@@ -2,12 +2,10 @@ class_name Buff extends Entity
 
 var def: BuffDef
 
-var source
-
 var tags: Array[BuffTagDef]:
 	get(): return def.tags
 
-var data: GameContext
+var data
 
 var stacks: int:
 	set(value):

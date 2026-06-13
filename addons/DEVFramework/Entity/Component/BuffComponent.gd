@@ -1,10 +1,11 @@
-class_name BuffComponent extends ActorComponent
+class_name BuffComponent extends Component
 
 @export_dir var defs_dir: String = "res://Assets/Def/Buff"
 
 signal buff_changed(buff: Buff, offset: int)
 
 var buffs: Array[Buff] = []
+var context_provider: Callable
 
 func get_def(buff_name: String) -> BuffDef:
 	return load(defs_dir.path_join(buff_name + ".tres"))
@@ -15,9 +16,8 @@ func get_buff(buff_name: String) -> Buff:
 			return buff
 	var def: BuffDef = get_def(buff_name)
 	var buff = Buff.new(def)
-	buff.data = GameContext.new(actor)
-	buff.data.source = buff
-	buff.data.buff = buff
+	if context_provider.is_valid():
+		buff.data = context_provider.call(buff)
 	buffs.append(buff)
 	buff.stacks_changed.connect(_on_buff_stacks_changed.bind(buff))
 	return buff
@@ -31,12 +31,9 @@ func get_stacks(buff_name: String) -> int:
 func _on_buff_stacks_changed(offset: int, buff: Buff):
 	buff_changed.emit(buff, offset)
 
-func add_stacks(buff_name: String, stacks: int, source = null):
+func add_stacks(buff_name: String, stacks: int):
 	if not is_multiplayer_authority(): return
-	if not source:
-		source = actor
 	var buff := get_buff(buff_name)
-	buff.source = source
 	if stacks > 0:
 		var cleanse_stacks := get_stacks(BuffDef.cleanse.name)
 		if buff.tags.has(BuffTagDef.buff_negative) and cleanse_stacks > 0:
@@ -57,15 +54,6 @@ func remove_stacks(buff_name: String, stacks: int):
 
 func clear_stacks(buff_name: String):
 	remove_stacks(buff_name, get_stacks(buff_name))
-
-func clear_buffs(source = null):
-	if source == null:
-		for buff in buffs:
-			buff.stacks = 0
-	else:
-		for buff in buffs:
-			if buff.source == source:
-				buff.stacks = 0
 
 func clear():
 	for buff in buffs:
