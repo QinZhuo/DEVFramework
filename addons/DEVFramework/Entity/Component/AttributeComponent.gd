@@ -22,20 +22,14 @@ func get_attribute(attribute_name: String) -> Attribute:
 func _on_attr_value_changed(modifier: Modifier, attr: Attribute):
 	attribute_changed.emit(attr, modifier)
 
-func get_value(attribute_name: String) -> int:
-	return get_attribute(attribute_name).value
-
-func set_value(attribute_name: String, value: int):
-	get_attribute(attribute_name).value = value
-
 func add_modifier(modifier: Modifier):
 	get_attribute(modifier.attr_name).add_modifier(modifier)
 
-func remove_modifiers(source: String):
+func remove_modifiers(source):
 	for attr in attributes:
 		attr.remove_modifiers(source)
 
-func clear_modifiers(source: String = ""):
+func clear_modifiers(source = null):
 	for attr in attributes:
 		attr.clear_modifiers(source)
 

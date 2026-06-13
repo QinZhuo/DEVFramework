@@ -22,3 +22,6 @@ static func in_all_tags(tags: Array[TagDef], target_tags: Array[TagDef]) -> bool
 		if not tags.has(target_tag):
 			return false
 	return true
+
+func get_csv_path() -> String:
+	return "res://Assets/Translation/tag.csv"
