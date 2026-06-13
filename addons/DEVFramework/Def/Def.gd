@@ -1,0 +1,55 @@
+@tool
+@abstract class_name Def extends Resource
+
+var name: String:
+	get():
+		if is_built_in():
+			resource_name = get_script().get_global_name()
+		else:
+			resource_name = resource_path.get_file().get_basename()
+		return resource_name
+	set(value):
+		resource_name = value
+
+func _to_string() -> String:
+	if is_built_in():
+		return get_script().get_global_name()
+	else:
+		return tr(name).strip_edges()
+
+func get_desc(_data) -> String:
+	return _to_string()
+
+static func get_def_desc(def: Def, data):
+	return def.get_desc(data) if def else ""
+
+func _get_zh(key: String) -> String:
+	if Engine.is_editor_hint() and not is_built_in():
+		return CSVDataAccess.get_csv_value(get_csv_path(), key, "zh", key)
+	else:
+		return name
+
+func _set_zh(key: String, value: String):
+	if Engine.is_editor_hint() and not is_built_in():
+		CSVDataAccess.set_csv_value(get_csv_path(), key, "zh", value)
+
+func get_csv_path() -> String:
+	var csv_name: String = get_script().get_global_name()
+	csv_name = csv_name.trim_suffix("Def").to_snake_case()
+	return "res://Assets/Translation/{0}.csv".format([csv_name])
+
+func get_root_def() -> Def:
+	if is_built_in():
+		return load(resource_path.substr(0, resource_path.find('::')))
+	return self
+
+func save_data():
+	return resource_path
+
+func _validate_property(property: Dictionary) -> void:
+	if "_init_def" in self:
+		call("_init_def")
+	if property.name.begins_with("zh_"):
+		property.usage = PROPERTY_USAGE_EDITOR ## 中文信息不存储
+	elif property.name.begins_with("tr_"):
+		property.usage = PROPERTY_USAGE_EDITOR | PROPERTY_USAGE_READ_ONLY ## 翻译变量只读且不储存
