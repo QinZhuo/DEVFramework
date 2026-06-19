@@ -116,7 +116,7 @@ func _create_mesh_pool(mesh: ArrayMesh, count: int) -> BakedPool:
 		mesh_pool.add_child(mesh_instance)
 		mesh_instance.owner = self
 
-	print("创建 ", key, " 数量: ", count, " => ", mesh_pool)
+	LogTool.log("烘焙池", "创建", key, "数量:", count, "=>", mesh_pool)
 	return mesh_pool
 
 func _create_scene_pool(scene: PackedScene, count: int) -> BakedPool:
@@ -139,5 +139,5 @@ func _create_scene_pool(scene: PackedScene, count: int) -> BakedPool:
 		mesh_pool.add_child(item)
 		item.owner = self
 
-	print("创建 ", key, " 数量: ", count, " => ", mesh_pool)
+	LogTool.log("烘焙池", "创建", key, "数量:", count, "=>", mesh_pool)
 	return mesh_pool

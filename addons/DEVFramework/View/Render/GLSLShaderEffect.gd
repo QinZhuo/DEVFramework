@@ -74,8 +74,8 @@ func _check_shader() -> bool:
 	var shader_spirv: RDShaderSPIRV = rd.shader_compile_spirv_from_source(shader_source)
 
 	if shader_spirv.compile_error_compute != "":
-		push_error(shader_spirv.compile_error_compute)
-		push_error("In: " + new_shader_code)
+		LogTool.error("着色器", shader_spirv.compile_error_compute)
+		LogTool.error("着色器", "输入:", new_shader_code)
 		return false
 
 	shader = rd.shader_create_from_spirv(shader_spirv)

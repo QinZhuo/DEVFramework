@@ -6,7 +6,7 @@ var next: EffectResult
 
 func _init(value_def: EntityDef, effect_value) -> void:
 	if not value_def:
-		push_error("def is null")
+		LogTool.error("效果", "def 为空")
 	def = value_def
 	value = effect_value
 

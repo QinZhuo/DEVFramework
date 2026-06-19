@@ -24,7 +24,7 @@ static func create_view(view_scene: PackedScene, pool, item) -> Node:
 		view = pool.pool_get()
 	else:
 		if not view_scene:
-			push_error("view_scene is not assigned!")
+			LogTool.error("数组视图", "view_scene 未赋值!")
 			return null
 		view = view_scene.instantiate()
 	if item is Node and not item.get_parent():

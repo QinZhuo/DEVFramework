@@ -2,28 +2,31 @@ class_name AttributeComponent extends Component
 
 @export_dir var defs_dir: String = "res://Assets/Def/Attribute"
 
-signal attribute_changed(attribute: Attribute, modifier: Modifier)
+signal attribute_changed(attribute: ModifierValue, modifier: Modifier)
 
-var attributes: Array[Attribute] = []
+var attributes: Array[ModifierValue] = []
 
 func get_def(attribute_name: String) -> AttributeDef:
 	return load(defs_dir.path_join(attribute_name + ".tres"))
 
-func get_attribute(attribute_name: String) -> Attribute:
+func get_attribute(attribute_name: String) -> ModifierValue:
 	for attribute in attributes:
 		if attribute.def.name == attribute_name:
 			return attribute
 	var def: AttributeDef = get_def(attribute_name)
-	var attribute = Attribute.new(def)
+	var attribute = ModifierValue.new(def)
 	attributes.append(attribute)
 	attribute.value_changed.connect(_on_attr_value_changed.bind(attribute))
 	return attribute
 
-func _on_attr_value_changed(modifier: Modifier, attr: Attribute):
+func _on_attr_value_changed(modifier: Modifier, attr: ModifierValue):
 	attribute_changed.emit(attr, modifier)
 
-func add_modifier(modifier: Modifier):
-	get_attribute(modifier.attr_name).add_modifier(modifier)
+func add_modifier(attr_name: String, modifier: Modifier, immediate: bool = false):
+	if immediate:
+		get_attribute(attr_name).apply_modifier(modifier)
+	else:
+		get_attribute(attr_name).add_modifier(modifier)
 
 func remove_modifiers(source):
 	for attr in attributes:

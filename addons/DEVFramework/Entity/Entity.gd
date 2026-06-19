@@ -7,7 +7,7 @@ func _init(init_def: EntityDef):
 		if "def" in self:
 			set("def", init_def)
 	else:
-		push_error("init_def is null")
+		LogTool.error("实体", "init_def 为空")
 
 func _to_string():
 	if "def" in self:

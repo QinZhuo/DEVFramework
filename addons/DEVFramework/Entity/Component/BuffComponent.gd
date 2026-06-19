@@ -36,7 +36,7 @@ func add_stacks(buff_name: String, stacks: int):
 	var buff := get_buff(buff_name)
 	if stacks > 0:
 		var cleanse_stacks := get_stacks(BuffDef.cleanse.name)
-		if buff.tags.has(BuffTagDef.buff_negative) and cleanse_stacks > 0:
+		if buff.tags.has(BuffTagDef.negative_buff) and cleanse_stacks > 0:
 			stacks -= cleanse_stacks
 			if stacks < 0:
 				cleanse_stacks -= stacks

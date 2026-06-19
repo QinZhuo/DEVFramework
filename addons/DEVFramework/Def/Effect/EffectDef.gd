@@ -1,12 +1,12 @@
 @tool
 @abstract class_name EffectDef extends Def
 
-@abstract func apply(data)
+@abstract func apply(context)
 
-func revert(data):
+func revert(context):
 	printerr("cannot revert ", self )
 
-func get_desc(data) -> String:
+func get_desc(context) -> String:
 	return _to_string()
 
 func _to_string() -> String:

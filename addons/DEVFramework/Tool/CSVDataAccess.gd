@@ -7,12 +7,12 @@ static func load_csv_data(path: String) -> Dictionary[String, Dictionary]:
 	var data: Dictionary[String, Dictionary] = {}
 	var file = FileAccess.open(path, FileAccess.READ)
 	if file == null:
-		push_error("Cannot open CSV file: " + path)
+		LogTool.error("表格", "无法打开CSV文件:", path)
 		return data
 
 	var header_line = file.get_csv_line()
 	if header_line.size() < 2:
-		push_error("Invalid CSV format: missing column headers")
+		LogTool.error("表格", "CSV格式无效: 缺少列标题")
 		return data
 
 	var columns = []
@@ -41,12 +41,12 @@ static func save_csv_data(path: String, data: Dictionary[String, Dictionary]) ->
 		path += ".csv"
 
 	if data.is_empty():
-		push_warning("No data to save to CSV: " + path)
+		LogTool.warn("表格", "没有数据可保存到CSV:", path)
 		return
 
 	var file = FileAccess.open(path, FileAccess.WRITE)
 	if file == null:
-		push_error("Cannot write to CSV file: " + path)
+		LogTool.error("表格", "无法写入CSV文件:", path)
 		return
 
 	# Try to read existing file to preserve column order
@@ -92,7 +92,7 @@ static func save_csv_data(path: String, data: Dictionary[String, Dictionary]) ->
 		file.store_csv_line(row)
 
 	file.close()
-	print("CSV file saved to: ", path)
+	LogTool.log("表格", "CSV文件已保存到:", path)
 
 static func get_csv_value(path: String, id: String, column: String, default: String = "") -> String:
 	var data := load_csv_data(path)

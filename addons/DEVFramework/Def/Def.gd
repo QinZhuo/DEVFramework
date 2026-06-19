@@ -1,4 +1,9 @@
 @tool
+## Def 静态数据基类
+##
+## Def 只应包含通过 @export 定义的静态配置数据，
+## 不得存储任何运行时缓存或状态信息。
+## 运行时状态由外部上下文持有，Def 仅提供对上下文的读写约定。
 @abstract class_name Def extends Resource
 
 var name: String:

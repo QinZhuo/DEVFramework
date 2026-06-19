@@ -19,11 +19,12 @@ var data: Array:
 
 ## 刷新视图，根据当前数据重新显示所有项目
 func refresh():
+	clear()
 	if not data or data.is_empty():
-		clear()
 		return
 	for item in data:
 		add_item(item)
+	queue_sort()
 
 ## 清除所有子节点
 func clear():

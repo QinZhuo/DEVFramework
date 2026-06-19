@@ -23,6 +23,17 @@ class_name DefMeshView extends Node3D
 
 var view: Node3D
 
+func _ready():
+	if Engine.is_editor_hint():
+		return
+	await get_tree().process_frame
+	if not mesh or not view:
+		return
+	var pool := BakedPoolManager.find_pool(_get_pool_key())
+	if pool and not pool.used_items.has(view):
+		_remove_view()
+		_add_view()
+
 func _enter_tree():
 	_add_view()
 

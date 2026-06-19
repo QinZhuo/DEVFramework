@@ -1,8 +1,8 @@
-class_name Attribute extends Entity
+class_name ModifierValue extends Entity
 
-var def: AttributeDef
+var def: Def
 
-var tags: Array[AttributeTagDef]:
+var tags: Array[TagDef]:
 	get(): return def.tags
 
 var _modifiers: Array = []
@@ -13,17 +13,26 @@ var value: int:
 	get:
 		return _value
 	set(_new_value):
-		push_error("不允许直接修改属性[", def, "]的value，请使用 base_value 或 add_modifier", def, _new_value)
+		LogTool.error("修饰值", "不允许直接修改属性[", def, "]的value，请使用base_value或add_modifier", def, _new_value)
 
 var base_value: int:
 	get:
 		return _base_value
 	set(new_value):
+		if _base_value == new_value:
+			return
 		_base_value = new_value
 		_recompute()
 
 func add_modifier(modifier: Modifier):
 	_modifiers.append(modifier)
+	_recompute(modifier)
+
+func apply_modifier(modifier: Modifier):
+	var new_value := modifier.apply(_base_value)
+	if _base_value == new_value:
+		return
+	_base_value = new_value
 	_recompute(modifier)
 
 func remove_modifiers(source):
@@ -53,7 +62,9 @@ func reset():
 func _recompute(modifier: Modifier = null):
 	var v := _base_value
 	for m in _modifiers:
-		v = m.apply_to(v)
+		v = m.apply(v)
+	if _value == v:
+		return
 	_value = v
 	value_changed.emit(modifier)
 

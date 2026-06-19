@@ -1,7 +1,7 @@
 @tool
-class_name OffsetArrayView3D extends SlotArrayView3D
+class_name OffsetArrayView2D extends SlotArrayView2D
 
-@export var offset: Vector3
+@export var offset: Vector2
 
 func _ready():
 	super ()
@@ -10,12 +10,12 @@ func _ready():
 	child_exiting_tree.connect(_on_child_exiting)
 
 func _on_child_entered(node: Node):
-	if node is Node3D:
+	if node is Node2D:
 		node.visibility_changed.connect(_on_visibility_changed)
 	update_layout.call_deferred()
 
 func _on_child_exiting(node: Node):
-	if node is Node3D and node.visibility_changed.is_connected(_on_visibility_changed):
+	if node is Node2D and node.visibility_changed.is_connected(_on_visibility_changed):
 		node.visibility_changed.disconnect(_on_visibility_changed)
 	update_layout.call_deferred()
 
@@ -28,9 +28,9 @@ func _update_slot_visibility():
 
 func update_layout():
 	var slots := get_children()
-	var visible_slots: Array[Node3D] = []
+	var visible_slots: Array[Node2D] = []
 	for child in slots:
-		if child is Node3D and child.visible:
+		if child is Node2D and child.visible:
 			visible_slots.append(child)
 	var count := visible_slots.size()
 	if count == 0:

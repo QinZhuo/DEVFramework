@@ -30,7 +30,7 @@ func _take_screenshot() -> void:
 	img.save_png(save_path)
 	viewport.transparent_bg = original_bg
 
-	print("保存图像成功 ", save_path)
+	LogTool.log("截图", "保存图像成功", save_path)
 
 func _apply_dithering(img: Image) -> void:
 	var width := img.get_width()

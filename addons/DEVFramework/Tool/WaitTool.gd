@@ -10,7 +10,7 @@ static func wait_all(...signals: Array) -> void:
 	for index in signals.size():
 		signals[index].connect(func(...args):
 			triggered.value += 1
-			print("[WaitTool] triggered signals[", index, '] : ', signals[index])
+			LogTool.log("等待", "已触发的信号[", index, "]:", signals[index])
 		, CONNECT_ONE_SHOT)
 
 	while triggered.value < remaining:

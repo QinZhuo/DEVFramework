@@ -22,6 +22,9 @@ signal button_up()
 func _ready() -> void:
 	_update_visible(true)
 
+func _exit_tree():
+	_mouse_exit()
+
 func _update_visible(reset: bool):
 	TweenViewTool.update_visible(visible_tween, tween_visible, reset)
 

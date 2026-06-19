@@ -1,12 +1,12 @@
 @tool
-class_name SlotArrayView3D extends Node3D
+class_name SlotArrayView2D extends Node2D
 
 @export var view_scene: PackedScene:
 	set(value):
 		view_scene = value
 		_preview_setup()
 
-var pool: BakedPool
+var pool: BakedPool2D
 var data: Array:
 	set(value):
 		data = value
@@ -17,7 +17,7 @@ var data: Array:
 		auto_hide_empty = value
 		_update_slot_visibility()
 
-var views: Array[Node3D] = []
+var views: Array[Node2D] = []
 
 func _resize_views():
 	var count = get_child_count()
@@ -49,7 +49,7 @@ func _update_slot_visibility():
 		return
 	var slot_nodes := get_children()
 	for i in slot_nodes.size():
-		var slot = slot_nodes[i] as Node3D
+		var slot = slot_nodes[i] as Node2D
 		if not slot:
 			continue
 		slot.visible = i < views.size() and is_instance_valid(views[i])
@@ -57,7 +57,7 @@ func _update_slot_visibility():
 # --- 核心私有方法 ---
 
 # 在指定插槽设置 view（释放旧 view → 创建新 view → 挂载到插槽）
-func _set_slot_view(slot_index: int, item) -> Node3D:
+func _set_slot_view(slot_index: int, item) -> Node2D:
 	var slot_nodes := get_children()
 	if slot_index < 0 or slot_index >= slot_nodes.size():
 		return null
@@ -106,7 +106,7 @@ func clear():
 		_free_slot(i)
 	_update_slot_visibility()
 
-func refresh_item(item) -> Node3D:
+func refresh_item(item) -> Node2D:
 	_resize_views()
 	var item_name = ArrayViewTool.get_item_name(item)
 	for i in views.size():
@@ -119,7 +119,7 @@ func refresh_item(item) -> Node3D:
 	_update_slot_visibility()
 	return view
 
-func add_item(item) -> Node3D:
+func add_item(item) -> Node2D:
 	_resize_views()
 	var view = _set_slot_view(_find_slot_index(), item)
 	_update_slot_visibility()
@@ -132,7 +132,7 @@ func remove_at(index: int):
 	_free_slot(index)
 	_update_slot_visibility()
 
-func set_item(index: int, item) -> Node3D:
+func set_item(index: int, item) -> Node2D:
 	_resize_views()
 	var slot_nodes := get_children()
 	if index < 0 or index >= slot_nodes.size():
@@ -151,11 +151,11 @@ func remove_item(item):
 			_update_slot_visibility()
 			return
 
-func get_item_position(item) -> Vector3:
+func get_item_position(item) -> Vector2:
 	_resize_views()
 	for i in views.size():
 		var view = views[i]
 		if is_instance_valid(view) and "data" in view and view.data == item:
 			return view.global_position
 	printerr(self, "  无法获取位置 ", item)
-	return Vector3.ZERO
+	return Vector2.ZERO
