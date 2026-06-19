@@ -34,7 +34,7 @@ static func create_structure() -> void:
 	var error_count := 0
 
 	for sub_path in _project_dirs:
-		printerr(sub_path)
+		print("新建文件夹", sub_path)
 		if dir.dir_exists(sub_path):
 			existed_count += 1
 			continue
