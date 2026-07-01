@@ -1,8 +1,6 @@
 class_name BuffComponent extends Component
 
 @export_dir var defs_dir: String = "res://Assets/Def/Buff"
-## 能抵消负面Buff的Buff名称（留空则不禁用此功能）
-@export var anti_debuff_buff: String = ""
 
 signal buff_changed(buff: Buff, offset: int)
 
@@ -36,14 +34,6 @@ func _on_buff_stacks_changed(offset: int, buff: Buff):
 func add_stacks(buff_name: String, stacks: int):
 	if not is_multiplayer_authority(): return
 	var buff := get_buff(buff_name)
-	if stacks > 0 and not anti_debuff_buff.is_empty():
-		var adb_stacks := get_stacks(anti_debuff_buff)
-		if buff.tags.has(BuffTagDef.negative_buff) and adb_stacks > 0:
-			var consumed := mini(stacks, adb_stacks)
-			stacks -= consumed
-			remove_stacks(anti_debuff_buff, consumed)
-			if stacks <= 0:
-				return
 	buff.stacks += stacks
 
 func remove_stacks(buff_name: String, stacks: int):
