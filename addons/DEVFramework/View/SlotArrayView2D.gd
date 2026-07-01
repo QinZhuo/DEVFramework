@@ -61,8 +61,6 @@ func _set_slot_view(slot_index: int, item) -> Node2D:
 	var slot_nodes := get_children()
 	if slot_index < 0 or slot_index >= slot_nodes.size():
 		return null
-	if is_instance_valid(views[slot_index]):
-		ArrayViewTool.free_view(views[slot_index], pool)
 	var view = ArrayViewTool.create_view(view_scene, pool, item)
 	if view:
 		slot_nodes[slot_index].add_child(view)

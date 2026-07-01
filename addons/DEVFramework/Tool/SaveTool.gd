@@ -40,6 +40,7 @@ static func check_version(data: Variant, version: String, ignore_patch: bool = f
 
 ## 保存数据，支持 3 种加密模式
 static func save_data(path: String, data, mode: EncryptMode = EncryptMode.NONE) -> Error:
+	var _t := LogTool.timer("存档", str("保存 ", path))
 	var actual_path := _resolve_path(path, mode)
 	var dir := actual_path.get_base_dir()
 	if not dir.is_empty() and not DirAccess.dir_exists_absolute(dir):
@@ -54,6 +55,7 @@ static func save_data(path: String, data, mode: EncryptMode = EncryptMode.NONE) 
 			return FAILED
 		file.store_string(json_str)
 		file.close()
+		_t.stop()
 		return OK
 
 	# 加密模式：使用 Godot 内置 AES-256 加密文件
@@ -71,11 +73,13 @@ static func save_data(path: String, data, mode: EncryptMode = EncryptMode.NONE) 
 			df.store_string(json_str)
 			df.close()
 
+	_t.stop()
 	return OK
 
 
 ## 加载数据，自动识别加密模式
 static func load_data(path: String, mode: EncryptMode = EncryptMode.NONE) -> Variant:
+	var _t := LogTool.timer("存档", str("加载 ", path))
 	var actual_path := _resolve_path(path, mode)
 	if not FileAccess.file_exists(actual_path):
 		return {}
@@ -101,6 +105,7 @@ static func load_data(path: String, mode: EncryptMode = EncryptMode.NONE) -> Var
 	var json := JSON.new()
 	var parse_result := json.parse(json_string)
 	if parse_result == OK:
+		_t.stop()
 		return json.data
 	LogTool.error("存档", "JSON 解析错误:", json.get_error_message())
 	return {}

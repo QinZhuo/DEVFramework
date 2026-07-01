@@ -29,6 +29,8 @@ var _debug = false
 
 func _init(initial_state = -1):
 	_current = initial_state
+	if _debug:
+		LogTool.log("状态机", "初始化，初始状态:", str(_current))
 
 func current():
 	return _current
@@ -88,9 +90,11 @@ func transition(to):
 	_current = to
 	state_changed.emit(from, to)
 	if _enter_callbacks.has(to):
-		var res2 = _enter_callbacks[to].call()
+		var res2 = await _enter_callbacks[to].call()
 		if typeof(res2) == TYPE_OBJECT:
 			await res2
+	if _debug:
+		LogTool.log("状态机", "转换成功", str(from), "->", str(to))
 	return true
 
 func force_set(state):
@@ -98,6 +102,8 @@ func force_set(state):
 	_current = state
 	if from != state:
 		state_changed.emit(from, state)
+	if _debug:
+		LogTool.log("状态机", "强制设置状态", str(from), "->", str(state))
 
 func allow_self_transition(v):
 	_allow_self_transition = v

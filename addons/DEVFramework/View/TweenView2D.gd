@@ -1,4 +1,4 @@
-class_name TweenView3D extends Node3D
+class_name TweenView2D extends Node2D
 
 @export var tween: TweenAnimation
 

@@ -2,10 +2,10 @@
 ##
 ## 纯栈管理器，不负责面板的显示/隐藏。
 ## 负责 UI 面板的注册/注销、栈排序、返回路由（[method back]）、模态管理。
-## UI 面板需预先摆放在场景树中，通过 [Panel2D] / [Panel3D] 的 [method open] / [method close] 同时完成显示与注册。
+## UI 面板需预先摆放在场景树中，通过 [Panel2D] / [UIPanel3D] 的 [method open] / [method close] 同时完成显示与注册。
 ##
 ## 职责划分：
-##   [b]Panel2D/Panel3D[/b] — 显示/隐藏动画、生命周期信号
+##   [b]Panel2D/UIPanel3D[/b] — 显示/隐藏动画、生命周期信号
 ##   [b]UIManager[/b]         — 栈管理、层级互斥、返回路由、模态阻断
 ##
 ## 基于 [enum Layer] 将 UI 分为 6 种类型，每种类型有独立的行为逻辑：
@@ -82,7 +82,7 @@ static var _stack: Array[Node] = []
 
 ## 注册面板（仅栈管理，不触发面板显示）。
 ##
-## 通常不需要主动调用 — [Panel2D] / [Panel3D] 的 [method open] 会自动调用此方法。
+## 通常不需要主动调用 — [Panel2D] / [UIPanel3D] 的 [method open] 会自动调用此方法。
 ## 仅在需要绕过面板自身显示逻辑、仅做栈注册的极少数场景下使用。
 ##
 ## 自动根据面板的 [code]layer[/code] 属性判断 UI 类型，执行对应的注册逻辑：
@@ -115,7 +115,7 @@ static func register(panel: Node) -> void:
 
 ## 注销面板（仅栈管理，不触发面板隐藏）。
 ##
-## 通常不需要主动调用 — [Panel2D] / [Panel3D] 的 [method close] 会自动调用此方法。
+## 通常不需要主动调用 — [Panel2D] / [UIPanel3D] 的 [method close] 会自动调用此方法。
 ##
 ## [b]注意：[/b]此方法仅从栈中移除，不触发 [code]panel.close()[/code] 隐藏逻辑。
 ## 如需同时注销并隐藏，请直接调用 [code]panel.close()[/code]。

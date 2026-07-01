@@ -14,6 +14,8 @@ class_name Button3D extends Area3D
 @export var audio: SFXComponent
 @onready var collision_shape: CollisionShape3D = $CollisionShape3D
 
+@export var enable_selection_outline: bool = false
+
 var is_pressed: bool
 
 signal button_down()
@@ -33,8 +35,12 @@ func _mouse_enter():
 		enter_tween.play()
 	if audio:
 		audio.play("Enter")
+	if enable_selection_outline:
+		OutlineEffect.set_outlined(self, true)
 
 func _mouse_exit():
+	if enable_selection_outline:
+		OutlineEffect.set_outlined(self, false)
 	if enter_tween:
 		enter_tween.playback()
 	if press_tween:

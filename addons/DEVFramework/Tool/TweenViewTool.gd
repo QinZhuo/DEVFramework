@@ -22,9 +22,6 @@ static func update_visible(tween: TweenAnimation, visible: bool, reset: bool):
 ## [param node] 要释放的节点
 ## [param tween] 可选的 TweenAnimation
 static func finish_and_free(node: Node, tween: TweenAnimation) -> void:
-	if Engine.is_editor_hint():
-		node.queue_free()
-		return
-	if tween:
+	if tween and not tween.is_playback:
 		await tween.playback().finished
 	node.queue_free()

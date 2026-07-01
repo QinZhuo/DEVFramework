@@ -21,7 +21,7 @@ class_name DefMeshView extends Node3D
 		mesh = value
 		_add_view()
 
-var view: Node3D
+var view: MeshInstance3D
 
 func _ready():
 	if Engine.is_editor_hint():

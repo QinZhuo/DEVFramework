@@ -21,7 +21,7 @@ class_name DragView3D extends Button3D
 @export var drag_return_duration: float = 0.2
 
 ## 拖拽排序吸附阈值比例（与相邻卡牌间距的比例，超过此比例才触发换位）
-@export var drag_snap_threshold_ratio: float = 0.5
+@export var drag_snap_threshold_ratio: float = 0.1
 
 ## ---------------------------------------------------- 信号
 signal drag_started()

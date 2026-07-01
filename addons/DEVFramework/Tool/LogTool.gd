@@ -1,11 +1,11 @@
 ## 通用日志工具 — 标签标记、自动配色、项目设置集成
 class_name LogTool
 
-const SETTING_ENABLED  := "dev_framework/log/enabled"
+const SETTING_ENABLED := "dev_framework/log/enabled"
 const SETTING_TIMESTAMPS := "dev_framework/log/show_timestamps"
 const SETTING_IGNORED_TAGS := "dev_framework/log/ignored_tags"
 
-enum Level { LOG, WARN, ERROR }
+enum Level {LOG, WARN, ERROR}
 
 
 static func set_enabled(v: bool) -> void:
@@ -58,3 +58,37 @@ static func _colored_tag(tag: String) -> String:
 	var hue: float = fmod(absf(tag.hash()), 360.0) / 360.0
 	var c: Color = Color.from_hsv(hue, 0.45, 0.82)
 	return "[color=#%s][b][%s][/b][/color]" % [c.to_html(false), tag]
+
+
+## 计时器 — 创建时传入日志信息，调用 stop() 输出自创建起的耗时
+class LogTimer:
+	var _start: int
+	var _tag: String
+	var _msg: String
+	var _stopped := false
+
+	func _init(tag: String, msg: String):
+		_start = Time.get_ticks_usec()
+		_tag = tag
+		_msg = msg
+		_start_timeout_watch()
+
+	func _start_timeout_watch():
+		var tree := Engine.get_main_loop() as SceneTree
+		if not tree:
+			return
+		var timer := tree.create_timer(5.0)
+		timer.timeout.connect(_on_timeout)
+
+	func _on_timeout():
+		if _stopped:
+			return
+		LogTool.error(_tag, str("计时器超时(>5s): ", _msg))
+
+	func stop() -> void:
+		_stopped = true
+		LogTool.log(_tag, str(_msg, " (", (Time.get_ticks_usec() - _start) / 1000.0, "ms)"))
+
+## 创建计时器，返回 LogTimer 对象，调用 stop() 输出耗时
+static func timer(tag: String, msg: String) -> LogTimer:
+	return LogTimer.new(tag, msg)
