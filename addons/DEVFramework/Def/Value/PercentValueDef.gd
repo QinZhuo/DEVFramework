@@ -5,10 +5,19 @@ class_name PercentValueDef extends ValueDef
 @export var percent: ValueDef
 
 func get_float(data) -> float:
-	return value.get_float(data) * percent.get_float(data) / 100.0
+	var percent_val := percent.get_float(data)
+	percent_val = ceili(percent_val / 10.0) * 10.0
+	var float_value: float = 1 if not value else value.get_float(data)
+	return float_value * percent_val / 100.0
 
 func get_desc(data) -> String:
-	return str(percent.get_desc(data), "%", value.get_desc(data))
+	var percent_val := percent.get_float(data)
+	percent_val = ceili(percent_val / 10.0) * 10.0
+	if value:
+		return str(int(percent_val), "%", value.get_desc(data))
+	return str(int(percent_val), "%")
 
 func _to_string():
-	return str(percent, "%", value)
+	if value:
+		return str(percent, "%", value)
+	return str(percent, "%")

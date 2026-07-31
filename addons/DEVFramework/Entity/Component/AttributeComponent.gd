@@ -7,13 +7,19 @@ signal attribute_changed(attribute: ModifierValue, modifier: Modifier)
 var attributes: Array[ModifierValue] = []
 
 func get_def(attribute_name: String) -> AttributeDef:
-	return load(defs_dir.path_join(attribute_name + ".tres"))
+	var path := defs_dir.path_join(attribute_name + ".tres")
+	if not ResourceLoader.exists(path):
+		printerr("属性资源不存在: ", path)
+		return null
+	return load(path)
 
 func get_attribute(attribute_name: String) -> ModifierValue:
 	for attribute in attributes:
 		if attribute.def.name == attribute_name:
 			return attribute
 	var def: AttributeDef = get_def(attribute_name)
+	if not def:
+		return null
 	var attribute = ModifierValue.new(def)
 	attributes.append(attribute)
 	attribute.value_changed.connect(_on_attr_value_changed.bind(attribute))
@@ -55,4 +61,6 @@ func load_data(data):
 	clear()
 	for attr_name in data:
 		var attr := get_attribute(attr_name)
+		if not attr:
+			continue
 		attr.base_value = data[attr_name]

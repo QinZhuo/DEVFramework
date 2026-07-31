@@ -48,8 +48,24 @@ func get_root_def() -> Def:
 		return load(resource_path.substr(0, resource_path.find('::')))
 	return self
 
+const DEFS_BASE := "res://Assets/Def/"
+
+## 保存时返回相对于 DEFS_BASE 的短路径，减小存档体积
 func save_data():
-	return resource_path
+	return resource_path.trim_prefix(DEFS_BASE)
+
+## 从存档数据中加载 Def（兼容旧存档的完整路径格式）
+## 文件不存在时返回 null 并输出日志
+static func load_data(path: String) -> Def:
+	var full_path: String
+	if path.begins_with("res://"):
+		full_path = path
+	else:
+		full_path = DEFS_BASE + path
+	if ResourceLoader.exists(full_path):
+		return load(full_path)
+	LogTool.warn("存档", "Def 文件不存在: %s (来源路径: %s)" % [full_path, path])
+	return null
 
 func _validate_property(property: Dictionary) -> void:
 	if "_init_def" in self:

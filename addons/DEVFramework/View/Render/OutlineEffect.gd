@@ -1,78 +1,49 @@
 @tool
 class_name OutlineEffect extends CompositorEffect
-## 选中物体描边后处理（单类，零外部依赖）
+## 选中物体描边后处理
 ##
-## 原理：
-##   set_outlined(node,true) → MeshInstance3D.material_overlay = 标记材质
-##   blend_add → 选中像素 alpha 从 1.0 累加到 2.0（HDR 缓冲可存储 >1）
-##   compute shader → 检测 alpha > 1.5 → 8方向膨胀 → 描边合成
-##
-## 优化要点：
-##   - 无选中物体时完全跳过 GPU dispatch
-##   - shader 一次性编译，永不重编（参数全部走 push constant）
-##   - 多循环缓存避免每帧分配
+## 标记阶段：material_overlay + 默认深度测试 + blend_add → ALPHA=4.0
+## 膨胀阶段：4方向端点检测 → outline_width 像素内的标记
+## 合成阶段：描边像素混合 outline_color
 
 
 #region --- 导出属性 ---
 
 @export_group("Outline", "outline_")
-@export var outline_color := Color(1.0, 0.85, 0.2, 1.0)
-@export var outline_width := 2.0
-@export var outline_alpha := 1.0
+@export var outline_color := Color(0.35, 0.65, 1.0, 1.0):
+	set(v):
+		outline_color = v
+		_pc_dirty = true
+@export var outline_width := 2.0:
+	set(v):
+		outline_width = v
+		_pc_dirty = true
+@export var outline_alpha := 1.0:
+	set(v):
+		outline_alpha = v
+		_pc_dirty = true
 
-const MARKER_THRESHOLD := 1.5   # normal=1.0，marked=2.0，阈值取中间
+const MARKER_THRESHOLD := 3.5
 
 #endregion
 
 
 #region --- 静态标记管理 ---
 
-static var _outlined_dict: Dictionary = {}   # main-thread dedup
-static var _outlined_count: int = 0          # render-thread safe
+static var _outlined_count: int = 0
 static var _overlay_mat: ShaderMaterial
-static var _mesh_cache: Dictionary = {}      # {instance_id: Array[MeshInstance3D]}
 
 
-static func set_outlined(node: Node, on: bool) -> void:
-	if not node or not is_instance_valid(node):
-		return
-	var id := node.get_instance_id()
+static func set_outlined(on: bool, ...meshes: Array) -> void:
 	if on:
-		if id in _outlined_dict:
-			return
-		_outlined_dict[id] = true
 		_outlined_count += 1
-		if not node.tree_exiting.is_connected(_on_node_free.bind(id)):
-			node.tree_exiting.connect(_on_node_free.bind(id), CONNECT_ONE_SHOT)
 	else:
-		if not _outlined_dict.erase(id):
-			return
 		_outlined_count -= 1
-		if _mesh_cache.has(id):
-			_mesh_cache.erase(id)
-
-	var meshes: Array = _get_cached_meshes(node, id)
 	var mat: ShaderMaterial = _get_overlay_mat() if on else null
-	for m in meshes:
-		var mi := m as MeshInstance3D
+	for mi in meshes:
 		if not mi:
 			continue
 		mi.material_overlay = mat
-
-
-static func _on_node_free(id: int) -> void:
-	if not _outlined_dict.erase(id):
-		return
-	_outlined_count -= 1
-	_mesh_cache.erase(id)
-
-
-static func _get_cached_meshes(node: Node, id: int) -> Array:
-	if _mesh_cache.has(id):
-		return _mesh_cache[id]
-	var meshes := node.find_children("*", "MeshInstance3D", true, false)
-	_mesh_cache[id] = meshes
-	return meshes
 
 
 static func _get_overlay_mat() -> ShaderMaterial:
@@ -85,11 +56,15 @@ static func _get_overlay_mat() -> ShaderMaterial:
 
 static func _make_marker_shader() -> Shader:
 	var s := Shader.new()
-	# blend_add: finalColor = srcColor*srcAlpha + dstColor = (0,0,0)*1 + dst = dst（不变）
-	#            finalAlpha = srcAlpha     + dstAlpha = 1       + 1   = 2.0（标记）
+	# depth_test_enabled(默认) → 被挡像素不写入，自然避免透视
+	# ALPHA=4.0              → 即使对着天空也累加到 4.0 > 3.5 阈值
+	# ALBEDO=0               → blend_add 不改变场景颜色
 	s.code = """shader_type spatial;
-render_mode blend_add, unshaded, cull_disabled, depth_test_disabled, shadows_disabled;
-void fragment() { ALBEDO = vec3(0.0); ALPHA = 1.0; }"""
+render_mode blend_add, unshaded, shadows_disabled;
+void fragment() {
+	ALBEDO = vec3(0.0);
+	ALPHA = 4.0;
+}"""
 	return s
 
 #endregion
@@ -101,6 +76,9 @@ var rd: RenderingDevice
 var shader: RID
 var pipeline: RID
 var _compiled := false
+
+var _pc_byte_cache: PackedByteArray
+var _pc_dirty := true
 
 
 func _init() -> void:
@@ -125,7 +103,7 @@ func _ensure_shader() -> bool:
 	var spv := rd.shader_compile_spirv_from_source(src)
 	if spv.compile_error_compute != "":
 		push_error("[OutlineEffect] ", spv.compile_error_compute)
-		_compiled = true  # 避免反复报错
+		_compiled = true
 		return false
 
 	shader = rd.shader_create_from_spirv(spv)
@@ -138,6 +116,20 @@ func _ensure_shader() -> bool:
 	return pipeline.is_valid()
 
 
+func _rebuild_push_constant() -> void:
+	_pc_byte_cache = PackedByteArray()
+	_pc_byte_cache.resize(32)
+	_pc_byte_cache.encode_float(0, outline_width)
+	_pc_byte_cache.encode_float(4, outline_alpha)
+	_pc_byte_cache.encode_float(8, MARKER_THRESHOLD)
+	_pc_byte_cache.encode_float(12, 0.0)  # std430 vec4 对齐填充
+	_pc_byte_cache.encode_float(16, outline_color.r)
+	_pc_byte_cache.encode_float(20, outline_color.g)
+	_pc_byte_cache.encode_float(24, outline_color.b)
+	_pc_byte_cache.encode_float(28, outline_color.a)
+	_pc_dirty = false
+
+
 func _render_callback(p_type: EffectCallbackType, p_data: RenderData) -> void:
 	if _outlined_count <= 0 or outline_width <= 0.0:
 		return
@@ -145,8 +137,7 @@ func _render_callback(p_type: EffectCallbackType, p_data: RenderData) -> void:
 		return
 
 	var bufs: RenderSceneBuffersRD = p_data.get_render_scene_buffers()
-	var sd: RenderSceneData = p_data.get_render_scene_data()
-	if not bufs or not sd:
+	if not bufs:
 		return
 
 	var size := bufs.get_internal_size()
@@ -158,32 +149,24 @@ func _render_callback(p_type: EffectCallbackType, p_data: RenderData) -> void:
 	@warning_ignore("integer_division")
 	var gy := (size.y - 1) / 8 + 1
 
-	var pc := PackedFloat32Array([
-		outline_width,
-		outline_alpha,
-		MARKER_THRESHOLD,
-		0.0,  # _pad（16字节对齐）
-		outline_color.r,
-		outline_color.g,
-		outline_color.b,
-		outline_color.a,
-	])
+	if _pc_dirty:
+		_rebuild_push_constant()
 
 	for view in bufs.get_view_count():
 		var set_rid := UniformSetCacheRD.get_cache(shader, 0, [
-			_rd_uniform(RenderingDevice.UNIFORM_TYPE_IMAGE, 0, bufs.get_color_layer(view)),
+			_bind_image(0, bufs.get_color_layer(view)),
 		])
 		var cl := rd.compute_list_begin()
 		rd.compute_list_bind_compute_pipeline(cl, pipeline)
 		rd.compute_list_bind_uniform_set(cl, set_rid, 0)
-		rd.compute_list_set_push_constant(cl, pc.to_byte_array(), 32)
+		rd.compute_list_set_push_constant(cl, _pc_byte_cache, 32)
 		rd.compute_list_dispatch(cl, gx, gy, 1)
 		rd.compute_list_end()
 
 
-static func _rd_uniform(type: int, bind: int, rid: RID) -> RDUniform:
+static func _bind_image(bind: int, rid: RID) -> RDUniform:
 	var u := RDUniform.new()
-	u.uniform_type = type
+	u.uniform_type = RenderingDevice.UNIFORM_TYPE_IMAGE
 	u.binding = bind
 	u.add_id(rid)
 	return u
@@ -196,14 +179,13 @@ static func _rd_uniform(type: int, bind: int, rid: RID) -> RDUniform:
 const COMPUTE_SHADER := """#version 450
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
-
 layout(rgba16f, set=0, binding=0) uniform image2D color_image;
 
 layout(push_constant, std430) uniform Params {
 	float outline_width;
 	float outline_alpha;
 	float marker_threshold;
-	float _pad;              // vec4 对齐所需填充
+	float _pad;
 	vec4 outline_color;
 } params;
 
@@ -215,47 +197,37 @@ void main() {
 
 	vec4 color = imageLoad(color_image, uv);
 
-	float marked = float(color.a > params.marker_threshold);
-	float dilated = marked;
+	bool is_marked = color.a > params.marker_threshold;
+	float marked_f = float(is_marked);
+	bool dilated = is_marked;
 
-	int w  = int(params.outline_width);
-	int wd = int(params.outline_width * 0.707);
-	ivec2 nuv;
+	// 4方向端点检测
+	if (!dilated) {
+		int w = int(params.outline_width);
+		ivec2 nuv;
 
-	if (w > 0) {
-		// 4方向（上下左右）
-		nuv = uv + ivec2( w,  0);
-		if (all(greaterThanEqual(nuv, ivec2(0))) && all(lessThan(nuv, size)))
-			dilated = max(dilated, float(imageLoad(color_image, nuv).a > params.marker_threshold));
-		nuv = uv + ivec2(-w,  0);
-		if (all(greaterThanEqual(nuv, ivec2(0))) && all(lessThan(nuv, size)))
-			dilated = max(dilated, float(imageLoad(color_image, nuv).a > params.marker_threshold));
-		nuv = uv + ivec2( 0,  w);
-		if (all(greaterThanEqual(nuv, ivec2(0))) && all(lessThan(nuv, size)))
-			dilated = max(dilated, float(imageLoad(color_image, nuv).a > params.marker_threshold));
-		nuv = uv + ivec2( 0, -w);
-		if (all(greaterThanEqual(nuv, ivec2(0))) && all(lessThan(nuv, size)))
-			dilated = max(dilated, float(imageLoad(color_image, nuv).a > params.marker_threshold));
-		// 4对角线（wd = w × 0.707）
-		nuv = uv + ivec2( wd,  wd);
-		if (all(greaterThanEqual(nuv, ivec2(0))) && all(lessThan(nuv, size)))
-			dilated = max(dilated, float(imageLoad(color_image, nuv).a > params.marker_threshold));
-		nuv = uv + ivec2( wd, -wd);
-		if (all(greaterThanEqual(nuv, ivec2(0))) && all(lessThan(nuv, size)))
-			dilated = max(dilated, float(imageLoad(color_image, nuv).a > params.marker_threshold));
-		nuv = uv + ivec2(-wd,  wd);
-		if (all(greaterThanEqual(nuv, ivec2(0))) && all(lessThan(nuv, size)))
-			dilated = max(dilated, float(imageLoad(color_image, nuv).a > params.marker_threshold));
-		nuv = uv + ivec2(-wd, -wd);
-		if (all(greaterThanEqual(nuv, ivec2(0))) && all(lessThan(nuv, size)))
-			dilated = max(dilated, float(imageLoad(color_image, nuv).a > params.marker_threshold));
+		nuv = uv + ivec2(-w, 0);
+		if (nuv.x >= 0 && imageLoad(color_image, nuv).a > params.marker_threshold) dilated = true;
+
+		if (!dilated) {
+			nuv = uv + ivec2(w, 0);
+			if (nuv.x < size.x && imageLoad(color_image, nuv).a > params.marker_threshold) dilated = true;
+		}
+
+		if (!dilated) {
+			nuv = uv + ivec2(0, -w);
+			if (nuv.y >= 0 && imageLoad(color_image, nuv).a > params.marker_threshold) dilated = true;
+		}
+
+		if (!dilated) {
+			nuv = uv + ivec2(0, w);
+			if (nuv.y < size.y && imageLoad(color_image, nuv).a > params.marker_threshold) dilated = true;
+		}
 	}
 
-	float outline = dilated - marked;
-	float blend = outline * params.outline_alpha * params.outline_color.a;
+	float blend = float(dilated) - marked_f;
+	blend = blend * params.outline_alpha * params.outline_color.a;
 	color.rgb = mix(color.rgb, params.outline_color.rgb, blend);
-
-	// 不恢复 alpha：标记仅本帧有效，下帧 overlay 重新写入
 	imageStore(color_image, uv, color);
 }"""
 

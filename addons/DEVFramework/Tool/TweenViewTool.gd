@@ -1,5 +1,5 @@
 ## TweenViewTool 是 Tween 视图组件的通用工具类。
-## 提取 TweenView / TweenView3D / Button3D 中的重复逻辑，统一管理 Tween 显隐控制和节点释放。
+## 提取 TweenView / TweenView3D / ButtonView3D 中的重复逻辑，统一管理 Tween 显隐控制和节点释放。
 class_name TweenViewTool
 
 ## 控制 TweenAnimation 的显隐动画。

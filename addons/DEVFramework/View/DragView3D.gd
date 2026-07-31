@@ -1,12 +1,12 @@
 ## 通用 3D 拖拽视图基类，提供完整的拖拽生命周期管理。
-## 继承自 Button3D，子类可自由扩展拖拽行为（排序、出售等）。
+## 继承自 ButtonView3D，子类可自由扩展拖拽行为（排序、出售等）。
 ## [br][br]
 ## 拖拽生命周期：[br]
 ##   按下左键 → [code]_start_drag()[/code] → [code]_on_drag_started()[/code] (虚)[br]
 ##   拖动鼠标 → [code]_drag()[/code] → [code]_on_drag_move()[/code] (虚)[br]
 ##   释放左键 → [code]_end_drag()[/code] → [code]_on_drag_ended()[/code] (虚) → 归位动画[br]
 ##   按下右键 → [code]_cancel_drag()[/code] → [code]_on_drag_cancelled()[/code] (虚) → 回到起点
-class_name DragView3D extends Button3D
+class_name DragView3D extends ButtonView3D
 
 ## 希望拖拽时产生缩放动画的节点，为空则使用自身
 @export var drag_visual_node: Node3D
@@ -29,7 +29,9 @@ signal drag_ended()
 signal drag_cancelled()
 
 ## ---------------------------------------------------- 拖拽状态
-var is_dragging: bool = false
+## 是否正在拖拽中（由 dragging_item 推导）
+var is_dragging: bool:
+	get: return ButtonView3D.dragging_item == self
 var drag_offset: Vector3 = Vector3.ZERO
 var drag_start_global_pos: Vector3 = Vector3.ZERO
 var drag_plane: Plane
@@ -64,7 +66,7 @@ func _unhandled_input(event: InputEvent):
 func _start_drag():
 	if not _can_drag():
 		return
-	is_dragging = true
+	ButtonView3D.dragging_item = self
 	drag_start_global_pos = global_position
 
 	var camera: Camera3D = get_viewport().get_camera_3d()
@@ -176,7 +178,7 @@ func _restore_scale():
 
 ## 统一重置拖拽状态（子类出售场景可主动调用以跳过基类清理）
 func _cleanup_drag_state():
-	is_dragging = false
+	ButtonView3D.dragging_item = null
 	drag_offset = Vector3.ZERO
 	drag_start_global_pos = Vector3.ZERO
 	drag_container = null

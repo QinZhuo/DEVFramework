@@ -1,12 +1,12 @@
 ## UI 管理器
 ##
 ## 纯栈管理器，不负责面板的显示/隐藏。
-## 负责 UI 面板的注册/注销、栈排序、返回路由（[method back]）、模态管理。
+## 负责 UI 面板的注册/注销、栈排序、返回路由（[method back]）、焦点管理。
 ## UI 面板需预先摆放在场景树中，通过 [Panel2D] / [UIPanel3D] 的 [method open] / [method close] 同时完成显示与注册。
 ##
 ## 职责划分：
 ##   [b]Panel2D/UIPanel3D[/b] — 显示/隐藏动画、生命周期信号
-##   [b]UIManager[/b]         — 栈管理、层级互斥、返回路由、模态阻断
+##   [b]UITool[/b]            — 栈管理、层级互斥、返回路由、焦点管理
 ##
 ## 基于 [enum Layer] 将 UI 分为 6 种类型，每种类型有独立的行为逻辑：
 ##
@@ -14,34 +14,32 @@
 ##     入栈管理、最低优先级。
 ##
 ##   [b]HUD (100)[/b] — 抬头显示层
-##     入栈管理、多元素共存不互斥、不阻塞输入、不参与 back() 返回键。
+##     入栈管理、多元素共存、不参与 back() 返回键。
 ##
-##   [b]PANEL (200)[/b] — 主界面层（互斥）
-##     同层互斥：打开新的 PANEL 时自动关闭已有 PANEL（可通过 [member auto_close_same_layer]
-##     关闭互斥行为）。参与 back() 返回键。完整生命周期。
+##   [b]PANEL (200)[/b] — 主界面层
+##     入栈管理、多元素共存、参与 back() 返回键。完整生命周期。
 ##
-##   [b]DIALOG (300)[/b] — 对话框层（模态栈）
-##     栈式叠加：多个对话框可同时存在于栈中。模态管理：打开后阻断下层输入。
-##     back() 关闭栈顶对话框。
+##   [b]DIALOG (300)[/b] — 对话框层
+##     同层互斥：打开新 DIALOG 时自动关闭已有 DIALOG。参与 back() 返回键。
 ##
-##   [b]TOOLTIP (400)[/b] — 提示层（非模态浮动）
-##     入栈管理、不阻断输入。单实例：同时只允许一个 TOOLTIP。
+##   [b]TOOLTIP (400)[/b] — 提示层
+##     不入栈，单独管理。单实例：同时只允许一个 TOOLTIP。
 ##
 ##   [b]TOP (500)[/b] — 系统顶层
 ##     最高优先级，覆盖一切。用于 Loading、系统通知等。
 ##
 ## 使用方式：
 ##   [codeblock]
-##   panel.open()                          # 显示面板并注册到 UIManager（推荐）
-##   panel.close()                         # 隐藏面板并从 UIManager 注销（推荐）
-##   UIManager.register(panel)             # 仅注册到栈（不触发显示）
-##   UIManager.unregister(panel)           # 仅从栈注销（不触发隐藏）
-##   UIManager.toggle(panel)               # 切换
-##   UIManager.back()                      # 返回键处理
-##   UIManager.has_modal()                 # 是否有模态面板
-##   UIManager.Layer.PANEL                 # 层级常量
+##   panel.open()                          # 显示面板并注册到 UITool（推荐）
+##   panel.close()                         # 隐藏面板并从 UITool 注销（推荐）
+##   UITool.register(panel)                # 仅注册到栈（不触发显示）
+##   UITool.unregister(panel)              # 仅从栈注销（不触发隐藏）
+##   UITool.toggle(panel)                  # 切换
+##   UITool.back()                         # 返回键处理
+##   UITool.is_focus(panel)                # 面板是否拥有焦点
+##   UITool.Layer.PANEL                    # 层级常量
 ##   [/codeblock]
-class_name UIManager
+class_name UITool
 
 ## UI 层级常量，数字越大越靠前。
 ##
@@ -62,19 +60,14 @@ enum Layer {
 }
 
 # ============================================================
-# 配置
-# ============================================================
-
-## PANEL 层是否启用同层互斥（打开新 PANEL 时自动关闭已有 PANEL）。
-## 设为 false 则允许多个 PANEL 共存。
-static var auto_close_same_layer: bool = true
-
-# ============================================================
 # 内部状态
 # ============================================================
 
 ## 常规 UI 栈（全部六种入栈）
 static var _stack: Array[Node] = []
+
+## 当前 Tooltip（不入栈，单独管理）
+static var _current_tooltip: Node = null
 
 # ============================================================
 # 公开接口 — 通用
@@ -86,11 +79,9 @@ static var _stack: Array[Node] = []
 ## 仅在需要绕过面板自身显示逻辑、仅做栈注册的极少数场景下使用。
 ##
 ## 自动根据面板的 [code]layer[/code] 属性判断 UI 类型，执行对应的注册逻辑：
-## [br]• BACKGROUND：入栈，常驻底层。
-## [br]• HUD：入栈，多元素可共存。
-## [br]• PANEL：入栈，同层互斥时自动关闭已有 PANEL。
-## [br]• DIALOG：入栈（支持多个叠加）。
-## [br]• TOOLTIP：入栈（单实例，打开新的自动关闭旧的）。
+## [br]• BACKGROUND / HUD / PANEL：入栈，多元素可共存。
+## [br]• DIALOG：入栈，同层互斥（自动关闭已有 DIALOG）。
+## [br]• TOOLTIP：不入栈，单实例（关闭旧的，记录新的）。
 ## [br][br][b]注意：[/b]此方法仅管理栈，不触发 [code]panel.open()[/code] 显示逻辑。
 ## 如需同时注册并显示，请直接调用 [code]panel.open()[/code]。
 static func register(panel: Node) -> void:
@@ -100,18 +91,32 @@ static func register(panel: Node) -> void:
 	var panel_layer: int = _get_layer(panel)
 
 	# ── 同层互斥处理 ──
-	if panel_layer == Layer.PANEL and auto_close_same_layer:
-		_close_all_of_layer(Layer.PANEL)
-	elif panel_layer == Layer.TOOLTIP:
-		_close_all_of_layer(Layer.TOOLTIP)
+	if panel_layer == Layer.DIALOG:
+		_close_all_of_layer(Layer.DIALOG)
+
+	# ── Tooltip 不入栈，单独管理 ──
+	if panel_layer == Layer.TOOLTIP:
+		if is_instance_valid(_current_tooltip):
+			_current_tooltip.close()
+		_current_tooltip = panel
+		LogTool.log("界面管理", "注册 Tooltip: %s" % panel.name)
+		return
 
 	if panel in _stack:
 		LogTool.warn("界面管理", "跳过注册（已在栈中）: %s (%s)" % [panel.name, get_layer_type_name(panel_layer)])
 		return
 
+	var old := get_top()
+	if old and panel_layer >= _get_layer(old) and old.has_method("_focus_exit"):
+		old._focus_exit()
+
 	_stack.append(panel)
 	_sort()
-	LogTool.log("界面管理", "注册: %s (%s)   栈大小=%d   内容=%s" % [panel.name, get_layer_type_name(panel_layer), _stack.size(), _stack_to_string()])
+	if panel_layer != Layer.TOOLTIP:
+		LogTool.log("界面管理", "注册: %s (%s)   栈大小=%d   内容=%s" % [panel.name, get_layer_type_name(panel_layer), _stack.size(), _stack_to_string()])
+
+	if is_focus(panel) and panel.has_method("_focus_enter"):
+		panel._focus_enter()
 
 ## 注销面板（仅栈管理，不触发面板隐藏）。
 ##
@@ -122,10 +127,29 @@ static func register(panel: Node) -> void:
 static func unregister(panel: Node) -> void:
 	if not is_instance_valid(panel):
 		_stack.erase(panel)
+		if panel == _current_tooltip:
+			_current_tooltip = null
 		LogTool.warn("界面管理", "注销无效面板，已从栈中移除   栈大小=%d   内容=%s" % [_stack.size(), _stack_to_string()])
 		return
+
+	var panel_layer := _get_layer(panel)
+
+	# ── Tooltip 单独注销 ──
+	if panel_layer == Layer.TOOLTIP:
+		if panel == _current_tooltip:
+			_current_tooltip = null
+		LogTool.log("界面管理", "注销 Tooltip: %s" % panel.name)
+		return
+	var is_focus_panel := is_focus(panel)
+	if is_focus_panel and panel.has_method("_focus_exit"):
+		panel._focus_exit()
 	_stack.erase(panel)
-	LogTool.log("界面管理", "注销: %s (%s)   栈大小=%d   内容=%s" % [panel.name, get_layer_type_name(_get_layer(panel)), _stack.size(), _stack_to_string()])
+	if panel_layer != Layer.TOOLTIP:
+		LogTool.log("界面管理", "注销: %s (%s)   栈大小=%d   内容=%s" % [panel.name, get_layer_type_name(panel_layer), _stack.size(), _stack_to_string()])
+	if is_focus_panel:
+		var top := get_top()
+		if top and top.has_method("_focus_enter"):
+			top._focus_enter()
 
 ## 关闭栈顶面板（委托调用 [code]panel.close()[/code]，触发完整关闭 + 注销流程）。
 static func close_top() -> void:
@@ -143,19 +167,26 @@ static func toggle(panel: Node) -> void:
 ## 返回键处理。委托调用面板的 [code]close()[/code]，触发完整关闭 + 注销流程。
 ## 优先关闭栈顶 DIALOG，其次关闭栈顶 PANEL。
 static func back() -> bool:
-	# 优先处理 DIALOG（模态弹窗）
+	# 优先处理 DIALOG
 	var top_dialog := get_top_of_layer(Layer.DIALOG)
 	if top_dialog:
-		top_dialog.close()
+		_call_back(top_dialog)
 		return true
 
 	# 其次处理 PANEL（主界面）
 	var top_panel := get_top_of_layer(Layer.PANEL)
 	if top_panel:
-		top_panel.close()
+		_call_back(top_panel)
 		return true
 
 	return false
+
+## 调用面板的 _back() 方法，若未实现则默认调用 close()。
+static func _call_back(panel: Node) -> void:
+	if panel.has_method("_back"):
+		panel._back()
+	else:
+		panel.close()
 
 ## 关闭所有面板（委托调用每个面板的 [code]close()[/code]，触发完整关闭 + 注销流程）。
 static func close_all() -> void:
@@ -165,23 +196,8 @@ static func close_all() -> void:
 			panel.close()
 		else:
 			_stack.erase(panel)
-
-# ============================================================
-# 公开接口 — 模态查询
-# ============================================================
-
-## 当前是否存在模态面板（DIALOG 或 TOP），用于阻断下层输入。
-static func has_modal() -> bool:
-	for panel in _stack:
-		if not is_instance_valid(panel):
-			continue
-		if _get_layer(panel) >= Layer.DIALOG:
-			return true
-	return false
-
-## 当前是否存在打开的 DIALOG
-static func has_dialog() -> bool:
-	return get_top_of_layer(Layer.DIALOG) != null
+	if is_instance_valid(_current_tooltip):
+		_current_tooltip.close()
 
 # ============================================================
 # 查询
@@ -195,10 +211,6 @@ static func get_top() -> Node:
 static func is_open(panel: Node) -> bool:
 	if not is_instance_valid(panel):
 		return false
-	return panel in _stack
-
-## 面板是否在栈中
-static func contains(panel: Node) -> bool:
 	return panel in _stack
 
 ## 栈是否为空
@@ -229,47 +241,25 @@ static func get_stack_size() -> int:
 # 公开接口 — 工具
 # ============================================================
 
-## 根据 Layer 值获取 UI 类型的名称
+## 根据 Layer 值获取 UI 类型的名称（通过枚举 keys 自动获取）
 static func get_layer_type_name(layer: int) -> String:
-	match layer:
-		Layer.BACKGROUND: return "Background"
-		Layer.HUD: return "HUD"
-		Layer.PANEL: return "Panel"
-		Layer.DIALOG: return "Dialog"
-		Layer.TOOLTIP: return "Tooltip"
-		Layer.TOP: return "Top"
-		_: return "Unknown"
+	var vals = Layer.values()
+	var idx = vals.find(layer)
+	if idx == -1:
+		return "Unknown"
+	var key = Layer.keys()[idx]
+	return "HUD" if key == "HUD" else key.capitalize()
 
-## 判断指定 layer 是否为模态类型（会阻断下层交互）
-static func is_modal_layer(layer: int) -> bool:
-	return layer == Layer.DIALOG or layer == Layer.TOP
-
-## 判断指定 layer 是否参与常规 UI 栈管理
-static func is_stack_managed(_layer: int) -> bool:
+## 判断面板是否当前拥有焦点（顶层面板优先级高于自身且不是自己时失去焦点）
+static func is_focus(panel: Node) -> bool:
+	if not is_instance_valid(panel):
+		return false
+	if panel not in _stack:
+		return false
+	var top := get_top()
+	if top and top != panel:
+		return false
 	return true
-
-# ============================================================
-# 公开接口 — 输入阻断
-# ============================================================
-
-## 获取当前最低的交互阻断层级（用于判断哪些下层 UI 应忽略输入）。
-##
-## 返回 -1 表示无阻断；否则表示从该层级起开始阻断输入。
-## [br]例如：存在 DIALOG 时返回 DIALOG(300)，则 PANEL(200) 及以下不应响应输入。
-static func get_input_block_layer() -> int:
-	var result := -1
-	for panel in _stack:
-		if not is_instance_valid(panel):
-			continue
-		var l := _get_layer(panel)
-		if l >= Layer.DIALOG and (result == -1 or l < result):
-			result = l
-	return result
-
-## 指定 layer 是否被模态面板阻断输入
-static func is_layer_input_blocked(layer: int) -> bool:
-	var block_layer := get_input_block_layer()
-	return block_layer != -1 and layer < block_layer
 
 # ============================================================
 # 内部 — 工具
@@ -292,7 +282,7 @@ static func _sort() -> void:
 	)
 
 ## 关闭指定层级的所有面板（委托调用面板的 [code]close()[/code]，触发完整关闭 + 注销流程）。
-## 主要用于同层互斥场景（如切换 PANEL 时自动关闭已有的同层 PANEL）。
+## 主要用于同层互斥场景（如打开新 DIALOG 时自动关闭已有的 DIALOG）。
 static func _close_all_of_layer(layer: Layer) -> void:
 	var to_close: Array[Node] = []
 	for panel in _stack:
@@ -332,4 +322,4 @@ static func debug_short() -> void:
 			info += "%s(%s) > " % [panel.name, get_layer_type_name(_get_layer(panel))]
 	if info.is_empty():
 		info = "(empty)"
-	print("[UIManager] %s  modal=%s" % [info, has_modal()])
+	print("[UITool] %s" % info)

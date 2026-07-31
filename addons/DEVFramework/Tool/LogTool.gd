@@ -7,6 +7,8 @@ const SETTING_IGNORED_TAGS := "dev_framework/log/ignored_tags"
 
 enum Level {LOG, WARN, ERROR}
 
+static var _last_ts_usec: int = 0
+
 
 static func set_enabled(v: bool) -> void:
 	ProjectSettings.set_setting(SETTING_ENABLED, v)
@@ -44,7 +46,10 @@ static func _out(level: Level, tag: String, objs: Array) -> void:
 		return
 
 	var msg := " ".join(objs.map(str))
-	var ts := ("%s " % Time.get_time_string_from_system()) if ProjectSettings.get_setting(SETTING_TIMESTAMPS, false) else ""
+	var now := Time.get_ticks_usec()
+	var diff_usec := now - _last_ts_usec if _last_ts_usec > 0 else 0
+	_last_ts_usec = now
+	var ts := "[color=#888888]%+dms [/color]" % [diff_usec / 1000] if diff_usec > 0 else ""
 	match level:
 		Level.LOG:
 			print_rich(_colored_tag(tag), ts, "[color=#dcdcdc]", msg, "[/color]")

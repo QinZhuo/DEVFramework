@@ -23,6 +23,12 @@ class_name DefMeshView extends Node3D
 
 var view: MeshInstance3D
 
+## 存储在 view 上的 material_overlay，view 重建后自动恢复
+var _saved_overlay: Material = null
+
+## 存储在 view 上的 material_override，view 重建后自动恢复
+var _saved_override: Material = null
+
 func _ready():
 	if Engine.is_editor_hint():
 		return
@@ -51,10 +57,21 @@ func _add_view():
 		view = MeshInstance3D.new()
 		view.mesh = mesh
 	add_child(view)
+	# view 重建后恢复之前保存的材质状态
+	if _saved_overlay:
+		view.material_overlay = _saved_overlay
+	if _saved_override:
+		view.material_override = _saved_override
 
 func _remove_view():
 	if not view:
 		return
+	# 保存当前材质状态，以便 view 重建后恢复
+	_saved_overlay = view.material_overlay
+	_saved_override = view.material_override
+	# 清除可能残留的 material_overlay（对象池复用时避免发光效果残留）
+	view.material_overlay = null
+	view.material_override = null
 	if mesh:
 		BakedPoolManager.pool_push(_get_pool_key(), view)
 	else:

@@ -31,3 +31,6 @@ func save_data():
 		name = def.name,
 		stacks = stacks
 	}
+
+func get_desc(data) -> String:
+	return def.get_desc(data)

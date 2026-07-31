@@ -1,4 +1,4 @@
-class_name Button3D extends Area3D
+class_name ButtonView3D extends Area3D
 
 @export var enter_tween: TweenAnimation
 @export var press_tween: TweenAnimation
@@ -13,10 +13,13 @@ class_name Button3D extends Area3D
 
 @export var audio: SFXComponent
 @onready var collision_shape: CollisionShape3D = $CollisionShape3D
+@export var outline_mesh: MeshInstance3D
 
-@export var enable_selection_outline: bool = false
+## 当前正在拖拽的项（由 DragView3D 设置，拖拽期间禁止其他项的 hover 效果）
+static var dragging_item: ButtonView3D = null
 
 var is_pressed: bool
+var is_enter: bool
 
 signal button_down()
 signal button_up()
@@ -31,16 +34,22 @@ func _update_visible(reset: bool):
 	TweenViewTool.update_visible(visible_tween, tween_visible, reset)
 
 func _mouse_enter():
+	if dragging_item != null or is_enter:
+		return
+	is_enter = true
 	if enter_tween:
 		enter_tween.play()
 	if audio:
 		audio.play("Enter")
-	if enable_selection_outline:
-		OutlineEffect.set_outlined(self, true)
+	if outline_mesh:
+		OutlineEffect.set_outlined(true, outline_mesh)
 
 func _mouse_exit():
-	if enable_selection_outline:
-		OutlineEffect.set_outlined(self, false)
+	if dragging_item != null or not is_enter:
+		return
+	is_enter = false
+	if outline_mesh:
+		OutlineEffect.set_outlined(false, outline_mesh)
 	if enter_tween:
 		enter_tween.playback()
 	if press_tween:
@@ -74,6 +83,13 @@ func _button_up():
 
 func _input_event(_camera: Camera3D, event: InputEvent, event_position: Vector3, _normal: Vector3, _shape_idx: int):
 	_game_input(event, event_position)
+
+## 供手柄焦点导航调用的激活方法，模拟一次完整点击。
+func activate() -> void:
+	if not visible:
+		return
+	_mouse_down()
+	_mouse_up()
 
 func _game_input(event: InputEvent, _event_position: Vector3):
 	if event is InputEventMouseButton:

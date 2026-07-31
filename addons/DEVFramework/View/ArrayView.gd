@@ -3,6 +3,9 @@
 class_name ArrayView extends FlowContainer
 
 @export var view_scene: PackedScene
+## 每帧生成数量，0 表示全部立即生成（默认）。大于 0 时分帧创建子节点，
+## 避免大量 UI 节点一次性 instantiate 导致掉帧。
+@export var items_per_frame: int = 0
 @export var preview_count: int = 3:
 	set(value):
 		if not Engine.is_editor_hint():
@@ -17,14 +20,26 @@ var data: Array:
 		data = value
 		refresh()
 
+var _generation_id := 0
+
 ## 刷新视图，根据当前数据重新显示所有项目
 func refresh():
+	_generation_id += 1  # 取消正在进行的旧分帧生成
 	clear()
 	if not data or data.is_empty():
 		return
-	for item in data:
-		add_item(item)
-	queue_sort()
+	if items_per_frame > 0:
+		_generate_in_frames()
+	else:
+		for item in data:
+			add_item(item)
+		queue_sort()
+
+func _generate_in_frames():
+	var gen := _generation_id
+	await AsyncTool.call_in_frames(data, items_per_frame, add_item, func(): return _generation_id != gen)
+	if _generation_id == gen:
+		queue_sort()
 
 ## 清除所有子节点
 func clear():

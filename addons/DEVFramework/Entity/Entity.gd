@@ -2,12 +2,10 @@
 
 signal entity_changed()
 
-func _init(init_def: Def):
+func _init(init_def: Def = null):
 	if init_def:
 		if "def" in self:
 			set("def", init_def)
-	else:
-		LogTool.error("实体", "init_def 为空 ", get_stack())
 
 func _to_string():
 	if "def" in self:

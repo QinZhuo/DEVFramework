@@ -74,4 +74,4 @@ func get_view_name():
 	return def.name
 
 func get_desc(data):
-	return str(def.get_desc(data), '\n', def.effect.get_desc(data))
+	return def.get_desc(data)

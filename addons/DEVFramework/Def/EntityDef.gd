@@ -19,9 +19,12 @@
 @export var power: float
 
 func get_desc(_data) -> String:
-	return get_icon_text(_data)
+	var display_name := get_display_name(_data)
+	if effect:
+		return str(display_name, '\n', get_def_desc(effect, _data))
+	return display_name
 
-func get_icon_text(_data) -> String:
+func get_display_name(_data) -> String:
 	var desc := str("[color=#", color.to_html(false), "]", super._to_string(), "[/color]")
 	if icon:
 		return str("[img=center,center,40x40]", icon.resource_path, "[/img]", desc)

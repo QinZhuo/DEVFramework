@@ -8,6 +8,8 @@ class_name ArrayViewTool
 static func get_item_name(item) -> String:
 	if not item:
 		return "temp"
+	if not item is Object:
+		return str(item)
 	if "get_view_name" in item:
 		return item.get_view_name()
 	return str(hash(item))
