@@ -168,7 +168,7 @@ func _parse_head(head: String) -> Dictionary:
 
 ## 向指定连接发送 HTTP 响应(需传入 request_received 时保存的 stream)
 func send_response(stream: StreamPeerTCP, status: int, headers: Dictionary, body: String, body_bytes: PackedByteArray = PackedByteArray()) -> void:
-	if stream == null or not stream.is_connected_to_host():
+	if stream == null or stream.get_status() != StreamPeerTCP.STATUS_CONNECTED:
 		return
 	var reason := _status_reason(status)
 	var out := "HTTP/1.1 %d %s\r\n" % [status, reason]
