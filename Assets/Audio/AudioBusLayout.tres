@@ -29,6 +29,21 @@ gain = 4.0
 attack_us = 5000.0
 release_ms = 120.0
 
+[sub_resource type="AudioEffectReverb" id="AudioEffectReverb_46pgh"]
+predelay_msec = 20.0
+room_size = 0.95
+damping = 0.45
+spread = 0.9
+dry = 0.6
+
+[sub_resource type="AudioEffectDelay" id="AudioEffectDelay_gmiiy"]
+tap1_level_db = -10.0
+tap1_pan = -0.3
+feedback_active = true
+feedback_delay_ms = 250.0
+feedback_level_db = -8.0
+feedback_lowpass = 4500.0
+
 [resource]
 bus/0/effect/0/effect = SubResource("AudioEffectLimiter_46pgh")
 bus/0/effect/0/enabled = true
@@ -58,3 +73,13 @@ bus/3/mute = false
 bus/3/bypass_fx = false
 bus/3/volume_db = 0.0
 bus/3/send = &""
+bus/4/name = &"FX_BGM"
+bus/4/solo = false
+bus/4/mute = false
+bus/4/bypass_fx = false
+bus/4/volume_db = 0.0
+bus/4/send = &""
+bus/4/effect/0/effect = SubResource("AudioEffectReverb_46pgh")
+bus/4/effect/0/enabled = true
+bus/4/effect/1/effect = SubResource("AudioEffectDelay_gmiiy")
+bus/4/effect/1/enabled = true

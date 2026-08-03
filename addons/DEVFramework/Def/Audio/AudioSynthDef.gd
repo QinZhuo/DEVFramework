@@ -30,16 +30,18 @@ enum Category {SFX, BGM, AMBIENT, LOOP}
 @export_range(0.0, 5.0, 0.05) var fade_out := 0.0
 
 ## ——— 编辑器预览(Inspector 按钮, 点击即触发) ———
+## 机制: 点击按钮 = 调用该属性存放的 Callable。用 getter 每次实时返回新 Callable,
+## 避免脚本热重载后序列化属性变 nil 导致 "invalid callable" 报错。
 ## 按当前设置后台生成并试听(自动路由到 bus/fx_chain, BGM 自动循环)
-@export_tool_button("▶ 预览播放") var _preview_play: Callable = Callable():
-	set(value):
-		_preview_play = value
-		AudioTool.play_editor_preview(self)
+@export_tool_button("▶ 预览播放") var _preview_play:
+	get:
+		return func() -> void:
+			AudioTool.play_editor_preview(self)
 ## 停止当前预览并取消未完成的生成
-@export_tool_button("■ 停止预览") var _preview_stop: Callable = Callable():
-	set(value):
-		_preview_stop = value
-		AudioTool.stop_editor_preview()
+@export_tool_button("■ 停止预览") var _preview_stop:
+	get:
+		return func() -> void:
+			AudioTool.stop_editor_preview()
 
 func get_desc(_data) -> String:
 	return "%s[%d声部/%d序列]" % [Category.keys()[category], voices.size(), patterns.size() + music.size()]
