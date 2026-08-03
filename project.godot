@@ -16,7 +16,7 @@ config/icon="res://icon.svg"
 
 [audio]
 
-buses/default_bus_layout="uid://bt4jisu18swhx"
+buses/default_bus_layout="res://Assets/Audio/AudioBusLayout.tres"
 
 [dev_framework]
 

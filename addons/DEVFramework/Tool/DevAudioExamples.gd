@@ -102,7 +102,7 @@ static func _synth_laser() -> AudioSynthDef:
 	s.bus = "SFX"
 	s.fx_chain = PackedStringArray(["limiter"])
 	var v := _voice_tone(
-		[_osc(AudioDSP.Wave.SAW, 0.6), _osc(AudioDSP.Wave.SQUARE, 0.3, 7.0, 0, 0.25)],
+		[_osc(AudioTool.Wave.SAW, 0.6), _osc(AudioTool.Wave.SQUARE, 0.3, 7.0, 0, 0.25)],
 		_env(0.001, 0.12, 0.0, 0.04), 0.9)
 	v.noise_amount = 0.15
 	v.filter = _filt(AudioFilterDef.Mode.LOW_PASS, 6000.0, 0.3, 3000.0)
@@ -121,7 +121,7 @@ static func _synth_explosion() -> AudioSynthDef:
 	s.soft_clip = 1.2
 	s.bus = "SFX"
 	s.fx_chain = PackedStringArray(["reverb", "delay"])
-	var v := _voice_tone([_osc(AudioDSP.Wave.SINE, 0.7, 0.0, -1), _osc(AudioDSP.Wave.SAW, 0.4)], _env(0.004, 0.55, 0.0, 0.35), 1.0)
+	var v := _voice_tone([_osc(AudioTool.Wave.SINE, 0.7, 0.0, -1), _osc(AudioTool.Wave.SAW, 0.4)], _env(0.004, 0.55, 0.0, 0.35), 1.0)
 	v.noise_amount = 0.9
 	v.filter = _filt(AudioFilterDef.Mode.LOW_PASS, 220.0, 0.2, 2600.0)
 	s.voices = [v]
@@ -138,7 +138,7 @@ static func _synth_coin() -> AudioSynthDef:
 	s.master_volume = 0.85
 	s.bus = "UI"
 	var v := _voice_tone(
-		[_osc(AudioDSP.Wave.SINE, 0.8), _osc(AudioDSP.Wave.SINE, 0.4, 4.0)],
+		[_osc(AudioTool.Wave.SINE, 0.8), _osc(AudioTool.Wave.SINE, 0.4, 4.0)],
 		_env(0.002, 0.25, 0.1, 0.12), 0.9)
 	v.filter = _filt(AudioFilterDef.Mode.HIGH_PASS, 1500.0)
 	s.voices = [v]
@@ -156,7 +156,7 @@ static func _synth_hit() -> AudioSynthDef:
 	s.bus = "SFX"
 	s.fx_chain = PackedStringArray(["limiter"])
 	var v := _voice_tone(
-		[_osc(AudioDSP.Wave.SQUARE, 0.6, 0.0, 0, 0.3), _osc(AudioDSP.Wave.SAW, 0.4)],
+		[_osc(AudioTool.Wave.SQUARE, 0.6, 0.0, 0, 0.3), _osc(AudioTool.Wave.SAW, 0.4)],
 		_env(0.001, 0.09, 0.0, 0.06), 1.0)
 	v.filter = _filt(AudioFilterDef.Mode.LOW_PASS, 1600.0, 0.4)
 	s.voices = [v]
@@ -179,14 +179,14 @@ static func _synth_adventure() -> AudioSynthDef:
 	s.fx_chain = PackedStringArray(["compressor", "delay"])
 
 	# 音色
-	var bass := _voice_tone([_osc(AudioDSP.Wave.SAW, 0.7)], _env(0.004, 0.3, 0.5, 0.15), 0.7)
+	var bass := _voice_tone([_osc(AudioTool.Wave.SAW, 0.7)], _env(0.004, 0.3, 0.5, 0.15), 0.7)
 	bass.filter = _filt(AudioFilterDef.Mode.LOW_PASS, 340.0, 0.3)
 	var pad := _voice_tone(
-		[_osc(AudioDSP.Wave.SINE, 0.6), _osc(AudioDSP.Wave.SAW, 0.25)],
+		[_osc(AudioTool.Wave.SINE, 0.6), _osc(AudioTool.Wave.SAW, 0.25)],
 		_env(0.3, 0.4, 0.8, 0.4), 0.35, -0.4)
 	pad.filter = _filt(AudioFilterDef.Mode.LOW_PASS, 1400.0, 0.2)
 	var lead := _voice_tone(
-		[_osc(AudioDSP.Wave.SQUARE, 0.55, 0.0, 1), _osc(AudioDSP.Wave.SINE, 0.5)],
+		[_osc(AudioTool.Wave.SQUARE, 0.55, 0.0, 1), _osc(AudioTool.Wave.SINE, 0.5)],
 		_env(0.01, 0.12, 0.0, 0.14), 0.5, 0.3)
 	lead.vibrato_rate = 5.5
 	lead.vibrato_depth = 0.02
@@ -268,12 +268,12 @@ static func _synth_ambient() -> AudioSynthDef:
 	s.fx_chain = PackedStringArray(["reverb_hall", "delay"])
 
 	var pad := _voice_tone(
-		[_osc(AudioDSP.Wave.SINE, 0.5), _osc(AudioDSP.Wave.SINE, 0.3, 3.0, 1)],
+		[_osc(AudioTool.Wave.SINE, 0.5), _osc(AudioTool.Wave.SINE, 0.3, 3.0, 1)],
 		_env(1.2, 1.0, 0.8, 1.5), 0.35, -0.5)
 	pad.filter = _filt(AudioFilterDef.Mode.LOW_PASS, 900.0, 0.15)
-	var drone := _voice_tone([_osc(AudioDSP.Wave.SAW, 0.5, 0.0, -1)], _env(2.0, 0.5, 0.9, 2.0), 0.6, 0.5)
+	var drone := _voice_tone([_osc(AudioTool.Wave.SAW, 0.5, 0.0, -1)], _env(2.0, 0.5, 0.9, 2.0), 0.6, 0.5)
 	drone.filter = _filt(AudioFilterDef.Mode.LOW_PASS, 300.0, 0.2)
-	var arp := _voice_tone([_osc(AudioDSP.Wave.SINE, 0.7)], _env(0.02, 0.3, 0.4, 0.5), 0.4, 0.4)
+	var arp := _voice_tone([_osc(AudioTool.Wave.SINE, 0.7)], _env(0.02, 0.3, 0.4, 0.5), 0.4, 0.4)
 	arp.vibrato_rate = 4.0
 	arp.vibrato_depth = 0.015
 	s.voices = [pad, drone, arp]

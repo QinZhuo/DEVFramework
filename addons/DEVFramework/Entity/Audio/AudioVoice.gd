@@ -20,8 +20,8 @@ class Tone:
 	var velocity := 1.0
 	var vibrato_phase := 0.0
 	var phases: PackedFloat32Array
-	var adsr: AudioDSP.ADSR
-	var filter: AudioDSP.SVFilter
+	var adsr: AudioTool.ADSR
+	var filter: AudioTool.SVFilter
 	var removed := false
 
 ## 打击乐事件状态
@@ -89,18 +89,18 @@ func _trigger(e: Dictionary, index: int) -> void:
 	n.start = index
 	n.gate = int(e.duration)
 	n.velocity = float(e.velocity)
-	n.target_freq = AudioDSP.midi_to_freq(int(e.midi))
+	n.target_freq = AudioTool.midi_to_freq(int(e.midi))
 	n.freq = n.target_freq
 	n.phases = PackedFloat32Array()
 	n.phases.resize(def.oscillators.size())
-	n.adsr = AudioDSP.ADSR.new(sample_rate)
+	n.adsr = AudioTool.ADSR.new(sample_rate)
 	n.adsr.attack = def.envelope.attack
 	n.adsr.decay = def.envelope.decay
 	n.adsr.sustain = def.envelope.sustain
 	n.adsr.release = def.envelope.release
 	n.adsr.curve = def.envelope.curve
 	if def.filter and def.filter.enabled:
-		n.filter = AudioDSP.SVFilter.new(sample_rate, def.filter.cutoff, def.filter.resonance, def.filter.mode)
+		n.filter = AudioTool.SVFilter.new(sample_rate, def.filter.cutoff, def.filter.resonance, def.filter.mode)
 	n.adsr.note_on()
 	_notes.append(n)
 
@@ -126,7 +126,7 @@ func _render_tone(n: Tone, index: int) -> float:
 		var f := n.target_freq * pow(2.0, (od.detune_cents + od.octave_shift * 1200.0) / 1200.0)
 		var dt := f / sample_rate
 		var ph := n.phases[oi]
-		wave += AudioDSP.osc(od.waveform, ph, dt, od.pulse_width, rng) * od.level
+		wave += AudioTool.osc(od.waveform, ph, dt, od.pulse_width, rng) * od.level
 		n.phases[oi] = ph + dt - floorf(ph + dt)
 	# 噪声叠加
 	if def.noise_amount > 0.0:

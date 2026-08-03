@@ -348,8 +348,8 @@ AudioTool.get_stream_info(stream)              # 查询时长/采样率/循环�
 AudioTool.list_examples()                      # 列出全部示例
 ```
 
-- **渲染管线**：`Def → AudioSequence（展开事件）→ AudioVoice（逐音符渲染）→ AudioSynth（混合/归一化/软削波）`。
-- **合成内核自研**（`AudioDSP.gd`）：PolyBLEP 抗锯齿振荡器、SVF 滤波器（低/带/高通）、ADSR 包络（支持曲线）、`midi_to_freq`、鼓合成（KICK / SNARE / HAT / HAT_OPEN / TOM / CLAP）。这些是 Godot 不提供的数据级合成 API，故自研；**其余通用能力一律用 Godot 已有功能**。
+- **渲染管线**：`Def → AudioSequence（展开事件）→ AudioVoice（逐音符渲染）→ AudioTool（混合/归一化/软削波）`。
+- **合成内核自研**（现已并入 `AudioTool`）：PolyBLEP 抗锯齿振荡器、SVF 滤波器（低/带/高通）、ADSR 包络（支持曲线）、`midi_to_freq`、鼓合成（KICK / SNARE / HAT / HAT_OPEN / TOM / CLAP）。这些是 Godot 不提供的数据级合成 API，故自研；**其余通用能力一律用 Godot 已有功能**。
 - **自动编曲**（`AudioMusicDef`）：音阶音池 + 加权随机游走旋律 + 和弦进行 + 鼓节奏音型。
 - **实时无限循环**：`AudioLivePlayer` 基于 Godot 内置 `AudioStreamGenerator` 逐块渲染，BGM 不占内存、无限循环。
 - **后台线程**：`AudioTool.generate_async(def)` 放 worker 线程渲染，避免阻塞主线程。
@@ -358,9 +358,9 @@ AudioTool.list_examples()                      # 列出全部示例
 
 | 能力 | 实现 | 说明 |
 |---|---|---|
-| 振荡/滤波/包络/鼓 | 自研 `AudioDSP` | Godot 无逐采样合成 API，必须自研 |
+| 振荡/滤波/包络/鼓 | 自研（并入 `AudioTool`）| Godot 无逐采样合成 API，必须自研 |
 | 混响 / 延迟 / 失真 / 限幅 / 压缩 / EQ | **Godot 内置 `AudioEffect`** | 经 `AudioSynthDef.bus` + `fx_chain` 配置，播放时自动路由到带效果的总线（离线 .wav 不烘焙效果）|
-| WAV 写盘 | **Godot 内置 `AudioStreamWAV.save_to_wav()`** | 不再手写 RIFF 头 |
+| WAV 写盘 | 自写 44 字节标准 PCM 头 | 4.7.1 内置 `save_to_wav()` 会把 16bit 立体声写成 mono 头（数据仍交错），Godot 重导入后声道/时长错乱，故自写标准头 |
 | 实时循环播放 | **Godot 内置 `AudioStreamGenerator`** | `AudioLivePlayer` 包装使用 |
 | 总线布局 | **Godot 内置 `AudioServer` / `AudioBusLayout`** | `AudioTool.setup_audio_buses()` 一键生成 Master/SFX/BGM/UI 布局并写入项目设置 |
 
@@ -372,15 +372,18 @@ AudioTool.list_examples()                      # 列出全部示例
 | `AudioSynthDef` | 根定义：类别（SFX/BGM/AMBIENT/LOOP）、采样率、主音量、软削波、`bus` + `fx_chain`（总线效果链）、循环/淡出 |
 | `AudioVoiceDef` | 声部（Tone/DRUM），含振荡器组、滤波器、ADSR、声像、音量 |
 | `AudioMusicDef` | 自动编曲配方；`AudioPatternDef` 显式四分音符节拍 |
-| `AudioSequence` / `AudioVoice` / `AudioDSP` | 事件展开 / 音符渲染 / DSP 内核（Entity 层内部实现，不直接使用） |
+| `AudioSequence` / `AudioVoice` | 事件展开 / 音符渲染（Entity 层内部实现，不直接使用） |
 | `AudioLivePlayer` | 实时无限循环 BGM 播放器（一般用 `AudioTool.play_loop()` 创建） |
 | `AudioTool` / `DevAudioExamples` | **统一入口**：渲染/生成/播放/保存/总线/示例 全部集成 / 一键生成示例定义 |
 
-`AudioTool` 是音频功能的**唯一对外入口**，内部再分为：合成渲染（`render_data`/`build_stream`/`render`）、生成（`generate`/`generate_async`）、播放（`play`/`play_stream`/`play_loop`/`play_example`）、保存（`save_wav`/`save_resource`/`generate_and_save`）、查询（`get_stream_info`/`list_examples`/`example_def`）、总线管理（`ensure_bus`/`resolve_bus`/`create_fx`/`setup_audio_buses`）、编辑器预览（`play_editor_preview`/`stop_editor_preview`）。
+`AudioTool` 是音频功能的**唯一对外入口**，内部再分为：合成内核（`osc`/`poly_blep`/`SVFilter`/`ADSR`/`soft_clip`/`midi_to_freq`/`Wave`）、合成渲染（`render_data`/`build_stream`/`render`）、生成（`generate`/`generate_async`）、播放（`play`/`play_stream`/`play_loop`/`play_example`）、保存（`save_wav`/`save_resource`/`generate_and_save`/`bake_wav`）、查询（`get_stream_info`/`list_examples`/`example_def`）、总线管理（`ensure_bus`/`resolve_bus`/`create_fx`/`setup_audio_buses`）、编辑器预览（`play_editor_preview`/`stop_editor_preview`）。
 
-### Inspector 预览
+### Inspector 预览与烘焙
 
-每个 `AudioSynthDef` 资源自带两个内建按钮（`@export_tool_button`，无需任何插件代码）：`▶ 预览播放`（按当前设置后台生成并按 bus/fx_chain 试听，BGM 自动循环）与 `■ 停止预览`（停止并取消未完成的生成）。
+每个 `AudioSynthDef` 资源自带两个内建按钮（`@export_tool_button`，无需任何插件代码）：
+
+- `▶ 播放 ／ ■ 停止`：**切换式**按钮——空闲时后台生成并按 `bus`/`fx_chain` 试听（BGM 自动循环），生成中或播放中再点则停止。
+- `烘焙 WAV...`：异步后台生成并写出标准立体声 WAV 到约定目录 `res://Assets/Audio/Baked/<Def名>.wav`，完成后自动刷新资源面板。**长 BGM 建议烘焙成 wav 资源供游戏直接加载**（引擎导入后为 QOA 压缩，播放开销极小）。
 
 `fx_chain` 可选效果名：`reverb` / `reverb_hall` / `delay` / `distortion` / `limiter` / `compressor` / `eq_lowpass` / `eq_highpass` / `eq_bandpass` / `spectrum`。
 

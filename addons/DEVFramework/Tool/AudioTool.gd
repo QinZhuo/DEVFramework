@@ -1,7 +1,7 @@
 @tool
 ## 程序化音频工具 — 生成/预览/保存/播放音频 + Godot 内置总线效果链管理
 ## 通用音频功能统一集中于此:
-##   生成(AudioStreamWAV) / 播放(总线路由) / 保存(内置 save_to_wav) / 查询
+##   生成(AudioStreamWAV) / 播放(总线路由) / 保存(标准 WAV 写出) / 查询
 ##   总线管理(ensure_bus / setup_*_buses) — 混响/延迟/压缩/限幅/失真/EQ 全部用 Godot 内置 AudioEffect
 class_name AudioTool
 
@@ -16,6 +16,166 @@ static var fx_names := [
 	"reverb", "reverb_hall", "delay", "distortion",
 	"limiter", "compressor", "eq_lowpass", "eq_highpass", "eq_bandpass", "spectrum",
 ]
+
+## ======= 合成内核(原 AudioDSP 合并至此) =======
+
+## 波形枚举（与 AudioOscillatorDef.Wave 一致）
+enum Wave {SINE, SQUARE, SAW, TRIANGLE, PULSE, NOISE}
+
+## PolyBLEP 抗锯齿修正——消除方波/锯齿/三角波的高频混叠，让音色"干净"
+static func poly_blep(t: float, dt: float) -> float:
+	if t < dt:
+		t /= dt
+		return t + t - t * t - 1.0
+	elif t > 1.0 - dt:
+		t = (t - 1.0) / dt
+		return t * t + t + t + 1.0
+	return 0.0
+
+static func _wrap(p: float) -> float:
+	return p - floorf(p)
+
+## 生成一帧波形。phase 为 0~1 相位，dt 为每采样相位步进，duty 为 PULSE 占空比
+static func osc(wave: int, phase: float, dt: float, duty := 0.5, rng: RandomNumberGenerator = null) -> float:
+	match wave:
+		Wave.SINE:
+			return sin(phase * TAU)
+		Wave.SQUARE:
+			var s := 1.0 if phase < 0.5 else -1.0
+			s += poly_blep(phase, dt) - poly_blep(_wrap(phase + 0.5), dt)
+			return s
+		Wave.SAW:
+			var s := 2.0 * phase - 1.0
+			s -= poly_blep(phase, dt)
+			return s
+		Wave.TRIANGLE:
+			var s := 2.0 * phase - 1.0
+			s -= poly_blep(phase, dt)
+			var p2 := _wrap(phase + 0.5)
+			var s2 := 2.0 * p2 - 1.0
+			s2 -= poly_blep(p2, dt)
+			return (s - s2) * 0.5
+		Wave.PULSE:
+			var s := 1.0 if phase < duty else -1.0
+			s += poly_blep(phase, dt) - poly_blep(_wrap(phase - duty + 1.0), dt)
+			return s
+		Wave.NOISE:
+			if rng:
+				return rng.randf_range(-1.0, 1.0)
+			return randf_range(-1.0, 1.0)
+	return 0.0
+
+## 非线性软削波(tanh)——温和过载，防止爆音并带来温暖感
+static func soft_clip(x: float, drive: float) -> float:
+	if drive <= 0.0001:
+		return x
+	return tanh(x * drive)
+
+## 状态变量滤波器(SVF)，支持低通/带通/高通，带截止频率调制
+class SVFilter:
+	var sample_rate := 44100.0
+	var mode := 0
+	var cutoff := 8000.0
+	var resonance := 0.3
+	var _low := 0.0
+	var _band := 0.0
+
+	func _init(sr: float = 44100.0, c: float = 8000.0, r: float = 0.3, m: int = 0) -> void:
+		sample_rate = sr
+		cutoff = c
+		resonance = r
+		mode = m
+
+	func reset() -> void:
+		_low = 0.0
+		_band = 0.0
+
+	func process(x: float) -> float:
+		var f := 2.0 * sin(PI * clampf(cutoff, 20.0, sample_rate * 0.45) / sample_rate)
+		var q := 2.0 * (1.0 - clampf(resonance, 0.0, 1.0)) + 0.5
+		_low += f * _band
+		var high := x - _low - q * _band
+		_band = f * high + _band
+		match mode:
+			1:
+				return _band
+			2:
+				return high
+		return _low
+
+## 指数衰减 ADSR 包络（逐采样，支持曲线）
+class ADSR:
+	var sample_rate := 44100.0
+	var attack := 0.005
+	var decay := 0.1
+	var sustain := 0.7
+	var release := 0.2
+	var curve := 0.0
+
+	var _phase := -1
+	var _timer := 0.0
+	var _start_level := 0.0
+	var _level := 0.0
+
+	func _init(sr: float = 44100.0) -> void:
+		sample_rate = sr
+
+	func reset() -> void:
+		_phase = -1
+		_level = 0.0
+
+	func note_on() -> void:
+		_phase = 0
+		_timer = 0.0
+		_start_level = maxf(_level, 0.0)
+
+	func note_off() -> void:
+		if _phase >= 0 and _phase <= 2:
+			_phase = 3
+			_timer = 0.0
+			_start_level = _level
+
+	func is_done() -> bool:
+		return _phase == -1
+
+	func get_level() -> float:
+		return _level
+
+	func process() -> float:
+		var dt := 1.0 / sample_rate
+		_timer += dt
+		match _phase:
+			0:
+				var t0 := 1.0 if attack <= 0.0 else _timer / attack
+				_level = _curve_segment(_start_level, 1.0, clampf(t0, 0.0, 1.0))
+				if _timer >= attack:
+					_phase = 1
+					_timer = 0.0
+			1:
+				var t1 := 1.0 if decay <= 0.0 else _timer / decay
+				_level = _curve_segment(1.0, sustain, clampf(t1, 0.0, 1.0))
+				if _timer >= decay:
+					_phase = 2
+			2:
+				_level = sustain
+			3:
+				var t3 := 1.0 if release <= 0.0 else _timer / release
+				_level = _curve_segment(_start_level, 0.0, clampf(t3, 0.0, 1.0))
+				if _timer >= release:
+					_phase = -1
+					_level = 0.0
+		return _level
+
+	func _curve_segment(a: float, b: float, t: float) -> float:
+		if absf(curve) < 0.001:
+			return lerpf(a, b, t)
+		if curve > 0.0:
+			return lerpf(a, b, pow(t, 1.0 + curve))
+		return lerpf(a, b, pow(t, 1.0 / (1.0 - curve)))
+
+## MIDI 音高 → 频率
+static func midi_to_freq(m: int) -> float:
+	return 440.0 * pow(2.0, (m - 69.0) / 12.0)
 
 ## ======= 合成渲染(原 AudioSynth 合并至此) =======
 
@@ -80,8 +240,8 @@ static func render_data(def: AudioSynthDef) -> Dictionary:
 	var norm := 0.97 / maxf(peak, 0.000001)
 	var drive := def.soft_clip
 	for i in total:
-		l[i] = AudioDSP.soft_clip(l[i] * norm, drive) * def.master_volume
-		r[i] = AudioDSP.soft_clip(r[i] * norm, drive) * def.master_volume
+		l[i] = soft_clip(l[i] * norm, drive) * def.master_volume
+		r[i] = soft_clip(r[i] * norm, drive) * def.master_volume
 
 	# 转 int16 交错立体声
 	var bytes := PackedByteArray()
@@ -205,9 +365,37 @@ static func stop_editor_preview() -> void:
 		_preview_player.queue_free()
 	_preview_player = null
 
-## 是否正在后台生成中
+## 是否在后台生成中
 static func is_editor_preview_busy() -> bool:
 	return _preview_busy
+
+## 是否正在播放预览中
+static func is_editor_preview_playing() -> bool:
+	return is_instance_valid(_preview_player) and _preview_player.playing
+
+## 烘焙 Def 为 WAV 文件(异步后台生成 + 标准立体声 WAV 写出): 编辑器按钮一键导出成品音频
+## 返回 Error; 编辑器环境下保存后自动刷新文件系统
+static func bake_wav(def: AudioSynthDef, path: String) -> Error:
+	stop_editor_preview()
+	var stream: AudioStreamWAV = await generate_async(def)
+	if stream == null:
+		return ERR_CANT_CREATE
+	if not path.ends_with(".wav"):
+		path += ".wav"
+	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(path).get_base_dir())
+	var err := save_wav(stream, path)
+	if err == OK:
+		LogTool.log("音频", "已烘焙为 WAV: ", path)
+		# 编辑器下刷新文件系统使其出现在资源面板(用单例方式取 EditorInterface, 避免编辑器类硬引用)
+		if Engine.is_editor_hint():
+			var iface := Engine.get_singleton("EditorInterface")
+			if iface:
+				var fs = iface.get("resource_filesystem")
+				if fs:
+					fs.call("scan")
+	else:
+		LogTool.error("音频", "烘焙失败: ", path, " err=", err)
+	return err
 
 ## ============ 示例快捷访问 ============
 
@@ -244,11 +432,31 @@ static func play_example(name: String, volume_db := 0.0) -> AudioStreamPlayer:
 
 ## ============ 保存 ============
 
-## 保存为 WAV 文件(使用 Godot 内置 AudioStreamWAV.save_to_wav)
+## 保存为 WAV 文件。
+## 注意: 4.7.1 内置 AudioStreamWAV.save_to_wav 会把 16bit 立体声写成 mono 头(数据仍交错),
+## 导致 Godot 重新导入后声道/时长错乱, 故这里手写标准 44 字节 PCM 头(立体声/16bit)
 static func save_wav(stream: AudioStreamWAV, path: String) -> Error:
 	if stream == null or stream.data.is_empty():
 		return ERR_INVALID_DATA
-	return stream.save_to_wav(path)
+	var f := FileAccess.open(path, FileAccess.WRITE)
+	if f == null:
+		return FileAccess.get_open_error()
+	var data := stream.data
+	f.store_buffer("RIFF".to_ascii_buffer())
+	f.store_32(36 + data.size())
+	f.store_buffer("WAVEfmt ".to_ascii_buffer())
+	f.store_32(16)          # fmt 块长度
+	f.store_16(1)           # PCM 编码
+	f.store_16(2)           # 声道数: 立体声
+	f.store_32(stream.mix_rate)
+	f.store_32(stream.mix_rate * 4)  # byte_rate = rate * channels * 2
+	f.store_16(4)           # block_align = channels * 2
+	f.store_16(16)          # 位深
+	f.store_buffer("data".to_ascii_buffer())
+	f.store_32(data.size())
+	f.store_buffer(data)
+	f.close()
+	return OK
 
 ## 保存为 Godot 音频资源(.tres/.res)，供编辑器直接拖入 AudioStreamPlayer
 static func save_resource(stream: AudioStream, path: String) -> Error:
@@ -266,20 +474,23 @@ static func generate_and_save(def: AudioSynthDef, wav_path: String) -> Error:
 ## ============ 流信息 ============
 
 ## 查询音频流信息(时长/采样率/声道/循环), 便于验证生成结果
+## 注意: 16bit 数据可直算帧数; 从磁盘导入的 wav 可能是 QOA 压缩(FORMAT_QOA), 无帧数信息
 static func get_stream_info(stream: AudioStreamWAV) -> Dictionary:
 	if stream == null or stream.data.is_empty():
 		return {}
-	var channels := 2
-	var frame_count := stream.data.size() / (channels * 2)
-	return {
+	var info := {
 		"mix_rate": stream.mix_rate,
-		"channels": channels,
-		"frames": frame_count,
-		"seconds": float(frame_count) / stream.mix_rate,
+		"channels": 2,
+		"format": stream.format,
 		"loop": stream.loop_mode != AudioStreamWAV.LOOP_DISABLED,
 		"loop_begin": stream.loop_begin,
 		"loop_end": stream.loop_end,
 	}
+	if stream.format == AudioStreamWAV.FORMAT_16_BITS:
+		var frame_count := stream.data.size() / 4
+		info["frames"] = frame_count
+		info["seconds"] = float(frame_count) / stream.mix_rate
+	return info
 
 ## ============ 总线管理(整合 Godot AudioServer + AudioEffect) ============
 

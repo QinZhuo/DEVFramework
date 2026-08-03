@@ -29,19 +29,39 @@ enum Category {SFX, BGM, AMBIENT, LOOP}
 ## 尾部淡出(秒)，用于非循环片段平滑收尾
 @export_range(0.0, 5.0, 0.05) var fade_out := 0.0
 
-## ——— 编辑器预览(Inspector 按钮, 点击即触发) ———
+## ——— 编辑器操作(Inspector 按钮, 点击即触发) ———
 ## 机制: 点击按钮 = 调用该属性存放的 Callable。用 getter 每次实时返回新 Callable,
 ## 避免脚本热重载后序列化属性变 nil 导致 "invalid callable" 报错。
-## 按当前设置后台生成并试听(自动路由到 bus/fx_chain, BGM 自动循环)
-@export_tool_button("▶ 预览播放") var _preview_play:
+## 播放/停止切换: 空闲时后台生成并按 bus/fx_chain 试听(BGM 自动循环), 生成中/播放中点击则停止
+@export_tool_button("▶ 播放 ／ ■ 停止") var _preview_toggle:
 	get:
 		return func() -> void:
-			AudioTool.play_editor_preview(self)
-## 停止当前预览并取消未完成的生成
-@export_tool_button("■ 停止预览") var _preview_stop:
+			if AudioTool.is_editor_preview_busy() or AudioTool.is_editor_preview_playing():
+				AudioTool.stop_editor_preview()
+			else:
+				AudioTool.play_editor_preview(self)
+
+## 弹窗选择保存路径, 异步烘焙当前定义为 WAV 文件并刷新资源面板
+@export_tool_button("烘焙 WAV...") var _bake_wav:
 	get:
 		return func() -> void:
-			AudioTool.stop_editor_preview()
+			_bake_to_wav()
+
+
+## 烘焙到约定目录 res://Assets/Audio/Baked/<Def名>.wav(异步后台生成, 完成后刷新资源面板)
+## 注意: 不用编辑器类硬引用(EditorFileDialog 等), 保证 Def 在游戏端也能安全编译
+func _bake_to_wav() -> void:
+	if not Engine.is_editor_hint():
+		return
+	DirAccess.make_dir_recursive_absolute("res://Assets/Audio/Baked")
+	var path := "res://Assets/Audio/Baked/" + _default_bake_name()
+	var err: Error = await AudioTool.bake_wav(self, path)
+	LogTool.log("音频", "烘焙完成: ", path, " err=", err)
+
+
+func _default_bake_name() -> String:
+	var stem := resource_path.get_file().get_basename() if not resource_path.is_empty() else name
+	return stem + ".wav"
 
 func get_desc(_data) -> String:
 	return "%s[%d声部/%d序列]" % [Category.keys()[category], voices.size(), patterns.size() + music.size()]
