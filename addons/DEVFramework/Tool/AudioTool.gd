@@ -239,9 +239,13 @@ static func render_data(def: AudioSynthDef) -> Dictionary:
 		peak = maxf(peak, absf(r[i]))
 	var norm := 0.97 / maxf(peak, 0.000001)
 	var drive := def.soft_clip
+	var fi := int(def.fade_in * sr)
 	for i in total:
-		l[i] = soft_clip(l[i] * norm, drive) * def.master_volume
-		r[i] = soft_clip(r[i] * norm, drive) * def.master_volume
+		var fade := 1.0
+		if fi > 0 and i < fi:
+			fade = smoothstep(0.0, 1.0, float(i) / fi)
+		l[i] = soft_clip(l[i] * norm, drive) * def.master_volume * fade
+		r[i] = soft_clip(r[i] * norm, drive) * def.master_volume * fade
 
 	# 转 int16 交错立体声
 	var bytes := PackedByteArray()
@@ -677,3 +681,128 @@ static func setup_audio_buses(apply := true) -> Dictionary:
 		buses[name] = AudioServer.get_bus_index(name)
 	LogTool.log("音频", "标准总线布局已就绪: ", buses)
 	return {"ok": true, "buses": buses, "layout_path": LAYOUT_PATH}
+
+## ============ 随机生成 / 微调变体(sfxr 灵感) ============
+
+## 全新随机生成音效定义(保持声部/振荡器结构, 若为空则自动建保底结构, 保证点按钮必有声音)
+## preserve_wave=AudioSynthDef.random_preserve_wave 决定随机时是否保持各振荡器波形与音色类型
+## mutate_locked 中列出的顶层属性名在随机/微调时不被改动
+static func randomize_def(def: AudioSynthDef, seed := 0) -> void:
+	var rng := RandomNumberGenerator.new()
+	if seed > 0:
+		rng.seed = seed
+	_ensure_baseline_structure(def)
+	_randomize_synth(def, rng, 1.0)
+	LogTool.log("音频", "已随机生成: ", def)
+
+## 在现有定义基础上微调变体(小幅扰动参数 / 重置编曲种子), 快速得到"相似但不同"的候选
+static func mutate_def(def: AudioSynthDef, seed := 0) -> void:
+	var rng := RandomNumberGenerator.new()
+	if seed > 0:
+		rng.seed = seed
+	var amt := 0.15
+	_randomize_synth(def, rng, amt)
+	# 编曲: 重新掷随机种子让旋律/鼓型变化, 其余参数已在上面微调
+	for m in def.music:
+		if _locked(def, "music"):
+			break
+		m.random_seed = rng.randi()
+	LogTool.log("音频", "已微调变体: ", def)
+
+## 是否命中参数锁(顶层属性名)
+static func _locked(def: AudioSynthDef, prop: String) -> bool:
+	for s in def.mutate_locked:
+		if s == prop:
+			return true
+	return false
+
+static func _randf(rng: RandomNumberGenerator, lo: float, hi: float) -> float:
+	return rng.randf_range(lo, hi)
+
+## 幅度扰动: v 在当前值附近乘(1±amt)；随机模式(amt>=1)直接用 lo~hi 全范围
+static func _perturb(rng: RandomNumberGenerator, v: float, lo: float, hi: float, amt: float) -> float:
+	if amt >= 1.0:
+		return _randf(rng, lo, hi)
+	return clampf(v * _randf(rng, 1.0 - amt, 1.0 + amt), lo, hi)
+
+static func _add(rng: RandomNumberGenerator, v: float, spread: float, lo: float, hi: float, amt: float) -> float:
+	if amt >= 1.0:
+		return _randf(rng, lo, hi)
+	return clampf(v + _randf(rng, -spread * amt, spread * amt), lo, hi)
+
+## 若没有可发声的内容则补默认结构: 1 个正弦音色 + 一段音效式下行音符
+static func _ensure_baseline_structure(def: AudioSynthDef) -> void:
+	if def.voices.is_empty():
+		var v := AudioVoiceDef.new()
+		var o := AudioOscillatorDef.new()
+		o.waveform = AudioOscillatorDef.Wave.SINE
+		v.oscillators = [o]
+		v.envelope = AudioEnvelopeDef.new()
+		v.envelope.decay = 0.15
+		v.envelope.sustain = 0.2
+		def.voices.append(v)
+	if def.patterns.is_empty() and def.music.is_empty():
+		var p := AudioPatternDef.new()
+		p.bpm = 320.0
+		p.voice_index = 0
+		p.notes = [
+			_quick_note(72, 0.06), _quick_note(60, 0.08), _quick_note(48, 0.1),
+		]
+		def.patterns.append(p)
+
+static func _quick_note(midi: int, beats: float) -> AudioNoteDef:
+	var n := AudioNoteDef.new()
+	n.midi = midi
+	n.length_beats = beats
+	return n
+
+## 核心: 按 amt(0~1, 1=全范围随机)扰动定义内外参数
+static func _randomize_synth(def: AudioSynthDef, rng: RandomNumberGenerator, amt: float) -> void:
+	if not _locked(def, "master_volume"):
+		def.master_volume = _perturb(rng, def.master_volume, 0.35, 1.0, amt)
+	if not _locked(def, "soft_clip"):
+		def.soft_clip = _add(rng, def.soft_clip, 0.8, 0.0, 2.0, amt)
+	if not _locked(def, "bus"):
+		if rng.randf() < 0.15:
+			def.bus = ["SFX", "UI"][rng.randi_range(0, 1)]
+	for v in def.voices:
+		_randomize_voice(v, rng, amt, def.random_preserve_wave)
+	if not _locked(def, "bpm"):
+		for music in def.music:
+			music.bpm = clampf(music.bpm * _randf(rng, 1.0 - 0.12 * amt, 1.0 + 0.12 * amt), 30.0, 320.0)
+
+static func _randomize_voice(v: AudioVoiceDef, rng: RandomNumberGenerator, amt: float, preserve_wave: bool) -> void:
+	if v.kind == AudioVoiceDef.Kind.DRUM:
+		v.drum_freq = _perturb(rng, v.drum_freq, 40.0, 220.0, amt)
+		v.drum_tone = _add(rng, v.drum_tone, 0.25, 0.15, 1.0, amt)
+		v.drum_noise = _add(rng, v.drum_noise, 0.3, 0.05, 0.95, amt)
+		if amt >= 1.0:
+			v.drum_length = _randf(rng, 0.05, 0.45)
+		return
+	v.volume = _perturb(rng, v.volume, 0.2, 1.0, amt)
+	v.pan = clampf(v.pan + _randf(rng, -0.5 * amt, 0.5 * amt), -1.0, 1.0)
+	v.noise_amount = _add(rng, v.noise_amount, 0.3, 0.0, 0.7, amt)
+	v.vibrato_rate = _perturb(rng, v.vibrato_rate, 0.0, 12.0, amt)
+	v.vibrato_depth = _add(rng, v.vibrato_depth, 0.025, 0.0, 0.08, amt)
+	v.glide = _add(rng, v.glide, 0.1, 0.0, 0.35, amt)
+	# 包络
+	if v.envelope:
+		v.envelope.attack = _add(rng, v.envelope.attack, 0.06, 0.0, 0.35, amt)
+		v.envelope.decay = _perturb(rng, v.envelope.decay, 0.03, 0.8, amt)
+		v.envelope.sustain = _add(rng, v.envelope.sustain, 0.2, 0.0, 0.95, amt)
+		v.envelope.release = _perturb(rng, v.envelope.release, 0.02, 0.6, amt)
+		v.envelope.curve = _add(rng, v.envelope.curve, 0.4, -0.9, 0.9, amt)
+	# 滤波器
+	if v.filter and v.filter.enabled:
+		v.filter.cutoff = _perturb(rng, v.filter.cutoff, 120.0, 14000.0, amt)
+		v.filter.resonance = _add(rng, v.filter.resonance, 0.25, 0.0, 0.9, amt)
+		v.filter.cutoff_envelope_amount = _add(rng, v.filter.cutoff_envelope_amount, 3000.0, -8000.0, 8000.0, amt)
+	# 振荡器
+	for o in v.oscillators:
+		if o == null:
+			continue
+		if not preserve_wave and amt >= 1.0:
+			o.waveform = rng.randi_range(0, AudioOscillatorDef.Wave.PULSE)
+		o.level = _perturb(rng, o.level, 0.15, 1.0, amt)
+		o.detune_cents = _add(rng, o.detune_cents, 30.0, -120.0, 120.0, amt)
+		o.pulse_width = _perturb(rng, o.pulse_width, 0.1, 0.9, amt)

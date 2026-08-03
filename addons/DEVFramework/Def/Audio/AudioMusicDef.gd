@@ -28,6 +28,11 @@ enum DrumKit {FULL, KICK, SNARE, HAT, HAT_OPEN}
 ## 鼓组选择（仅 DRUM 角色生效）：整组 / 底鼓 / 军鼓 / 闭镲 / 开镲，便于分轨分配不同音色
 @export var drum_kit: DrumKit = DrumKit.FULL
 
+## 每音符音高随机(音分): MIDI 音高微抖动量, 常用 5~40, 消除机械感(鼓组/打击乐推荐)
+@export_range(0, 200, 1) var pitch_jitter_cents := 0
+## 每音符触发时间随机(毫秒): 制造 ~靠近/提前的瑕疵节奏, 打击乐更自然
+@export_range(0, 200, 1) var timing_jitter_ms := 0
+
 func get_desc(_data) -> String:
 	return "%s %d小节@%dBPM" % [Role.keys()[role], bars, int(bpm)]
 

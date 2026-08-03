@@ -16,12 +16,13 @@ static func expand(def: AudioSynthDef) -> Array:
 static func _append_pattern(events: Array, p: AudioPatternDef, sr: int) -> void:
 	var fpp := 60.0 / p.bpm * sr  # 每拍采样帧
 	var cursor := 0.0
+	var mine: Array = []
 	for n in p.notes:
 		cursor += n.delay_beats * fpp
 		if n.is_rest:
 			cursor += n.length_beats * fpp
 			continue
-		events.append({
+		mine.append({
 			"voice_index": p.voice_index,
 			"start": int(cursor),
 			"duration": int(n.length_beats * fpp),
@@ -29,6 +30,10 @@ static func _append_pattern(events: Array, p: AudioPatternDef, sr: int) -> void:
 			"velocity": n.velocity,
 		})
 		cursor += n.length_beats * fpp
+	var rng := RandomNumberGenerator.new()
+	rng.seed = p.random_seed
+	_finalize(mine, rng, p.pitch_jitter_cents, p.timing_jitter_ms, sr)
+	events.append_array(mine)
 
 static func _append_music(events: Array, m: AudioMusicDef, sr: int) -> void:
 	var fpp := 60.0 / m.bpm * sr
@@ -39,6 +44,7 @@ static func _append_music(events: Array, m: AudioMusicDef, sr: int) -> void:
 	var scale_notes := _build_scale_pool(m.scale, m.octave)
 
 	var melody_idx := _nearest_scale_index(scale_notes, m.scale.degree_to_midi(1) + 12 * m.octave)
+	var mine: Array = []
 
 	for bar in m.bars:
 		var degree := m.chord_progression[bar % maxi(1, m.chord_progression.size())]
@@ -48,7 +54,7 @@ static func _append_music(events: Array, m: AudioMusicDef, sr: int) -> void:
 			m.Role.CHORD, m.Role.PAD:
 				var dur := int(bar_frames * m.gate)
 				for iv in chord_intervals:
-					events.append(_ev(m.voice_index, bar_start, dur, root + iv, m.velocity))
+					mine.append(_ev(m.voice_index, bar_start, dur, root + iv, m.velocity))
 			m.Role.ARPEGGIO:
 				var step := m.note_length
 				var steps := 4.0 / step
@@ -60,12 +66,12 @@ static func _append_music(events: Array, m: AudioMusicDef, sr: int) -> void:
 						oct += 1
 					var midi: int = root + chord_intervals[idx] + 12 * oct
 					var start := bar_start + int(s * step_frames)
-					events.append(_ev(m.voice_index, start, int(step_frames * m.gate), midi, m.velocity * _twitch(rng)))
+					mine.append(_ev(m.voice_index, start, int(step_frames * m.gate), midi, m.velocity * _twitch(rng)))
 			m.Role.BASS:
 				var steps := 2
 				var sdur := bar_frames / steps
 				for s in steps:
-					events.append(_ev(m.voice_index, bar_start + int(s * sdur), int(sdur * m.gate), root - 12, m.velocity))
+					mine.append(_ev(m.voice_index, bar_start + int(s * sdur), int(sdur * m.gate), root - 12, m.velocity))
 			m.Role.MELODY:
 				var steps := 4.0 / m.note_length
 				var step_frames := m.note_length * fpp
@@ -79,25 +85,27 @@ static func _append_music(events: Array, m: AudioMusicDef, sr: int) -> void:
 					var step_n := _rng_step(rng)
 					melody_idx = clampi(melody_idx + step_n, 0, scale_notes.size() - 1)
 					var midi: int = scale_notes[melody_idx]
-					events.append(_ev(m.voice_index, start, int(step_frames * m.gate), midi, m.velocity * _twitch(rng)))
+					mine.append(_ev(m.voice_index, start, int(step_frames * m.gate), midi, m.velocity * _twitch(rng)))
 			m.Role.DRUM:
 				# 4/4 鼓组，按 drum_kit 分轨
 				match m.drum_kit:
 					m.DrumKit.FULL, m.DrumKit.KICK:
-						events.append({"voice_index": m.voice_index, "start": bar_start, "duration": int(fpp * 0.9), "midi": 0, "velocity": 0.9})
-						events.append({"voice_index": m.voice_index, "start": bar_start + int(2.0 * fpp), "duration": int(fpp * 0.9), "midi": 0, "velocity": 0.85})
+						mine.append({"voice_index": m.voice_index, "start": bar_start, "duration": int(fpp * 0.9), "midi": 0, "velocity": 0.9})
+						mine.append({"voice_index": m.voice_index, "start": bar_start + int(2.0 * fpp), "duration": int(fpp * 0.9), "midi": 0, "velocity": 0.85})
 					m.DrumKit.FULL, m.DrumKit.SNARE:
-						events.append({"voice_index": m.voice_index, "start": bar_start + int(1.0 * fpp), "duration": int(fpp * 0.5), "midi": 0, "velocity": 0.7})
-						events.append({"voice_index": m.voice_index, "start": bar_start + int(3.0 * fpp), "duration": int(fpp * 0.5), "midi": 0, "velocity": 0.7})
+						mine.append({"voice_index": m.voice_index, "start": bar_start + int(1.0 * fpp), "duration": int(fpp * 0.5), "midi": 0, "velocity": 0.7})
+						mine.append({"voice_index": m.voice_index, "start": bar_start + int(3.0 * fpp), "duration": int(fpp * 0.5), "midi": 0, "velocity": 0.7})
 					m.DrumKit.FULL, m.DrumKit.HAT:
 						for h in 8:
 							var vel := 0.2
 							if h == 6:
 								vel = 0.4
-							events.append({"voice_index": m.voice_index, "start": bar_start + int(h * 0.5 * fpp), "duration": int(fpp * 0.4), "midi": 0, "velocity": vel})
+							mine.append({"voice_index": m.voice_index, "start": bar_start + int(h * 0.5 * fpp), "duration": int(fpp * 0.4), "midi": 0, "velocity": vel})
 					m.DrumKit.HAT_OPEN:
-						events.append({"voice_index": m.voice_index, "start": bar_start + int(6.5 * fpp), "duration": int(fpp * 1.5), "midi": 0, "velocity": 0.5})
-				return
+						mine.append({"voice_index": m.voice_index, "start": bar_start + int(6.5 * fpp), "duration": int(fpp * 1.5), "midi": 0, "velocity": 0.5})
+
+	_finalize(mine, rng, m.pitch_jitter_cents, m.timing_jitter_ms, sr)
+	events.append_array(mine)
 
 static func _ev(voice_index: int, start: int, duration: int, midi: int, velocity: float) -> Dictionary:
 	return {"voice_index": voice_index, "start": start, "duration": maxi(1, duration), "midi": midi, "velocity": clampf(velocity, 0.0, 1.0)}
@@ -132,6 +140,16 @@ static func _rng_step(rng: RandomNumberGenerator) -> int:
 
 static func _twitch(rng: RandomNumberGenerator) -> float:
 	return rng.randf_range(0.92, 1.0)
+
+## 人性化: 音高抖动(音分) + 触发时间抖动(毫秒), 消除重复机械感
+static func _finalize(mine: Array, rng: RandomNumberGenerator, cents: float, ms: float, sr: int) -> void:
+	if cents > 0.0:
+		for e in mine:
+			e["pitch_cents"] = cents * rng.randf_range(-1.0, 1.0)
+	if ms > 0.0:
+		var ms_frames := ms * sr / 1000.0
+		for e in mine:
+			e["start"] = maxi(0, int(e.start) + int(rng.randf_range(-ms_frames, ms_frames)))
 
 static func _chord_intervals(t: AudioMusicDef.ChordType) -> PackedInt32Array:
 	match t:

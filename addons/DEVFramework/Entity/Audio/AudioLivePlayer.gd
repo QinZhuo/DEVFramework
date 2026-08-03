@@ -9,6 +9,8 @@ var _mix_rate := 22050.0
 var _voices: Array[AudioVoice] = []
 var _loop_frames := 0
 var _global_index := 0
+var _fade_in_frames := 0
+var _fade_done := true
 const _BLOCK := 2048
 
 ## 使用前必须调用：加载定义并准备好渲染状态
@@ -39,6 +41,8 @@ func setup(def: AudioSynthDef) -> void:
 		_loop_frames = maxi(_loop_frames, v.last_frame())
 	if _loop_frames <= 0:
 		_loop_frames = int(def.duration * _mix_rate) if def.duration > 0.0 else int(8.0 * _mix_rate)
+	_fade_in_frames = int(def.fade_in * _mix_rate)
+	_fade_done = def.fade_in <= 0.0
 
 func _ready() -> void:
 	if stream:
@@ -74,5 +78,14 @@ func _render_and_push(count: int) -> void:
 		_global_index = 0
 		for v in _voices:
 			v.reset_stream()
+	if not _fade_done:
+		var g := 1.0
+		if _global_index >= _fade_in_frames:
+			_fade_done = true
+		else:
+			g = smoothstep(0.0, 1.0, float(_global_index) / maxf(1.0, float(_fade_in_frames)))
+		for i in count:
+			_playback.push_frame(Vector2(l[i] * g, r[i] * g))
+		return
 	for i in count:
 		_playback.push_frame(Vector2(l[i], r[i]))

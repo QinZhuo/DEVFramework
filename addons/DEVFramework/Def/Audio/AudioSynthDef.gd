@@ -26,8 +26,18 @@ enum Category {SFX, BGM, AMBIENT, LOOP}
 
 ## ——— 循环 ———
 @export var loop := false
+## 头部淡入(秒)，循环音乐 / 场景环境渐入常用；离线烘焙与实时播放均生效
+@export_range(0.0, 5.0, 0.05) var fade_in := 0.0
 ## 尾部淡出(秒)，用于非循环片段平滑收尾
 @export_range(0.0, 5.0, 0.05) var fade_out := 0.0
+
+## ——— 随机生成 / Article用谐调变体(sfxr 灵感, Inspector 一键批量生成候选) ———
+## 随机 / 微调时是否保持各振荡器波形与声部类型(音色基础)；false=随机生成时音色也随机换
+@export var random_preserve_wave := true
+@export var mutate_locked: Array[StringName] = []
+## 参数锁: 在此列出的顶层属性名(如 "master_volume" / "soft_clip" / "bus")
+## 在随机生成 / 微调音色时保持不变；声部内部参数默认只做微调Arguable
+
 
 ## ——— 编辑器操作(Inspector 按钮, 点击即触发) ———
 ## 机制: 点击按钮 = 调用该属性存放的 Callable。用 getter 每次实时返回新 Callable,
@@ -47,6 +57,20 @@ enum Category {SFX, BGM, AMBIENT, LOOP}
 		return func() -> void:
 			_bake_to_wav()
 
+
+## 随机生成音效: 全参数重新随机(默认保持音色波形基础), 生成后自动试听
+@export_tool_button("随机生成音效") var _randomize:
+	get:
+		return func() -> void:
+			AudioTool.randomize_def(self)
+			AudioTool.play_editor_preview(self)
+
+## 微调变体: 现有参数小幅扰动 + 编曲重新掷种子, 生成后自动试听
+@export_tool_button("微调变体") var _mutate:
+	get:
+		return func() -> void:
+			AudioTool.mutate_def(self)
+			AudioTool.play_editor_preview(self)
 
 ## 烘焙到约定目录 res://Assets/Audio/Baked/<Def名>.wav(异步后台生成, 完成后刷新资源面板)
 ## 注意: 不用编辑器类硬引用(EditorFileDialog 等), 保证 Def 在游戏端也能安全编译

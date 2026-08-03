@@ -39,6 +39,13 @@ static func _build_synths() -> Dictionary:
 	d["SFX_Hit"] = _synth_hit()
 	d["BGM_Loop_Adventure"] = _synth_adventure()
 	d["BGM_Loop_Ambient"] = _synth_ambient()
+	d["SFX_Jump"] = _synth_jump()
+	d["SFX_UI_Click"] = _synth_ui_click()
+	d["SFX_Powerup"] = _synth_powerup()
+	d["SFX_Steps"] = _synth_steps()
+	d["SFX_Whoosh"] = _synth_whoosh()
+	d["SFX_Magic"] = _synth_magic()
+	d["SFX_Impact"] = _synth_impact()
 	return d
 
 # —— 便捷构造 ——
@@ -315,3 +322,120 @@ static func _synth_ambient() -> AudioSynthDef:
 
 	s.music = [chord, bassm, arpm]
 	return s
+
+static func _synth_jump() -> AudioSynthDef:
+	var s := AudioSynthDef.new()
+	s.category = AudioSynthDef.Category.SFX
+	s.master_volume = 0.9
+	s.bus = "SFX"
+	s.fx_chain = AudioTool.fxs_from_names(["limiter"])
+	var v := _voice_tone([_osc(AudioTool.Wave.SINE, 0.8), _osc(AudioTool.Wave.SQUARE, 0.3, 4.0, 0, 0.25)], _env(0.008, 0.16, 0.0, 0.1), 0.9)
+	v.glide = 0.14
+	s.voices = [v]
+	var p := AudioPatternDef.new()
+	p.bpm = 320.0
+	p.voice_index = 0
+	p.notes = [_note(60, 0.07), _note(48, 0.09)]
+	s.patterns = [p]
+	return s
+
+static func _synth_ui_click() -> AudioSynthDef:
+	var s := AudioSynthDef.new()
+	s.category = AudioSynthDef.Category.SFX
+	s.master_volume = 0.8
+	s.bus = "UI"
+	var v := _voice_tone([_osc(AudioTool.Wave.SQUARE, 0.7, 0.0, 0, 0.5)], _env(0.001, 0.05, 0.0, 0.03), 0.5)
+	s.voices = [v]
+	var p := AudioPatternDef.new()
+	p.bpm = 400.0
+	p.voice_index = 0
+	p.notes = [_note(79, 0.05), _note(81, 0.05)]
+	s.patterns = [p]
+	return s
+
+static func _synth_powerup() -> AudioSynthDef:
+	var s := AudioSynthDef.new()
+	s.category = AudioSynthDef.Category.SFX
+	s.master_volume = 0.85
+	s.bus = "UI"
+	s.fx_chain = AudioTool.fxs_from_names(["reverb_hall", "limiter"])
+	var v := _voice_tone([_osc(AudioTool.Wave.SINE, 0.7), _osc(AudioTool.Wave.SINE, 0.35, 5.0)], _env(0.004, 0.2, 0.15, 0.12), 0.85)
+	v.vibrato_rate = 9.0
+	v.vibrato_depth = 0.02
+	s.voices = [v]
+	var p := AudioPatternDef.new()
+	p.bpm = 380.0
+	p.voice_index = 0
+	p.notes = [_note(60, 0.06), _note(64, 0.06), _note(67, 0.06), _note(72, 0.1)]
+	s.patterns = [p]
+	return s
+
+static func _synth_steps() -> AudioSynthDef:
+	var s := AudioSynthDef.new()
+	s.category = AudioSynthDef.Category.SFX
+	s.master_volume = 0.85
+	s.bus = "SFX"
+	var v := _voice_tone([_osc(AudioTool.Wave.SINE, 0.3, 0.0, -1)], _env(0.002, 0.06, 0.0, 0.04), 1.0)
+	v.noise_amount = 0.75
+	v.filter = _filt(AudioFilterDef.Mode.LOW_PASS, 500.0, 0.4)
+	s.voices = [v]
+	var p := AudioPatternDef.new()
+	p.bpm = 180.0
+	p.voice_index = 0
+	p.pitch_jitter_cents = 10
+	p.timing_jitter_ms = 25
+	p.random_seed = 7
+	p.notes = [_note(36, 0.06), _note(36, 0.06), _note(31, 0.06)]
+	s.patterns = [p]
+	return s
+
+static func _synth_whoosh() -> AudioSynthDef:
+	var s := AudioSynthDef.new()
+	s.category = AudioSynthDef.Category.SFX
+	s.master_volume = 0.8
+	s.bus = "SFX"
+	var v := _voice_tone([_osc(AudioTool.Wave.NOISE, 0.9)], _env(0.3, 0.3, 0.0, 0.35), 0.9)
+	v.filter = _filt(AudioFilterDef.Mode.BAND_PASS, 1100.0, 0.6, 3400.0)
+	s.voices = [v]
+	var p := AudioPatternDef.new()
+	p.bpm = 120.0
+	p.voice_index = 0
+	p.notes = [_note(0, 1.0)]
+	s.patterns = [p]
+	return s
+
+static func _synth_magic() -> AudioSynthDef:
+	var s := AudioSynthDef.new()
+	s.category = AudioSynthDef.Category.SFX
+	s.master_volume = 0.85
+	s.bus = "SFX"
+	s.fx_chain = AudioTool.fxs_from_names(["delay", "reverb_hall"])
+	var v := _voice_tone([_osc(AudioTool.Wave.SINE, 0.7), _osc(AudioTool.Wave.TRIANGLE, 0.3)], _env(0.005, 0.25, 0.2, 0.2), 0.8)
+	v.vibrato_rate = 8.0
+	v.vibrato_depth = 0.03
+	s.voices = [v]
+	var p := AudioPatternDef.new()
+	p.bpm = 400.0
+	p.voice_index = 0
+	p.notes = [_note(67, 0.07), _note(72, 0.07), _note(76, 0.07), _note(79, 0.12)]
+	s.patterns = [p]
+	return s
+
+static func _synth_impact() -> AudioSynthDef:
+	var s := AudioSynthDef.new()
+	s.category = AudioSynthDef.Category.SFX
+	s.master_volume = 1.0
+	s.soft_clip = 1.1
+	s.bus = "SFX"
+	s.fx_chain = AudioTool.fxs_from_names(["reverb", "limiter"])
+	var v := _voice_tone([_osc(AudioTool.Wave.SINE, 0.8, 0.0, -1), _osc(AudioTool.Wave.SAW, 0.4, 0.0, -1)], _env(0.001, 0.4, 0.0, 0.3), 1.0)
+	v.noise_amount = 0.5
+	v.filter = _filt(AudioFilterDef.Mode.LOW_PASS, 480.0, 0.3)
+	s.voices = [v]
+	var p := AudioPatternDef.new()
+	p.bpm = 90.0
+	p.voice_index = 0
+	p.notes = [_note(28, 0.5)]
+	s.patterns = [p]
+	return s
+

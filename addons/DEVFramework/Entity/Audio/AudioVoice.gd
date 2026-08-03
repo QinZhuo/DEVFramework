@@ -89,8 +89,8 @@ func _trigger(e: Dictionary, index: int) -> void:
 	n.start = index
 	n.gate = int(e.duration)
 	n.velocity = float(e.velocity)
-	n.target_freq = AudioTool.midi_to_freq(int(e.midi))
-	n.freq = n.target_freq
+	n.target_freq = AudioTool.midi_to_freq(int(e.midi)) * pow(2.0, float(e.get("pitch_cents", 0.0)) / 1200.0)
+	n.freq = n.target_freq * (0.5 if def.glide > 0.0 else 1.0)
 	n.phases = PackedFloat32Array()
 	n.phases.resize(def.oscillators.size())
 	n.adsr = AudioTool.ADSR.new(sample_rate)

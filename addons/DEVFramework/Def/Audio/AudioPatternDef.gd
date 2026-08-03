@@ -6,6 +6,14 @@ class_name AudioPatternDef extends Def
 @export_range(20.0, 400.0, 0.5) var bpm := 120.0
 @export var notes: Array[AudioNoteDef] = []
 
+## 每音符人性化随机(音分): 固定旋律也带"人手感"
+@export_range(0, 200, 1) var pitch_jitter_cents := 0
+## 每音符触发时间随机(毫秒)
+@export_range(0, 200, 1) var timing_jitter_ms := 0
+## 人性化随机种子(重掷可得到新变体)
+@export var random_seed := 12345
+
+
 ## 每拍拍号（默认 4/4）
 @export_range(1, 12, 1) var beats_per_bar := 4
 
