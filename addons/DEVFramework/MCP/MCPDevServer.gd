@@ -25,6 +25,11 @@ var _tool_handlers := {}        # 工具名 -> Callable
 var _tool_defs := []            # 工具定义列表(MCP 格式)
 var _editor: EditorInterface
 
+## 运行中游戏进程管理(独立进程 + --log-file 合并进 get_logs)
+var _run_pid := 0             # >0 表示游戏在运行
+var _run_log_path := "user://mcp_run.log"
+var _run_log_offset := 0      # get_logs 增量读取的字节偏移
+
 ## 全局唯一实例(由 plugin.gd 持有)
 static var instance: MCPDevServer
 
@@ -69,6 +74,7 @@ func start() -> void:
 func poll() -> void:
 	if _http:
 		_http.poll()
+	_poll_run_log()
 
 
 ## 关闭服务器(保留 Logger)
@@ -91,7 +97,9 @@ func _register_tools() -> void:
 	_register_log_tools()
 	_register_screenshot_tools()
 	_register_scene_tools()
+	_register_scene_edit_tools()
 	_register_project_tools()
+	_register_run_tools()
 
 
 func _add_tool(name: String, desc: String, input_schema: Dictionary, handler: Callable) -> void:
@@ -168,12 +176,43 @@ func _register_scene_tools() -> void:
 		_call_call_node_method)
 
 
+## -- 场景编辑 --
+func _register_scene_edit_tools() -> void:
+	_add_tool("add_node",
+		"在当前编辑场景中添加节点或实例化子场景。parent 为父节点路径(缺省根), node_type 为节点类型类名(如 Sprite2D/CharacterBody2D/Label)或子场景 res:// 路径。",
+		{"type": "object", "properties": {"parent": {"type": "string", "description": "父节点路径(编辑场景内), 缺省为场景根"}, "node_type": {"type": "string", "description": "节点类型类名或子场景 res:// 路径"}, "name": {"type": "string", "description": "新节点名称(可选)"}}},
+		_call_add_node)
+
+	_add_tool("save_scene",
+		"保存当前正在编辑的场景到磁盘(set_node_property/add_node 的改动需要保存后才会写回 .tscn)。",
+		{"type": "object", "properties": {}},
+		_call_save_scene)
+
+
 ## -- 项目信息 --
 func _register_project_tools() -> void:
 	_add_tool("get_project_info",
 		"获取 Godot 项目基本信息(项目名/Godot 版本/当前编辑场景/运行模式/插件开关等)。",
 		{"type": "object", "properties": {}},
 		_call_get_project_info)
+
+	_add_tool("get_project_settings",
+		"获取项目关键配置(主场景/autoload/输入映射/图层命名等), 帮助 AI 理解项目约定。",
+		{"type": "object", "properties": {}},
+		_call_get_project_settings)
+
+
+## -- 运行游戏 --
+func _register_run_tools() -> void:
+	_add_tool("run_game",
+		"启动项目(独立进程)以便实际测试。可选指定启动场景 res:// 路径(缺省为项目主场景)。运行日志实时合并进 get_logs。",
+		{"type": "object", "properties": {"scene": {"type": "string", "description": "启动场景 res:// 路径, 可选"}}},
+		_call_run_game)
+
+	_add_tool("stop_game",
+		"停止当前运行中的游戏进程(若在运行)。",
+		{"type": "object", "properties": {}},
+		_call_stop_game)
 
 
 ## ======= MCP 协议处理 =======
@@ -509,6 +548,53 @@ func _call_call_node_method(args: Dictionary) -> Dictionary:
 	return _ok("已调用 %s.%s() -> %s" % [path, method, str(result)])
 
 
+func _call_add_node(args: Dictionary) -> Dictionary:
+	var parent_path := str(args.get("parent", ""))
+	var node_type := str(args.get("node_type", ""))
+	var new_name := str(args.get("name", ""))
+	var root := _edited_root()
+	if root == null:
+		return _fail("当前没有打开的场景")
+	var parent := root
+	if not parent_path.is_empty():
+		parent = _resolve_node(parent_path)
+		if parent == null:
+			return _fail("找不到父节点: %s" % parent_path)
+	# 实例化子场景 或 按类型创建节点
+	var new_node: Node
+	if node_type.begins_with("res://"):
+		if not ResourceLoader.exists(node_type):
+			return _fail("子场景不存在: %s" % node_type)
+		var packed: PackedScene = ResourceLoader.load(node_type)
+		if packed == null:
+			return _fail("子场景加载失败: %s" % node_type)
+		new_node = packed.instantiate()
+	else:
+		if not ClassDB.class_exists(node_type):
+			return _fail("未知节点类型: %s" % node_type)
+		new_node = ClassDB.instantiate(node_type)
+		if new_node == null:
+			return _fail("无法实例化节点类型: %s" % node_type)
+	if not new_name.is_empty():
+		new_node.name = new_name
+	parent.add_child(new_node, true)
+	if root == new_node or parent == root:
+		new_node.owner = root
+	return _ok("已添加节点 %s [%s] 到 %s" % [new_node.name, new_node.get_class(), parent.name])
+
+
+func _call_save_scene(_args: Dictionary) -> Dictionary:
+	if _editor == null:
+		return _fail("编辑器不可用")
+	var root := _edited_root()
+	if root == null:
+		return _fail("当前没有打开的场景")
+	var err := _editor.save_scene()
+	if err != OK:
+		return _fail("保存场景失败(错误码 %d)" % err)
+	return _ok("已保存场景 %s" % root.get_scene_file_path())
+
+
 func _call_get_project_info(_args: Dictionary) -> Dictionary:
 	var info := {
 		"project_name": ProjectSettings.get_setting("application/config/name", ""),
@@ -518,8 +604,117 @@ func _call_get_project_info(_args: Dictionary) -> Dictionary:
 		"current_scene": _edited_root().get_scene_file_path() if _edited_root() else null,
 		"mcp_port": _port,
 		"mcp_running": is_running(),
+		"game_running": _run_pid != 0,
 	}
 	return _ok(JSON.stringify(info))
+
+
+func _call_get_project_settings(_args: Dictionary) -> Dictionary:
+	var root := _edited_root()
+	var info := {
+		"main_scene": ProjectSettings.get_setting("application/run/main_scene", ""),
+		"project_name": ProjectSettings.get_setting("application/config/name", ""),
+		"autoloads": _autoloads(),
+		"input_actions": _input_actions(),
+		"layers_2d": _named_layers("layer_names/2d_physics"),
+		"layers_2d_render": _named_layers("layer_names/2d_render"),
+		"layers_3d": _named_layers("layer_names/3d_physics"),
+		"layers_3d_render": _named_layers("layer_names/3d_render"),
+		"current_scene": root.get_scene_file_path() if root else null,
+	}
+	return _ok(JSON.stringify(info))
+
+
+## 收集 autoload 单例(名字 -> 路径)
+func _autoloads() -> Dictionary:
+	var out := {}
+	for key in ProjectSettings.get_property_list():
+		var name: String = str(key.get("name", ""))
+		if name.begins_with("autoload/") and name.count("/") == 1:
+			var keyname := name.trim_prefix("autoload/")
+			var val = ProjectSettings.get_setting(name)
+			if val is String and not (val.begins_with("*") or val.begins_with("&")):
+				out[keyname] = val
+	return out
+
+
+## 收集输入映射动作名
+func _input_actions() -> Array:
+	var out := []
+	for key in ProjectSettings.get_property_list():
+		var name: String = str(key.get("name", ""))
+		if name.begins_with("input/"):
+			out.append(name.trim_prefix("input/"))
+	return out
+
+
+## 读取图层命名(2d_physics/2d_render/3d_physics/3d_render)
+func _named_layers(setting_key: String) -> Dictionary:
+	var out := {}
+	for key in ProjectSettings.get_property_list():
+		var name: String = str(key.get("name", ""))
+		if name.begins_with(setting_key + "/"):
+			var idx := name.trim_prefix(setting_key + "/")
+			out[int(idx)] = ProjectSettings.get_setting(name)
+	return out
+
+
+func _call_run_game(args: Dictionary) -> Dictionary:
+	if _run_pid != 0:
+		return _fail("游戏已在运行(PID %d)。如需重启请先 stop_game。" % _run_pid)
+	var scene := str(args.get("scene", ""))
+	var scene_path := scene
+	if not scene_path.is_empty() and not scene_path.begins_with("res://"):
+		scene_path = "res://" + scene_path
+	if not scene_path.is_empty():
+		if not ResourceLoader.exists(scene_path):
+			return _fail("启动场景不存在: %s" % scene_path)
+	var exe := OS.get_executable_path()
+	var args_arr := ["--path", ProjectSettings.globalize_path("res://"), "--log-file", ProjectSettings.globalize_path(_run_log_path)]
+	if not scene_path.is_empty():
+		args_arr.append(scene_path)
+	# 清空旧日志并重置偏移
+	var f := FileAccess.open(_run_log_path, FileAccess.WRITE)
+	if f:
+		f.store_string("")
+		f.close()
+	_run_log_offset = 0
+	var pid := OS.create_process(exe, args_arr)
+	if pid <= 0:
+		return _fail("启动游戏失败(create_process 返回 %d)" % pid)
+	_run_pid = pid
+	return _ok("已启动游戏 PID=%d%s。运行日志已并入 get_logs。" % [pid, " 场景=" + scene_path if not scene_path.is_empty() else ""])
+
+
+func _call_stop_game(_args: Dictionary) -> Dictionary:
+	if _run_pid == 0:
+		return _fail("当前没有运行中的游戏")
+	var pid := _run_pid
+	_run_pid = 0
+	OS.kill(pid)
+	return _ok("已停止游戏 PID=%d" % pid)
+
+
+## 每帧调用: 把运行中游戏的日志文件增量合并进 _logger
+func _poll_run_log() -> void:
+	if _run_pid == 0 or _logger == null:
+		return
+	if not FileAccess.file_exists(_run_log_path):
+		return
+	var f := FileAccess.open(_run_log_path, FileAccess.READ)
+	if f == null:
+		return
+	f.seek(_run_log_offset)
+	var data := f.get_as_text()
+	_run_log_offset = f.get_position()
+	f.close()
+	if data.is_empty():
+		return
+	for line in data.split("\n"):
+		var trimmed := line.strip_edges()
+		if trimmed.is_empty():
+			continue
+		_logger.append_external(trimmed)
 
 
 ## ======= 辅助 =======

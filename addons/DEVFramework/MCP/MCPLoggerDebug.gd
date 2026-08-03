@@ -114,6 +114,15 @@ func clear_messages() -> void:
 	_mutex.unlock()
 
 
+## 供运行游戏日志合并(带来源前缀), 线程安全
+func append_external(message: String, prefix: String = "[运行] ") -> void:
+	_mutex.lock()
+	_messages.append({"time": Time.get_ticks_msec(), "message": prefix + message, "is_error": false})
+	if _messages.size() > CAPACITY:
+		_messages.pop_front()
+	_mutex.unlock()
+
+
 func get_message_count() -> int:
 	_mutex.lock()
 	var n := _messages.size()
