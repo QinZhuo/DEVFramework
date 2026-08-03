@@ -2,20 +2,42 @@
 ## 音色定义 — 一个可演奏的发声器（音调类或打击乐类），可多层振荡器叠加 + 滤波 + 颤音 + 滑音
 class_name AudioVoiceDef extends Def
 
-enum Kind {TONE, DRUM}
-enum DrumType {KICK, SNARE, HAT_OPEN, HAT_CLOSED, TOM, CLAP}
+enum Kind {
+	## 音调类(振荡器+包络+滤波, 有音高)
+	TONE,
+	## 打击乐类(物理建模鼓合成, 无音高)
+	DRUM,
+}
+enum DrumType {
+	## 底鼓(重低频)
+	KICK,
+	## 军鼓(噪声+身体)
+	SNARE,
+	## 开镲(长噪声衰减)
+	HAT_OPEN,
+	## 闭镲(短促噪声)
+	HAT_CLOSED,
+	## 通通鼓(有调性鼓)
+	TOM,
+	## 拍手(多段噪声爆发)
+	CLAP,
+}
 
+## 发声方式: 音调类(旋律/音效) 或 打击乐类(鼓)
 @export var kind: Kind = Kind.TONE
 
 ## ——— 音调类参数 ———
 @export var oscillators: Array[AudioOscillatorDef] = []
 ## 白噪声混合量(0~1)，可叠加在振荡器上
 @export_range(0.0, 1.0, 0.001) var noise_amount := 0.0
+## 音量包络(ADSR+曲线)
 @export var envelope: AudioEnvelopeDef = AudioEnvelopeDef.new()
+## 滤波器(低通/带通/高通, 可被包络调制)
 @export var filter: AudioFilterDef = AudioFilterDef.new()
 
 ## ——— 公共参数 ———
 @export_range(0.0, 1.0, 0.001) var volume := 0.8
+## 声像(-1=左, 0=中, 1=右)
 @export_range(-1.0, 1.0, 0.01) var pan := 0.0
 ## 颤音速率(Hz)
 @export_range(0.0, 20.0, 0.01) var vibrato_rate := 5.0

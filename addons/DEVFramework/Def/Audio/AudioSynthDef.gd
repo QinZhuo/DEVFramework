@@ -2,14 +2,28 @@
 ## 程序化音频定义 — 组合一组音色 + 一组序列(显式/自动编曲)，一键渲染成 AudioStreamWAV
 class_name AudioSynthDef extends Def
 
-enum Category {SFX, BGM, AMBIENT, LOOP}
+enum Category {
+	## 短音效(激光/爆炸/拾取/攻击等单发)
+	SFX,
+	## 音乐/整段长曲
+	BGM,
+	## 环境氛围铺设
+	AMBIENT,
+	## 无限循环的音乐片段(常配 loop=true)
+	LOOP,
+}
 
+## 音频类别: 决定语义/命名/烘焙约定, 不改变渲染算法
 @export var category: Category = Category.SFX
+## 采样率(Hz): 44100=CD 音质; 22050 体积减半; 8k~16k 复古/轻负担
 @export_range(8000, 48000, 1000) var sample_rate := 44100
 ## 时长(秒)；0 表示由序列/编曲自动推算
 @export_range(0.0, 600.0, 0.1) var duration := 0.0
+## 音色表: 每个声部一种发声(音调/打击乐), 事件的 voice_index 指向其中一项
 @export var voices: Array[AudioVoiceDef] = []
+## 显式音符序列(手工固定旋律/音效/鼓点)
 @export var patterns: Array[AudioPatternDef] = []
+## 自动编曲(按音阶/和弦/角色生成, 随机种子可复现)
 @export var music: Array[AudioMusicDef] = []
 
 ## ——— 母带与效果 ———
@@ -31,12 +45,11 @@ enum Category {SFX, BGM, AMBIENT, LOOP}
 ## 尾部淡出(秒)，用于非循环片段平滑收尾
 @export_range(0.0, 5.0, 0.05) var fade_out := 0.0
 
-## ——— 随机生成 / Article用谐调变体(sfxr 灵感, Inspector 一键批量生成候选) ———
+## ——— 随机生成 / 用谐调变体(sfxr 灵感, Inspector 一键批量生成候选) ———
 ## 随机 / 微调时是否保持各振荡器波形与声部类型(音色基础)；false=随机生成时音色也随机换
 @export var random_preserve_wave := true
+## 参数锁: 列出的顶层属性名在随机生成/微调时保持不变(如 master_volume/soft_clip/bus)
 @export var mutate_locked: Array[StringName] = []
-## 参数锁: 在此列出的顶层属性名(如 "master_volume" / "soft_clip" / "bus")
-## 在随机生成 / 微调音色时保持不变；声部内部参数默认只做微调Arguable
 
 
 ## ——— 编辑器操作(Inspector 按钮, 点击即触发) ———

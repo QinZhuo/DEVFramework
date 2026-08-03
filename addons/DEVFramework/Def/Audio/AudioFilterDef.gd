@@ -2,9 +2,18 @@
 ## 音频滤波器定义 — 状态变量滤波器(SVF)，可被包络/LFO 调制
 class_name AudioFilterDef extends Def
 
-enum Mode {LOW_PASS, BAND_PASS, HIGH_PASS}
+enum Mode {
+	## 低通(保留低频, 削弱高频)
+	LOW_PASS,
+	## 带通(只保留中间频段)
+	BAND_PASS,
+	## 高通(保留高频, 削弱低频)
+	HIGH_PASS,
+}
 
+## 开关滤波器链
 @export var enabled := false
+## 滤波类型
 @export var mode: Mode = Mode.LOW_PASS
 @export_range(20.0, 20000.0, 1.0) var cutoff := 8000.0
 @export_range(0.0, 1.0, 0.001) var resonance := 0.3

@@ -11,7 +11,7 @@ const LAYOUT_SETTING := "audio/buses/default_bus_layout"
 ## 示例定义目录(AudioTool.example_def / play_example)
 const EXAMPLES_DIR := "res://Assets/Def/Audio/Examples/"
 
-## 支持的效果名(用于 AudioSynthDef.fx_chain)
+## 支持的效果预设名(供 AudioSynthDef.fx_chain / create_fx / fxs_from_names 使用)
 static var fx_names := [
 	"reverb", "reverb_hall", "delay", "distortion",
 	"limiter", "compressor", "eq_lowpass", "eq_highpass", "eq_bandpass", "spectrum",
@@ -19,8 +19,21 @@ static var fx_names := [
 
 ## ======= 合成内核(原 AudioDSP 合并至此) =======
 
-## 波形枚举（与 AudioOscillatorDef.Wave 一致）
-enum Wave {SINE, SQUARE, SAW, TRIANGLE, PULSE, NOISE}
+## 波形枚举(与 AudioOscillatorDef.Wave 一致)
+enum Wave {
+	## 正弦(纯净圆润)
+	SINE,
+	## 方波(明亮复古, 8-bit)
+	SQUARE,
+	## 锯齿(明亮有力)
+	SAW,
+	## 三角(柔和)
+	TRIANGLE,
+	## 脉冲(方波+占空比)
+	PULSE,
+	## 噪声(颗粒/风/爆)
+	NOISE,
+}
 
 ## PolyBLEP 抗锯齿修正——消除方波/锯齿/三角波的高频混叠，让音色"干净"
 static func poly_blep(t: float, dt: float) -> float:

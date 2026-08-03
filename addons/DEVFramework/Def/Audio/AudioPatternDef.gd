@@ -2,8 +2,11 @@
 ## 音符序列定义 — 显式排列一串音符，适合手工编写固定旋律/音效
 class_name AudioPatternDef extends Def
 
+## 使用的声部索引(指向 AudioSynthDef.voices 中第几项)
 @export_range(0, 128, 1) var voice_index := 0
+## 速度(拍/分钟)
 @export_range(20.0, 400.0, 0.5) var bpm := 120.0
+## 音符列表(顺序演奏; delay_beats 可留空/休止)
 @export var notes: Array[AudioNoteDef] = []
 
 ## 每音符人性化随机(音分): 固定旋律也带"人手感"
