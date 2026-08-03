@@ -461,7 +461,7 @@ DEV Framework 的 MCP 使用 **Streamable HTTP** 传输，端点为 `http://127.
 {
   "$schema": "https://opencode.ai/config.json",
   "mcp": {
-    "devframework": {
+    "devframework-godot-mcp": {
       "type": "remote",
       "url": "http://127.0.0.1:8931/mcp",
       "enabled": true
@@ -473,18 +473,18 @@ DEV Framework 的 MCP 使用 **Streamable HTTP** 传输，端点为 `http://127.
 **Claude Code**（命令行，无需手写 JSON）：
 
 ```bash
-claude mcp add --transport http devframework http://127.0.0.1:8931/mcp
+claude mcp add --transport http devframework-godot-mcp http://127.0.0.1:8931/mcp
 claude mcp list        # 查看已配置
 ```
 
 #### B. `mcpServers` 格式（Cline / Roo Code / TRAE / Cherry Studio / 通义灵码 / VS Code 等）
 
-这类工具共用 `mcpServers` 对象结构，把 `devframework` 加入即可：
+这类工具共用 `mcpServers` 对象结构，把 `devframework-godot-mcp` 加入即可：
 
 ```jsonc
 {
   "mcpServers": {
-    "devframework": {
+    "devframework-godot-mcp": {
       "url": "http://127.0.0.1:8931/mcp"
     }
   }

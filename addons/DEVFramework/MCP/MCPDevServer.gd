@@ -14,7 +14,7 @@ const SETTING_MAX_MESSAGES := "dev_framework/mcp/max_messages"
 
 ## ------- MCP 常量 -------
 const PROTOCOL_VERSION := "2025-03-26"          # 支持的 MCP 协议版本
-const SERVER_NAME := "devframework-mcp"
+const SERVER_NAME := "devframework-godot-mcp"
 const SERVER_VERSION := "0.1.0"
 
 var _http: MCPTcpHttpServer
