@@ -359,7 +359,7 @@ AudioTool.list_examples()                      # 列出全部示例
 | 能力 | 实现 | 说明 |
 |---|---|---|
 | 振荡/滤波/包络/鼓 | 自研（并入 `AudioTool`）| Godot 无逐采样合成 API，必须自研 |
-| 混响 / 延迟 / 失真 / 限幅 / 压缩 / EQ | **Godot 内置 `AudioEffect`** | 经 `AudioSynthDef.bus` + `fx_chain` 配置，播放时自动路由到带效果的总线（离线 .wav 不烘焙效果）|
+| 混响 / 延迟 / 失真 / 限幅 / 压缩 / EQ | **Godot 内置 `AudioEffect`** | 播放时经 `AudioSynthDef.bus` + `fx_chain` 路由到带效果的总线；**离线烘焙同样支持**——用内置 `AudioEffectRecord` 录音法把效果链固化进 .wav（`bake_wav(..., bake_fx=true)`，默认开启）|
 | WAV 写盘 | 自写 44 字节标准 PCM 头 | 4.7.1 内置 `save_to_wav()` 会把 16bit 立体声写成 mono 头（数据仍交错），Godot 重导入后声道/时长错乱，故自写标准头 |
 | 实时循环播放 | **Godot 内置 `AudioStreamGenerator`** | `AudioLivePlayer` 包装使用 |
 | 总线布局 | **Godot 内置 `AudioServer` / `AudioBusLayout`** | `AudioTool.setup_audio_buses()` 一键生成 Master/SFX/BGM/UI 布局并写入项目设置 |
@@ -383,9 +383,9 @@ AudioTool.list_examples()                      # 列出全部示例
 每个 `AudioSynthDef` 资源自带两个内建按钮（`@export_tool_button`，无需任何插件代码）：
 
 - `▶ 播放 ／ ■ 停止`：**切换式**按钮——空闲时后台生成并按 `bus`/`fx_chain` 试听（BGM 自动循环），生成中或播放中再点则停止。
-- `烘焙 WAV...`：异步后台生成并写出标准立体声 WAV 到约定目录 `res://Assets/Audio/Baked/<Def名>.wav`，完成后自动刷新资源面板。**长 BGM 建议烘焙成 wav 资源供游戏直接加载**（引擎导入后为 QOA 压缩，播放开销极小）。
+- `烘焙 WAV...`：异步后台生成并写出标准立体声 WAV 到约定目录 `res://Assets/Audio/Baked/<Def名>.wav`，**默认把 `fx_chain` 效果链一起烘焙进文件**（内置 `AudioEffectRecord` 录音法，`AudioTool.bake_wav(def, path, bake_fx=false)` 可关闭），完成后自动刷新资源面板。**长 BGM 建议烘焙成 wav 资源供游戏直接加载**（引擎导入后为 QOA 压缩，播放开销极小）。
 
-`fx_chain` 可选效果名：`reverb` / `reverb_hall` / `delay` / `distortion` / `limiter` / `compressor` / `eq_lowpass` / `eq_highpass` / `eq_bandpass` / `spectrum`。
+`fx_chain` 为 **Godot 原生 `Array[AudioEffect]` 资源数组**——直接在 Inspector 里从音频效果资源列表选取并展开调参（混响 / 延迟 / 失真 / 限幅 / 压缩 / EQ 等任意内置效果）；代码侧可用 `AudioTool.create_fx("reverb")` 取标准预设、`AudioTool.fxs_from_names(["reverb", "delay"])` 批量构建。标准预设名：`reverb` / `reverb_hall` / `delay` / `distortion` / `limiter` / `compressor` / `eq_lowpass` / `eq_highpass` / `eq_bandpass` / `spectrum`。
 
 > 生成较重的 BGM（16 秒）约需 2 倍实时（后台线程），建议一次性烘焙成 `.wav` 资源供游戏加载；实时循环交给 `AudioLivePlayer`。
 

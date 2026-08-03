@@ -20,9 +20,9 @@ enum Category {SFX, BGM, AMBIENT, LOOP}
 ## ——— 播放总线(整合 Godot AudioServer) ———
 ## 播放时自动路由到该总线; 标准布局由 AudioTool.setup_audio_buses() 一键创建
 @export var bus := "Master"
-## 运行时总线效果链(由 Godot 内置 AudioEffect 提供, 播放时生效, 不写入离线 WAV):
-## 可选值: reverb / delay / distortion / limiter / compressor / eq_lowpass / eq_highpass / spectrum
-@export var fx_chain: PackedStringArray = []
+## 运行时总线效果链(播放与烘焙共用): Godot 原生 AudioEffect 资源数组,
+## 在 Inspector 中直接添加效果并调节其原生参数; 也可用 AudioTool.create_fx("reverb") 等预设创建
+@export var fx_chain: Array[AudioEffect] = []
 
 ## ——— 循环 ———
 @export var loop := false

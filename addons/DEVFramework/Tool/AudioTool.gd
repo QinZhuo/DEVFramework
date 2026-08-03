@@ -307,7 +307,7 @@ static func play(def: AudioSynthDef, volume_db := 0.0) -> AudioStreamPlayer:
 	return play_stream(stream, volume_db, def.bus if def.bus else "Master", def.fx_chain)
 
 ## 播放已有音频流(自动释放); bus 为空用 Master, fx 非空时自动建 "FX_<bus>" 效果总线
-static func play_stream(stream: AudioStream, volume_db := 0.0, bus := "Master", fx: PackedStringArray = []) -> AudioStreamPlayer:
+static func play_stream(stream: AudioStream, volume_db := 0.0, bus := "Master", fx: Array[AudioEffect] = []) -> AudioStreamPlayer:
 	var player := AudioStreamPlayer.new()
 	player.stream = stream
 	player.volume_db = volume_db
@@ -374,12 +374,18 @@ static func is_editor_preview_playing() -> bool:
 	return is_instance_valid(_preview_player) and _preview_player.playing
 
 ## 烘焙 Def 为 WAV 文件(异步后台生成 + 标准立体声 WAV 写出): 编辑器按钮一键导出成品音频
-## 返回 Error; 编辑器环境下保存后自动刷新文件系统
-static func bake_wav(def: AudioSynthDef, path: String) -> Error:
+## bake_fx=true 时把 def.fx_chain 效果链(内置 AudioEffect)也烘焙进 WAV(经真实播放+录音)
+static func bake_wav(def: AudioSynthDef, path: String, bake_fx := true) -> Error:
 	stop_editor_preview()
 	var stream: AudioStreamWAV = await generate_async(def)
 	if stream == null:
 		return ERR_CANT_CREATE
+	if bake_fx and not def.fx_chain.is_empty():
+		var recorded: AudioStreamWAV = await render_with_fx(stream, def.fx_chain)
+		if recorded == null:
+			LogTool.error("音频", "烘焙失败: 效果录音不可用(需可用音频设备)")
+			return ERR_CANT_CREATE
+		stream = recorded
 	if not path.ends_with(".wav"):
 		path += ".wav"
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(path).get_base_dir())
@@ -396,6 +402,43 @@ static func bake_wav(def: AudioSynthDef, path: String) -> Error:
 	else:
 		LogTool.error("音频", "烘焙失败: ", path, " err=", err)
 	return err
+
+## 把音频经 fx_chain(内置 AudioEffect 效果链)真实播放一遍并用内置 AudioEffectRecord 录音,
+## 返回带效果的音频流。纯内置方案: 效果链与播放时完全一致, 录音截取效果总线输出。
+## 注意: 需要可用音频设备(mixer 实时处理); 耗时为音频实时时长 + 0.8s 效果尾音
+static func render_with_fx(stream: AudioStreamWAV, fx_chain: Array[AudioEffect]) -> AudioStreamWAV:
+	if stream == null or fx_chain.is_empty():
+		return stream
+	var bus_name := "FX_BakeTemp_" + str(Time.get_ticks_msec())
+	var idx := AudioServer.bus_count
+	AudioServer.add_bus()
+	AudioServer.set_bus_name(idx, bus_name)
+	for fx_effect in fx_chain:
+		if fx_effect:
+			AudioServer.add_bus_effect(idx, fx_effect)
+	var rec := AudioEffectRecord.new()
+	AudioServer.add_bus_effect(idx, rec)
+	rec.set_recording_active(true)
+	var player := AudioStreamPlayer.new()
+	player.stream = stream
+	player.bus = bus_name
+	var tree := Engine.get_main_loop() as SceneTree
+	if tree:
+		tree.root.add_child(player)
+	player.play()
+	# 记录"原始时长 + 效果尾音"(混响/延迟会延伸尾音); 不依赖 finished, 兼容 loop 定义
+	var need := stream.get_length() + 0.8
+	var elapsed := 0.0
+	while elapsed < need:
+		await tree.create_timer(0.05).timeout
+		elapsed += 0.05
+	player.stop()
+	if player.get_parent():
+		player.queue_free()
+	rec.set_recording_active(false)
+	var recorded: AudioStreamWAV = rec.get_recording()
+	AudioServer.remove_bus(idx)
+	return recorded
 
 ## ============ 示例快捷访问 ============
 
@@ -494,8 +537,8 @@ static func get_stream_info(stream: AudioStreamWAV) -> Dictionary:
 
 ## ============ 总线管理(整合 Godot AudioServer + AudioEffect) ============
 
-## 按名称创建 Godot 内置效果(AudioEffect), 未知名称返回 null
-## 注意: 属性名以本项目 Godot 4.7.1(steam) 实际 API 为准
+## 按名称创建"标准预设"的 Godot 内置效果(AudioEffect), 未知名称返回 null
+## 通用参数以本项目 Godot 4.7.1(steam) 实际 API 为准; 需要微调时请直接构造效果并改属性
 static func create_fx(name: String) -> AudioEffect:
 	match name:
 		"reverb":
@@ -566,25 +609,33 @@ static func create_fx(name: String) -> AudioEffect:
 			return AudioEffectSpectrumAnalyzer.new()
 	return null
 
-## 确保总线存在(幂等), 并按要求挂载效果链; 返回总线索引
-static func ensure_bus(name: String, fx: PackedStringArray = []) -> int:
+## 把一组字符串效果名批量转成 AudioEffect 数组(供标准总线布局等 preset 配置使用)
+static func fxs_from_names(names: Array) -> Array[AudioEffect]:
+	var out: Array[AudioEffect] = []
+	for n in names:
+		var fx := create_fx(n)
+		if fx:
+			out.append(fx)
+	return out
+
+## 确保总线存在(幂等), 并按要求挂载效果链(原生 AudioEffect 资源数组); 返回总线索引
+static func ensure_bus(name: String, fx: Array[AudioEffect] = []) -> int:
 	var idx := AudioServer.get_bus_index(name)
 	if idx != -1:
 		return idx
 	idx = AudioServer.bus_count
 	AudioServer.add_bus()
 	AudioServer.set_bus_name(idx, name)
-	for fname in fx:
-		var effect := create_fx(fname)
+	for effect in fx:
 		if effect:
 			AudioServer.add_bus_effect(idx, effect)
 		else:
-			LogTool.warn("音频", "未知效果名, 已跳过: ", fname)
-	LogTool.log("音频", "已创建总线: ", name, " 效果=", fx)
+			LogTool.warn("音频", "未能构建效果, 已跳过: ", effect)
+	LogTool.log("音频", "已创建总线: ", name, " 效果数=", fx.size())
 	return idx
 
 ## 根据需要计算实际播放总线名: 带效果链时自动建 "FX_<bus>" 效果总线
-static func resolve_bus(bus: String, fx: PackedStringArray) -> String:
+static func resolve_bus(bus: String, fx: Array[AudioEffect]) -> String:
 	var name := bus if not bus.is_empty() else "Master"
 	if not fx.is_empty():
 		name = "FX_" + name
@@ -605,14 +656,14 @@ static func setup_audio_buses(apply := true) -> Dictionary:
 		AudioServer.set_bus_count(1)
 		while AudioServer.get_bus_effect_count(0) > 0:
 			AudioServer.remove_bus_effect(0, 0)
-		for name in layout.keys():
-			if name != "Master":
-				ensure_bus(name, layout[name])
-			else:
-				for fname in layout[name]:
-					var effect := create_fx(fname)
-					if effect:
-						AudioServer.add_bus_effect(0, effect)
+	for name in layout.keys():
+		if name != "Master":
+			ensure_bus(name, fxs_from_names(layout[name]))
+		else:
+			for fname in layout[name]:
+				var effect := create_fx(fname)
+				if effect:
+					AudioServer.add_bus_effect(0, effect)
 	DirAccess.make_dir_recursive_absolute("res://Assets/Audio")
 	var bus_layout := AudioServer.generate_bus_layout()
 	var err := ResourceSaver.save(bus_layout, LAYOUT_PATH)

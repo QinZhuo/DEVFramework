@@ -100,7 +100,7 @@ static func _synth_laser() -> AudioSynthDef:
 	s.master_volume = 0.95
 	s.soft_clip = 0.6
 	s.bus = "SFX"
-	s.fx_chain = PackedStringArray(["limiter"])
+	s.fx_chain = AudioTool.fxs_from_names(["limiter"])
 	var v := _voice_tone(
 		[_osc(AudioTool.Wave.SAW, 0.6), _osc(AudioTool.Wave.SQUARE, 0.3, 7.0, 0, 0.25)],
 		_env(0.001, 0.12, 0.0, 0.04), 0.9)
@@ -120,7 +120,7 @@ static func _synth_explosion() -> AudioSynthDef:
 	s.master_volume = 1.0
 	s.soft_clip = 1.2
 	s.bus = "SFX"
-	s.fx_chain = PackedStringArray(["reverb", "delay"])
+	s.fx_chain = AudioTool.fxs_from_names(["reverb", "delay"])
 	var v := _voice_tone([_osc(AudioTool.Wave.SINE, 0.7, 0.0, -1), _osc(AudioTool.Wave.SAW, 0.4)], _env(0.004, 0.55, 0.0, 0.35), 1.0)
 	v.noise_amount = 0.9
 	v.filter = _filt(AudioFilterDef.Mode.LOW_PASS, 220.0, 0.2, 2600.0)
@@ -154,7 +154,7 @@ static func _synth_hit() -> AudioSynthDef:
 	s.category = AudioSynthDef.Category.SFX
 	s.master_volume = 0.9
 	s.bus = "SFX"
-	s.fx_chain = PackedStringArray(["limiter"])
+	s.fx_chain = AudioTool.fxs_from_names(["limiter"])
 	var v := _voice_tone(
 		[_osc(AudioTool.Wave.SQUARE, 0.6, 0.0, 0, 0.3), _osc(AudioTool.Wave.SAW, 0.4)],
 		_env(0.001, 0.09, 0.0, 0.06), 1.0)
@@ -176,7 +176,7 @@ static func _synth_adventure() -> AudioSynthDef:
 	s.master_volume = 0.85
 	s.soft_clip = 0.5
 	s.bus = "BGM"
-	s.fx_chain = PackedStringArray(["compressor", "delay"])
+	s.fx_chain = AudioTool.fxs_from_names(["compressor", "delay"])
 
 	# 音色
 	var bass := _voice_tone([_osc(AudioTool.Wave.SAW, 0.7)], _env(0.004, 0.3, 0.5, 0.15), 0.7)
@@ -265,7 +265,7 @@ static func _synth_ambient() -> AudioSynthDef:
 	s.master_volume = 0.8
 	s.soft_clip = 0.4
 	s.bus = "BGM"
-	s.fx_chain = PackedStringArray(["reverb_hall", "delay"])
+	s.fx_chain = AudioTool.fxs_from_names(["reverb_hall", "delay"])
 
 	var pad := _voice_tone(
 		[_osc(AudioTool.Wave.SINE, 0.5), _osc(AudioTool.Wave.SINE, 0.3, 3.0, 1)],
