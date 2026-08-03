@@ -12,8 +12,9 @@ DEVFramework 是一套面向 Godot 4 的数据驱动开发框架，通过「Def�
 4. [Entity 实体层](#四entity-实体层)
 5. [Tool 工具层](#五tool-工具层)
 6. [View 视图层](#六view-视图层)
-7. [典型使用流程](#七典型使用流程)
-8. [FAQ](#八faq)
+7. [MCP 调试服务器](#七mcp-调试服务器)
+8. [典型使用流程](#八典型使用流程)
+9. [FAQ](#九faq)
 
 ---
 
@@ -423,7 +424,84 @@ array_view.remove_item(item)
 
 ---
 
-## 七、典型使用流程
+## 七、MCP 调试服务器
+
+DEV Framework 内置一个 **MCP（Model Context Protocol）调试服务器**，由**编辑器插件**持有，随插件启用/停用而开启/关闭，让 AI 助手（opencode / Claude Code / Cursor 等）直接连接正在打开的编辑器，辅助编辑场景、校验脚本、诊断错误。
+
+### 7.1 原理与架构
+
+```
+AI 助手 ──MCP Streamable HTTP──▶ http://127.0.0.1:8931/mcp  (Godot 编辑器内嵌)
+```
+
+- Godot 编辑器内部用 `TCPServer` 实现了一个轻量 HTTP 服务器（`MCPTcpHttpServer`）。
+- 由 `plugin.gd` 在**启用插件时启动**、**停用时关闭**，不依赖 autoload、不污染导出构建。
+- 通过 `MCPDevServer`（`RefCounted`）持有；通过继承 Godot 4.5+ 的 `Logger`（`MCPLogger`）**捕获编辑器控制台输出与错误（含 GDScript 栈追踪）**，线程安全。
+- 每帧由 `plugin.gd::_process` 驱动服务器处理请求。
+
+### 2. 启用与配置
+
+- 编辑器启用 `DEV Framework` 插件即自动开启 MCP 服务器（`_enter_tree`）。
+- 配置项（`项目设置 → DEV Framework` 或直接改 `project.godot`）：
+
+| 设置项 | 默认值 | 说明 |
+|---|---|---|
+| `dev_framework/mcp/enabled` | `true` | MCP 服务器总开关 |
+| `dev_framework/mcp/port` | `8931` | 监听端口（仅本机 `127.0.0.1`）|
+
+### 3. AI 助手连接配置
+
+以 **opencode**（`opencode.json`）为例，`type` 用 `remote`（Streamable HTTP）：
+
+```jsonc
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "servers": {
+      "devframework": {
+        "type": "remote",
+        "url": "http://127.0.0.1:8931/mcp",
+        "enabled": true
+      }
+    }
+  }
+}
+```
+
+> 其他客户端：
+> - **Claude Code**：`claude mcp add --transport http devframework http://127.0.0.1:8931/mcp`
+> - **Cursor**：Settings → MCP：`{"serverUrl": "http://127.0.0.1:8931/mcp"}`
+
+> 注意：必须先启用 `DEV Framework` 插件，该 MCP 才会监听端口。
+
+### 4. 内置工具清单
+
+| 工具名 | 作用 |
+|---|---|
+| `validate_script` | 校验 GDScript 语法/可编译性（传 `path` 或 `code`）|
+| `validate_resource` | 校验资源/场景能否被引擎加载 |
+| `list_dir` | 列出目录内容（支持递归）|
+| `get_logs` | 读取编辑器控制台日志（增量/关键字/截断）|
+| `get_errors` | 读取捕获的错误（含来源文件、行号、**GDScript 栈追踪**）|
+| `clear_errors` | 清空错误缓冲区 |
+| `take_screenshot` | 捕获编辑器当前窗口画面（存到 `user://mcp_screenshots/`）|
+| `get_scene_tree` | 获取当前编辑场景的节点树结构 |
+| `get_node_info` | 读取编辑场景中指定节点属性列表及当前值 |
+| `set_node_property` | 修改编辑场景中节点属性（需手动保存才写回 .tscn）|
+| `call_node_method` | 触发编辑场景中节点方法 |
+| `get_project_info` | 项目/版本/当前编辑场景等环境信息 |
+
+### 5. 典型 AI 调试流程
+
+1. 打开项目并启用 `DEV Framework` 插件，连接 http://127.0.0.1:8931/mcp。
+2. AI `list_dir` / `validate_script` / `validate_resource` 排查脚本与资源问题。
+3. AI `get_scene_tree` / `get_node_info` 理解当前编辑场景的节点与属性。
+4. AI 用 `set_node_property` / `call_node_method` 快速验证逻辑，`get_errors` 定位报错。
+5. `take_screenshot` 查看编辑器画面实际表现。
+
+---
+
+## 八、典型使用流程
 
 ### 场景一：新增一种卡牌效果
 
@@ -459,7 +537,7 @@ var data = await SaveTool.load_async("user://save.json", SaveTool.Mode.JSON)
 
 ---
 
-## 八、FAQ
+## 九、FAQ
 
 **Q1：Def 能否存运行时数据？**
 不能。Def 是纯配置（`Resource`），运行时状态应放 Entity / Component / 场景节点，通过外部上下文（如 `GameContext`）传入。
