@@ -376,7 +376,11 @@ AudioTool.list_examples()                      # 列出全部示例
 | `AudioLivePlayer` | 实时无限循环 BGM 播放器（一般用 `AudioTool.play_loop()` 创建） |
 | `AudioTool` / `DevAudioExamples` | **统一入口**：渲染/生成/播放/保存/总线/示例 全部集成 / 一键生成示例定义 |
 
-`AudioTool` 是音频功能的**唯一对外入口**，内部再分为：合成渲染（`render_data`/`build_stream`/`render`）、生成（`generate`/`generate_async`）、播放（`play`/`play_stream`/`play_loop`/`play_example`）、保存（`save_wav`/`save_resource`/`generate_and_save`）、查询（`get_stream_info`/`list_examples`/`example_def`）、总线管理（`ensure_bus`/`resolve_bus`/`create_fx`/`setup_audio_buses`）。
+`AudioTool` 是音频功能的**唯一对外入口**，内部再分为：合成渲染（`render_data`/`build_stream`/`render`）、生成（`generate`/`generate_async`）、播放（`play`/`play_stream`/`play_loop`/`play_example`）、保存（`save_wav`/`save_resource`/`generate_and_save`）、查询（`get_stream_info`/`list_examples`/`example_def`）、总线管理（`ensure_bus`/`resolve_bus`/`create_fx`/`setup_audio_buses`）、编辑器预览（`play_editor_preview`/`stop_editor_preview`）。
+
+### Inspector 预览
+
+每个 `AudioSynthDef` 资源自带两个内建按钮（`@export_tool_button`，无需任何插件代码）：`▶ 预览播放`（按当前设置后台生成并按 bus/fx_chain 试听，BGM 自动循环）与 `■ 停止预览`（停止并取消未完成的生成）。
 
 `fx_chain` 可选效果名：`reverb` / `reverb_hall` / `delay` / `distortion` / `limiter` / `compressor` / `eq_lowpass` / `eq_highpass` / `eq_bandpass` / `spectrum`。
 

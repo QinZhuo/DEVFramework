@@ -169,6 +169,46 @@ static func play_loop(def: AudioSynthDef) -> AudioLivePlayer:
 	player.play()
 	return player
 
+## ============ 编辑器预览(Inspector 按钮使用) ============
+
+## 存储预览状态: 每次调用都生成新 token, 后台生成完成后对比发现 token 变化则丢弃结果(实现取消)
+static var _preview_player: AudioStreamPlayer
+static var _preview_busy := false
+static var _preview_token := 0
+
+## 在编辑器中试听 Def: 先停止旧的, 后台线程生成, 完成后按定义的 bus/fx_chain 播放(loop 的 BGM 自动循环)
+## on_ready(result: bool) 可选, 生成播放成功后回调
+static func play_editor_preview(def: AudioSynthDef, on_ready: Callable = Callable()) -> void:
+	# 先停止旧的(使其 token 失效), 再自增领取新 token — 防止把自己的 token 顶掉
+	stop_editor_preview()
+	_preview_token += 1
+	var token := _preview_token
+	_preview_busy = true
+	var stream: AudioStreamWAV = await generate_async(def)
+	if token != _preview_token:
+		return
+	_preview_busy = false
+	if stream == null:
+		if on_ready.is_valid():
+			on_ready.call(false)
+		return
+	_preview_player = play_stream(stream, 0.0, def.bus if def.bus else "Master", def.fx_chain)
+	if on_ready.is_valid():
+		on_ready.call(true)
+
+## 停止当前编辑器预览(同时使未完成的异步生成结果失效)
+static func stop_editor_preview() -> void:
+	_preview_token += 1
+	_preview_busy = false
+	if is_instance_valid(_preview_player):
+		_preview_player.stop()
+		_preview_player.queue_free()
+	_preview_player = null
+
+## 是否正在后台生成中
+static func is_editor_preview_busy() -> bool:
+	return _preview_busy
+
 ## ============ 示例快捷访问 ============
 
 ## 按名称加载示例定义(DevAudioExamples 生成, 位于 Assets/Def/Audio/Examples/), 不存在返回 null
