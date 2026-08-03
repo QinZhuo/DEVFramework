@@ -451,27 +451,68 @@ AI 助手 ──MCP Streamable HTTP──▶ http://127.0.0.1:8931/mcp  (Godot �
 
 ### 3. AI 助手连接配置
 
-以 **opencode**（`opencode.json`）为例，`type` 用 `remote`（Streamable HTTP）：
+DEV Framework 的 MCP 使用 **Streamable HTTP** 传输，端点为 `http://127.0.0.1:8931/mcp`（仅本机，需先启用插件）。下面按**配置文件格式**分组给出各工具接入方式。
+
+#### A. opencode / Claude Code 等 CLI 工具
+
+**opencode**（`opencode.json` / `opencode.jsonc`，`mcp` 直接按服务器名作 key）：
 
 ```jsonc
 {
   "$schema": "https://opencode.ai/config.json",
   "mcp": {
-    "servers": {
-      "devframework": {
-        "type": "remote",
-        "url": "http://127.0.0.1:8931/mcp",
-        "enabled": true
-      }
+    "devframework": {
+      "type": "remote",
+      "url": "http://127.0.0.1:8931/mcp",
+      "enabled": true
     }
   }
 }
 ```
 
-> 其他客户端：
-> - **Claude Code**：`claude mcp add --transport http devframework http://127.0.0.1:8931/mcp`
-> - **Cursor**：Settings → MCP：`{"serverUrl": "http://127.0.0.1:8931/mcp"}`
+**Claude Code**（命令行，无需手写 JSON）：
 
+```bash
+claude mcp add --transport http devframework http://127.0.0.1:8931/mcp
+claude mcp list        # 查看已配置
+```
+
+#### B. `mcpServers` 格式（Cline / Roo Code / TRAE / Cherry Studio / 通义灵码 / VS Code 等）
+
+这类工具共用 `mcpServers` 对象结构，把 `devframework` 加入即可：
+
+```jsonc
+{
+  "mcpServers": {
+    "devframework": {
+      "url": "http://127.0.0.1:8931/mcp"
+    }
+  }
+}
+```
+
+各工具放置位置与字段差异：
+
+| 工具 | 配置位置 | 说明 |
+|---|---|---|
+| **Cline** | `~/.cline/mcp.json`，或 MCP Servers → Configure → 编辑 JSON | `type` 写 `streamableHttp` |
+| **Roo Code** | 扩展设置 `settings.json` → `mcpServers` | `type` 必须写 `streamable-http` |
+| **TRAE** | 项目级 `.trae/mcp.json`，或 设置 → MCP → 手动添加 | 仅需 `url`，`type` 可省略 |
+| **Cherry Studio** | 设置 → MCP 服务器 → 添加 / 从 JSON 导入 | `type` 写 `streamableHttp` |
+| **通义灵码** | 个人设置 → MCP 服务 → 配置文件添加 | 也支持界面手动添加（见下）|
+| **VS Code** | `.vscode/mcp.json` | 顶层为 `servers`，字段以官方文档为准 |
+
+#### C. 界面手动添加（无需 JSON，Cursor / 通义灵码 / 豆包 MarsCode 等）
+
+| 工具 | 操作路径 | 填写内容 |
+|---|---|---|
+| **Cursor** | Settings → MCP → Add | 类型选 remote/HTTP，URL 填 `http://127.0.0.1:8931/mcp` |
+| **通义灵码** | 个人设置 → MCP 服务 → `+` → 手动添加 | 类型选 SSE/HTTP，服务地址填 `http://127.0.0.1:8931/mcp` |
+| **豆包 MarsCode** | 设置 → MCP → 添加 | 类型选 HTTP，URL 填 `http://127.0.0.1:8931/mcp` |
+| **腾讯云 AI 代码助手** | 设置 → MCP → 添加 | URL 填 `http://127.0.0.1:8931/mcp` |
+
+> 若工具界面没有"远程/HTTP"类型选项，可改用 `mcpServers` JSON 方式（见 B 组）。
+>
 > 注意：必须先启用 `DEV Framework` 插件，该 MCP 才会监听端口。
 
 ### 4. 内置工具清单
