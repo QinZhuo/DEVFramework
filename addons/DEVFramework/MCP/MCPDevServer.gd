@@ -322,21 +322,7 @@ func _call_list_dir(args: Dictionary) -> Dictionary:
 	var dirs: Array = []
 	var files: Array = []
 	if recursive:
-		var walk := func(p: String):
-			var d := DirAccess.open(p)
-			if d == null:
-				return
-			d.list_dir_begin()
-			var f := d.get_next()
-			while not f.is_empty():
-				if d.current_is_dir() and f != "." and f != "..":
-					dirs.append(p + f + "/")
-					walk.call(p + f + "/")
-				elif not d.current_is_dir():
-					files.append(p + f)
-				f = d.get_next()
-			d.list_dir_end()
-		walk.call(path)
+		_collect_dir(path, dirs, files)
 	else:
 		dir.list_dir_begin()
 		var f := dir.get_next()
@@ -348,6 +334,23 @@ func _call_list_dir(args: Dictionary) -> Dictionary:
 			f = dir.get_next()
 		dir.list_dir_end()
 	return _ok(JSON.stringify({"path": path, "dirs": dirs, "files": files}))
+
+
+## 递归收集目录内容(供 list_dir 使用)
+func _collect_dir(base: String, dirs: Array, files: Array) -> void:
+	var d := DirAccess.open(base)
+	if d == null:
+		return
+	d.list_dir_begin()
+	var f := d.get_next()
+	while not f.is_empty():
+		if d.current_is_dir() and f != "." and f != "..":
+			dirs.append(base + f + "/")
+			_collect_dir(base + f + "/", dirs, files)
+		elif not d.current_is_dir():
+			files.append(base + f)
+		f = d.get_next()
+	d.list_dir_end()
 
 
 func _call_get_logs(args: Dictionary) -> Dictionary:
@@ -373,7 +376,7 @@ func _call_get_errors(args: Dictionary) -> Dictionary:
 		return _fail("错误捕获器未就绪")
 	var max: int = int(args.get("max", 100))
 	var result := _logger.take_errors_since(0)
-	var out := result.entries.duplicate()
+	var out: Array = result.entries.duplicate()
 	if out.size() > max:
 		out = out.slice(out.size() - max)
 	return _ok(JSON.stringify({"count": out.size(), "errors": out}))
@@ -435,24 +438,27 @@ func _call_get_scene_tree(args: Dictionary) -> Dictionary:
 	if root == null:
 		return _fail("当前没有打开的场景")
 	var lines: Array = []
-	var walk := func(node: Node, depth: int):
-		if depth > max_depth:
-			return
-		var indent := "  ".repeat(depth)
-		lines.append("%s%s [%s]" % [indent, node.name, node.get_class()])
-		if include_props and depth < 3:
-			var props: Dictionary = {}
-			for p in node.get_property_list():
-				var pname: String = str(p.name)
-				if p.usage & PROPERTY_USAGE_EDITOR or pname in ["name", "position", "rotation", "scale", "visible", "modulate", "process_mode"]:
-					if node.get(pname) != null:
-						props[pname] = node.get(pname)
-			if not props.is_empty():
-				lines.append("%s    props: %s" % [indent, JSON.stringify(props)])
-		for child in node.get_children():
-			walk.call(child, depth + 1)
-	walk.call(root, 0)
+	_walk_scene_tree(root, 0, max_depth, include_props, lines)
 	return _ok("\n".join(lines))
+
+
+## 递归展开场景树(供 get_scene_tree 使用)
+func _walk_scene_tree(node: Node, depth: int, max_depth: int, include_props: bool, lines: Array) -> void:
+	if depth > max_depth:
+		return
+	var indent := "  ".repeat(depth)
+	lines.append("%s%s [%s]" % [indent, node.name, node.get_class()])
+	if include_props and depth < 3:
+		var props: Dictionary = {}
+		for p in node.get_property_list():
+			var pname: String = str(p.name)
+			if p.usage & PROPERTY_USAGE_EDITOR or pname in ["name", "position", "rotation", "scale", "visible", "modulate", "process_mode"]:
+				if node.get(pname) != null:
+					props[pname] = node.get(pname)
+		if not props.is_empty():
+			lines.append("%s    props: %s" % [indent, JSON.stringify(props)])
+	for child in node.get_children():
+		_walk_scene_tree(child, depth + 1, max_depth, include_props, lines)
 
 
 func _call_get_node_info(args: Dictionary) -> Dictionary:

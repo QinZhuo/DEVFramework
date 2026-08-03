@@ -24,7 +24,7 @@ func _log_message(message: String, error: bool) -> void:
 	_mutex.lock()
 	if error:
 		# printerr 输出也计入错误列表末尾, 方便统一查看
-		_append_error({"time": Time.get_ticks_msec(), "message": message, "is_error": true, "type": "stderr", "stack": []})
+		_push_error({"time": Time.get_ticks_msec(), "message": message, "is_error": true, "type": "stderr", "stack": []})
 	else:
 		_messages.append({"time": Time.get_ticks_msec(), "message": message, "is_error": false})
 		if _messages.size() > CAPACITY:

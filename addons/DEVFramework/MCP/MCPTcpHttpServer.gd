@@ -96,7 +96,7 @@ func _process_buffer(c: Dictionary, finished: Array, conn_index: int) -> void:
 		var head_bytes := buf.slice(0, header_end).get_string_from_utf8()
 		var body_start := header_end + 4
 		var parsed := _parse_head(head_bytes)
-		if parsed == null:
+		if parsed.is_empty():
 			_send_simple(c.stream, 400, {}, "Bad Request")
 			finished.append(conn_index)
 			c._drop = true
@@ -132,12 +132,12 @@ func _find_bytes(buf: PackedByteArray, token: String) -> int:
 	if buf.size() < needle.size():
 		return -1
 	for i in range(buf.size() - needle.size() + 1):
-		var match := true
+		var found := true
 		for j in needle.size():
 			if buf[i + j] != needle[j]:
-				match = false
+				found = false
 				break
-		if match:
+		if found:
 			return i
 	return -1
 
@@ -145,10 +145,10 @@ func _find_bytes(buf: PackedByteArray, token: String) -> int:
 func _parse_head(head: String) -> Dictionary:
 	var lines := head.split("\r\n")
 	if lines.is_empty():
-		return null
+		return {}
 	var parts := lines[0].split(" ")
 	if parts.size() < 3:
-		return null
+		return {}
 	var method := parts[0].to_upper()
 	var raw_path := parts[1]
 	var path := raw_path.split("?")[0]
