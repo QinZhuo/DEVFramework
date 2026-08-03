@@ -3,7 +3,8 @@
 ## 让 AI 助手(opencode/Claude Code 等)通过 http://127.0.0.1:<端口>/mcp 连接
 ## 以**编辑器**为主工具, 提供:
 ##   验证脚本 / 验证资源 / 读取日志 / 读取错误与栈追踪 / 编辑器视口截图 /
-##   当前编辑场景树 / 节点属性读写 / 调用节点方法 / 项目信息
+##   当前编辑场景树 / 节点属性读写 / 调用节点方法 / 项目信息 /
+##   重载项目 / 执行代码 / 全局类列表 / 场景与主场景管理 / 项目设置读写 / 全部保存 / 重新导入
 ## 生命周期由 plugin.gd 接管(启用插件时 start, 停用插件时 stop), 不使用 autoload
 class_name MCPDevServer extends RefCounted
 
@@ -100,6 +101,7 @@ func _register_tools() -> void:
 	_register_scene_edit_tools()
 	_register_project_tools()
 	_register_run_tools()
+	_register_dev_tools()
 
 
 func _add_tool(name: String, desc: String, input_schema: Dictionary, handler: Callable) -> void:
@@ -215,6 +217,54 @@ func _register_run_tools() -> void:
 		_call_stop_game)
 
 
+## -- 开发辅助(重载/求值/设置) --
+func _register_dev_tools() -> void:
+	_add_tool("reload_project",
+		"触发编辑器重新扫描项目: 重建全局类缓存(新增 class_name 立即生效) + 重扫资源文件。新脚本/新资源不生效时调用此工具。可选 reopen_scene 重载当前编辑场景(未保存修改会丢失)。",
+		{"type": "object", "properties": {"reopen_scene": {"type": "boolean", "description": "是否重载当前编辑场景, 默认 false(注意: 未保存修改会丢失)"}}},
+		_call_reload_project)
+
+	_add_tool("eval_code",
+		"在编辑器进程中执行一段 GDScript 代码(常用于查值/调工具/验证逻辑)。代码中可显式 return 返回值; print 输出会进入 get_logs。注意: 语法错误详情输出到编辑器控制台, 可用 get_logs 查看。",
+		{"type": "object", "properties": {"code": {"type": "string", "description": "要执行的 GDScript 代码(方法体内容, 缩进由服务器处理)"}}},
+		_call_eval_code)
+
+	_add_tool("get_global_classes",
+		"列出当前已注册的全部全局类(class_name 全局类), 含名称/脚本路径/基类。用于确认新脚本是否已进入类缓存。",
+		{"type": "object", "properties": {}},
+		_call_get_global_classes)
+
+	_add_tool("open_scene",
+		"在编辑器打开指定场景文件(res:// 路径)。",
+		{"type": "object", "properties": {"path": {"type": "string", "description": "场景 res:// 路径"}}},
+		_call_open_scene)
+
+	_add_tool("set_main_scene",
+		"设置项目主场景(application/run/main_scene)并保存 project.godot。",
+		{"type": "object", "properties": {"path": {"type": "string", "description": "主场景 res:// 路径"}}},
+		_call_set_main_scene)
+
+	_add_tool("get_project_setting",
+		"读取任意项目设置项的值(ProjectSettings), 如 application/config/name、audio/buses/default_bus_layout 等。",
+		{"type": "object", "properties": {"name": {"type": "string", "description": "设置项名称"}}},
+		_call_get_project_setting)
+
+	_add_tool("set_project_setting",
+		"修改任意项目设置项并保存(ProjectSettings)。value 传 JSON 值。",
+		{"type": "object", "properties": {"name": {"type": "string", "description": "设置项名称"}, "value": {"description": "新值"}, "save": {"type": "boolean", "description": "是否立即保存到 project.godot, 默认 true"}}},
+		_call_set_project_setting)
+
+	_add_tool("save_all",
+		"保存全部打开的场景与项目设置。",
+		{"type": "object", "properties": {}},
+		_call_save_all)
+
+	_add_tool("reimport",
+		"重新导入指定资源文件(触发导入管线重建 .godot/imported 缓存)。资源显示异常/导入配置变更后使用。",
+		{"type": "object", "properties": {"path": {"type": "string", "description": "要重新导入的资源 res:// 路径"}}},
+		_call_reimport)
+
+
 ## ======= MCP 协议处理 =======
 
 func _on_request(method: String, path: String, headers: Dictionary, body: PackedByteArray, stream) -> void:
@@ -262,11 +312,16 @@ func _handle_jsonrpc(req: Dictionary) -> Dictionary:
 				},
 			}
 		"tools/list":
+			# 每次查询都重新注册: 脚本热重载后新工具立即可用, 无需重启编辑器
+			_register_tools()
 			return {"jsonrpc": "2.0", "id": req_id, "result": {"tools": _tool_defs}}
 		"tools/call":
 			var params: Dictionary = req.get("params", {})
 			var tool_name: String = params.get("name", "")
 			var arguments: Dictionary = params.get("arguments", {})
+			if not _tool_handlers.has(tool_name):
+				# 未知工具时先尝试热重载注册(兼容脚本热重载后的新工具)
+				_register_tools()
 			if not _tool_handlers.has(tool_name):
 				return _jsonrpc_error(req_id, -32602, "Unknown tool: %s" % tool_name)
 			var tool_result: Dictionary = await _tool_handlers[tool_name].call(arguments)
@@ -316,21 +371,29 @@ func _call_validate_script(args: Dictionary) -> Dictionary:
 		code = file.get_as_text()
 		file.close()
 	script.source_code = code
-	script.resource_path = path if not path.is_empty() else "res://_mcp_validate.gd"
+	# 注意: 不设置 resource_path——直接指定已加载资源的路径会触发
+	# "Another resource is loaded from path" 冲突并污染错误缓冲
 	# 用 reload() 的返回值判断语法错误(reload 对无效脚本返回非 OK 错误码)
+	# 且不做 can_instantiate 检查: 纯工具/抽象类脚本不可实例化并不代表语法错误
 	var reload_err := script.reload()
-	if reload_err == OK and script.can_instantiate():
+	if reload_err == OK:
 		return _ok(JSON.stringify({
 			"valid": true,
 			"message": "脚本语法有效",
 			"error_latin": 0,
 			"error_text": "",
 		}))
+	var text := error_string(reload_err)
+	var hint := ""
+	if text.contains("hides a global script class"):
+		hint = " (class_name 与全局类缓存冲突: 若是新脚本, 先调用 reload_project 刷新类缓存后再试)"
+	var msg := "解析失败: %s%s" % [text, hint]
 	return _ok(JSON.stringify({
 		"valid": false,
-		"message": "解析失败: " + error_string(reload_err) if reload_err != OK else "脚本无法实例化(可能是抽象类或缺少基类)",
+		"message": msg,
 		"error_line": 0,
-		"error_text": error_string(reload_err) if reload_err != OK else "can_instantiate() = false",
+		"error_text": text,
+		"hint": hint.strip_edges().trim_prefix(" (").trim_suffix(")"),
 	}))
 
 
@@ -437,12 +500,18 @@ func _call_take_screenshot(args: Dictionary) -> Dictionary:
 	var dir := DirAccess.open("user://")
 	if dir:
 		dir.make_dir_recursive("mcp_screenshots")
-	var viewport := _get_editor_viewport()
+	var base: Control = _editor.get_base_control() if _editor else null
+	if base == null:
+		return _fail("无法获取编辑器基座控件")
+	var viewport := base.get_viewport()
+	var tree := base.get_tree()
 	if viewport == null:
 		return _fail("无法获取编辑器视口")
-	# 等待几帧让渲染完成(截图需要 GPU 回读)
+	if tree == null:
+		return _fail("编辑器场景树不可用")
+	# 等待几帧让渲染完成(截图需要 GPU 回读)。注意: 不能用 viewport.process_frame(对 Window 不稳定)
 	for i in 3:
-		await viewport.process_frame
+		await tree.process_frame
 	await RenderingServer.frame_post_draw
 	var img: Image = viewport.get_texture().get_image()
 	if img == null or img.is_empty():
@@ -458,16 +527,6 @@ func _call_take_screenshot(args: Dictionary) -> Dictionary:
 		"height": img.get_height(),
 		"bytes": FileAccess.get_file_as_bytes(path).size(),
 	}))
-
-
-## 获取编辑器窗口视口(Viewport), 用于截取整个编辑器画面
-func _get_editor_viewport() -> Viewport:
-	if _editor == null:
-		return null
-	var base: Control = _editor.get_base_control()
-	if base == null:
-		return null
-	return base.get_viewport()
 
 
 func _call_get_scene_tree(args: Dictionary) -> Dictionary:
@@ -693,6 +752,139 @@ func _call_stop_game(_args: Dictionary) -> Dictionary:
 	_run_pid = 0
 	OS.kill(pid)
 	return _ok("已停止游戏 PID=%d" % pid)
+
+
+## ======= 开发辅助工具实现 =======
+
+func _call_reload_project(args: Dictionary) -> Dictionary:
+	if _editor == null:
+		return _fail("编辑器不可用")
+	var fs := _editor.get_resource_filesystem()
+	if fs == null:
+		return _fail("编辑器文件系统不可用")
+	var tree := _editor.get_base_control().get_tree()
+	if tree == null:
+		return _fail("编辑器场景树不可用")
+	var reopen: bool = bool(args.get("reopen_scene", false))
+	var current := ""
+	if _edited_root() != null:
+		current = _edited_root().get_scene_file_path()
+	# 先重建源文件缓存(新增/修改的 .gd 与 class_name 注册), 再重扫全部资源; 等待后台扫描完成
+	fs.scan_sources()
+	await _await_scan(fs, tree)
+	var sources_done := not fs.is_scanning()
+	fs.scan()
+	await _await_scan(fs, tree)
+	var msg := "已触发项目重载: scan_sources(重建类缓存, 新 class_name 已注册) + scan(重扫资源)。"
+	if not sources_done or fs.is_scanning():
+		msg += " 注意: 扫描仍在后台进行(新增资源可能需要片刻才能生效)。"
+	if reopen and not current.is_empty():
+		_editor.open_scene_from_path(current)
+		msg += " 已重载当前场景 %s。注意: 未保存修改可能已丢失。" % current
+	elif reopen and current.is_empty():
+		msg += " 提示: 当前没有打开的场景, 未执行场景重载。"
+	return _ok(msg)
+
+
+## 等待 EditorFileSystem 后台扫描完成(上限 15 秒)
+func _await_scan(fs: EditorFileSystem, tree: SceneTree) -> void:
+	var waited := 0
+	while fs.is_scanning() and waited < 900:
+		await tree.process_frame
+		waited += 1
+
+
+func _call_eval_code(args: Dictionary) -> Dictionary:
+	var code: String = str(args.get("code", ""))
+	if code.is_empty():
+		return _fail("必须提供 code")
+	var script := GDScript.new()
+	# 缩进每个输入行, 组成方法体; 末尾追加 return null 兜底
+	var body := code.replace("\n", "\n\t")
+	script.source_code = "extends RefCounted\nstatic func _mcp_run():\n\t%s\n\treturn null" % body
+	var err := script.reload()
+	if err != OK:
+		var text := error_string(err)
+		var hint := ""
+		if text.contains("hides a global script class"):
+			hint = " (class_name 与全局类冲突: 请勿在 eval_code 中声明类, 或先 reload_project)"
+		return _fail("代码解析失败: %s%s\n解析详情已输出到编辑器控制台, 可用 get_logs 查看。" % [text, hint])
+	var inst: Object = script.new()
+	if inst == null:
+		return _fail("无法实例化求值脚本")
+	var result: Variant = inst.call("_mcp_run")
+	var shown := str(result)
+	if result is Dictionary or result is Array:
+		shown = JSON.stringify(result)
+	return _ok("执行成功, 返回: %s" % shown)
+
+
+func _call_get_global_classes(_args: Dictionary) -> Dictionary:
+	var list := ProjectSettings.get_global_class_list()
+	var out: Array = []
+	for c in list:
+		out.append({
+			"name": c.get("name", ""),
+			"path": c.get("path", ""),
+			"base": c.get("base", ""),
+			"class": c.get("class", ""),
+		})
+	return _ok(JSON.stringify({"count": out.size(), "classes": out}))
+
+
+func _call_open_scene(args: Dictionary) -> Dictionary:
+	var path := str(args.get("path", ""))
+	if path.is_empty() or not ResourceLoader.exists(path):
+		return _fail("场景不存在: %s" % path)
+	_editor.open_scene_from_path(path)
+	return _ok("已打开场景 %s" % path)
+
+
+func _call_set_main_scene(args: Dictionary) -> Dictionary:
+	var path := str(args.get("path", ""))
+	if path.is_empty():
+		return _fail("必须提供 path")
+	if not ResourceLoader.exists(path):
+		return _fail("场景不存在: %s" % path)
+	ProjectSettings.set_setting("application/run/main_scene", path)
+	ProjectSettings.save()
+	return _ok("已设置主场景: %s" % path)
+
+
+func _call_get_project_setting(args: Dictionary) -> Dictionary:
+	var name := str(args.get("name", ""))
+	if name.is_empty():
+		return _fail("必须提供 name")
+	if not ProjectSettings.has_setting(name):
+		return _fail("不存在设置项: %s" % name)
+	return _ok(JSON.stringify({"name": name, "value": ProjectSettings.get_setting(name)}))
+
+
+func _call_set_project_setting(args: Dictionary) -> Dictionary:
+	var name := str(args.get("name", ""))
+	if name.is_empty():
+		return _fail("必须提供 name")
+	var value: Variant = args.get("value", null)
+	ProjectSettings.set_setting(name, value)
+	if bool(args.get("save", true)):
+		ProjectSettings.save()
+	return _ok("已设置 %s = %s" % [name, str(value)])
+
+
+func _call_save_all(_args: Dictionary) -> Dictionary:
+	_editor.save_all_scenes()
+	var ps := ProjectSettings.save()
+	return _ok("已保存全部场景, 项目设置(err=%d)" % ps)
+
+
+func _call_reimport(args: Dictionary) -> Dictionary:
+	var path := str(args.get("path", ""))
+	if path.is_empty() or not ResourceLoader.exists(path):
+		return _fail("资源不存在: %s" % path)
+	if _editor.get_resource_filesystem() == null:
+		return _fail("编辑器文件系统不可用")
+	_editor.get_resource_filesystem().reimport_files([path])
+	return _ok("已触发重新导入: %s" % path)
 
 
 ## 每帧调用: 把运行中游戏的日志文件增量合并进 _logger

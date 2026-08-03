@@ -331,7 +331,45 @@ var data = await ActorTool.save_data(root)
 await ActorTool.load_data(root, data)
 ```
 
-### 5.8 其他工具
+### 5.8 程序化音频生成（AudioTool）
+
+用 `AudioSynthDef` 描述声音，一键生成 3A 级音效 / BGM / 氛围 / 循环音乐，无需外部音频素材：
+
+```gdscript
+# 一次性离线渲染：定义为每秒带爆破感的激光
+var def: AudioSynthDef = load("res://Assets/Def/Audio/Examples/SFX_Laser.tres")
+AudioTool.play(def)                     # 生成并播放(自动路由到定义的总线)
+AudioTool.generate_and_save(def, "res://out/sfx.wav")   # 生成并导出 .wav
+AudioTool.get_stream_info(stream)       # 查询时长/采样率/循环信息
+```
+
+- **渲染管线**：`Def → AudioSequence（展开事件）→ AudioVoice（逐音符渲染）→ AudioSynth（混合/归一化/软削波）`。
+- **音频算法**（`AudioDSP.gd`）：PolyBLEP 抗锯齿振荡器、SVF 滤波器（低/带/高通）、ADSR 包络（支持曲线）、tanh 软削波、`midi_to_freq`。
+- **鼓合成**：KICK / SNARE / HAT / HAT_OPEN / TOM / CLAP 内置发声法（`AudioVoiceDef.Kind.DRUM`）。
+- **自动编曲**（`AudioMusicDef`）：音阶音池 + 加权随机游走旋律 + 和弦进行 + 鼓节奏音型。
+- **实时无限循环**：`AudioLivePlayer` 基于 `AudioStreamGenerator` 逐块渲染，BGM 不占内存、无限循环。
+- **后台线程**：`AudioTool.generate_async(def)` 放 worker 线程渲染，避免阻塞主线程。
+
+**整合 Godot 内置音频引擎（不自研后期效果）：**
+- 自研 DSP 只负责"合成声音"；**混响 / 延迟 / 失真 / 限幅 / 压缩 / EQ 全部使用 Godot 内置 `AudioEffect`**，经 `AudioSynthDef.bus` + `fx_chain` 配置，播放时自动路由到带效果的总线（离线 .wav 不烘焙效果）。
+- `AudioTool.setup_audio_buses()` 一键生成标准总线布局（Master 限幅 / SFX 轻混响 / BGM 大厅混响+压缩 / UI）并写入项目设置；`AudioBusManager.ensure_bus()` 按需幂等创建任意效果总线。
+- `AudioTool.play_stream()` 播放结束后自动释放节点；`AudioLivePlayer` 自动挂到定义的总线。
+
+| 类 | 说明 |
+|---|---|
+| `AudioSynthDef` | 根定义：类别（SFX/BGM/AMBIENT/LOOP）、采样率、主音量、软削波、回声、`bus` + `fx_chain`（总线效果链）、循环/淡出 |
+| `AudioVoiceDef` | 声部（Tone/DRUM），含振荡器组、滤波器、ADSR、声像、音量 |
+| `AudioMusicDef` | 自动编曲配方；`AudioPatternDef` 显式四分音符节拍 |
+| `AudioSequence` / `AudioVoice` / `AudioSynth` | 事件展开 / 音符渲染 / 混音导出（Entity 层） |
+| `AudioLivePlayer` | 实时无限循环 BGM 播放器（Entity 层） |
+| `AudioBusManager` | 总线管理：按名创建带效果的 Godot 总线、标准布局一键生成（Entity 层） |
+| `AudioTool` / `DevAudioExamples` | 生成入口 / 一键生成示例定义（工具层） |
+
+`fx_chain` 可选效果名：`reverb` / `reverb_hall` / `delay` / `distortion` / `limiter` / `compressor` / `eq_lowpass` / `eq_highpass` / `eq_bandpass` / `spectrum`。
+
+> 生成较重的 BGM（16 秒）约需 2 倍实时（后台线程），建议一次性烘焙成 `.wav` 资源供游戏加载；实时循环交给 `AudioLivePlayer`。
+
+### 5.9 其他工具
 
 | 工具 | 用途 |
 |---|---|
@@ -519,7 +557,7 @@ claude mcp list        # 查看已配置
 
 | 工具名 | 作用 |
 |---|---|
-| `validate_script` | 校验 GDScript 语法/可编译性（传 `path` 或 `code`）|
+| `validate_script` | 校验 GDScript 语法/可编译性（传 `path` 或 `code`，兼容非 `@tool`/纯工具类脚本）|
 | `validate_resource` | 校验资源/场景能否被引擎加载 |
 | `list_dir` | 列出目录内容（支持递归）|
 | `get_logs` | 读取编辑器控制台日志（增量/关键字/截断）|
@@ -531,6 +569,18 @@ claude mcp list        # 查看已配置
 | `set_node_property` | 修改编辑场景中节点属性（需手动保存才写回 .tscn）|
 | `call_node_method` | 触发编辑场景中节点方法 |
 | `get_project_info` | 项目/版本/当前编辑场景等环境信息 |
+| `get_project_settings` | 主场景/autoload/输入映射/图层命名等关键配置 |
+| `run_game` / `stop_game` | 独立进程启动/停止游戏（日志并入 `get_logs`）|
+| `reload_project` | **重载项目**：重建全局类缓存（新 `class_name` 立即注册）+ 重扫资源；可选重载当前场景 |
+| `eval_code` | 在编辑器内执行一段 GDScript 代码并返回结果（print 进 `get_logs`）|
+| `get_global_classes` | 列出已注册的全部全局类（含路径/基类）|
+| `open_scene` | 在编辑器打开指定场景 |
+| `set_main_scene` | 设置项目主场景并保存 |
+| `get_project_setting` / `set_project_setting` | 读/写任意 ProjectSettings 项（可即时保存）|
+| `save_all` | 保存全部场景与项目设置 |
+| `reimport` | 重新导入指定资源（重建导入缓存）|
+
+> **提示**：修改插件代码（`MCPDevServer.gd` 等）后，新工具需**重启编辑器**才会注册（脚本热重载不会重建工具注册表）。
 
 ### 5. 典型 AI 调试流程
 

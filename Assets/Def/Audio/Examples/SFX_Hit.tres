@@ -1,0 +1,63 @@
+[gd_resource type="Resource" script_class="AudioSynthDef" format=3]
+
+[ext_resource type="Script" path="res://addons/DEVFramework/Def/Audio/AudioMusicDef.gd" id="1_wfsk0"]
+[ext_resource type="Script" path="res://addons/DEVFramework/Def/Audio/AudioPatternDef.gd" id="2_qwuen"]
+[ext_resource type="Script" path="res://addons/DEVFramework/Def/Audio/AudioNoteDef.gd" id="3_nmfrp"]
+[ext_resource type="Script" path="res://addons/DEVFramework/Def/Audio/AudioSynthDef.gd" id="4_rv1dr"]
+[ext_resource type="Script" path="res://addons/DEVFramework/Def/Audio/AudioVoiceDef.gd" id="5_0b0pw"]
+[ext_resource type="Script" path="res://addons/DEVFramework/Def/Audio/AudioEnvelopeDef.gd" id="6_wjd6w"]
+[ext_resource type="Script" path="res://addons/DEVFramework/Def/Audio/AudioFilterDef.gd" id="7_4kqjd"]
+[ext_resource type="Script" path="res://addons/DEVFramework/Def/Audio/AudioOscillatorDef.gd" id="8_0383e"]
+
+[sub_resource type="Resource" id="Resource_sytfv"]
+script = ExtResource("3_nmfrp")
+midi = 48
+length_beats = 0.05
+
+[sub_resource type="Resource" id="Resource_d3m5v"]
+script = ExtResource("3_nmfrp")
+midi = 36
+length_beats = 0.08
+
+[sub_resource type="Resource" id="Resource_g4djl"]
+script = ExtResource("2_qwuen")
+bpm = 240.0
+notes = Array[ExtResource("3_nmfrp")]([SubResource("Resource_sytfv"), SubResource("Resource_d3m5v")])
+
+[sub_resource type="Resource" id="Resource_8roxh"]
+script = ExtResource("6_wjd6w")
+attack = 0.001
+decay = 0.09
+sustain = 0.0
+release = 0.06
+
+[sub_resource type="Resource" id="Resource_ac2dd"]
+script = ExtResource("7_4kqjd")
+enabled = true
+cutoff = 1600.0
+resonance = 0.4
+
+[sub_resource type="Resource" id="Resource_6s8mh"]
+script = ExtResource("8_0383e")
+waveform = 1
+level = 0.6
+pulse_width = 0.3
+
+[sub_resource type="Resource" id="Resource_d2dlk"]
+script = ExtResource("8_0383e")
+waveform = 2
+level = 0.4
+
+[sub_resource type="Resource" id="Resource_inwf0"]
+script = ExtResource("5_0b0pw")
+oscillators = Array[ExtResource("8_0383e")]([SubResource("Resource_6s8mh"), SubResource("Resource_d2dlk")])
+envelope = SubResource("Resource_8roxh")
+filter = SubResource("Resource_ac2dd")
+volume = 1.0
+
+[resource]
+script = ExtResource("4_rv1dr")
+voices = Array[ExtResource("5_0b0pw")]([SubResource("Resource_inwf0")])
+patterns = Array[ExtResource("2_qwuen")]([SubResource("Resource_g4djl")])
+bus = "SFX"
+fx_chain = PackedStringArray("limiter")
