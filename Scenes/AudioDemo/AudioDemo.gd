@@ -1,8 +1,7 @@
 ## 程序化音频 Demo — 展示生成的音效与循环 BGM
 ## 场景内已排布按钮，脚本按节点名称绑定触发逻辑（界面由场景搭建）
+## 播放全部通过 AudioTool 一行 API 完成
 extends Control
-
-const DEF := "res://Assets/Def/Audio/Examples/"
 
 var _bgm: AudioLivePlayer
 
@@ -27,23 +26,17 @@ func _bind_buttons() -> void:
 func _on_sound(name: String) -> void:
 	if name == "":
 		_stop_bgm()
-		return
-	if name.begins_with("BGM"):
+	elif name.begins_with("BGM"):
 		_play_bgm(name)
 	else:
-		var def: AudioSynthDef = load(DEF + name + ".tres")
-		if def:
-			AudioTool.play(def)
+		AudioTool.play_example(name)
 
 func _play_bgm(name: String) -> void:
 	_stop_bgm()
-	var def: AudioSynthDef = load(DEF + name + ".tres")
+	var def := AudioTool.example_def(name)
 	if def == null:
 		return
-	_bgm = AudioLivePlayer.new()
-	add_child(_bgm)
-	_bgm.setup(def)
-	_bgm.play()
+	_bgm = AudioTool.play_loop(def)
 
 func _stop_bgm() -> void:
 	if _bgm:

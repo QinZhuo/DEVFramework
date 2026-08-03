@@ -20,7 +20,7 @@ func setup(def: AudioSynthDef) -> void:
 	gen.buffer_length = 0.4
 	stream = gen
 	# 播放总线: 带效果链时自动创建 "FX_<bus>" 效果总线并挂载 Godot 内置效果
-	bus = AudioBusManager.resolve_bus(def.bus, def.fx_chain)
+	bus = AudioTool.resolve_bus(def.bus, def.fx_chain)
 
 	var events: Array = AudioSequence.expand(def)
 	var per_voice: Array = []

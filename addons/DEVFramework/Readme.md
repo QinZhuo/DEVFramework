@@ -336,34 +336,47 @@ await ActorTool.load_data(root, data)
 用 `AudioSynthDef` 描述声音，一键生成 3A 级音效 / BGM / 氛围 / 循环音乐，无需外部音频素材：
 
 ```gdscript
-# 一次性离线渲染：定义为每秒带爆破感的激光
-var def: AudioSynthDef = load("res://Assets/Def/Audio/Examples/SFX_Laser.tres")
-AudioTool.play(def)                     # 生成并播放(自动路由到定义的总线)
-AudioTool.generate_and_save(def, "res://out/sfx.wav")   # 生成并导出 .wav
-AudioTool.get_stream_info(stream)       # 查询时长/采样率/循环信息
+# 一行播放示例音效 / 无限循环 BGM(全链路: 自动总线、自动释放)
+AudioTool.play_example("SFX_Laser")            # 音效一行
+var bgm := AudioTool.play_loop(load("res://Assets/Def/Audio/Examples/BGM_Loop_Adventure.tres"))  # 无限循环 BGM
+
+# 完整控制
+var def: AudioSynthDef = AudioTool.example_def("SFX_Laser")     # 加载示例定义
+var stream := AudioTool.generate_and_save(def, "res://out/sfx.wav")  # 生成并导出 .wav
+AudioTool.play(def)                            # 生成并播放(自动路由到定义的总线)
+AudioTool.get_stream_info(stream)              # 查询时长/采样率/循环信息
+AudioTool.list_examples()                      # 列出全部示例
 ```
 
 - **渲染管线**：`Def → AudioSequence（展开事件）→ AudioVoice（逐音符渲染）→ AudioSynth（混合/归一化/软削波）`。
-- **音频算法**（`AudioDSP.gd`）：PolyBLEP 抗锯齿振荡器、SVF 滤波器（低/带/高通）、ADSR 包络（支持曲线）、tanh 软削波、`midi_to_freq`。
-- **鼓合成**：KICK / SNARE / HAT / HAT_OPEN / TOM / CLAP 内置发声法（`AudioVoiceDef.Kind.DRUM`）。
+- **合成内核自研**（`AudioDSP.gd`）：PolyBLEP 抗锯齿振荡器、SVF 滤波器（低/带/高通）、ADSR 包络（支持曲线）、`midi_to_freq`、鼓合成（KICK / SNARE / HAT / HAT_OPEN / TOM / CLAP）。这些是 Godot 不提供的数据级合成 API，故自研；**其余通用能力一律用 Godot 已有功能**。
 - **自动编曲**（`AudioMusicDef`）：音阶音池 + 加权随机游走旋律 + 和弦进行 + 鼓节奏音型。
-- **实时无限循环**：`AudioLivePlayer` 基于 `AudioStreamGenerator` 逐块渲染，BGM 不占内存、无限循环。
+- **实时无限循环**：`AudioLivePlayer` 基于 Godot 内置 `AudioStreamGenerator` 逐块渲染，BGM 不占内存、无限循环。
 - **后台线程**：`AudioTool.generate_async(def)` 放 worker 线程渲染，避免阻塞主线程。
 
-**整合 Godot 内置音频引擎（不自研后期效果）：**
-- 自研 DSP 只负责"合成声音"；**混响 / 延迟 / 失真 / 限幅 / 压缩 / EQ 全部使用 Godot 内置 `AudioEffect`**，经 `AudioSynthDef.bus` + `fx_chain` 配置，播放时自动路由到带效果的总线（离线 .wav 不烘焙效果）。
-- `AudioTool.setup_audio_buses()` 一键生成标准总线布局（Master 限幅 / SFX 轻混响 / BGM 大厅混响+压缩 / UI）并写入项目设置；`AudioBusManager.ensure_bus()` 按需幂等创建任意效果总线。
+**只自研"无法用内置实现"的部分，其余全部用 Godot 已有功能：**
+
+| 能力 | 实现 | 说明 |
+|---|---|---|
+| 振荡/滤波/包络/鼓 | 自研 `AudioDSP` | Godot 无逐采样合成 API，必须自研 |
+| 混响 / 延迟 / 失真 / 限幅 / 压缩 / EQ | **Godot 内置 `AudioEffect`** | 经 `AudioSynthDef.bus` + `fx_chain` 配置，播放时自动路由到带效果的总线（离线 .wav 不烘焙效果）|
+| WAV 写盘 | **Godot 内置 `AudioStreamWAV.save_to_wav()`** | 不再手写 RIFF 头 |
+| 实时循环播放 | **Godot 内置 `AudioStreamGenerator`** | `AudioLivePlayer` 包装使用 |
+| 总线布局 | **Godot 内置 `AudioServer` / `AudioBusLayout`** | `AudioTool.setup_audio_buses()` 一键生成 Master/SFX/BGM/UI 布局并写入项目设置 |
+
+- `AudioTool.ensure_bus()` 按需幂等创建任意效果总线；`resolve_bus()` 为带 `fx_chain` 的定义自动建 `FX_<bus>` 效果总线。
 - `AudioTool.play_stream()` 播放结束后自动释放节点；`AudioLivePlayer` 自动挂到定义的总线。
 
 | 类 | 说明 |
 |---|---|
-| `AudioSynthDef` | 根定义：类别（SFX/BGM/AMBIENT/LOOP）、采样率、主音量、软削波、回声、`bus` + `fx_chain`（总线效果链）、循环/淡出 |
+| `AudioSynthDef` | 根定义：类别（SFX/BGM/AMBIENT/LOOP）、采样率、主音量、软削波、`bus` + `fx_chain`（总线效果链）、循环/淡出 |
 | `AudioVoiceDef` | 声部（Tone/DRUM），含振荡器组、滤波器、ADSR、声像、音量 |
 | `AudioMusicDef` | 自动编曲配方；`AudioPatternDef` 显式四分音符节拍 |
-| `AudioSequence` / `AudioVoice` / `AudioSynth` | 事件展开 / 音符渲染 / 混音导出（Entity 层） |
-| `AudioLivePlayer` | 实时无限循环 BGM 播放器（Entity 层） |
-| `AudioBusManager` | 总线管理：按名创建带效果的 Godot 总线、标准布局一键生成（Entity 层） |
-| `AudioTool` / `DevAudioExamples` | 生成入口 / 一键生成示例定义（工具层） |
+| `AudioSequence` / `AudioVoice` / `AudioDSP` | 事件展开 / 音符渲染 / DSP 内核（Entity 层内部实现，不直接使用） |
+| `AudioLivePlayer` | 实时无限循环 BGM 播放器（一般用 `AudioTool.play_loop()` 创建） |
+| `AudioTool` / `DevAudioExamples` | **统一入口**：渲染/生成/播放/保存/总线/示例 全部集成 / 一键生成示例定义 |
+
+`AudioTool` 是音频功能的**唯一对外入口**，内部再分为：合成渲染（`render_data`/`build_stream`/`render`）、生成（`generate`/`generate_async`）、播放（`play`/`play_stream`/`play_loop`/`play_example`）、保存（`save_wav`/`save_resource`/`generate_and_save`）、查询（`get_stream_info`/`list_examples`/`example_def`）、总线管理（`ensure_bus`/`resolve_bus`/`create_fx`/`setup_audio_buses`）。
 
 `fx_chain` 可选效果名：`reverb` / `reverb_hall` / `delay` / `distortion` / `limiter` / `compressor` / `eq_lowpass` / `eq_highpass` / `eq_bandpass` / `spectrum`。
 
