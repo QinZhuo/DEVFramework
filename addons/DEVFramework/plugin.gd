@@ -1,6 +1,7 @@
 @tool
 extends EditorPlugin
 
+# run_game 日志经 cmd type 增量读取(Windows FileAccess 被游戏独占锁)
 const DevProjectSetup = preload("res://addons/DEVFramework/Tool/DevProjectSetup.gd")
 const DevAudioExamples = preload("res://addons/DEVFramework/Tool/DevAudioExamples.gd")
 
@@ -14,10 +15,14 @@ func _enter_tree() -> void:
 	_register("dev_framework/save_tool/encrypt_salt", TYPE_STRING, ProjectSettings.get_setting("application/config/name", "GodotProject"))
 	_register("dev_framework/mcp/enabled", TYPE_BOOL, true)
 	_register("dev_framework/mcp/port", TYPE_INT, 8931)
+	_register("dev_framework/mcp/token", TYPE_STRING, "")
 	_register("dev_framework/audio/default_sample_rate", TYPE_INT, 44100)
 	add_tool_menu_item("创建 DEV 项目结构...", Callable(self, "_on_create_structure"))
 	add_tool_menu_item("DEV 音频：生成示例音频定义...", Callable(self, "_on_create_audio_examples"))
 	# 插件启用时启动 MCP 服务器(服务编辑器), 并每帧驱动它处理请求
+	LogTool.log("MCP", "MCP 插件初始化(port=%d, token=%s)" % [
+		ProjectSettings.get_setting("dev_framework/mcp/port", 8931),
+		("启用" if not str(ProjectSettings.get_setting("dev_framework/mcp/token", "")).is_empty() else "未启用")])
 	_mcp = MCPDevServer.new(get_editor_interface())
 	_mcp.start()
 

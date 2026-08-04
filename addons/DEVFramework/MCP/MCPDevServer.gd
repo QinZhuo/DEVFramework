@@ -12,6 +12,10 @@ class_name MCPDevServer extends RefCounted
 const SETTING_ENABLED := "dev_framework/mcp/enabled"
 const SETTING_PORT := "dev_framework/mcp/port"
 const SETTING_MAX_MESSAGES := "dev_framework/mcp/max_messages"
+const SETTING_TOKEN := "dev_framework/mcp/token"
+
+## 输出给 AI 的核心属性白名单(过滤编辑器内部数百项属性, 控制上下文开销)
+const CORE_PROP_NAMES := ["name", "position", "scale", "rotation", "rotation_degrees", "visible", "modulate", "process_mode", "z_index", "text", "color"]
 
 ## ------- MCP 常量 -------
 const PROTOCOL_VERSION := "2025-03-26"          # 支持的 MCP 协议版本
@@ -26,10 +30,20 @@ var _tool_handlers := {}        # 工具名 -> Callable
 var _tool_defs := []            # 工具定义列表(MCP 格式)
 var _editor: EditorInterface
 
-## 运行中游戏进程管理(独立进程 + --log-file 合并进 get_logs)
-var _run_pid := 0             # >0 表示游戏在运行
-var _run_log_path := "user://mcp_run.log"
-var _run_log_offset := 0      # get_logs 增量读取的字节偏移
+## 运行中游戏日志捕获: 游戏进程以 --log-file 写入项目 user://game_run.log,
+## 编辑器进程增量读取该文件(增量解析已完成/持续写入的行), 并入 get_logs。
+## 采用 create_process + --log-file 而非编辑器播放机制/调试器桥:
+##  - EditorDebuggerPlugin._capture 收不到内建 "output" 消息(被内建 ScriptEditorDebugger 消费)
+##  - play_custom_scene 不支持自定义命令行参数(无法注入 --log-file)
+##  - Windows 下该 log 文件为共享读写, 编辑器可行边写边读(已验证)
+var _run_pid := 0               # 游戏进程 PID(0=未运行)
+var _run_log_abs := ""          # 游戏 --log-file 的绝对路径(user://game_run.log)
+var _run_log_offset := 0        # 上次已消费的字节数(增量跳过的偏移)
+var _run_last_poll_ms := 0      # 上次轮询时间戳(节流, 降低 OS.execute 开销)
+
+## 游戏日志轮询间隔: 游戏进程独占 --log-file 文件导致 Godot FileAccess 无法读取,
+## 需用 cmd type 读取(Windows 共享读允许)。type 读全文较慢, 故节流轮询。
+const RUN_LOG_POLL_INTERVAL_MS := 400
 
 ## 全局唯一实例(由 plugin.gd 持有)
 static var instance: MCPDevServer
@@ -114,7 +128,7 @@ func _add_tool(name: String, desc: String, input_schema: Dictionary, handler: Ca
 ## -- 脚本/资源验证 --
 func _register_validate_tools() -> void:
 	_add_tool("validate_script",
-		"验证一个 GDScript 脚本的语法与可编译性(不执行)。返回是否有效及错误明细(含行号/信息)。可传 'path'(res://路径) 读取磁盘脚本, 或 'code'(源码文本)直接验证。",
+		"验证一个 GDScript 脚本的语法与可编译性(不执行)。返回是否有效及错误明细。可传 'path'(res://路径) 读取磁盘脚本, 或 'code'(源码文本)直接验证。注意: 仅存在'被当作错误的警告'(如 untyped_declaration)时会判为有效并在 warnings 中列出; 若验证的脚本 class_name 与已加载类同名(如 addons 内已加载脚本)属环境冲突, 会提示 hint。",
 		{"type": "object", "properties": {"path": {"type": "string", "description": "脚本 res:// 路径, 与 code 二选一"}, "code": {"type": "string", "description": "GDScript 源码文本, 与 path 二选一"}}},
 		_call_validate_script)
 
@@ -228,8 +242,8 @@ func _register_dev_tools() -> void:
 		_call_reload_project)
 
 	_add_tool("eval_code",
-		"在编辑器进程中执行一段 GDScript 代码(常用于查值/调工具/验证逻辑)。代码中可显式 return 返回值; print 输出会进入 get_logs。注意: 语法错误详情输出到编辑器控制台, 可用 get_logs 查看。",
-		{"type": "object", "properties": {"code": {"type": "string", "description": "要执行的 GDScript 代码(方法体内容, 缩进由服务器处理)"}}},
+		"在编辑器进程中执行一段 GDScript 代码(常用于查值/调工具/验证逻辑)。代码中可显式 return 返回值; print 输出会进入 get_logs。缩进自动归一化(tab/空格均可)。注意: 字符串内需要换行请用 char(10) 而非 '\\n'(JSON 传输会拆行导致字符串被破坏); 语法错误详情输出到编辑器控制台, 可用 get_logs 查看。",
+		{"type": "object", "properties": {"code": {"type": "string", "description": "要执行的 GDScript 代码(方法体内容, 缩进由服务器自动处理)"}}},
 		_call_eval_code)
 
 	_add_tool("get_global_classes",
@@ -272,10 +286,28 @@ func _register_dev_tools() -> void:
 
 func _on_request(method: String, path: String, headers: Dictionary, body: PackedByteArray, stream) -> void:
 	if method == "OPTIONS":
-		_http.send_response(stream, 204, {"Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "POST, GET, OPTIONS", "Access-Control-Allow-Headers": "*"}, "")
+		_http.send_response(stream, 204, _cors_headers(headers), "")
 		return
 	if method != "POST":
 		_http.send_response(stream, 405, {"Allow": "POST, OPTIONS", "Content-Type": "application/json"}, "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32000,\"message\":\"Method Not Allowed\"},\"id\":null}")
+		return
+	# 鉴权: 可选 Bearer token(dev_framework/mcp/token, 非空时启用)
+	var token: String = ProjectSettings.get_setting(SETTING_TOKEN, "")
+	if not token.is_empty():
+		var auth := str(headers.get("authorization", ""))
+		if auth != "Bearer " + token:
+			_http.send_response(stream, 401, _cors_headers(headers), JSON.stringify({"jsonrpc": "2.0", "error": {"code": -32000, "message": "Unauthorized"}, "id": null}))
+			return
+	# 校验 Origin: 拦截浏览器/外部站点的跨域调用(eval_code 可执行任意代码, 防本机 RCE)。
+	# 无 Origin(本地 CLI/工具)或本机 Origin 放行。
+	var origin := str(headers.get("origin", "")).to_lower()
+	if not origin.is_empty() and not (origin.begins_with("http://127.0.0.1") or origin.begins_with("http://localhost") or origin.begins_with("http://0.0.0.0")):
+		_http.send_response(stream, 403, _cors_headers(headers), JSON.stringify({"jsonrpc": "2.0", "error": {"code": -32000, "message": "Forbidden"}, "id": null}))
+		return
+	# 游戏运行日志上报端点(由 DevMCPLog autoload 调用, 绕过 MCP 协议)
+	if path == "/log":
+		_handle_log_post(body)
+		_http.send_response(stream, 200, _cors_headers(headers), "OK")
 		return
 	var parsed: Variant = JSON.parse_string(body.get_string_from_utf8())
 	if parsed == null or not parsed is Dictionary:
@@ -288,7 +320,21 @@ func _on_request(method: String, path: String, headers: Dictionary, body: Packed
 		_http.send_response(stream, 202, {}, "")
 		return
 	var json := JSON.stringify(response)
-	_http.send_response(stream, 200, {"Content-Type": "application/json", "Access-Control-Allow-Origin": "*", "Mcp-Session-Id": _make_session_id(headers)}, json)
+	_http.send_response(stream, 200, _cors_headers(headers), json)
+
+
+## CORS 响应头: 不再无条件返回 "*", 仅对(可能的)本地 Origin 回显, 收紧跨域面
+func _cors_headers(headers: Dictionary) -> Dictionary:
+	var h := {
+		"Content-Type": "application/json",
+		"Mcp-Session-Id": _make_session_id(headers),
+		"Access-Control-Allow-Methods": "POST, GET, OPTIONS",
+		"Access-Control-Allow-Headers": "Authorization, Content-Type, Mcp-Session-Id",
+	}
+	var origin := str(headers.get("origin", ""))
+	if not origin.is_empty():
+		h["Access-Control-Allow-Origin"] = origin
+	return h
 
 
 func _make_session_id(headers: Dictionary) -> String:
@@ -374,22 +420,49 @@ func _call_validate_script(args: Dictionary) -> Dictionary:
 		code = file.get_as_text()
 		file.close()
 	script.source_code = code
-	# 注意: 不设置 resource_path——直接指定已加载资源的路径会触发
-	# "Another resource is loaded from path" 冲突并污染错误缓冲
-	# 用 reload() 的返回值判断语法错误(reload 对无效脚本返回非 OK 错误码)
-	# 且不做 can_instantiate 检查: 纯工具/抽象类脚本不可实例化并不代表语法错误
+	# reload() 会把 "Warning treated as error"(如 untyped_declaration) 当作编译错误返回,
+	# 而这类脚本编辑器/正常加载路径是可用的。因此不能只看错误码:
+	# 记录 reload 前后错误缓冲新增条目, 区分真实语法错误与 warning 类误报。
+	var n0: int = _logger.get_error_count() if _logger else 0
 	var reload_err := script.reload()
-	if reload_err == OK:
+	var new_errs: Array = []
+	if _logger:
+		var all_entries: Array = _logger.take_errors_since(0).entries
+		var added: int = all_entries.size() - n0
+		if added > 0:
+			new_errs = all_entries.slice(maxi(0, all_entries.size() - added))
+	# 解析新增错误: 纯 warning 类(被当错误)不算语法错误
+	var real_errors: Array = []
+	var warnings: Array = []
+	for e in new_errs:
+		var msg: String = str(e.get("message", ""))
+		if msg.contains("Warning treated as error") or msg.contains("variable type is being inferred from a Variant value"):
+			warnings.append(msg)
+		else:
+			real_errors.append(msg)
+	if reload_err == OK and real_errors.is_empty():
 		return _ok(JSON.stringify({
 			"valid": true,
-			"message": "脚本语法有效",
+			"message": "脚本语法有效" + ("(含 %d 条可忽略警告)" % warnings.size() if warnings.size() > 0 else ""),
 			"error_latin": 0,
 			"error_text": "",
+			"warnings": warnings,
 		}))
-	var text := error_string(reload_err)
+	if real_errors.is_empty():
+		# reload 失败但新增错误全是 warning-as-error: 按语法有效处理
+		return _ok(JSON.stringify({
+			"valid": true,
+			"message": "脚本语法有效(仅存在被当作错误的警告, 编辑器可正常加载)",
+			"error_latin": 0,
+			"error_text": "",
+			"warnings": warnings,
+		}))
+	var text := "; ".join(real_errors)
 	var hint := ""
 	if text.contains("hides a global script class"):
-		hint = " (class_name 与全局类缓存冲突: 若是新脚本, 先调用 reload_project 刷新类缓存后再试)"
+		hint = " (class_name 与全局类缓存冲突: 若是新脚本, 先调用 reload_project 刷新类缓存后再试; 若验证的是已被编辑器加载的类脚本(如 addons 内), 属正常冲突)"
+	elif text.contains("Warning treated as error") or text.contains("inferred from a Variant"):
+		hint = " (存在被当作错误的警告: 可在项目设置 GDScript 警告中放宽, 或为相关变量标注显式类型)"
 	var msg := "解析失败: %s%s" % [text, hint]
 	return _ok(JSON.stringify({
 		"valid": false,
@@ -397,6 +470,8 @@ func _call_validate_script(args: Dictionary) -> Dictionary:
 		"error_line": 0,
 		"error_text": text,
 		"hint": hint.strip_edges().trim_prefix(" (").trim_suffix(")"),
+		"errors": real_errors,
+		"warnings": warnings,
 	}))
 
 
@@ -464,13 +539,15 @@ func _call_get_logs(args: Dictionary) -> Dictionary:
 	var since: int = int(args.get("since", 0))
 	var keyword: String = str(args.get("keyword", ""))
 	var max: int = int(args.get("max", 200))
-	var result := _logger.take_logs_since(since)
+	var result: Dictionary = _logger.take_logs_since(since)
 	var entries: Array = result.entries
 	var out: Array = []
 	for e in entries:
-		if not keyword.is_empty() and keyword not in str(e.message):
+		var clean: Dictionary = e.duplicate()
+		clean.message = _logger.sanitize(str(e.message))
+		if not keyword.is_empty() and keyword not in str(clean.message):
 			continue
-		out.append(e)
+		out.append(clean)
 		if out.size() >= max:
 			break
 	return _ok(JSON.stringify({"next": result.next, "count": out.size(), "logs": out}))
@@ -480,11 +557,17 @@ func _call_get_errors(args: Dictionary) -> Dictionary:
 	if _logger == null:
 		return _fail("错误捕获器未就绪")
 	var max: int = int(args.get("max", 100))
-	var result := _logger.take_errors_since(0)
+	var result: Dictionary = _logger.take_errors_since(0)
 	var out: Array = result.entries.duplicate()
 	if out.size() > max:
 		out = out.slice(out.size() - max)
-	return _ok(JSON.stringify({"count": out.size(), "errors": out}))
+	var cleaned: Array = []
+	for e in out:
+		var clean: Dictionary = e.duplicate()
+		if clean.has("message"):
+			clean.message = _logger.sanitize(str(clean.message))
+		cleaned.append(clean)
+	return _ok(JSON.stringify({"count": cleaned.size(), "errors": cleaned}))
 
 
 func _call_clear_errors(_args: Dictionary) -> Dictionary:
@@ -571,12 +654,7 @@ func _walk_scene_tree(node: Node, depth: int, max_depth: int, include_props: boo
 	var indent := "  ".repeat(depth)
 	lines.append("%s%s [%s]" % [indent, node.name, node.get_class()])
 	if include_props and depth < 3:
-		var props: Dictionary = {}
-		for p in node.get_property_list():
-			var pname: String = str(p.name)
-			if p.usage & PROPERTY_USAGE_EDITOR or pname in ["name", "position", "rotation", "scale", "visible", "modulate", "process_mode"]:
-				if node.get(pname) != null:
-					props[pname] = node.get(pname)
+		var props := _collect_essential_props(node)
 		if not props.is_empty():
 			lines.append("%s    props: %s" % [indent, JSON.stringify(props)])
 	for child in node.get_children():
@@ -592,13 +670,25 @@ func _call_get_node_info(args: Dictionary) -> Dictionary:
 		"name": node.name,
 		"class": node.get_class(),
 		"path": node.get_path(),
-		"properties": {},
+		"properties": _collect_essential_props(node),
 	}
+	return _ok(JSON.stringify(info))
+
+
+## 提取对 AI 调试最有用的核心属性: 脚本导出变量 + 白名单常用属性,
+## 排除 theme_override/focus_/accessibility_/editor 内部属性及资源对象, 避免上下文爆炸。
+func _collect_essential_props(node: Node) -> Dictionary:
+	var out := {}
 	for p in node.get_property_list():
 		var pname: String = str(p.name)
-		if p.usage & PROPERTY_USAGE_EDITOR or pname in ["name", "position", "rotation", "scale", "visible", "process_mode", "modulate"]:
-			info.properties[pname] = node.get(pname)
-	return _ok(JSON.stringify(info))
+		if pname.begins_with("theme_override") or pname.begins_with("accessibility_") \
+				or pname.begins_with("focus_") or pname == "editor_description" or pname == "script":
+			continue
+		if p.usage & PROPERTY_USAGE_SCRIPT_VARIABLE or pname in CORE_PROP_NAMES:
+			var v: Variant = node.get(pname)
+			if v != null and not (v is Object or v is Resource):
+				out[pname] = v
+	return out
 
 
 func _call_set_node_property(args: Dictionary) -> Dictionary:
@@ -611,7 +701,7 @@ func _call_set_node_property(args: Dictionary) -> Dictionary:
 	var current: Variant = node.get(property)
 	if current == null and not node.has_method(property):
 		return _fail("节点 %s 没有属性: %s" % [path, property])
-	var typed := _coerce_value(value, typeof(current))
+	var typed: Variant = _coerce_value(value, typeof(current))
 	if typed == null and value != null:
 		return _fail("无法转换值 %s 为属性类型" % str(value))
 	node.set(property, typed)
@@ -661,9 +751,16 @@ func _call_add_node(args: Dictionary) -> Dictionary:
 	if not new_name.is_empty():
 		new_node.name = new_name
 	parent.add_child(new_node, true)
-	if root == new_node or parent == root:
-		new_node.owner = root
+	# 无论挂在哪个父节点下都设为场景根 owner(含子树), 否则保存场景时新节点不会写入 .tscn
+	_assign_owner_recursive(new_node, root)
 	return _ok("已添加节点 %s [%s] 到 %s" % [new_node.name, new_node.get_class(), parent.name])
+
+
+## 递归把节点及其子树 owner 设为场景根, 保证新增节点可随场景保存
+func _assign_owner_recursive(node: Node, root: Node) -> void:
+	node.owner = root
+	for child in node.get_children():
+		_assign_owner_recursive(child, root)
 
 
 func _call_save_scene(_args: Dictionary) -> Dictionary:
@@ -743,8 +840,10 @@ func _named_layers(setting_key: String) -> Dictionary:
 
 
 func _call_run_game(args: Dictionary) -> Dictionary:
+	if _editor == null:
+		return _fail("编辑器不可用")
 	if _run_pid != 0:
-		return _fail("游戏已在运行(PID %d)。如需重启请先 stop_game。" % _run_pid)
+		return _fail("游戏已在运行(pid=%d)。如需重启请先 stop_game。" % _run_pid)
 	var scene := str(args.get("scene", ""))
 	if scene.is_empty():
 		return _fail("必须提供 scene(要运行的场景 res:// 路径), 例如 res://Scenes/Main/Main.tscn")
@@ -756,28 +855,66 @@ func _call_run_game(args: Dictionary) -> Dictionary:
 	var scene_res: Resource = ResourceLoader.load(scene)
 	if not scene_res is PackedScene:
 		return _fail("不是有效场景文件: %s(类型: %s)" % [scene, scene_res.get_class() if scene_res else "null"])
-	var exe := OS.get_executable_path()
-	var args_arr := ["--path", ProjectSettings.globalize_path("res://"), "--log-file", ProjectSettings.globalize_path(_run_log_path), scene]
-	# 清空旧日志并重置偏移
-	var f := FileAccess.open(_run_log_path, FileAccess.WRITE)
+	# 直接启动 godot 子进程运行该场景, 并以 --log-file 写入 user://game_run.log(绝对路径),
+	# 编辑器进程每帧增量读取该文件实时并入 get_logs(Windows 共享读已验证可行)。
+	_run_log_abs = ProjectSettings.globalize_path("user://game_run.log")
+	_run_log_offset = 0
+	# 清掉旧日志, 避免混入上一次运行残留
+	var f := FileAccess.open(_run_log_abs, FileAccess.WRITE)
 	if f:
 		f.store_string("")
 		f.close()
-	_run_log_offset = 0
-	var pid := OS.create_process(exe, args_arr)
-	if pid <= 0:
-		return _fail("启动游戏失败(create_process 返回 %d)" % pid)
-	_run_pid = pid
-	return _ok("已启动游戏 PID=%d 场景=%s。运行日志已并入 get_logs。" % [pid, scene])
+	var exe := OS.get_executable_path()
+	var args_arr := PackedStringArray(["--path", ProjectSettings.globalize_path("res://"), scene, "--log-file", _run_log_abs])
+	_run_pid = OS.create_process(exe, args_arr)
+	if _run_pid == 0:
+		_run_log_abs = ""
+		return _fail("启动游戏进程失败(OS.create_process 返回 0)。可检查路径: %s" % exe)
+	return _ok("已启动游戏(独立进程, pid=%d) 场景=%s。运行日志经 --log-file 实时并入 get_logs。" % [_run_pid, scene])
 
 
 func _call_stop_game(_args: Dictionary) -> Dictionary:
 	if _run_pid == 0:
 		return _fail("当前没有运行中的游戏")
-	var pid := _run_pid
+	if OS.is_process_running(_run_pid):
+		OS.kill(_run_pid)
 	_run_pid = 0
-	OS.kill(pid)
-	return _ok("已停止游戏 PID=%d" % pid)
+	return _ok("已停止游戏")
+
+
+## 每帧调用: 增量读取游戏 --log-file 输出, 并入 _logger; 并检测游戏进程退出
+func _poll_run_log() -> void:
+	# 进程已退出(正常退出/崩溃/被外部关闭)时清理 PID, 避免 stop_game 对无效进程误操作
+	if _run_pid != 0 and not OS.is_process_running(_run_pid):
+		_run_pid = 0
+	if _run_pid == 0 or _logger == null or _run_log_abs.is_empty():
+		return
+	# 节流: 游戏独占 --log-file 文件, Godot FileAccess 无法读取(Windows), 用 cmd type 全量读取,
+	# 再按已消费偏移跳过旧内容。type 较慢, 故限制轮询频率降低编辑器卡顿。
+	var now := Time.get_ticks_msec()
+	if now - _run_last_poll_ms < RUN_LOG_POLL_INTERVAL_MS:
+		return
+	_run_last_poll_ms = now
+	if not FileAccess.file_exists(_run_log_abs):
+		return
+	var out := []
+	var err := OS.execute("cmd.exe", ["/c", "type", _run_log_abs.replace("/", "\\")], out)
+	if err != 0 or out.is_empty() or str(out[0]).is_empty():
+		return
+	var data := str(out[0])
+	var total := data.length()
+	if _run_log_offset > total:
+		_run_log_offset = 0   # 文件被重置(新一次 run_game)时从头读
+	if _run_log_offset > 0:
+		data = data.substr(_run_log_offset)
+	_run_log_offset = total
+	if data.is_empty():
+		return
+	# 拆成行; 最后一行可能未写完, 保留在尾部, 下一帧会整体重新读取该行
+	for line in data.split("\n"):
+		var trimmed := line.strip_edges()
+		if not trimmed.is_empty():
+			_logger.append_external(trimmed)
 
 
 ## ======= 开发辅助工具实现 =======
@@ -826,9 +963,10 @@ func _call_eval_code(args: Dictionary) -> Dictionary:
 	if code.is_empty():
 		return _fail("必须提供 code")
 	var script := GDScript.new()
-	# 缩进每个输入行, 组成方法体; 末尾追加 return null 兜底
-	var body := code.replace("\n", "\n\t")
-	script.source_code = "extends RefCounted\nstatic func _mcp_run():\n\t%s\n\treturn null" % body
+	# 将用户代码归一化为统一空格缩进的方法体, 避免 tab/空格混排导致 Parse error。
+	# GDScript 函数未显式 return 时默认返回 null, 无需追加兜底 return。
+	var body := _indent_method_body(code)
+	script.source_code = "extends RefCounted\nstatic func _mcp_run():\n%s" % body
 	var err := script.reload()
 	if err != OK:
 		var text := error_string(err)
@@ -844,6 +982,36 @@ func _call_eval_code(args: Dictionary) -> Dictionary:
 	if result is Dictionary or result is Array:
 		shown = JSON.stringify(result)
 	return _ok("执行成功, 返回: %s" % shown)
+
+
+## 把用户 eval_code 规范成方法体缩进: 前导 tab 按 4 空格折算, 混合前导空白统一为纯空格,
+## 每行再整体缩进 4 空格。这样用户用 tab 或空格缩进都不会与 GDScript 的混排限制冲突。
+func _indent_method_body(code: String) -> String:
+	var lines := code.split("\n")
+	var out := PackedStringArray()
+	for line in lines:
+		var norm := _normalize_indent(line, 4)
+		out.append("    " + norm)
+	return "\n".join(out)
+
+
+func _normalize_indent(line: String, tab_w: int) -> String:
+	var i := 0
+	var spaces := 0
+	while i < line.length():
+		var c := line.unicode_at(i)
+		if c == 9:
+			spaces += tab_w
+			i += 1
+		elif c == 32:
+			spaces += 1
+			i += 1
+		else:
+			break
+	var prefix := ""
+	for j in spaces:
+		prefix += " "
+	return prefix + line.substr(i)
 
 
 func _call_get_global_classes(_args: Dictionary) -> Dictionary:
@@ -914,22 +1082,12 @@ func _call_reimport(args: Dictionary) -> Dictionary:
 	return _ok("已触发重新导入: %s" % path)
 
 
-## 每帧调用: 把运行中游戏的日志文件增量合并进 _logger
-func _poll_run_log() -> void:
-	if _run_pid == 0 or _logger == null:
+## 接收游戏运行日志(DevMCPLog 转发), 按行合并进日志缓冲
+func _handle_log_post(body: PackedByteArray) -> void:
+	if _logger == null:
 		return
-	if not FileAccess.file_exists(_run_log_path):
-		return
-	var f := FileAccess.open(_run_log_path, FileAccess.READ)
-	if f == null:
-		return
-	f.seek(_run_log_offset)
-	var data := f.get_as_text()
-	_run_log_offset = f.get_position()
-	f.close()
-	if data.is_empty():
-		return
-	for line in data.split("\n"):
+	var text := body.get_string_from_utf8()
+	for line in text.split("\n"):
 		var trimmed := line.strip_edges()
 		if trimmed.is_empty():
 			continue

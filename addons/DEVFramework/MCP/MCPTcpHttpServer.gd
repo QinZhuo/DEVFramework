@@ -58,14 +58,21 @@ func poll() -> void:
 		var c = _conns[i]
 		var stream: StreamPeerTCP = c.stream
 		stream.poll()
-		if stream.get_status() == StreamPeerTCP.STATUS_CONNECTED or stream.get_status() == StreamPeerTCP.STATUS_CONNECTING:
+		var status := stream.get_status()
+		if status == StreamPeerTCP.STATUS_CONNECTED or status == StreamPeerTCP.STATUS_CONNECTING:
 			_read_available(c)
 			_process_buffer(c, finished, i)
-		elif stream.get_status() == StreamPeerTCP.STATUS_ERROR:
+		elif status == StreamPeerTCP.STATUS_ERROR or status == StreamPeerTCP.STATUS_NONE or c.get("_overload", false):
+			# 已断开(响应完成后 disconnect 会进入 STATUS_NONE)或超限的连接一律回收,
+			# 避免 _conns 无限增长造成内存泄漏
 			finished.append(i)
 	finished.sort()
 	finished.reverse()
 	for i in finished:
+		var c = _conns[i]
+		var stream: StreamPeerTCP = c.get("stream")
+		if stream:
+			stream.disconnect_from_host()
 		_conns.remove_at(i)
 
 
@@ -104,7 +111,11 @@ func _process_buffer(c: Dictionary, finished: Array, conn_index: int) -> void:
 		c.method = parsed.method
 		c.path = parsed.path
 		c.headers = parsed.headers
-		c.content_length = parsed.headers.get("content-length", "-1").to_int()
+		var cl: int = parsed.headers.get("content-length", "-1").to_int()
+		# 无 body 的请求(GET/OPTIONS/HEAD/DELETE)通常不带 Content-Length, 按 0 处理
+		if cl < 0 and (c.method == "OPTIONS" or c.method == "GET" or c.method == "HEAD" or c.method == "DELETE"):
+			cl = 0
+		c.content_length = cl
 		c.headers_done = true
 		c._body_start = body_start
 		if c.content_length < 0 or c.content_length > MAX_BODY_SIZE:
