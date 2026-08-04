@@ -96,6 +96,8 @@ func mark_dirty() -> void:
 
 ## 立即重新规划并（若有方案）开始执行
 func replan() -> void:
+	if paused:
+		return
 	_world_dirty = false
 	var result := _try_plan()
 	if result.is_empty():
@@ -164,6 +166,15 @@ func _finish_plan(success: bool) -> void:
 	_current_action = null
 	current_plan.clear()
 	plan_completed.emit(success)
+
+
+## 中断当前执行并回到空闲状态（供外部事件如被杀/重生时调用）。
+## 清空进行中的动作与剩余计划，置脏以便下一帧重新规划。
+func reset_plan() -> void:
+	_state = AgentState.IDLE
+	_current_action = null
+	current_plan.clear()
+	_world_dirty = true
 
 
 func get_current_action() -> GoapAction:

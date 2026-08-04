@@ -160,6 +160,12 @@ func _update_movement(delta: float) -> void:
 		cb.call()
 
 
+## 中断移动：取消进行中的移动与等待中的完成回调
+func _interrupt_move() -> void:
+	_moving = false
+	_move_done = Callable()
+
+
 ## —— 被捕食 / 重生 ——
 
 func being_eaten() -> void:
@@ -167,7 +173,8 @@ func being_eaten() -> void:
 		return
 	body.visible = false
 	paused = true
-	_moving = false
+	_interrupt_move()
+	reset_plan()
 	_status_label.visible = false
 	get_tree().create_timer(3.5).timeout.connect(_respawn)
 
@@ -178,8 +185,10 @@ func _respawn() -> void:
 	body.position = EcosystemWorld.rand_pos()
 	body.visible = true
 	paused = false
+	_interrupt_move()
 	_status_label.visible = true
 	_status("重获新生")
+	reset_plan()
 	world_state.reset({})
 	set_state("hungry", randf() < 0.7)
 	set_state("has_food", false)
