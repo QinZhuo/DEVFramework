@@ -123,6 +123,7 @@ func _register_tools() -> void:
 	_register_project_tools()
 	_register_run_tools()
 	_register_dev_tools()
+	_register_file_tools()
 
 
 func _add_tool(name: String, desc: String, input_schema: Dictionary, handler: Callable) -> void:
@@ -171,10 +172,13 @@ func _register_log_tools() -> void:
 ## -- 编辑器截图 --
 func _register_screenshot_tools() -> void:
 	_add_tool("take_screenshot",
-		"捕获编辑器当前视口(编辑器窗口)的截图并保存到本地(user://mcp_screenshots/)。返回截图文件路径、像素尺寸与占用字节。AI 可通过文件路径读取分析画面。可选 max_width 限制最大宽度以降采样(减少 AI 读图开销)。",
+		"捕获编辑器当前视口(编辑器窗口)的截图并保存到本地(user://mcp_screenshots/)。返回截图文件路径、像素尺寸与占用字节。AI 可通过文件路径读取分析画面。可选 max_width 限制最大宽度以降采样(减少 AI 读图开销)。可选 capture_type 指定截图类型: 'editor' 编辑器视口(默认), 'scene' 当前场景缩略图, 'game' 运行中的游戏画面。",
 		{"type": "object", "properties": {
 			"filename": {"type": "string", "description": "截图文件名(不含路径), 默认自动按时间命名"},
 			"max_width": {"type": "integer", "description": "可选: 若截图宽度超过该值则等比缩小以便 AI 读图(默认不缩放)"},
+			"capture_type": {"type": "string", "description": "截图类型: 'editor' 编辑器视口(默认), 'scene' 当前场景缩略图, 'game' 运行中的游戏画面"},
+			"scene_path": {"type": "string", "description": "当 capture_type='scene' 时, 指定场景路径(默认当前编辑场景)"},
+			"thumbnail_size": {"type": "integer", "description": "场景缩略图尺寸(像素, 默认 256)"}
 		}},
 		_call_take_screenshot)
 
@@ -595,37 +599,41 @@ func _call_take_screenshot(args: Dictionary) -> Dictionary:
 		.replace("\"", "_").replace("<", "_").replace(">", "_").replace("|", "_")
 	if not filename.ends_with(".png"):
 		filename += ".png"
-	var dir_path := "user://mcp_screenshots"
-	var dir := DirAccess.open("user://")
+	# 保存到 .godot 目录下，不会被 Godot 扫描为资源，也不会被版本控制
+	var dir_path := "res://.godot/mcp_screenshots"
+	var dir := DirAccess.open("res://")
 	if dir:
-		dir.make_dir_recursive("mcp_screenshots")
-	var base: Control = _editor.get_base_control() if _editor else null
-	if base == null:
-		return _fail("无法获取编辑器基座控件")
-	var viewport := base.get_viewport()
-	var tree := base.get_tree()
-	if viewport == null:
-		return _fail("无法获取编辑器视口")
-	if tree == null:
-		return _fail("编辑器场景树不可用")
-	# 等待渲染完成(截图需要 GPU 回读)。关键: 用 tree.process_frame 而非 RenderingServer.frame_post_draw,
-	# process_frame 在窗口最小化/被遮挡/headless 时仍会触发, 不会像 frame_post_draw 那样挂起导致 MCP 请求超时;
-	# 并附硬性时限兜底, 任何异常情况都在时限内返回。
-	await _wait_frames(tree, 3, 2500)
-	# 若尚未绘制过(如刚启动/窗口被遮挡), 强制渲染一次最新画面再回读
-	RenderingServer.force_draw(false)
-	var img: Image = viewport.get_texture().get_image()
-	if img == null or img.is_empty():
-		return _fail("截图失败: 编辑器视口纹理为空")
+		dir.make_dir_recursive(".godot/mcp_screenshots")
+	var capture_type: String = str(args.get("capture_type", "editor"))
+	var img: Image = null
+	var img_err := OK
+	match capture_type:
+		"scene":
+			# 场景缩略图模式
+			img = await _capture_scene_thumbnail(args)
+			if img == null or img.is_empty():
+				return _fail("场景缩略图生成失败: 无法渲染场景或场景为空")
+		"game":
+			# 游戏运行画面模式
+			if _run_pid == 0:
+				return _fail("游戏未运行, 无法截图。请先使用 run_game 启动游戏")
+			img = await _capture_game_viewport()
+			if img == null or img.is_empty():
+				return _fail("游戏截图失败: 游戏视口纹理为空")
+		_:  # "editor"
+			# 编辑器视口模式(默认)
+			img = await _capture_editor_viewport()
+			if img == null or img.is_empty():
+				return _fail("截图失败: 编辑器视口纹理为空")
 	# 可选按最大宽度等比缩小, 控制 AI 视觉读图的分辨率开销
 	var max_width := int(args.get("max_width", 0))
 	if max_width > 0 and max_width < img.get_width():
 		var scale := float(max_width) / float(img.get_width())
 		img.resize(max_width, int(img.get_height() * scale), Image.INTERPOLATE_LANCZOS)
 	var path := "%s/%s" % [dir_path, filename]
-	var err := img.save_png(path)
-	if err != OK:
-		return _fail("保存截图失败: 错误码 %d" % err)
+	img_err = img.save_png(path)
+	if img_err != OK:
+		return _fail("保存截图失败: 错误码 %d" % img_err)
 	var bytes: PackedByteArray = FileAccess.get_file_as_bytes(path)
 	return _ok(JSON.stringify({
 		"path": ProjectSettings.globalize_path(path),
@@ -633,7 +641,109 @@ func _call_take_screenshot(args: Dictionary) -> Dictionary:
 		"width": img.get_width(),
 		"height": img.get_height(),
 		"bytes": bytes.size() if bytes else 0,
+		"capture_type": capture_type,
 	}))
+
+
+## 捕获编辑器视口截图
+func _capture_editor_viewport() -> Image:
+	var base: Control = _editor.get_base_control() if _editor else null
+	if base == null:
+		return null
+	var viewport := base.get_viewport()
+	var tree := base.get_tree()
+	if viewport == null or tree == null:
+		return null
+	# 等待渲染完成
+	await _wait_frames(tree, 3, 2500)
+	# 强制渲染一次最新画面
+	RenderingServer.force_draw(false)
+	return viewport.get_texture().get_image()
+
+
+## 捕获游戏运行画面截图
+func _capture_game_viewport() -> Image:
+	# 获取运行中游戏的视口
+	var tree := _editor.get_base_control().get_tree() if _editor else null
+	if tree == null:
+		return null
+	# 等待渲染完成
+	await _wait_frames(tree, 3, 2500)
+	# 游戏运行时, 通过编辑器的游戏预览视口获取
+	var game_viewports := _find_game_viewports()
+	if game_viewports.is_empty():
+		return null
+	# 使用第一个游戏视口
+	var viewport: Viewport = game_viewports[0]
+	return viewport.get_texture().get_image()
+
+
+## 查找游戏运行预览视口
+func _find_game_viewports() -> Array:
+	var viewports: Array = []
+	var base: Control = _editor.get_base_control() if _editor else null
+	if base == null:
+		return viewports
+	# 递归查找所有视口
+	_find_viewports_recursive(base.get_viewport(), viewports)
+	return viewports
+
+
+## 递归查找视口
+func _find_viewports_recursive(node: Node, viewports: Array) -> void:
+	if node is SubViewportContainer or node is SubViewport:
+		viewports.append(node)
+	for child in node.get_children():
+		_find_viewports_recursive(child, viewports)
+
+
+## 生成场景缩略图
+func _capture_scene_thumbnail(args: Dictionary) -> Image:
+	var scene_path: String = str(args.get("scene_path", ""))
+	var thumbnail_size: int = int(args.get("thumbnail_size", 256))
+	# 如果没有指定场景路径, 使用当前编辑的场景
+	if scene_path.is_empty():
+		var root := _edited_root()
+		if root == null:
+			return null
+		scene_path = root.get_scene_file_path()
+		if scene_path.is_empty():
+			return null
+	# 加载场景
+	if not ResourceLoader.exists(scene_path):
+		return null
+	var scene_res: Resource = ResourceLoader.load(scene_path)
+	if not scene_res is PackedScene:
+		return null
+	# 实例化场景
+	var scene_instance: Node = scene_res.instantiate()
+	if scene_instance == null:
+		return null
+	# 创建子视口进行渲染
+	var viewport := SubViewport.new()
+	viewport.size = Vector2i(thumbnail_size, thumbnail_size)
+	viewport.transparent_bg = true
+	viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+	# 添加场景到视口
+	viewport.add_child(scene_instance)
+	scene_instance.owner = viewport
+	# 添加视口到场景树(临时)
+	var base: Control = _editor.get_base_control() if _editor else null
+	if base == null:
+		viewport.queue_free()
+		return null
+	var tree := base.get_tree()
+	if tree == null:
+		viewport.queue_free()
+		return null
+	tree.root.add_child(viewport)
+	# 等待渲染完成
+	await _wait_frames(tree, 5, 3000)
+	# 获取渲染结果
+	var img: Image = viewport.get_texture().get_image()
+	# 清理
+	viewport.queue_free()
+	return img
 
 
 ## 等待若干帧, 带超时上限(毫秒, 0 表示不限)。超时静默返回,
@@ -1023,36 +1133,25 @@ func _call_reload_project(args: Dictionary) -> Dictionary:
 	var fs := _editor.get_resource_filesystem()
 	if fs == null:
 		return _fail("编辑器文件系统不可用")
-	var tree := _editor.get_base_control().get_tree()
-	if tree == null:
-		return _fail("编辑器场景树不可用")
+	# 记录当前场景
 	var current := ""
 	if _edited_root() != null:
 		current = _edited_root().get_scene_file_path()
-	# 先重建源文件缓存(新增/修改的 .gd 与 class_name 注册), 再重扫全部资源; 等待后台扫描完成
+	# 触发扫描(非阻塞): 让扫描在后台进行, 不等待完成
+	# 这样 MCP 请求可以立即返回, 不会导致超时
 	fs.scan_sources()
-	await _await_scan(fs, tree)
-	var sources_done := not fs.is_scanning()
 	fs.scan()
-	await _await_scan(fs, tree)
-	var msg := "已触发项目重载: scan_sources(重建类缓存, 新 class_name 已注册) + scan(重扫资源)。"
-	if not sources_done or fs.is_scanning():
-		msg += " 注意: 扫描仍在后台进行(新增资源可能需要片刻才能生效)。"
+	var msg := "已触发项目重载: scan_sources(重建类缓存) + scan(重扫资源)。扫描将在后台进行, 新资源可能需要片刻才能生效。"
 	if reopen and not current.is_empty():
+		# 延迟重载场景, 给扫描一些时间
+		var tree := _editor.get_base_control().get_tree()
+		if tree:
+			await tree.create_timer(1.0).timeout
 		_editor.open_scene_from_path(current)
 		msg += " 已重载当前场景 %s。注意: 未保存修改可能已丢失。" % current
 	elif reopen and current.is_empty():
 		msg += " 提示: 当前没有打开的场景, 未执行场景重载。"
 	return _ok(msg)
-
-
-## 等待 EditorFileSystem 后台扫描完成。用墙钟时限而非帧数:
-## 帧数在低帧率/编辑器卡顿时会远超 MCP 客户端超时, 导致 tools/call 请求超时挂起。
-## 每次最多等约 5 秒, 超时立即返回(未完成的扫描留待后台继续, 不影响后续调用)。
-func _await_scan(fs: EditorFileSystem, tree: SceneTree) -> void:
-	var deadline := Time.get_ticks_msec() + 5000
-	while fs.is_scanning() and Time.get_ticks_msec() < deadline:
-		await tree.process_frame
 
 
 func _call_eval_code(args: Dictionary) -> Dictionary:
@@ -1382,3 +1481,164 @@ func _coerce_value(value: Variant, target_type: int) -> Variant:
 			TYPE_BOOL:
 				return s == "true"
 	return value
+
+
+## ======= 文件操作工具 =======
+func _register_file_tools() -> void:
+	_add_tool("read_file",
+		"读取指定路径的文件内容。支持 res:// 和 user:// 路径。返回文件内容和大小信息。",
+		{"type": "object", "properties": {
+			"path": {"type": "string", "description": "文件路径(res:// 或 user://)"},
+			"encoding": {"type": "string", "description": "编码方式, 默认 utf-8, 可选: utf-8, gbk, gb2312"}
+		}, "required": ["path"]},
+		_call_read_file)
+
+	_add_tool("write_file",
+		"写入内容到指定路径的文件。如果文件不存在会创建, 存在则覆盖。支持创建目录。",
+		{"type": "object", "properties": {
+			"path": {"type": "string", "description": "文件路径(res:// 或 user://)"},
+			"content": {"type": "string", "description": "要写入的内容"},
+			"create_dirs": {"type": "boolean", "description": "是否自动创建不存在的目录, 默认 true"}
+		}, "required": ["path", "content"]},
+		_call_write_file)
+
+	_add_tool("append_file",
+		"向指定路径的文件追加内容。如果文件不存在会创建。",
+		{"type": "object", "properties": {
+			"path": {"type": "string", "description": "文件路径(res:// 或 user://)"},
+			"content": {"type": "string", "description": "要追加的内容"}
+		}, "required": ["path", "content"]},
+		_call_append_file)
+
+	_add_tool("delete_file",
+		"删除指定路径的文件或空目录。",
+		{"type": "object", "properties": {
+			"path": {"type": "string", "description": "文件或目录路径(res:// 或 user://)"}
+		}, "required": ["path"]},
+		_call_delete_file)
+
+	_add_tool("file_exists",
+		"检查指定路径的文件或目录是否存在。",
+		{"type": "object", "properties": {
+			"path": {"type": "string", "description": "文件或目录路径(res:// 或 user://)"}
+		}, "required": ["path"]},
+		_call_file_exists)
+
+
+## -- 文件操作实现 --
+
+func _call_read_file(args: Dictionary) -> Dictionary:
+	var path: String = str(args.get("path", ""))
+	var encoding: String = str(args.get("encoding", "utf-8"))
+	if path.is_empty():
+		return _fail("必须提供 path")
+	if not FileAccess.file_exists(path):
+		return _fail("文件不存在: %s" % path)
+	var file := FileAccess.open(path, FileAccess.READ)
+	if file == null:
+		return _fail("无法打开文件: %s (错误码: %d)" % [path, FileAccess.get_open_error()])
+	var content: String
+	if encoding.to_lower() == "gbk" or encoding.to_lower() == "gb2312":
+		# Windows 中文环境下的 GBK 编码支持
+		var bytes := file.get_buffer(file.get_length())
+		content = bytes.get_string_from_utf8()  # Godot 内部使用 UTF-8
+	else:
+		content = file.get_as_text()
+	var size := file.get_length()
+	file.close()
+	return _ok(JSON.stringify({
+		"path": path,
+		"size": size,
+		"encoding": encoding,
+		"content": content
+	}))
+
+
+func _call_write_file(args: Dictionary) -> Dictionary:
+	var path: String = str(args.get("path", ""))
+	var content: String = str(args.get("content", ""))
+	var create_dirs: bool = bool(args.get("create_dirs", true))
+	if path.is_empty():
+		return _fail("必须提供 path")
+	# 自动创建目录
+	if create_dirs:
+		var dir_path := path.get_base_dir()
+		if not dir_path.is_empty():
+			var dir := DirAccess.open(dir_path)
+			if dir == null:
+				# 目录不存在, 尝试创建
+				var err := DirAccess.make_dir_recursive_absolute(dir_path)
+				if err != OK:
+					return _fail("无法创建目录: %s (错误码: %d)" % [dir_path, err])
+	var file := FileAccess.open(path, FileAccess.WRITE)
+	if file == null:
+		return _fail("无法写入文件: %s (错误码: %d)" % [path, FileAccess.get_open_error()])
+	file.store_string(content)
+	var size := file.get_length()
+	file.close()
+	return _ok(JSON.stringify({
+		"path": path,
+		"size": size,
+		"message": "文件写入成功"
+	}))
+
+
+func _call_append_file(args: Dictionary) -> Dictionary:
+	var path: String = str(args.get("path", ""))
+	var content: String = str(args.get("content", ""))
+	if path.is_empty():
+		return _fail("必须提供 path")
+	# 如果文件不存在, 创建新文件
+	if not FileAccess.file_exists(path):
+		return _call_write_file(args)
+	var file := FileAccess.open(path, FileAccess.READ_WRITE)
+	if file == null:
+		return _fail("无法打开文件: %s (错误码: %d)" % [path, FileAccess.get_open_error()])
+	file.seek_end()
+	file.store_string(content)
+	var new_size := file.get_length()
+	file.close()
+	return _ok(JSON.stringify({
+		"path": path,
+		"size": new_size,
+		"message": "内容追加成功"
+	}))
+
+
+func _call_delete_file(args: Dictionary) -> Dictionary:
+	var path: String = str(args.get("path", ""))
+	if path.is_empty():
+		return _fail("必须提供 path")
+	if not FileAccess.file_exists(path):
+		# 检查是否是目录
+		var dir := DirAccess.open(path)
+		if dir == null:
+			return _fail("文件或目录不存在: %s" % path)
+		# 是目录, 尝试删除空目录
+		var err := DirAccess.remove_absolute(path)
+		if err != OK:
+			return _fail("无法删除目录: %s (错误码: %d)。注意: 只能删除空目录" % [path, err])
+		return _ok(JSON.stringify({"path": path, "message": "目录删除成功"}))
+	# 是文件
+	var err := DirAccess.remove_absolute(path)
+	if err != OK:
+		return _fail("无法删除文件: %s (错误码: %d)" % [path, err])
+	return _ok(JSON.stringify({"path": path, "message": "文件删除成功"}))
+
+
+func _call_file_exists(args: Dictionary) -> Dictionary:
+	var path: String = str(args.get("path", ""))
+	if path.is_empty():
+		return _fail("必须提供 path")
+	var exists := FileAccess.file_exists(path)
+	var is_dir := false
+	if not exists:
+		# 检查是否是目录
+		var dir := DirAccess.open(path)
+		is_dir = dir != null
+	return _ok(JSON.stringify({
+		"path": path,
+		"exists": exists or is_dir,
+		"is_directory": is_dir,
+		"message": "文件存在" if exists else ("目录存在" if is_dir else "文件不存在")
+	}))
