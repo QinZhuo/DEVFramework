@@ -35,15 +35,22 @@ var _editor: EditorInterface
 ## 采用 create_process + --log-file 而非编辑器播放机制/调试器桥:
 ##  - EditorDebuggerPlugin._capture 收不到内建 "output" 消息(被内建 ScriptEditorDebugger 消费)
 ##  - play_custom_scene 不支持自定义命令行参数(无法注入 --log-file)
-##  - Windows 下该 log 文件为共享读写, 编辑器可行边写边读(已验证)
+## 读取策略(通用/跨平台):
+##  1) 首选 Godot FileAccess 增量读: POSIX(Linux/macOS)及部分场景下共享读可用, 零子进程开销, UTF-8 天然正确
+##  2) Windows 上游戏进程对 --log-file 独占锁导致 FileAccess 失败时, 退化为子进程读取:
+##     用 PowerShell 按字节 Seek 增量读, 并以 base64(纯 ASCII)输出, 彻底绕开系统代码页(GBK/CP1252)
+##     转码问题; Godot 端 base64 解码后按 UTF-8 还原, 编码无损。
+##  只消费完整行(以 \n 结尾), 最后的不完整行按字节回退 offset, 下帧重读, 不丢不重。
 var _run_pid := 0               # 游戏进程 PID(0=未运行)
 var _run_log_abs := ""          # 游戏 --log-file 的绝对路径(user://game_run.log)
-var _run_log_offset := 0        # 上次已消费的字节数(增量跳过的偏移)
-var _run_last_poll_ms := 0      # 上次轮询时间戳(节流, 降低 OS.execute 开销)
+var _run_log_offset := 0        # 上次已消费到完整行末尾的字节偏移(增量读取)
+var _run_last_poll_ms := 0      # 上次轮询时间戳(节流)
+var _run_use_subprocess := false  # 当前是否处于子进程读取模式(FileAccess 被锁)
 
-## 游戏日志轮询间隔: 游戏进程独占 --log-file 文件导致 Godot FileAccess 无法读取,
-## 需用 cmd type 读取(Windows 共享读允许)。type 读全文较慢, 故节流轮询。
-const RUN_LOG_POLL_INTERVAL_MS := 400
+## FileAccess 读取模式的轮询间隔(轻量, 可较频繁)
+const RUN_LOG_POLL_INTERVAL_MS := 200
+## 子进程读取模式的轮询间隔(每次启动子进程约 200~300ms 固定开销, 需低频)
+const RUN_LOG_POLL_INTERVAL_MS_FALLBACK := 1500
 
 ## 全局唯一实例(由 plugin.gd 持有)
 static var instance: MCPDevServer
@@ -859,6 +866,7 @@ func _call_run_game(args: Dictionary) -> Dictionary:
 	# 编辑器进程每帧增量读取该文件实时并入 get_logs(Windows 共享读已验证可行)。
 	_run_log_abs = ProjectSettings.globalize_path("user://game_run.log")
 	_run_log_offset = 0
+	_run_use_subprocess = false
 	# 清掉旧日志, 避免混入上一次运行残留
 	var f := FileAccess.open(_run_log_abs, FileAccess.WRITE)
 	if f:
@@ -889,29 +897,95 @@ func _poll_run_log() -> void:
 		_run_pid = 0
 	if _run_pid == 0 or _logger == null or _run_log_abs.is_empty():
 		return
-	# 节流: 游戏独占 --log-file 文件, Godot FileAccess 无法读取(Windows), 用 cmd type 全量读取,
-	# 再按已消费偏移跳过旧内容。type 较慢, 故限制轮询频率降低编辑器卡顿。
+	# 节流: FileAccess 模式轻量可频繁; 子进程模式每次启动外部进程开销大, 需低频
+	var interval := RUN_LOG_POLL_INTERVAL_MS_FALLBACK if _run_use_subprocess else RUN_LOG_POLL_INTERVAL_MS
 	var now := Time.get_ticks_msec()
-	if now - _run_last_poll_ms < RUN_LOG_POLL_INTERVAL_MS:
+	if now - _run_last_poll_ms < interval:
 		return
 	_run_last_poll_ms = now
 	if not FileAccess.file_exists(_run_log_abs):
 		return
+	# 首选 FileAccess 增量读; 失败(Windows 上文件被游戏进程独占锁)时退化子进程读取
+	if _read_run_log_via_fileaccess():
+		_run_use_subprocess = false
+	elif OS.get_name() == "Windows":
+		_run_use_subprocess = true
+		_read_run_log_via_powershell()
+	else:
+		_run_use_subprocess = false
+
+
+## FileAccess 增量读: 从 _run_log_offset 读到 EOF, 更新偏移并消费完整行。
+## 返回是否成功打开并读取(读取到的内容可能为空, 空也视为成功)。
+func _read_run_log_via_fileaccess() -> bool:
+	if _run_log_offset < 0:
+		_run_log_offset = 0
+	var f := FileAccess.open(_run_log_abs, FileAccess.READ)
+	if f == null:
+		return false
+	f.seek(_run_log_offset)
+	var txt := f.get_as_text()
+	_run_log_offset = f.get_position()
+	f.close()
+	_consume_run_lines(txt)
+	return true
+
+
+## Windows fallback: 用 PowerShell 按字节 Seek 增量读 [offset, EOF], base64 输出避免系统代码页转码。
+func _read_run_log_via_powershell() -> bool:
+	var ps := _find_powershell()
+	if ps.is_empty():
+		return false
+	if _run_log_offset < 0:
+		_run_log_offset = 0
+	var esc_path := _run_log_abs.replace("'", "''")
+	# FileShare 'ReadWrite': 允许与游戏写进程共存; 读到 EOF 后对字节流做 base64(纯 ASCII)输出
+	var cmd := "[Console]::OutputEncoding=[Text.Encoding]::ASCII; $fs=[IO.File]::Open('%s','Open','Read','ReadWrite'); try { $fs.Seek(%d,'Begin') | Out-Null; $ms=[IO.MemoryStream]::new(); $fs.CopyTo($ms); } finally { $fs.Close() }; [Convert]::ToBase64String($ms.ToArray())" % [esc_path, _run_log_offset]
 	var out := []
-	var err := OS.execute("cmd.exe", ["/c", "type", _run_log_abs.replace("/", "\\")], out)
-	if err != 0 or out.is_empty() or str(out[0]).is_empty():
+	var err := OS.execute(ps, ["-NoProfile", "-NonInteractive", "-Command", cmd], out)
+	if err != 0 or out.is_empty():
+		return false
+	var bytes := Marshalls.base64_to_raw(str(out[0]).strip_edges())
+	if bytes.is_empty():
+		# 无新内容: 不推进偏移, 静默返回
+		return true
+	_run_log_offset += bytes.size()
+	_consume_run_lines(bytes.get_string_from_utf8())
+	return true
+
+
+## 查找可用的 PowerShell 可执行文件(Windows 必有 v1.0 路径, 优先精确路径避免 PATH 缺失)
+func _find_powershell() -> String:
+	var candidates := [
+		"C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+		"C:/Program Files/PowerShell/7/pwsh.exe",
+	]
+	for c in candidates:
+		if FileAccess.file_exists(c):
+			return c
+	return "powershell.exe"
+
+
+## 消费一批日志文本: 拆行, 完整行并入 logger; 最后不完整行按字节回退 offset, 下帧续读。
+## 要求 _run_log_offset 已指向本批文本的文件尾字节位置(FileAccess 的 get_position 或 PowerShell 的 EOF)。
+func _consume_run_lines(txt: String) -> void:
+	if txt.is_empty():
 		return
-	var data := str(out[0])
-	var total := data.length()
-	if _run_log_offset > total:
-		_run_log_offset = 0   # 文件被重置(新一次 run_game)时从头读
-	if _run_log_offset > 0:
-		data = data.substr(_run_log_offset)
-	_run_log_offset = total
-	if data.is_empty():
-		return
-	# 拆成行; 最后一行可能未写完, 保留在尾部, 下一帧会整体重新读取该行
-	for line in data.split("\n"):
+	var incomplete := ""
+	var incomplete_bytes := 0
+	if not txt.ends_with("\n"):
+		# 最后一段不完整(无 \n), 回退其字节数, 下帧从完整行末尾重读
+		var lines := txt.split("\n", false)
+		if not lines.is_empty():
+			incomplete = lines[lines.size() - 1]
+			lines = lines.slice(0, lines.size() - 1)
+		incomplete_bytes = incomplete.to_utf8_buffer().size()
+		if incomplete_bytes > 0:
+			_run_log_offset -= incomplete_bytes
+			if _run_log_offset < 0:
+				_run_log_offset = 0
+		txt = "\n".join(lines)
+	for line in txt.split("\n"):
 		var trimmed := line.strip_edges()
 		if not trimmed.is_empty():
 			_logger.append_external(trimmed)
