@@ -150,8 +150,11 @@ func _register_log_tools() -> void:
 ## -- 编辑器截图 --
 func _register_screenshot_tools() -> void:
 	_add_tool("take_screenshot",
-		"捕获编辑器当前视口(编辑器窗口)的截图并保存到本地(user://mcp_screenshots/)。返回截图文件路径、像素尺寸与占用字节。AI 可通过文件路径读取分析画面。",
-		{"type": "object", "properties": {"filename": {"type": "string", "description": "截图文件名(不含路径), 默认自动按时间命名"}}},
+		"捕获编辑器当前视口(编辑器窗口)的截图并保存到本地(user://mcp_screenshots/)。返回截图文件路径、像素尺寸与占用字节。AI 可通过文件路径读取分析画面。可选 max_width 限制最大宽度以降采样(减少 AI 读图开销)。",
+		{"type": "object", "properties": {
+			"filename": {"type": "string", "description": "截图文件名(不含路径), 默认自动按时间命名"},
+			"max_width": {"type": "integer", "description": "可选: 若截图宽度超过该值则等比缩小以便 AI 读图(默认不缩放)"},
+		}},
 		_call_take_screenshot)
 
 
@@ -207,8 +210,8 @@ func _register_project_tools() -> void:
 ## -- 运行游戏 --
 func _register_run_tools() -> void:
 	_add_tool("run_game",
-		"启动项目(独立进程)以便实际测试。可选指定启动场景 res:// 路径(缺省为项目主场景)。运行日志实时合并进 get_logs。",
-		{"type": "object", "properties": {"scene": {"type": "string", "description": "启动场景 res:// 路径, 可选"}}},
+		"启动项目(独立进程)以便实际测试。必须提供 scene: 要运行的场景 res:// 路径(如 res://Scenes/Main/Main.tscn), 缺省会报错。运行日志实时合并进 get_logs。",
+		{"type": "object", "properties": {"scene": {"type": "string", "description": "要运行的场景 res:// 路径, 必填(如 res://Scenes/Main/Main.tscn)"}}, "required": ["scene"]},
 		_call_run_game)
 
 	_add_tool("stop_game",
@@ -493,7 +496,10 @@ func _call_clear_errors(_args: Dictionary) -> Dictionary:
 func _call_take_screenshot(args: Dictionary) -> Dictionary:
 	var filename: String = str(args.get("filename", ""))
 	if filename.is_empty():
-		filename = "mcp_%s.png" % Time.get_datetime_string_from_system().replace(":", "-").replace(" ", "_")
+		filename = "mcp_%s" % Time.get_datetime_string_from_system().replace(":", "-").replace(" ", "_")
+	# 清理文件名中的非法字符(Windows 不支持 : / \ * ? " < > |), 避免保存失败
+	filename = filename.replace("/", "_").replace("\\", "_").replace("*", "_").replace("?", "_")\
+		.replace("\"", "_").replace("<", "_").replace(">", "_").replace("|", "_")
 	if not filename.ends_with(".png"):
 		filename += ".png"
 	var dir_path := "user://mcp_screenshots"
@@ -509,24 +515,42 @@ func _call_take_screenshot(args: Dictionary) -> Dictionary:
 		return _fail("无法获取编辑器视口")
 	if tree == null:
 		return _fail("编辑器场景树不可用")
-	# 等待几帧让渲染完成(截图需要 GPU 回读)。注意: 不能用 viewport.process_frame(对 Window 不稳定)
-	for i in 3:
-		await tree.process_frame
-	await RenderingServer.frame_post_draw
+	# 等待渲染完成(截图需要 GPU 回读)。关键: 用 tree.process_frame 而非 RenderingServer.frame_post_draw,
+	# process_frame 在窗口最小化/被遮挡/headless 时仍会触发, 不会像 frame_post_draw 那样挂起导致 MCP 请求超时;
+	# 并附硬性时限兜底, 任何异常情况都在时限内返回。
+	await _wait_frames(tree, 3, 2500)
+	# 若尚未绘制过(如刚启动/窗口被遮挡), 强制渲染一次最新画面再回读
+	RenderingServer.force_draw(false)
 	var img: Image = viewport.get_texture().get_image()
 	if img == null or img.is_empty():
 		return _fail("截图失败: 编辑器视口纹理为空")
+	# 可选按最大宽度等比缩小, 控制 AI 视觉读图的分辨率开销
+	var max_width := int(args.get("max_width", 0))
+	if max_width > 0 and max_width < img.get_width():
+		var scale := float(max_width) / float(img.get_width())
+		img.resize(max_width, int(img.get_height() * scale), Image.INTERPOLATE_LANCZOS)
 	var path := "%s/%s" % [dir_path, filename]
 	var err := img.save_png(path)
 	if err != OK:
 		return _fail("保存截图失败: 错误码 %d" % err)
+	var bytes: PackedByteArray = FileAccess.get_file_as_bytes(path)
 	return _ok(JSON.stringify({
 		"path": ProjectSettings.globalize_path(path),
 		"res_path": path,
 		"width": img.get_width(),
 		"height": img.get_height(),
-		"bytes": FileAccess.get_file_as_bytes(path).size(),
+		"bytes": bytes.size() if bytes else 0,
 	}))
+
+
+## 等待若干帧, 带超时上限(毫秒, 0 表示不限)。超时静默返回,
+## 用于窗口被遮挡/headless 等无法产生绘制帧的场景, 避免调用方无限挂起。
+func _wait_frames(tree: SceneTree, frames: int, timeout_msec: int) -> void:
+	var deadline := Time.get_ticks_msec() + timeout_msec
+	for i in frames:
+		if timeout_msec > 0 and Time.get_ticks_msec() > deadline:
+			break
+		await tree.process_frame
 
 
 func _call_get_scene_tree(args: Dictionary) -> Dictionary:
@@ -722,16 +746,18 @@ func _call_run_game(args: Dictionary) -> Dictionary:
 	if _run_pid != 0:
 		return _fail("游戏已在运行(PID %d)。如需重启请先 stop_game。" % _run_pid)
 	var scene := str(args.get("scene", ""))
-	var scene_path := scene
-	if not scene_path.is_empty() and not scene_path.begins_with("res://"):
-		scene_path = "res://" + scene_path
-	if not scene_path.is_empty():
-		if not ResourceLoader.exists(scene_path):
-			return _fail("启动场景不存在: %s" % scene_path)
+	if scene.is_empty():
+		return _fail("必须提供 scene(要运行的场景 res:// 路径), 例如 res://Scenes/Main/Main.tscn")
+	if not scene.begins_with("res://"):
+		scene = "res://" + scene
+	if not ResourceLoader.exists(scene):
+		return _fail("启动场景不存在: %s" % scene)
+	# 加载并校验确为场景文件, 避免误传脚本/贴图等资源
+	var scene_res: Resource = ResourceLoader.load(scene)
+	if not scene_res is PackedScene:
+		return _fail("不是有效场景文件: %s(类型: %s)" % [scene, scene_res.get_class() if scene_res else "null"])
 	var exe := OS.get_executable_path()
-	var args_arr := ["--path", ProjectSettings.globalize_path("res://"), "--log-file", ProjectSettings.globalize_path(_run_log_path)]
-	if not scene_path.is_empty():
-		args_arr.append(scene_path)
+	var args_arr := ["--path", ProjectSettings.globalize_path("res://"), "--log-file", ProjectSettings.globalize_path(_run_log_path), scene]
 	# 清空旧日志并重置偏移
 	var f := FileAccess.open(_run_log_path, FileAccess.WRITE)
 	if f:
@@ -742,7 +768,7 @@ func _call_run_game(args: Dictionary) -> Dictionary:
 	if pid <= 0:
 		return _fail("启动游戏失败(create_process 返回 %d)" % pid)
 	_run_pid = pid
-	return _ok("已启动游戏 PID=%d%s。运行日志已并入 get_logs。" % [pid, " 场景=" + scene_path if not scene_path.is_empty() else ""])
+	return _ok("已启动游戏 PID=%d 场景=%s。运行日志已并入 get_logs。" % [pid, scene])
 
 
 func _call_stop_game(_args: Dictionary) -> Dictionary:
@@ -786,12 +812,13 @@ func _call_reload_project(args: Dictionary) -> Dictionary:
 	return _ok(msg)
 
 
-## 等待 EditorFileSystem 后台扫描完成(上限 15 秒)
+## 等待 EditorFileSystem 后台扫描完成。用墙钟时限而非帧数:
+## 帧数在低帧率/编辑器卡顿时会远超 MCP 客户端超时, 导致 tools/call 请求超时挂起。
+## 每次最多等约 5 秒, 超时立即返回(未完成的扫描留待后台继续, 不影响后续调用)。
 func _await_scan(fs: EditorFileSystem, tree: SceneTree) -> void:
-	var waited := 0
-	while fs.is_scanning() and waited < 900:
+	var deadline := Time.get_ticks_msec() + 5000
+	while fs.is_scanning() and Time.get_ticks_msec() < deadline:
 		await tree.process_frame
-		waited += 1
 
 
 func _call_eval_code(args: Dictionary) -> Dictionary:
