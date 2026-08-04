@@ -382,6 +382,7 @@ func _handle_jsonrpc(req: Dictionary) -> Dictionary:
 			var params: Dictionary = req.get("params", {})
 			var tool_name: String = params.get("name", "")
 			var arguments: Dictionary = params.get("arguments", {})
+			LogTool.log("MCP", "工具调用: %s, 参数: %s" % [tool_name, str(arguments)])
 			if not _tool_handlers.has(tool_name):
 				# 未知工具时先尝试热重载注册(兼容脚本热重载后的新工具)
 				_register_tools()
@@ -415,6 +416,17 @@ func _ok(text: String) -> Dictionary:
 
 func _fail(text: String) -> Dictionary:
 	return {"text": text, "is_error": true}
+
+
+## 辅助函数：将 Variant 转换为 bool（支持 bool、String("true"/"True")、数字等）
+func _to_bool(value: Variant) -> bool:
+	if value is bool:
+		return value
+	if value is String:
+		return value.to_lower() == "true"
+	if value is int or value is float:
+		return value != 0
+	return false
 
 
 ## ======= 工具 Callable 实现 =======
@@ -507,7 +519,7 @@ func _call_validate_resource(args: Dictionary) -> Dictionary:
 
 func _call_list_dir(args: Dictionary) -> Dictionary:
 	var path: String = str(args.get("path", "res://"))
-	var recursive: bool = bool(args.get("recursive", false))
+	var recursive: bool = _to_bool(args.get("recursive", false))
 	if not path.ends_with("/"):
 		path += "/"
 	var dir := DirAccess.open(path)
@@ -758,7 +770,7 @@ func _wait_frames(tree: SceneTree, frames: int, timeout_msec: int) -> void:
 
 func _call_get_scene_tree(args: Dictionary) -> Dictionary:
 	var max_depth: int = int(args.get("max_depth", 8))
-	var include_props: bool = bool(args.get("include_properties", false))
+	var include_props: bool = _to_bool(args.get("include_properties", false))
 	var root := _edited_root()
 	if root == null:
 		return _fail("当前没有打开的场景")
@@ -823,8 +835,8 @@ func _call_set_node_property(args: Dictionary) -> Dictionary:
 		return _fail("节点 %s 没有属性: %s" % [path, property])
 	# 先尝试智能自动转换，如果失败再使用目标类型转换
 	var typed: Variant = _auto_convert_arg(value)
-	if typed == value and current != null:
-		# 自动转换未生效，使用目标类型转换
+	if typed is String and current != null:
+		# 自动转换未生效（仍是字符串），使用目标类型转换
 		typed = _coerce_value(value, typeof(current))
 	if typed == null and value != null:
 		return _fail("无法转换值 %s 为属性类型" % str(value))
@@ -1117,8 +1129,9 @@ func _consume_run_lines(txt: String) -> void:
 func _call_reload_project(args: Dictionary) -> Dictionary:
 	if _editor == null:
 		return _fail("编辑器不可用")
-	var restart: bool = bool(args.get("restart_editor", false))
-	var reopen: bool = bool(args.get("reopen_scene", false))
+	var restart: bool = _to_bool(args.get("restart_editor", false))
+	var reopen: bool = _to_bool(args.get("reopen_scene", false))
+	LogTool.log("MCP", "reload_project: restart=%s, reopen=%s, args=%s" % [str(restart), str(reopen), str(args)])
 	# restart_editor: 启动新编辑器实例并关闭当前编辑器
 	if restart:
 		var project_path := ProjectSettings.globalize_path("res://")
@@ -1126,9 +1139,11 @@ func _call_reload_project(args: Dictionary) -> Dictionary:
 		var pid := OS.create_process(exe, ["--path", project_path])
 		if pid == 0:
 			return _fail("启动新编辑器实例失败")
-		await _editor.get_base_control().get_tree().create_timer(0.5).timeout
+		# 延迟禁用插件和关闭编辑器
+		await _editor.get_base_control().get_tree().create_timer(1.0).timeout
 		_editor.set_plugin_enabled("DEVFramework", false)
-		return _ok("已启动新编辑器实例(pid=%d), 当前编辑器即将关闭。" % pid)
+		# 返回消息（编辑器即将关闭，消息可能无法发送）
+		return _ok("已启动新编辑器实例(pid=%d)。当前编辑器即将关闭，MCP 服务将随编辑器重启。AI 请等待 3-5 秒后重新连接。" % pid)
 	# 常规重载: 重建类缓存 + 重扫资源
 	var fs := _editor.get_resource_filesystem()
 	if fs == null:
@@ -1257,7 +1272,7 @@ func _call_set_project_setting(args: Dictionary) -> Dictionary:
 		return _fail("必须提供 name")
 	var value: Variant = args.get("value", null)
 	ProjectSettings.set_setting(name, value)
-	if bool(args.get("save", true)):
+	if _to_bool(args.get("save", true)):
 		ProjectSettings.save()
 	return _ok("已设置 %s = %s" % [name, str(value)])
 
@@ -1557,7 +1572,7 @@ func _call_read_file(args: Dictionary) -> Dictionary:
 func _call_write_file(args: Dictionary) -> Dictionary:
 	var path: String = str(args.get("path", ""))
 	var content: String = str(args.get("content", ""))
-	var create_dirs: bool = bool(args.get("create_dirs", true))
+	var create_dirs: bool = _to_bool(args.get("create_dirs", true))
 	if path.is_empty():
 		return _fail("必须提供 path")
 	# 自动创建目录

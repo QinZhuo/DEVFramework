@@ -1,9 +1,13 @@
-[gd_scene load_steps=3 format=3 uid="uid://goapdemoec01"]
+[gd_scene format=3 uid="uid://goapdemoec01"]
 
-[ext_resource type="Script" path="res://Scenes/AI/GoapDemo.gd" id="1_goap"]
+[ext_resource type="Script" uid="uid://1wqs5yafs1xx" path="res://Scenes/AI/GoapDemo.gd" id="1_goap"]
 
 [sub_resource type="StyleBoxFlat" id="StyleBoxFlat_panel"]
-bg_color = Color(0.08, 0.10, 0.13, 0.9)
+content_margin_left = 12.0
+content_margin_top = 10.0
+content_margin_right = 12.0
+content_margin_bottom = 10.0
+bg_color = Color(0.08, 0.1, 0.13, 0.9)
 border_width_left = 1
 border_width_top = 1
 border_width_right = 1
@@ -13,12 +17,8 @@ corner_radius_top_left = 8
 corner_radius_top_right = 8
 corner_radius_bottom_right = 8
 corner_radius_bottom_left = 8
-content_margin_left = 12.0
-content_margin_top = 10.0
-content_margin_right = 12.0
-content_margin_bottom = 10.0
 
-[node name="GoapDemo" type="Control"]
+[node name="GoapDemo" type="Control" unique_id=1587218191]
 layout_mode = 3
 anchors_preset = 15
 anchor_right = 1.0
@@ -27,15 +27,15 @@ grow_horizontal = 2
 grow_vertical = 2
 script = ExtResource("1_goap")
 
-[node name="World" type="Node2D" parent="."]
+[node name="World" type="Node2D" parent="." unique_id=1636467410]
 unique_name_in_owner = true
 
-[node name="BG" type="Polygon2D" parent="World"]
-polygon = PackedVector2Array(44, 44, 1108, 44, 1108, 596, 44, 596)
+[node name="BG" type="Polygon2D" parent="World" unique_id=1474239369]
 color = Color(0.15, 0.28, 0.18, 1)
+polygon = PackedVector2Array(44, 44, 1108, 44, 1108, 596, 44, 596)
 
-[node name="UI" type="PanelContainer" parent="."]
-anchors_preset = 3
+[node name="UI" type="PanelContainer" parent="." unique_id=1431370018]
+layout_mode = 0
 anchor_left = 1.0
 anchor_top = 1.0
 anchor_right = 1.0
@@ -48,46 +48,45 @@ grow_horizontal = 0
 grow_vertical = 0
 theme_override_styles/panel = SubResource("StyleBoxFlat_panel")
 
-[node name="VBox" type="VBoxContainer" parent="UI"]
+[node name="VBox" type="VBoxContainer" parent="UI" unique_id=117682618]
 layout_mode = 2
 theme_override_constants/separation = 8
 
-[node name="Title" type="Label" parent="UI/VBox"]
+[node name="Title" type="Label" parent="UI/VBox" unique_id=835913187]
 layout_mode = 2
 text = "GOAP 演示 · 2D 生态箱"
 horizontal_alignment = 1
 
-[node name="StatsLabel" type="Label" parent="UI/VBox"]
+[node name="StatsLabel" type="Label" parent="UI/VBox" unique_id=1999068854]
 unique_name_in_owner = true
 layout_mode = 2
 text = "草 x0 ｜ 兔 x0 ｜ 狐 x0"
 horizontal_alignment = 1
 
-[node name="LogBox" type="RichTextLabel" parent="UI/VBox"]
+[node name="LogBox" type="RichTextLabel" parent="UI/VBox" unique_id=1873936070]
 unique_name_in_owner = true
+custom_minimum_size = Vector2(0, 200)
 layout_mode = 2
 size_flags_vertical = 3
-custom_minimum_size = Vector2(0, 200)
-scroll_active = true
 bbcode_enabled = true
 
-[node name="Buttons" type="HBoxContainer" parent="UI/VBox"]
+[node name="Buttons" type="HBoxContainer" parent="UI/VBox" unique_id=35101703]
 layout_mode = 2
 theme_override_constants/separation = 8
 
-[node name="PauseButton" type="Button" parent="UI/VBox/Buttons"]
+[node name="PauseButton" type="Button" parent="UI/VBox/Buttons" unique_id=300874693]
 unique_name_in_owner = true
 layout_mode = 2
 size_flags_horizontal = 3
 text = "暂停"
 
-[node name="SpeedButton" type="Button" parent="UI/VBox/Buttons"]
+[node name="SpeedButton" type="Button" parent="UI/VBox/Buttons" unique_id=1604678432]
 unique_name_in_owner = true
 layout_mode = 2
 size_flags_horizontal = 3
 text = "加速 x2"
 
-[node name="ResetButton" type="Button" parent="UI/VBox/Buttons"]
+[node name="ResetButton" type="Button" parent="UI/VBox/Buttons" unique_id=349485459]
 layout_mode = 2
 size_flags_horizontal = 3
 text = "重置"
