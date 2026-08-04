@@ -124,10 +124,13 @@ func take_logs_since(last_index: int) -> Dictionary:
 
 
 ## 获取新增错误
-func take_errors_since(_last_index: int) -> Dictionary:
+func take_errors_since(last_index: int) -> Dictionary:
 	_mutex.lock()
-	var n := _errors.size()
-	var result := {"entries": _errors.duplicate(), "next": n, "cleared": _errors.is_empty()}
+	var start := maxi(last_index, 0)
+	var new_entries: Array = []
+	for i in range(start, _errors.size()):
+		new_entries.append(_errors[i])
+	var result := {"entries": new_entries, "next": _errors.size(), "cleared": _errors.is_empty()}
 	_mutex.unlock()
 	return result
 

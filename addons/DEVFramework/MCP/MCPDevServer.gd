@@ -126,6 +126,7 @@ func _register_tools() -> void:
 	_register_file_tools()
 
 
+
 func _add_tool(name: String, desc: String, input_schema: Dictionary, handler: Callable) -> void:
 	_tool_handlers[name] = handler
 	_tool_defs.append({"name": name, "description": desc, "inputSchema": input_schema})
@@ -585,7 +586,8 @@ func _call_get_errors(args: Dictionary) -> Dictionary:
 	if _logger == null:
 		return _fail("错误捕获器未就绪")
 	var max: int = int(args.get("max", 100))
-	var result: Dictionary = _logger.take_errors_since(0)
+	var since: int = int(args.get("since", 0))
+	var result: Dictionary = _logger.take_errors_since(since)
 	var out: Array = result.entries.duplicate()
 	if out.size() > max:
 		out = out.slice(out.size() - max)
@@ -595,7 +597,7 @@ func _call_get_errors(args: Dictionary) -> Dictionary:
 		if clean.has("message"):
 			clean.message = _logger.sanitize(str(clean.message))
 		cleaned.append(clean)
-	return _ok(JSON.stringify({"count": cleaned.size(), "errors": cleaned}))
+	return _ok(JSON.stringify({"count": cleaned.size(), "errors": cleaned, "next": result.next}))
 
 
 func _call_clear_errors(_args: Dictionary) -> Dictionary:
@@ -997,16 +999,11 @@ func _call_run_game(args: Dictionary) -> Dictionary:
 	var scene_res: Resource = ResourceLoader.load(scene)
 	if not scene_res is PackedScene:
 		return _fail("不是有效场景文件: %s(类型: %s)" % [scene, scene_res.get_class() if scene_res else "null"])
-	# 直接启动 godot 子进程运行该场景, 并以 --log-file 写入 user://game_run.log(绝对路径),
-	# 编辑器进程每帧增量读取该文件实时并入 get_logs(Windows 共享读已验证可行)。
-	_run_log_abs = ProjectSettings.globalize_path("user://game_run.log")
+	# 直接启动 godot 子进程运行该场景, 并以 --log-file 写入 user://game_run_<pid>.log
+	# 使用唯一文件名避免上一次运行的文件被锁定
+	_run_log_abs = ProjectSettings.globalize_path("user://game_run_%d.log" % Time.get_ticks_msec())
 	_run_log_offset = 0
 	_run_use_subprocess = false
-	# 清掉旧日志, 避免混入上一次运行残留
-	var f := FileAccess.open(_run_log_abs, FileAccess.WRITE)
-	if f:
-		f.store_string("")
-		f.close()
 	var exe := OS.get_executable_path()
 	var args_arr := PackedStringArray(["--path", ProjectSettings.globalize_path("res://"), scene, "--log-file", _run_log_abs])
 	_run_pid = OS.create_process(exe, args_arr)
@@ -1019,9 +1016,13 @@ func _call_run_game(args: Dictionary) -> Dictionary:
 func _call_stop_game(_args: Dictionary) -> Dictionary:
 	if _run_pid == 0:
 		return _fail("当前没有运行中的游戏")
+	# 清理日志文件
+	if not _run_log_abs.is_empty() and FileAccess.file_exists(_run_log_abs):
+		DirAccess.remove_absolute(_run_log_abs)
 	if OS.is_process_running(_run_pid):
 		OS.kill(_run_pid)
 	_run_pid = 0
+	_run_log_abs = ""
 	return _ok("已停止游戏")
 
 
@@ -1645,3 +1646,5 @@ func _call_file_exists(args: Dictionary) -> Dictionary:
 		"is_directory": is_dir,
 		"message": "文件存在" if exists else ("目录存在" if is_dir else "文件不存在")
 	}))
+
+
