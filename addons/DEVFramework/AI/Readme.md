@@ -54,32 +54,32 @@ perform_method = "perform_find_wood"
 在 `perform_method` 指向的方法名对应的 `GoapAgent` 子类（或挂载脚本）中实现行为。
 
 ```gdscript
-class_name WoodcutterAgent extends GoapAgent
+class_name RabbitAgent extends GoapAgent
 
 func _ready_goap() -> void:
 	# 代码方式配置（等价于在场景中配置数组）
 	var goal := GoapGoalDef.new()
-	goal.name = "带回木材"
-	goal.priority = 10
-	goal.goal_state = {"wood_delivered": true}
+	goal.name = "填饱肚子"
+	goal.priority = 20
+	goal.goal_state = {"hungry": false}
 	goals.append(goal)
 
 	var action := GoapActionDef.new()
-	action.name = "寻找木材"
-	action.effects = {"wood_near": true}
+	action.name = "寻找食物"
+	action.effects = {"has_food": true}
 	action.cost = 1.0
-	action.perform_method = "perform_find_wood"
+	action.perform_method = "perform_find_food"
 	actions.append(action)
 
 	# 初始世界状态
-	set_state("wood_near", false)
+	set_state("hungry", true)
 
 # 同步行动：声明 -> bool，返回 true / false 表示完成 / 失败
-func perform_find_wood(_action: GoapAction) -> bool:
+func perform_find_food(_action: GoapAction) -> bool:
 	return true
 
 # 异步行动：声明 -> Variant，返回 null，完成后手动通知
-func perform_carry_wood(_action: GoapAction) -> Variant:
+func perform_walk_to_food(_action: GoapAction) -> Variant:
 	get_tree().create_timer(1.0).timeout.connect(
 		func(): notify_action_finished(true))
 	return null
@@ -138,9 +138,12 @@ agent.replan()
 
 ## 内置演示
 
-运行 `res://Scenes/AI/GoapDemo.tscn` 可查看完整示例（樵夫 AI）：
-- 配置驱动：行动/目标全部定义在 `res://Assets/Def/Goap/*.tres`
-- 目标优先级：带回木材（10）> 获得木材（5）
-- 同步行动（寻找/制作/砍伐）与异步行动（搬运 1 秒）混用
-- 世界状态驱动的动态重规划：完成一个行动，计划自动缩短
-- 场景 UI 提供"木头就位 / 给予工具 / 重置世界 / 暂停 AI"调试按钮
+运行 `res://Scenes/AI/GoapDemo.tscn` 可查看完整示例（2D 生态箱）：
+- 配置驱动：行动/目标全部定义在 `res://Assets/Def/Goap/Ecosystem/*.tres`
+- 生物行为：
+  - 兔（食草）：饥饿时觅食（寻找食物 → 走向食物 → 进食）
+  - 狐（捕食）：饥饿时狩猎（寻找猎物 → 追踪猎物 → 捕食）
+- 目标优先级：兔的「逃离危险（30）」>「填饱肚子（20）」，感知到狐狸时优先逃跑
+- 世界状态驱动的动态重规划：感知 / 饥饿变化自动触发重新规划
+- 被捕食的兔与被吃掉的草会在随机位置重生，生态持续运行
+- 场景 UI 提供「暂停 / 加速 / 重置世界」调试按钮，日志实时显示每个 Agent 的目标与行动

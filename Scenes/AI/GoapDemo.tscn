@@ -1,18 +1,22 @@
-[gd_scene load_steps=4 format=3 uid="uid://bgoapdemo0001"]
+[gd_scene load_steps=3 format=3 uid="uid://goapdemoec01"]
 
-[ext_resource type="Script" path="res://Scripts/Entity/Goap/WoodcutterAgent.gd" id="1_agent"]
-[ext_resource type="Script" path="res://Scenes/AI/GoapDemo.gd" id="2_demo"]
+[ext_resource type="Script" path="res://Scenes/AI/GoapDemo.gd" id="1_goap"]
 
 [sub_resource type="StyleBoxFlat" id="StyleBoxFlat_panel"]
-content_margin_left = 16.0
-content_margin_top = 14.0
-content_margin_right = 16.0
-content_margin_bottom = 14.0
-bg_color = Color(0.09, 0.11, 0.15, 0.95)
+bg_color = Color(0.08, 0.10, 0.13, 0.9)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(0.3, 0.5, 0.35, 1)
 corner_radius_top_left = 8
 corner_radius_top_right = 8
 corner_radius_bottom_right = 8
 corner_radius_bottom_left = 8
+content_margin_left = 12.0
+content_margin_top = 10.0
+content_margin_right = 12.0
+content_margin_bottom = 10.0
 
 [node name="GoapDemo" type="Control"]
 layout_mode = 3
@@ -21,89 +25,73 @@ anchor_right = 1.0
 anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
-script = ExtResource("2_demo")
+script = ExtResource("1_goap")
 
-[node name="Woodcutter" type="Node2D" parent="."]
+[node name="World" type="Node2D" parent="."]
 unique_name_in_owner = true
-script = ExtResource("1_agent")
+
+[node name="BG" type="Polygon2D" parent="World"]
+polygon = PackedVector2Array(44, 44, 1108, 44, 1108, 596, 44, 596)
+color = Color(0.15, 0.28, 0.18, 1)
 
 [node name="UI" type="PanelContainer" parent="."]
-layout_mode = 1
-anchors_preset = 0
-offset_left = 24.0
-offset_top = 24.0
-offset_right = 560.0
-offset_bottom = 470.0
+anchors_preset = 3
+anchor_left = 1.0
+anchor_top = 1.0
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_left = -464.0
+offset_top = -330.0
+offset_right = -24.0
+offset_bottom = -24.0
+grow_horizontal = 0
+grow_vertical = 0
 theme_override_styles/panel = SubResource("StyleBoxFlat_panel")
 
 [node name="VBox" type="VBoxContainer" parent="UI"]
 layout_mode = 2
-theme_override_constants/separation = 6
+theme_override_constants/separation = 8
 
 [node name="Title" type="Label" parent="UI/VBox"]
 layout_mode = 2
-theme_override_colors/font_color = Color(0.95, 0.95, 0.95, 1)
-theme_override_font_sizes/font_size = 20
-text = "GOAP 演示 · 樵夫"
+text = "GOAP 演示 · 2D 生态箱"
+horizontal_alignment = 1
 
-[node name="WorldLabel" type="RichTextLabel" parent="UI/VBox"]
+[node name="StatsLabel" type="Label" parent="UI/VBox"]
 unique_name_in_owner = true
 layout_mode = 2
-theme_override_colors/default_color = Color(0.78, 0.78, 0.78, 1)
-theme_override_font_sizes/normal_font_size = 14
-bbcode_enabled = true
-fit_content = true
-scroll_active = false
-text = "世界状态"
-
-[node name="GoalLabel" type="Label" parent="UI/VBox"]
-unique_name_in_owner = true
-layout_mode = 2
-theme_override_colors/font_color = Color(0.87, 0.87, 0.87, 1)
-theme_override_font_sizes/font_size = 14
-text = "当前目标: -"
-
-[node name="PlanLabel" type="Label" parent="UI/VBox"]
-unique_name_in_owner = true
-layout_mode = 2
-theme_override_colors/font_color = Color(0.87, 0.87, 0.87, 1)
-theme_override_font_sizes/font_size = 14
-text = "当前计划: -"
+text = "草 x0 ｜ 兔 x0 ｜ 狐 x0"
+horizontal_alignment = 1
 
 [node name="LogBox" type="RichTextLabel" parent="UI/VBox"]
 unique_name_in_owner = true
 layout_mode = 2
 size_flags_vertical = 3
-theme_override_colors/default_color = Color(0.62, 0.66, 0.72, 1)
-theme_override_font_sizes/normal_font_size = 13
+custom_minimum_size = Vector2(0, 200)
+scroll_active = true
 bbcode_enabled = true
-text = ""
 
 [node name="Buttons" type="HBoxContainer" parent="UI/VBox"]
 layout_mode = 2
 theme_override_constants/separation = 8
 
-[node name="NearButton" type="Button" parent="UI/VBox/Buttons"]
-unique_name_in_owner = true
-layout_mode = 2
-text = "木头就位"
-
-[node name="ToolButton" type="Button" parent="UI/VBox/Buttons"]
-unique_name_in_owner = true
-layout_mode = 2
-text = "给予工具"
-
-[node name="ResetButton" type="Button" parent="UI/VBox/Buttons"]
-unique_name_in_owner = true
-layout_mode = 2
-text = "重置世界"
-
 [node name="PauseButton" type="Button" parent="UI/VBox/Buttons"]
 unique_name_in_owner = true
 layout_mode = 2
-text = "暂停 AI"
+size_flags_horizontal = 3
+text = "暂停"
 
-[connection signal="pressed" from="UI/VBox/Buttons/NearButton" to="." method="_on_near_pressed"]
-[connection signal="pressed" from="UI/VBox/Buttons/ToolButton" to="." method="_on_tool_pressed"]
-[connection signal="pressed" from="UI/VBox/Buttons/ResetButton" to="." method="_on_reset_pressed"]
+[node name="SpeedButton" type="Button" parent="UI/VBox/Buttons"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+text = "加速 x2"
+
+[node name="ResetButton" type="Button" parent="UI/VBox/Buttons"]
+layout_mode = 2
+size_flags_horizontal = 3
+text = "重置"
+
 [connection signal="pressed" from="UI/VBox/Buttons/PauseButton" to="." method="_on_pause_pressed"]
+[connection signal="pressed" from="UI/VBox/Buttons/SpeedButton" to="." method="_on_speed_pressed"]
+[connection signal="pressed" from="UI/VBox/Buttons/ResetButton" to="." method="_on_reset_pressed"]

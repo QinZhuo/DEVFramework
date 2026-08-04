@@ -153,7 +153,8 @@ func notify_action_finished(success: bool) -> void:
 	if success:
 		action.apply_effects(world_state)
 	if not success or replan_after_action:
-		replan()
+		# 延迟到帧末重规划，避免行动同步完成时 replan→execute→notify 同帧递归（栈溢出）
+		call_deferred("replan")
 	else:
 		_execute_next_action()
 
