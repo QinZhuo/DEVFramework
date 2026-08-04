@@ -248,10 +248,9 @@ func _register_run_tools() -> void:
 ## -- 开发辅助(重载/求值/设置) --
 func _register_dev_tools() -> void:
 	_add_tool("reload_project",
-		"触发编辑器重新扫描项目: 重建全局类缓存(新增 class_name 立即生效) + 重扫资源文件。新脚本/新资源不生效时调用此工具。可选 reopen_scene 重载当前编辑场景(未保存修改会丢失)。可选 restart_editor 重启整个编辑器(用于解决编辑器状态异常/插件加载失败/缓存混乱, 未保存修改会丢失)。",
+		"触发编辑器重新扫描项目: 重建全局类缓存(新增 class_name 立即生效) + 重扫资源文件。新脚本/新资源不生效时调用此工具。可选 reopen_scene 重载当前编辑场景(未保存修改会丢失)。",
 		{"type": "object", "properties": {
-			"reopen_scene": {"type": "boolean", "description": "是否重载当前编辑场景, 默认 false(注意: 未保存修改会丢失)"},
-			"restart_editor": {"type": "boolean", "description": "是否重启整个编辑器, 默认 false(注意: 未保存修改会丢失)"}
+			"reopen_scene": {"type": "boolean", "description": "是否重载当前编辑场景, 默认 false(注意: 未保存修改会丢失)"}
 		}},
 		_call_reload_project)
 
@@ -299,6 +298,9 @@ func _register_dev_tools() -> void:
 ## ======= MCP 协议处理 =======
 
 func _on_request(method: String, path: String, headers: Dictionary, body: PackedByteArray, stream) -> void:
+	# MCP 服务器已关闭时忽略请求（编辑器重启期间）
+	if _http == null:
+		return
 	if method == "OPTIONS":
 		_http.send_response(stream, 204, _cors_headers(headers), "")
 		return
@@ -1129,21 +1131,7 @@ func _consume_run_lines(txt: String) -> void:
 func _call_reload_project(args: Dictionary) -> Dictionary:
 	if _editor == null:
 		return _fail("编辑器不可用")
-	var restart: bool = _to_bool(args.get("restart_editor", false))
 	var reopen: bool = _to_bool(args.get("reopen_scene", false))
-	LogTool.log("MCP", "reload_project: restart=%s, reopen=%s, args=%s" % [str(restart), str(reopen), str(args)])
-	# restart_editor: 启动新编辑器实例并关闭当前编辑器
-	if restart:
-		var project_path := ProjectSettings.globalize_path("res://")
-		var exe := OS.get_executable_path()
-		var pid := OS.create_process(exe, ["--path", project_path])
-		if pid == 0:
-			return _fail("启动新编辑器实例失败")
-		# 延迟禁用插件和关闭编辑器
-		await _editor.get_base_control().get_tree().create_timer(1.0).timeout
-		_editor.set_plugin_enabled("DEVFramework", false)
-		# 返回消息（编辑器即将关闭，消息可能无法发送）
-		return _ok("已启动新编辑器实例(pid=%d)。当前编辑器即将关闭，MCP 服务将随编辑器重启。AI 请等待 3-5 秒后重新连接。" % pid)
 	# 常规重载: 重建类缓存 + 重扫资源
 	var fs := _editor.get_resource_filesystem()
 	if fs == null:
