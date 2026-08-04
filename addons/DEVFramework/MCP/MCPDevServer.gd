@@ -244,8 +244,11 @@ func _register_run_tools() -> void:
 ## -- 开发辅助(重载/求值/设置) --
 func _register_dev_tools() -> void:
 	_add_tool("reload_project",
-		"触发编辑器重新扫描项目: 重建全局类缓存(新增 class_name 立即生效) + 重扫资源文件。新脚本/新资源不生效时调用此工具。可选 reopen_scene 重载当前编辑场景(未保存修改会丢失)。",
-		{"type": "object", "properties": {"reopen_scene": {"type": "boolean", "description": "是否重载当前编辑场景, 默认 false(注意: 未保存修改会丢失)"}}},
+		"触发编辑器重新扫描项目: 重建全局类缓存(新增 class_name 立即生效) + 重扫资源文件。新脚本/新资源不生效时调用此工具。可选 reopen_scene 重载当前编辑场景(未保存修改会丢失)。可选 restart_editor 重启整个编辑器(用于解决编辑器状态异常/插件加载失败/缓存混乱, 未保存修改会丢失)。",
+		{"type": "object", "properties": {
+			"reopen_scene": {"type": "boolean", "description": "是否重载当前编辑场景, 默认 false(注意: 未保存修改会丢失)"},
+			"restart_editor": {"type": "boolean", "description": "是否重启整个编辑器, 默认 false(注意: 未保存修改会丢失)"}
+		}},
 		_call_reload_project)
 
 	_add_tool("eval_code",
@@ -996,13 +999,25 @@ func _consume_run_lines(txt: String) -> void:
 func _call_reload_project(args: Dictionary) -> Dictionary:
 	if _editor == null:
 		return _fail("编辑器不可用")
+	var restart: bool = bool(args.get("restart_editor", false))
+	var reopen: bool = bool(args.get("reopen_scene", false))
+	# restart_editor: 启动新编辑器实例并关闭当前编辑器
+	if restart:
+		var project_path := ProjectSettings.globalize_path("res://")
+		var exe := OS.get_executable_path()
+		var pid := OS.create_process(exe, ["--path", project_path])
+		if pid == 0:
+			return _fail("启动新编辑器实例失败")
+		await _editor.get_base_control().get_tree().create_timer(0.5).timeout
+		_editor.set_plugin_enabled("DEVFramework", false)
+		return _ok("已启动新编辑器实例(pid=%d), 当前编辑器即将关闭。" % pid)
+	# 常规重载: 重建类缓存 + 重扫资源
 	var fs := _editor.get_resource_filesystem()
 	if fs == null:
 		return _fail("编辑器文件系统不可用")
 	var tree := _editor.get_base_control().get_tree()
 	if tree == null:
 		return _fail("编辑器场景树不可用")
-	var reopen: bool = bool(args.get("reopen_scene", false))
 	var current := ""
 	if _edited_root() != null:
 		current = _edited_root().get_scene_file_path()
@@ -1206,14 +1221,54 @@ func _coerce_value(value: Variant, target_type: int) -> Variant:
 				if s.count(",") == 1:
 					var parts := s.split(",")
 					return Vector2(float(parts[0]), float(parts[1]))
+			TYPE_VECTOR2I:
+				if s.count(",") == 1:
+					var parts := s.split(",")
+					return Vector2i(int(parts[0]), int(parts[1]))
 			TYPE_VECTOR3:
 				if s.count(",") == 2:
 					var parts := s.split(",")
 					return Vector3(float(parts[0]), float(parts[1]), float(parts[2]))
-			TYPE_COLOR:
+			TYPE_VECTOR3I:
+				if s.count(",") == 2:
+					var parts := s.split(",")
+					return Vector3i(int(parts[0]), int(parts[1]), int(parts[2]))
+			TYPE_VECTOR4:
 				if s.count(",") == 3:
 					var parts := s.split(",")
-					return Color(float(parts[0]), float(parts[1]), float(parts[2]), float(parts[3]))
+					return Vector4(float(parts[0]), float(parts[1]), float(parts[2]), float(parts[3]))
+			TYPE_VECTOR4I:
+				if s.count(",") == 3:
+					var parts := s.split(",")
+					return Vector4i(int(parts[0]), int(parts[1]), int(parts[2]), int(parts[3]))
+			TYPE_COLOR:
+				if s.count(",") >= 2:
+					var parts := s.split(",")
+					if parts.size() == 3:
+						return Color(float(parts[0]), float(parts[1]), float(parts[2]), 1.0)
+					elif parts.size() >= 4:
+						return Color(float(parts[0]), float(parts[1]), float(parts[2]), float(parts[3]))
+			TYPE_RECT2:
+				if s.count(",") == 3:
+					var parts := s.split(",")
+					return Rect2(float(parts[0]), float(parts[1]), float(parts[2]), float(parts[3]))
+			TYPE_RECT2I:
+				if s.count(",") == 3:
+					var parts := s.split(",")
+					return Rect2i(int(parts[0]), int(parts[1]), int(parts[2]), int(parts[3]))
+			TYPE_PLANE:
+				if s.count(",") == 3:
+					var parts := s.split(",")
+					return Plane(float(parts[0]), float(parts[1]), float(parts[2]), float(parts[3]))
+			TYPE_QUATERNION:
+				if s.count(",") == 3:
+					var parts := s.split(",")
+					return Quaternion(float(parts[0]), float(parts[1]), float(parts[2]), float(parts[3]))
+			TYPE_AABB:
+				if s.count(",") == 5:
+					var parts := s.split(",")
+					return AABB(Vector3(float(parts[0]), float(parts[1]), float(parts[2])),
+					           Vector3(float(parts[3]), float(parts[4]), float(parts[5])))
 			TYPE_INT:
 				return int(s)
 			TYPE_FLOAT:
