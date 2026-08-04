@@ -711,7 +711,11 @@ func _call_set_node_property(args: Dictionary) -> Dictionary:
 	var current: Variant = node.get(property)
 	if current == null and not node.has_method(property):
 		return _fail("节点 %s 没有属性: %s" % [path, property])
-	var typed: Variant = _coerce_value(value, typeof(current))
+	# 先尝试智能自动转换，如果失败再使用目标类型转换
+	var typed: Variant = _auto_convert_arg(value)
+	if typed == value and current != null:
+		# 自动转换未生效，使用目标类型转换
+		typed = _coerce_value(value, typeof(current))
 	if typed == null and value != null:
 		return _fail("无法转换值 %s 为属性类型" % str(value))
 	node.set(property, typed)
@@ -727,7 +731,11 @@ func _call_call_node_method(args: Dictionary) -> Dictionary:
 		return _fail("找不到节点: %s" % path)
 	if not node.has_method(method):
 		return _fail("节点 %s 没有方法: %s" % [path, method])
-	var result: Variant = node.callv(method, args_arr)
+	# 对参数进行智能类型转换
+	var converted_args: Array = []
+	for arg in args_arr:
+		converted_args.append(_auto_convert_arg(arg))
+	var result: Variant = node.callv(method, converted_args)
 	return _ok("已调用 %s.%s() -> %s" % [path, method, str(result)])
 
 
@@ -1210,6 +1218,104 @@ func _resolve_node(path: String) -> Node:
 	if n:
 		return n
 	return root.find_child(path, true, false)
+
+
+## 自动推断并转换参数类型(无需知道目标类型)
+## 支持: Vector2/Vector2i/Vector3/Vector3i/Color/Rect2/数字/布尔等
+func _auto_convert_arg(value: Variant) -> Variant:
+	if not value is String:
+		return value
+	var s: String = value
+	# 检测 Vector2 格式: "x,y" 或 "(x, y)"
+	if s.count(",") == 1 and not s.contains("Color") and not s.contains("Rect"):
+		var parts := s.replace("(", "").replace(")", "").split(",")
+		if parts.size() == 2:
+			var x := parts[0].strip_edges()
+			var y := parts[1].strip_edges()
+			if _is_numeric(x) and _is_numeric(y):
+				return Vector2(float(x), float(y))
+	# 检测 Vector2i 格式
+	if s.count(",") == 1 and s.contains("i"):
+		var parts := s.replace("(", "").replace(")", "").replace("i", "").split(",")
+		if parts.size() == 2:
+			var x := parts[0].strip_edges()
+			var y := parts[1].strip_edges()
+			if _is_numeric(x) and _is_numeric(y):
+				return Vector2i(int(x), int(y))
+	# 检测 Vector3 格式: "x,y,z"
+	if s.count(",") == 2:
+		var parts := s.replace("(", "").replace(")", "").split(",")
+		if parts.size() == 3:
+			var x := parts[0].strip_edges()
+			var y := parts[1].strip_edges()
+			var z := parts[2].strip_edges()
+			if _is_numeric(x) and _is_numeric(y) and _is_numeric(z):
+				return Vector3(float(x), float(y), float(z))
+	# 检测 Color 格式: "r,g,b" 或 "r,g,b,a"
+	if s.count(",") >= 2 and s.count(",") <= 3:
+		var parts := s.replace("(", "").replace(")", "").split(",")
+		if parts.size() >= 3 and parts.size() <= 4:
+			var all_numeric := true
+			for p in parts:
+				if not _is_numeric(p.strip_edges()):
+					all_numeric = false
+					break
+			if all_numeric:
+				var r := float(parts[0].strip_edges())
+				var g := float(parts[1].strip_edges())
+				var b := float(parts[2].strip_edges())
+				var a := float(parts[3].strip_edges()) if parts.size() == 4 else 1.0
+				return Color(r, g, b, a)
+	# 检测 Rect2 格式: "x,y,w,h"
+	if s.count(",") == 3:
+		var parts := s.replace("(", "").replace(")", "").split(",")
+		if parts.size() == 4:
+			var all_numeric := true
+			for p in parts:
+				if not _is_numeric(p.strip_edges()):
+					all_numeric = false
+					break
+			if all_numeric:
+				return Rect2(float(parts[0].strip_edges()), float(parts[1].strip_edges()),
+					float(parts[2].strip_edges()), float(parts[3].strip_edges()))
+	# 检测纯数字
+	if _is_numeric(s):
+		if s.contains("."):
+			return float(s)
+		else:
+			return int(s)
+	# 检测布尔值
+	if s == "true":
+		return true
+	elif s == "false":
+		return false
+	# 检测 null
+	if s == "null" or s == "nil":
+		return null
+	return value
+
+
+## 检查字符串是否为有效数字
+func _is_numeric(s: String) -> bool:
+	if s.is_empty():
+		return false
+	var i := 0
+	if s[0] == "-" or s[0] == "+":
+		i = 1
+	var has_dot := false
+	while i < s.length():
+		var c := s[i]
+		if c == ".":
+			if has_dot:
+				return false
+			has_dot = true
+		else:
+			# 数字字符: 0-9
+			var code := c.unicode_at(0)
+			if code < 48 or code > 57:  # '0'-'9'
+				return false
+		i += 1
+	return true
 
 
 ## 将传入值转换为目标类型(处理 Vector2/Vector3/Color 等字符串)

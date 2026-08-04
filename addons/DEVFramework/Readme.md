@@ -216,7 +216,6 @@ attr.value_changed.connect(func(modifier): ...)
 |---|---|---|
 | `AttributeComponent` | 管理一组属性 | `get_attribute(name)`、`add_modifier(attr, mod, immediate)`、`remove_modifiers(source)`、`clear()`、`save_data()` |
 | `BuffComponent` | 管理 Buff 层数 | `get_buff(name)`、`add_stacks(name, n)`、`remove_stacks(name, n)`、`clear_stacks(name)`、`save_data()` |
-| `SFXComponent` | 音效 + Tween 播放 | `play(key)`，从 `audios` / `tweens` 字典查找 |
 
 ```gdscript
 # BuffComponent 支持上下文提供者

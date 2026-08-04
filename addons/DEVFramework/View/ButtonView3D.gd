@@ -11,7 +11,6 @@ class_name ButtonView3D extends Area3D
 		tween_visible = value
 		_update_visible(false)
 
-@export var audio: SFXComponent
 @onready var collision_shape: CollisionShape3D = $CollisionShape3D
 @export var outline_mesh: MeshInstance3D
 
@@ -39,8 +38,6 @@ func _mouse_enter():
 	is_enter = true
 	if enter_tween:
 		enter_tween.play()
-	if audio:
-		audio.play("Enter")
 	if outline_mesh:
 		OutlineEffect.set_outlined(true, outline_mesh)
 
@@ -62,8 +59,6 @@ func _mouse_down():
 	elif enter_tween:
 		enter_tween.playback()
 	_button_down()
-	if audio:
-		audio.play("Down")
 
 func _mouse_up():
 	if not is_pressed:
