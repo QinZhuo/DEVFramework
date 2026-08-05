@@ -1456,13 +1456,18 @@ func _call_eval_code(args: Dictionary) -> Dictionary:
 	var shown := str(result)
 	if result is Dictionary or result is Array:
 		shown = JSON.stringify(result)
+	# 运行期错误(如 get_node 访问 null 字段)应作为错误即时返回, 而非"成功+警告",
+	# 否则编辑器侧只能等 20s 超时再回查错误缓冲, AI 无法及时定位。
 	if not runtime_errors.is_empty():
 		var msgs := PackedStringArray()
 		var max_show := mini(runtime_errors.size(), 5)
 		for i in range(max_show):
-			msgs.append(str(runtime_errors[i].get("message", "")))
-		return _ok("执行完成, 返回: %s\n警告: 执行中捕获 %d 条运行期错误(前 %d 条):\n%s\n如需完整列表可用 get_game_errors。" %
-			[shown, runtime_errors.size(), max_show, "\n".join(msgs)])
+			var e: Dictionary = runtime_errors[i]
+			msgs.append("%s@%s:%s" % [e.get("message", ""), e.get("file", "?"), e.get("line", "?")])
+		return _err(
+			"eval 执行返回: %s\n执行中捕获 %d 条运行期错误(前 %d 条):\n%s\n\n提示: get_node() 相对路径基于 eval 脚本实例, 找不到节点常因路径写错, 建议用绝对路径(/root/场景名/...) 或 get_tree().current_scene.get_node(...)。完整错误列表可用 get_game_errors。" %
+			[shown, runtime_errors.size(), max_show, "\n".join(msgs)],
+			"validation", true, "修正 eval 代码中的错误后重试")
 	return _ok("执行成功, 返回: %s" % shown)
 
 
@@ -1923,7 +1928,7 @@ func _register_runtime_tools() -> void:
 		_runtime_take_screenshot)
 
 	_add_tool("game_eval",
-		"在游戏进程中执行一段 GDScript 代码, 可访问当前游戏场景树(get_tree()/get_node()/get_viewport() 等)。常用于读取游戏运行状态/修改变量/触发逻辑。代码中可显式 return 返回值。",
+		"在游戏进程中执行一段 GDScript 代码, 可访问当前游戏场景树(get_tree()/get_node()/get_viewport() 等)。常用于读取游戏运行状态/修改变量/触发逻辑。代码中可显式 return 返回值。注意: get_node() 相对路径基于 eval 脚本实例(挂在场景树 root 下), 访问场景节点请用绝对路径 /root/场景名/子路径 或 get_tree().current_scene.get_node(...)。",
 		{"type": "object", "properties": {"code": {"type": "string", "description": "要执行的 GDScript 代码(方法体内容, 缩进由服务器自动处理)"}}},
 		_call_eval_code)
 
