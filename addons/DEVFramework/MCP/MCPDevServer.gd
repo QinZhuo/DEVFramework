@@ -117,16 +117,23 @@ func _on_debugger_capture(message: String, data: Array) -> bool:
 func _on_session_started(session_id: int) -> void:
 	LogTool.log("MCP", "游戏调试会话已建立(session=%d)" % session_id)
 	_game_ready = false
+	# 保留旧的未决失败结果不覆盖; 新会话开始, 旧请求已无意义
+	for req_id in _pending:
+		if _pending[req_id] == null:
+			_pending[req_id] = _err("游戏调试会话已重启, 原请求被取消", "transient", true, "重新调用该工具即可")
 	_pending.clear()
 
 
+## 游戏会话结束(正常停止/崩溃/被杀)。填充所有未决请求为失败结果,
+## 等待中的 _call_runtime_proxy 能立即读到(而不是干等超时)。
+## 注意: 填充后不能 clear(), 否则代理读不到结果会退回 20s 超时。
 func _on_session_stopped(session_id: int) -> void:
 	LogTool.log("MCP", "游戏调试会话已结束(session=%d)" % session_id)
 	_game_ready = false
+	var msg := "游戏进程已停止(正常结束或崩溃), 所有未完成的运行时调用被取消。请先 run_game 重新启动游戏后再试。"
 	for req_id in _pending:
 		if _pending[req_id] == null:
-			_pending[req_id] = {"is_error": true, "text": "游戏调试会话已结束, 请求被取消"}
-	_pending.clear()
+			_pending[req_id] = _err(msg, "game_stopped", true, "调用 run_game 重新启动游戏, 等待调试线就绪后重试")
 
 
 ## 编辑器进程: 编辑器模式显式启动(由 plugin.gd 在启用插件时调用)。
@@ -492,14 +499,16 @@ func _handle_jsonrpc(req: Dictionary) -> Dictionary:
 			if not _tool_handlers.has(tool_name):
 				return _jsonrpc_error(req_id, -32602, "Unknown tool: %s" % tool_name)
 			var tool_result: Dictionary = await _tool_handlers[tool_name].call(arguments)
-			return {
-				"jsonrpc": "2.0",
-				"id": req_id,
-				"result": {
-					"content": [{"type": "text", "text": tool_result.get("text", "")}],
-					"isError": tool_result.get("is_error", false),
-				},
+			var out_result := {
+				"content": [{"type": "text", "text": tool_result.get("text", "")}],
+				"isError": tool_result.get("is_error", false),
 			}
+			# 附带结构化错误元数据(error_category/is_retryable/recovery), 供 AI 决策恢复策略
+			if tool_result.get("error_category", "") != "":
+				out_result["errorCategory"] = tool_result.get("error_category")
+				out_result["isRetryable"] = tool_result.get("is_retryable", false)
+				out_result["recovery"] = tool_result.get("recovery", "")
+			return {"jsonrpc": "2.0", "id": req_id, "result": out_result}
 		"ping":
 			return {"jsonrpc": "2.0", "id": req_id, "result": {}}
 		"logging/setLevel":
@@ -519,6 +528,22 @@ func _ok(text: String) -> Dictionary:
 
 func _fail(text: String) -> Dictionary:
 	return {"text": text, "is_error": true}
+
+
+## 结构化错误封装(MCP 工具执行错误)。category 语义:
+##   validation  - 输入/代码问题, 修正后重试即可(同参数重试永远失败)
+##   transient   - 暂时性故障(超时/未就绪), 等待后重试可能成功
+##   game_stopped- 游戏进程已结束/崩溃, 必须 run_game 重启后才能继续
+##   internal    - 服务器内部错误, 不应重试同参数
+## retryable=true 表示"等待/修正后重试有机会成功"。
+func _err(text: String, category: String, retryable: bool, recovery: String) -> Dictionary:
+	return {
+		"text": text,
+		"is_error": true,
+		"error_category": category,
+		"is_retryable": retryable,
+		"recovery": recovery,
+	}
 
 
 ## 辅助函数：将 Variant 转换为 bool（支持 bool、String("true"/"True")、数字等）
@@ -952,6 +977,7 @@ func _call_save_scene(_args: Dictionary) -> Dictionary:
 
 
 func _call_get_project_info(_args: Dictionary) -> Dictionary:
+	var session_active: bool = debugger_plugin != null and debugger_plugin.has_active_session()
 	var info := {
 		"project_name": ProjectSettings.get_setting("application/config/name", ""),
 		"godot_version": Engine.get_version_info(),
@@ -961,7 +987,9 @@ func _call_get_project_info(_args: Dictionary) -> Dictionary:
 		"mode": _mode,
 		"mcp_port": _port,
 		"mcp_running": is_running(),
-		"game_running": debugger_plugin != null and debugger_plugin.has_active_session(),
+		"game_running": session_active,
+		"bridge_ready": session_active and _game_ready,
+		"session_active": session_active,
 	}
 	return _ok(JSON.stringify(info))
 
@@ -1080,6 +1108,14 @@ func _call_eval_code(args: Dictionary) -> Dictionary:
 	var code: String = str(args.get("code", ""))
 	if code.is_empty():
 		return _fail("必须提供 code")
+	# 静态安全扫描(禁止逃逸 API)
+	var forbidden := _eval_forbidden_scan(code)
+	if forbidden != "":
+		return _err(forbidden, "validation", false, "移除被禁止的 API 调用后重新调用 eval")
+	# 预编译检查(语法错误在到达解释器前拦截)
+	var precheck := _precheck_eval_code(code)
+	if precheck != "":
+		return _err(precheck, "validation", false, "修正代码语法后重新调用 eval(语法错误无法通过重试解决)")
 	var script := GDScript.new()
 	var body := _indent_method_body(code)
 	# 包装为挂到场景树的 Node 方法, 让用户代码可直接 get_tree()/get_node() 访问当前场景
@@ -1090,19 +1126,34 @@ func _call_eval_code(args: Dictionary) -> Dictionary:
 		var hint := ""
 		if text.contains("hides a global script class"):
 			hint = " (class_name 与全局类冲突: 请勿在 eval_code 中声明类, 或先 reload_project)"
-		return _fail("代码解析失败: %s%s\n解析详情已输出到编辑器控制台, 可用 get_logs 查看。" % [text, hint])
+		return _err("代码解析失败: %s%s\n解析详情已输出到编辑器控制台, 可用 get_logs 查看。" % [text, hint],
+			"validation", false, "修正代码后重新调用 eval")
+	# 执行前记录错误缓冲区位置, 以便捕获本次 eval 运行期错误
+	var err_before: int = _logger.get_error_count() if _logger else 0
 	var inst: Node = script.new()
 	if inst == null:
-		return _fail("无法实例化求值脚本")
+		return _err("无法实例化求值脚本", "internal", false, "重新调用 eval, 或检查服务器日志")
 	var root := get_tree().root
 	if root:
 		root.add_child(inst)
 	var result: Variant = inst.call("_mcp_run")
 	if root:
 		inst.queue_free()
+	# 收集本次运行产生的运行期错误(若代码 halt, 也会反映为错误入队)
+	var runtime_errors: Array = []
+	if _logger:
+		var taken: Dictionary = _logger.take_errors_since(err_before)
+		runtime_errors = taken.get("entries", [])
 	var shown := str(result)
 	if result is Dictionary or result is Array:
 		shown = JSON.stringify(result)
+	if not runtime_errors.is_empty():
+		var msgs := PackedStringArray()
+		var max_show := mini(runtime_errors.size(), 5)
+		for i in range(max_show):
+			msgs.append(str(runtime_errors[i].get("message", "")))
+		return _ok("执行完成, 返回: %s\n警告: 执行中捕获 %d 条运行期错误(前 %d 条):\n%s\n如需完整列表可用 get_game_errors。" %
+			[shown, runtime_errors.size(), max_show, "\n".join(msgs)])
 	return _ok("执行成功, 返回: %s" % shown)
 
 
@@ -1826,7 +1877,7 @@ func _register_game_play_tools() -> void:
 	_add_tool("game_eval",
 		"在游戏进程中执行一段 GDScript 代码(经调试线转发到游戏进程)。需先 run_game 启动游戏。可访问游戏场景树。",
 		{"type": "object", "properties": {"code": {"type": "string", "description": "要执行的 GDScript 代码"}}},
-		func(args): return await _call_runtime_proxy("game_eval", args))
+		func(args): return await _call_game_eval_proxy(args))
 
 	_add_tool("get_game_logs",
 		"获取游戏进程的日志(经调试线转发到游戏进程)。需先 run_game 启动游戏。",
@@ -1847,21 +1898,131 @@ func _register_game_play_tools() -> void:
 ## 转发工具调用到游戏进程(经 EngineDebugger 调试线)。仅编辑器模式。
 func _call_runtime_proxy(tool_name: String, args: Dictionary) -> Dictionary:
 	if debugger_plugin == null or not debugger_plugin.has_active_session():
-		return _fail("游戏未运行。请先使用 run_game 启动游戏")
+		return _err("游戏未运行。请先使用 run_game 启动游戏", "game_stopped", true, "调用 run_game 启动游戏, 等待调试线就绪后重试")
 	if not _game_ready:
-		return _fail("游戏调试线尚未就绪。请稍后重试(可先 run_game 等待启动完成)")
+		return _err("游戏调试线尚未就绪", "transient", true, "等待游戏启动完成(可稍后重试, 或重新 run_game)")
 	var req_id := _next_req_id
 	_next_req_id += 1
 	_pending[req_id] = null
 	debugger_plugin.send_call(req_id, tool_name, args)
-	# 轮询等待游戏响应(最多 20s; 会话断开时由 _on_session_stopped 填入失败结果)
+	# 轮询等待游戏响应。会话断开时 _on_session_stopped 会填充失败结果;
+	# 同时每帧检测会话是否仍活跃, 一旦消失立即返回(不再干等 20s)。
 	var deadline := Time.get_ticks_msec() + 20000
 	while Time.get_ticks_msec() < deadline:
 		if _pending.has(req_id) and _pending[req_id] != null:
 			var result: Dictionary = _pending[req_id]
 			_pending.erase(req_id)
-			return {"text": str(result.get("text", "")), "is_error": bool(result.get("is_error", false))}
+			return _normalize_wire_result(result, tool_name)
+		if not debugger_plugin.has_active_session():
+			_pending.erase(req_id)
+			return _err("游戏进程已停止/崩溃(工具 %s 的请求被取消)。请先 run_game 重启游戏。" % tool_name,
+				"game_stopped", true, "调用 run_game 重启游戏, 等待调试线就绪后重试")
 		await get_tree().process_frame
 	if _pending.has(req_id):
 		_pending.erase(req_id)
-	return _fail("游戏进程响应超时(20s)。工具: %s" % tool_name)
+	# 超时主因通常是: eval 代码触发运行期脚本错误(除零/访问null等)导致 _mcp_run 中止、未发回结果;
+	# 其次是死循环/卡死。自动回查游戏错误缓冲, 把真实脚本错误拼进超时响应, 而非让 AI 瞎猜。
+	var diagnose := await _fetch_recent_game_error(tool_name)
+	if diagnose != "":
+		return _err("游戏进程响应超时(20s)。工具: %s。\n已自动回查游戏错误缓冲, 发现运行期脚本错误:\n%s\n\n若你的代码触发了脚本错误(如除零/访问 null 字段), 请修正后重试; 若确实无错误但仍超时, 才考虑死循环/卡死。" %
+			[tool_name, diagnose],
+			"validation", true, "查看上方脚本错误修正代码后重试; 若代码无误仍超时, stop_game 后重新 run_game")
+	return _err("游戏进程响应超时(20s)。工具: %s。游戏错误缓冲中无运行期脚本错误, 可能是死循环/卡死或游戏无响应。" % tool_name,
+		"transient", true, "检查 game_eval 代码是否含死循环; 必要时 stop_game 后重新 run_game")
+
+
+## 超时诊断: 回查游戏错误缓冲, 返回最近一条脚本错误描述(无则返回 "")
+func _fetch_recent_game_error(tool_name: String) -> String:
+	# 用内部 req_id 再发一次 get_game_errors(短超时), 避免二次长期挂起
+	var req_id := _next_req_id
+	_next_req_id += 1
+	_pending[req_id] = null
+	if not debugger_plugin.send_call(req_id, "get_game_errors", {}):
+		return ""
+	var deadline := Time.get_ticks_msec() + 5000
+	while Time.get_ticks_msec() < deadline:
+		if _pending.has(req_id) and _pending[req_id] != null:
+			var result: Dictionary = _pending[req_id]
+			_pending.erase(req_id)
+			if not result.get("is_error", false):
+				var text := str(result.get("text", ""))
+				var parsed: Variant = JSON.parse_string(text)
+				if parsed is Dictionary:
+					var entries: Array = parsed.get("errors", [])
+					if not entries.is_empty():
+						var e: Dictionary = entries[entries.size() - 1]
+						var msg := str(e.get("message", ""))
+						var f := str(e.get("file", ""))
+						var ln := str(e.get("line", ""))
+						var fn := str(e.get("function", ""))
+						return "  错误: %s\n  位置: %s:%s (函数: %s)" % [msg, f, ln, fn]
+			return ""
+		if not debugger_plugin.has_active_session():
+			_pending.erase(req_id)
+			return ""
+		await get_tree().process_frame
+	if _pending.has(req_id):
+		_pending.erase(req_id)
+	return ""
+
+
+## 归一化来自游戏的 wire 结果, 保留结构化错误元数据供 AI 决策
+func _normalize_wire_result(result: Dictionary, _tool_name: String) -> Dictionary:
+	var out := {
+		"text": str(result.get("text", "")),
+		"is_error": bool(result.get("is_error", false)),
+	}
+	if result.get("error_category", "") != "":
+		out["error_category"] = result.get("error_category")
+		out["is_retryable"] = bool(result.get("is_retryable", false))
+		out["recovery"] = str(result.get("recovery", ""))
+	return out
+
+
+## 编辑器侧 game_eval 转发: 先本地预编译 + 静态检查, 通过后才发到游戏进程。
+## 语法错误/被禁止的代码在编辑器内拦截, 避免污染游戏进程(运行时解析错误可能中断游戏)。
+func _call_game_eval_proxy(args: Dictionary) -> Dictionary:
+	var code: String = str(args.get("code", ""))
+	var precheck := _precheck_eval_code(code)
+	if precheck != "":
+		return _err("game_eval 被编辑器侧预检拦截: %s" % precheck, "validation", false, "修正代码后重新调用 game_eval(语法错误无法通过重试解决, 需修改代码)")
+	return await _call_runtime_proxy("game_eval", args)
+
+
+## 预检 eval 代码: 返回 "" 表示通过, 否则返回错误描述。
+## 1) 静态扫描被禁止的 API(防代码逃逸编辑器/游戏沙箱); 2) GDScript 语法预编译。
+func _precheck_eval_code(code: String) -> String:
+	if code.is_empty():
+		return "必须提供 code"
+	var forbidden := _eval_forbidden_scan(code)
+	if forbidden != "":
+		return forbidden
+	var script := GDScript.new()
+	var body := _indent_method_body(code)
+	script.source_code = "extends Node\nfunc _mcp_run():\n%s" % body
+	var err := script.reload()
+	if err != OK:
+		var text := error_string(err)
+		var hint := ""
+		if text.contains("hides a global script class"):
+			hint = " (class_name 与全局类冲突: 请勿在 eval_code 中声明类, 或先 reload_project)"
+		return "代码解析失败: %s%s" % [text, hint]
+	return ""
+
+
+## 静态扫描 eval 代码中被禁止的 API, 返回 "" 表示通过。
+const _EVAL_FORBIDDEN := [
+	["OS.execute", "调用系统命令"],
+	["OS.create_process", "启动外部进程"],
+	["OS.shell_open", "调用 shell 打开外部程序"],
+	["OS.kill", "终止进程"],
+	["Process", "访问进程"],
+	["DisplayServer.shell_open", "调用 shell"],
+]
+
+
+func _eval_forbidden_scan(code: String) -> String:
+	for item in _EVAL_FORBIDDEN:
+		if code.contains(item[0]):
+			return "代码包含被禁止的 API: %s (%s)。出于安全考虑不允许在 eval 中执行。" % [item[0], item[1]]
+	return ""
