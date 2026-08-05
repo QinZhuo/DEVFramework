@@ -74,14 +74,12 @@ func _ready() -> void:
 	EngineDebugger.send_message(DEBUGGER_PREFIX + ":ready", [])
 
 
-## 游戏进程: 处理编辑器经调试线发来的 dev_mcp:call 消息。
-## 返回 true 表示消息已被消费(注册捕获器协议要求)。
+## 游戏进程: 处理编辑器经调试线发来的工具调用消息。
+## 注意: 游戏侧注册捕获器后, 回调收到的 message 已去掉前缀(见 EngineDebugger 文档),
+## 例如编辑器发 "dev_mcp:call", 这里收到的是 "call"。返回 true 表示消息已被消费。
 func _on_debugger_message(message: String, data: Array) -> bool:
-	if not message.begins_with(DEBUGGER_PREFIX + ":"):
+	if message != "call" or data.size() < 3:
 		return false
-	var kind := message.get_slice(":", 1)
-	if kind != "call" or data.size() < 3:
-		return true
 	var req_id := int(data[0])
 	var tool_name := str(data[1])
 	var args: Dictionary = data[2] if data[2] is Dictionary else {}
@@ -1628,8 +1626,9 @@ func _collect_visible_nodes(node: Node, viewport: Viewport, result: Array, max_n
 			z_index = canvas_item.z_index if canvas_item is Node2D else 0
 		var class_name_str := node.get_class()
 		var script_class_str: String = ""
-		if node.get_script() != null:
-			script_class_str = str(node.get_script_class())
+		var nscript: Script = node.get_script()
+		if nscript != null:
+			script_class_str = nscript.get_global_name()
 		var info := {
 			"name": str(node.name),
 			"class": class_name_str,
