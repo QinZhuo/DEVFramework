@@ -1953,13 +1953,16 @@ func _register_runtime_tools() -> void:
 func _call_get_game_view(args: Dictionary) -> Dictionary:
 	var max_nodes: int = int(args.get("max_nodes", 50))
 	var max_depth: int = int(args.get("max_depth", 10))
-	var root := get_tree().current_scene
-	if root == null:
+	var tree := get_tree()
+	if tree == null or tree.current_scene == null:
 		return _fail("当前没有运行中的场景")
 	var viewport := get_viewport()
 	var viewport_size := viewport.get_visible_rect().size
 	var nodes_info: Array = []
-	_collect_visible_nodes(root, viewport, nodes_info, max_nodes, 0, max_depth)
+	# 从场景树根的所有子节点遍历(current_scene + autoload + 其他根),
+	# autoload 下的 UI(如 HUD) 是 root 直属子节点, 仅遍历 current_scene 会漏掉它们
+	for child in tree.root.get_children():
+		_collect_visible_nodes(child, viewport, nodes_info, max_nodes, 0, max_depth)
 	return _ok_json({
 		"viewport_size": {"x": int(viewport_size.x), "y": int(viewport_size.y)},
 		"node_count": nodes_info.size(),
@@ -1983,11 +1986,12 @@ func _collect_visible_nodes(node: Node, viewport: Viewport, result: Array, max_n
 			var canvas_item := node as CanvasItem
 			if node is Control:
 				var control := node as Control
-				screen_pos = canvas_item.get_global_transform_with_canvas() * control.position
-				screen_size = control.size
+				var global_rect := control.get_global_rect()
+				screen_pos = global_rect.position
+				screen_size = global_rect.size
 			elif node is Node2D:
 				var node2d := node as Node2D
-				screen_pos = canvas_item.get_global_transform_with_canvas() * node2d.position
+				screen_pos = canvas_item.get_global_transform_with_canvas() * Vector2.ZERO
 				if node is Sprite2D:
 					var sprite := node as Sprite2D
 					if sprite.texture:
