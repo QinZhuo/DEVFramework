@@ -37,7 +37,7 @@ static var instance: MCPDevServer
 
 var _http: MCPTcpHttpServer
 var _logger: MCPLogger
-var _port := 8932
+var _port := 8931
 var _enabled := true
 var _tool_handlers := {}        # 工具名 -> Callable
 var _tool_defs := []            # 工具定义列表(MCP 格式)
@@ -56,7 +56,7 @@ var _next_req_id := 1
 func _ready() -> void:
 	instance = self
 	_enabled = ProjectSettings.get_setting(SETTING_ENABLED, true)
-	_port = int(ProjectSettings.get_setting(SETTING_PORT, 8932))
+	_port = int(ProjectSettings.get_setting(SETTING_PORT, 8931))
 	if Engine.is_editor_hint():
 		# 编辑器进程: 生命周期完全由 plugin.gd 控制(启用时 start_editor()/停用时 stop())。
 		# 这里仅登记 instance, 不自动启动, 避免与插件开关产生端口/生命周期冲突。
