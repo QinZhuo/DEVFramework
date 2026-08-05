@@ -237,13 +237,19 @@ func _register_validate_tools() -> void:
 ## -- 日志/错误 --
 func _register_log_tools() -> void:
 	_add_tool("get_logs",
-		"获取日志(print/printerr 输出)。返回日志数组(含时间戳/是否错误流)。游戏运行时返回游戏进程日志, 否则返回编辑器日志。",
-		{"type": "object", "properties": {"max": {"type": "integer", "description": "最多返回条数, 默认 200"}}},
+		"获取日志(print/printerr 输出)。返回日志数组(含时间戳/是否错误流)与 next 游标。游戏运行时返回游戏进程日志, 否则返回编辑器日志。增量用法: 把上次返回的 next 作为 since 参数, 只取新增日志, 节省上下文。",
+		{"type": "object", "properties": {
+			"max": {"type": "integer", "description": "最多返回条数, 默认 200"},
+			"since": {"type": "integer", "description": "增量游标(上次返回的 next), 只返回此位置之后的日志, 默认 0=全量"}
+		}},
 		_call_get_logs)
 
 	_add_tool("get_errors",
-		"获取捕获的错误(脚本错误/assert/push_error 等), 每个错误包含信息、来源文件、行号、类型及 GDScript 栈追踪。游戏运行时返回游戏进程错误, 否则返回编辑器错误。",
-		{"type": "object", "properties": {"max": {"type": "integer", "description": "最多返回条数, 默认 100"}}},
+		"获取捕获的错误(脚本错误/assert/push_error 等), 每个错误包含信息、来源文件、行号、类型及 GDScript 栈追踪。返回 next 游标。游戏运行时返回游戏进程错误, 否则返回编辑器错误。增量用法: 把上次返回的 next 作为 since 参数, 只取新增错误。",
+		{"type": "object", "properties": {
+			"max": {"type": "integer", "description": "最多返回条数, 默认 100"},
+			"since": {"type": "integer", "description": "增量游标(上次返回的 next), 只返回此位置之后的错误, 默认 0=全量"}
+		}},
 		_call_get_errors)
 
 	_add_tool("clear_errors",
@@ -255,10 +261,10 @@ func _register_log_tools() -> void:
 ## -- 截图 --
 func _register_screenshot_tools() -> void:
 	_add_tool("take_screenshot",
-		"捕获画面并保存到本地。capture_type: 'editor' 编辑器视口(默认), 'scene' 当前场景缩略图, 'game' 运行中的游戏画面(需游戏在运行)。返回截图文件路径、像素尺寸与占用字节。AI 可通过文件路径读取分析画面。",
+		"捕获画面并保存到本地。capture_type: 'editor' 编辑器视口(默认), 'scene' 当前场景缩略图, 'game' 运行中的游戏画面(需游戏在运行)。返回截图文件路径、像素尺寸与占用字节。AI 可通过文件路径读取分析画面。截图默认降采样到 1280 宽以控制体积, 需要更高分辨率可传更大的 max_width。",
 		{"type": "object", "properties": {
 			"capture_type": {"type": "string", "description": "截图类型: 'editor' 编辑器视口(默认), 'scene' 当前场景缩略图, 'game' 运行中的游戏画面"},
-			"max_width": {"type": "integer", "description": "若截图宽度超过该值则等比缩小以便 AI 读图(默认不缩放)"}
+			"max_width": {"type": "integer", "description": "最大宽度, 超过则等比缩小。默认 1280, 传 0 或更大值可保留原始分辨率"}
 		}},
 		_call_take_screenshot)
 
@@ -480,35 +486,47 @@ func _handle_jsonrpc(req: Dictionary) -> Dictionary:
 	var method: String = req.get("method", "")
 	match method:
 		"initialize":
+			var client_info := ""
+			var params0: Variant = req.get("params", {})
+			if params0 is Dictionary:
+				var ci: Variant = params0.get("clientInfo", null)
+				if ci is Dictionary:
+					client_info = "%s v%s" % [ci.get("name", "unknown"), ci.get("version", "?")]
+			LogTool.log("MCP", "客户端初始化: %s (协议: %s)" % [client_info, str(req.get("params", {}).get("protocolVersion", "")) if req.get("params", {}) is Dictionary else ""])
+			# 能力协商: 声明工具列表变更通知与日志能力
 			return {
 				"jsonrpc": "2.0",
 				"id": req_id,
 				"result": {
 					"protocolVersion": PROTOCOL_VERSION,
-					"capabilities": {"tools": {"listChanged": false}, "logging": {}},
+					"capabilities": {
+						"tools": {"listChanged": true},
+						"logging": {"supportedLevels": ["debug", "info", "warning", "error"]},
+					},
 					"serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
 				},
 			}
+		"notifications/initialized":
+			return {}
 		"tools/list":
 			return {"jsonrpc": "2.0", "id": req_id, "result": {"tools": _tool_defs}}
 		"tools/call":
-			var params: Dictionary = req.get("params", {})
-			var tool_name: String = params.get("name", "")
-			var arguments: Dictionary = params.get("arguments", {})
+			var params: Variant = req.get("params", {})
+			var params_dict: Dictionary = params if params is Dictionary else {}
+			var tool_name: String = str(params_dict.get("name", ""))
+			# 参数类型防护: 客户端传非对象/非法参数时, 返回 无效参数 而非触发运行时类型错误导致无响应挂起
+			var raw_args: Variant = params_dict.get("arguments", {})
+			var arguments: Dictionary = raw_args if raw_args is Dictionary else {}
+			if not (raw_args is Dictionary):
+				return _jsonrpc_error(req_id, -32602, "Invalid params: 'arguments' must be an object: %s" % str(raw_args))
 			LogTool.log("MCP", "工具调用(%s): %s, 参数: %s" % [_mode, tool_name, str(arguments)])
 			if not _tool_handlers.has(tool_name):
 				return _jsonrpc_error(req_id, -32602, "Unknown tool: %s" % tool_name)
-			var tool_result: Dictionary = await _tool_handlers[tool_name].call(arguments)
-			var out_result := {
-				"content": [{"type": "text", "text": tool_result.get("text", "")}],
-				"isError": tool_result.get("is_error", false),
-			}
-			# 附带结构化错误元数据(error_category/is_retryable/recovery), 供 AI 决策恢复策略
-			if tool_result.get("error_category", "") != "":
-				out_result["errorCategory"] = tool_result.get("error_category")
-				out_result["isRetryable"] = tool_result.get("is_retryable", false)
-				out_result["recovery"] = tool_result.get("recovery", "")
-			return {"jsonrpc": "2.0", "id": req_id, "result": out_result}
+			# 安全执行: 隔离 handler 运行期错误, 避免 GDScript 无 try/catch 导致协程中止、响应永不发出
+			var result := await _safe_call_handler(_tool_handlers[tool_name], arguments)
+			if result.is_empty():
+				return _jsonrpc_error(req_id, -32603, "Internal error: 工具执行未返回结果")
+			return {"jsonrpc": "2.0", "id": req_id, "result": result}
 		"ping":
 			return {"jsonrpc": "2.0", "id": req_id, "result": {}}
 		"logging/setLevel":
@@ -519,6 +537,38 @@ func _handle_jsonrpc(req: Dictionary) -> Dictionary:
 
 func _jsonrpc_error(req_id: Variant, code: int, message: String) -> Dictionary:
 	return {"jsonrpc": "2.0", "id": req_id, "error": {"code": code, "message": message}}
+
+
+## 安全执行工具 handler: 在执行前后记录/比对错误缓冲, 把运行期错误转换成结构化诊断附加到结果。
+## 注意: GDScript 无 try/catch, handler 内硬错误(如类型错误)仍会使 await 协程中止——
+## 但参数类型防护(见 tools/call)已消除最常见的崩溃源; 此处负责把"执行中 push_error 但没崩"的
+## 可恢复错误带上诊断文本返回, 并保证返回空字典时向上层报 internal error 而非无响应。
+func _safe_call_handler(handler: Callable, arguments: Dictionary) -> Dictionary:
+	var err_before: int = _logger.get_error_count() if _logger else 0
+	var result: Variant = await handler.call(arguments)
+	if not (result is Dictionary):
+		return {}
+	if _logger and _logger.get_error_count() > err_before:
+		var outcome := _collect_runtime_error(err_before)
+		var base: Dictionary = result
+		base["text"] = str(base.get("text", "")) + "\n[警告] 执行过程中捕获运行期错误:\n%s" % outcome
+	return result
+
+
+## 读取自 err_before 起最新的运行期错误条目, 组成诊断文本
+func _collect_runtime_error(err_before: int) -> String:
+	if _logger == null:
+		return "(无诊断数据)"
+	var taken: Dictionary = _logger.take_errors_since(err_before)
+	var entries: Array = taken.get("entries", [])
+	if entries.is_empty():
+		return "(无诊断数据)"
+	var e: Dictionary = entries[entries.size() - 1]
+	var msg := str(e.get("message", ""))
+	var f := str(e.get("file", ""))
+	var ln := str(e.get("line", ""))
+	var fn := str(e.get("function", ""))
+	return "%s  (%s:%s %s)" % [msg, f, ln, fn]
 
 
 ## 统一工具结果封装
@@ -686,7 +736,9 @@ func _call_get_logs(args: Dictionary) -> Dictionary:
 	if _logger == null:
 		return _fail("日志捕获器未就绪")
 	var max: int = int(args.get("max", 200))
-	var result: Dictionary = _logger.take_logs_since(0)
+	# since: 上次拉取返回的 next 游标, 增量拉取新日志以节省上下文(token)。默认 0 = 全量。
+	var since: int = int(args.get("since", 0))
+	var result: Dictionary = _logger.take_logs_since(since)
 	var entries: Array = result.entries
 	var out: Array = []
 	var start := maxi(0, entries.size() - max)
@@ -695,14 +747,20 @@ func _call_get_logs(args: Dictionary) -> Dictionary:
 		var clean: Dictionary = e.duplicate()
 		clean.message = _logger.sanitize(str(e.message))
 		out.append(clean)
-	return _ok(JSON.stringify({"count": out.size(), "logs": out}))
+	return _ok(JSON.stringify({
+		"count": out.size(),
+		"logs": out,
+		"next": int(result.get("next", 0)),
+		"hint": "将 next 作为下次调用的 since 参数即可只取新增日志",
+	}))
 
 
 func _call_get_errors(args: Dictionary) -> Dictionary:
 	if _logger == null:
 		return _fail("错误捕获器未就绪")
 	var max: int = int(args.get("max", 100))
-	var result: Dictionary = _logger.take_errors_since(0)
+	var since: int = int(args.get("since", 0))
+	var result: Dictionary = _logger.take_errors_since(since)
 	var out: Array = result.entries.duplicate()
 	if out.size() > max:
 		out = out.slice(out.size() - max)
@@ -712,7 +770,13 @@ func _call_get_errors(args: Dictionary) -> Dictionary:
 		if clean.has("message"):
 			clean.message = _logger.sanitize(str(clean.message))
 		cleaned.append(clean)
-	return _ok(JSON.stringify({"count": cleaned.size(), "errors": cleaned}))
+	return _ok(JSON.stringify({
+		"count": cleaned.size(),
+		"errors": cleaned,
+		"next": int(result.get("next", 0)),
+		"cleared": bool(result.get("cleared", false)),
+		"hint": "将 next 作为下次调用的 since 参数即可只取新增错误",
+	}))
 
 
 func _call_clear_errors(_args: Dictionary) -> Dictionary:
@@ -751,7 +815,8 @@ func _call_take_screenshot(args: Dictionary) -> Dictionary:
 			img = await _capture_editor_viewport()
 			if img == null or img.is_empty():
 				return _fail("截图失败: 编辑器视口纹理为空")
-	var max_width := int(args.get("max_width", 0))
+	# 缺省降采样到 1280 宽以控制截图体积(大视口/高分屏尤其明显), 传更大的 max_width 可保留更高分辨率。
+	var max_width := int(args.get("max_width", 1280))
 	if max_width > 0 and max_width < img.get_width():
 		var scale := float(max_width) / float(img.get_width())
 		img.resize(max_width, int(img.get_height() * scale), Image.INTERPOLATE_LANCZOS)
@@ -1567,9 +1632,10 @@ func _register_runtime_tools() -> void:
 	_tool_handlers.clear()
 	_tool_defs.clear()
 	_add_tool("get_game_view",
-		"分析游戏运行时场景中所有可见节点的屏幕位置和大小信息。用于AI理解游戏画面布局以决定点击/拖拽目标。返回每个节点的名称、类型、屏幕坐标、尺寸、层级(z_index)、可见性及文本信息。",
+		"分析游戏运行时场景中所有可见节点的屏幕位置和大小信息。用于AI理解游戏画面布局以决定点击/拖拽目标。返回每个节点的名称、类型、屏幕坐标、尺寸、层级(z_index)、可见性及文本信息。不可见节点与纯逻辑节点(如 Node 容器)会被剪枝, 大树可用 max_depth/max_nodes 限制遍历成本。",
 		{"type": "object", "properties": {
-			"max_nodes": {"type": "integer", "description": "最多返回节点数, 默认 50"}
+			"max_nodes": {"type": "integer", "description": "最多返回节点数, 默认 50"},
+			"max_depth": {"type": "integer", "description": "最多递归深度, 默认 10"}
 		}},
 		_call_get_game_view)
 
@@ -1630,13 +1696,14 @@ func _register_runtime_tools() -> void:
 ## 运行时: 分析游戏场景中可见节点的屏幕位置
 func _call_get_game_view(args: Dictionary) -> Dictionary:
 	var max_nodes: int = int(args.get("max_nodes", 50))
+	var max_depth: int = int(args.get("max_depth", 10))
 	var root := get_tree().current_scene
 	if root == null:
 		return _fail("当前没有运行中的场景")
 	var viewport := get_viewport()
 	var viewport_size := viewport.get_visible_rect().size
 	var nodes_info: Array = []
-	_collect_visible_nodes(root, viewport, nodes_info, max_nodes, 0)
+	_collect_visible_nodes(root, viewport, nodes_info, max_nodes, 0, max_depth)
 	return _ok(JSON.stringify({
 		"viewport_size": {"x": int(viewport_size.x), "y": int(viewport_size.y)},
 		"node_count": nodes_info.size(),
@@ -1645,10 +1712,10 @@ func _call_get_game_view(args: Dictionary) -> Dictionary:
 
 
 ## 递归收集可见节点信息(运行时模式, 游戏进程内坐标天然正确)
-func _collect_visible_nodes(node: Node, viewport: Viewport, result: Array, max_nodes: int, depth: int) -> void:
+func _collect_visible_nodes(node: Node, viewport: Viewport, result: Array, max_nodes: int, depth: int, max_depth: int) -> void:
 	if result.size() >= max_nodes:
 		return
-	if depth > 10:
+	if depth > max_depth:
 		return
 	if node is CanvasItem and not (node as CanvasItem).visible:
 		return
@@ -1708,7 +1775,7 @@ func _collect_visible_nodes(node: Node, viewport: Viewport, result: Array, max_n
 				info["polygon_count"] = polygon.polygon.size()
 		result.append(info)
 	for child in node.get_children():
-		_collect_visible_nodes(child, viewport, result, max_nodes, depth + 1)
+		_collect_visible_nodes(child, viewport, result, max_nodes, depth + 1, max_depth)
 
 
 ## 运行时: 模拟鼠标左键点击(游戏进程内 Input.parse_input_event 直接生效)
@@ -1822,7 +1889,8 @@ func _runtime_take_screenshot(args: Dictionary) -> Dictionary:
 	var img: Image = viewport.get_texture().get_image()
 	if img == null or img.is_empty():
 		return _fail("游戏截图失败: 视口纹理为空")
-	var max_width := int(args.get("max_width", 0))
+	# 缺省降采样到 1280 宽以控制体积, 传更大的 max_width 可保留更高分辨率。
+	var max_width := int(args.get("max_width", 1280))
 	if max_width > 0 and max_width < img.get_width():
 		var scale := float(max_width) / float(img.get_width())
 		img.resize(max_width, int(img.get_height() * scale), Image.INTERPOLATE_LANCZOS)
@@ -1998,6 +2066,8 @@ func _call_game_eval_proxy(args: Dictionary) -> Dictionary:
 func _precheck_eval_code(code: String) -> String:
 	if code.is_empty():
 		return "必须提供 code"
+	if code.length() > MAX_EVAL_LENGTH:
+		return "代码过长: %d 字符, 超过上限 %d。请拆分逻辑后重试。" % [code.length(), MAX_EVAL_LENGTH]
 	var forbidden := _eval_forbidden_scan(code)
 	if forbidden != "":
 		return forbidden
@@ -2015,18 +2085,111 @@ func _precheck_eval_code(code: String) -> String:
 
 
 ## 静态扫描 eval 代码中被禁止的 API, 返回 "" 表示通过。
+## 黑名单分两类: 精确成员访问(点号匹配) 与 危险类名(前缀匹配, 防绕过点号约束)。
+## 注意: 此扫描是"安全围栏", 不替代信任模型——eval 代码本身就能访问当前场景任意节点。
 const _EVAL_FORBIDDEN := [
+	# -- 精确成员访问(阻止系统/进程逃逸) --
 	["OS.execute", "调用系统命令"],
 	["OS.create_process", "启动外部进程"],
 	["OS.shell_open", "调用 shell 打开外部程序"],
 	["OS.kill", "终止进程"],
-	["Process", "访问进程"],
+	["OS.get_environment", "读取环境变量"],
 	["DisplayServer.shell_open", "调用 shell"],
+	["Engine.get_main_loop", "绕过作用域访问主循环"],
+	["Engine.get_physics_frames", "读取引擎内部状态"],
+	# -- 危险类名前缀(网络/文件/时间戳副作用) --
+	["HTTPRequest", "发起网络请求"],
+	["TCPServer", "监听网络端口"],
+	["StreamPeerTCP", "TCP 连接"],
+	["StreamPeerTLS", "TLS 连接"],
+	["UDPServer", "UDP 监听"],
+	["PackedScene.new", "新建场景"],
+	["FileAccess", "读写文件"],
+	["DirAccess", "操作文件系统"],
+	["ResourceLoader.load", "加载任意资源"],
+	["ProjectSettings.set_setting", "修改项目设置"],
+	["DirAccess.open", "打开目录"],
 ]
 
+## eval 代码长度上限(字符), 防止超长脚本导致编辑/运行进程缓慢或冻结。超限以 validation 错误拒绝。
+const MAX_EVAL_LENGTH := 8192
 
+
+## 判断是否为"空标识符"字符(数字开头等非法用途, 防止 `123execute` 之类绕过)
+func _is_eval_id_char(c: String) -> bool:
+	return c == "_" or (c >= "a" and c <= "z") or (c >= "A" and c <= "Z") or (c >= "0" and c <= "9")
+
+
+## 静态扫描 eval 代码中被禁止的 API, 返回 "" 表示通过。
 func _eval_forbidden_scan(code: String) -> String:
-	for item in _EVAL_FORBIDDEN:
-		if code.contains(item[0]):
-			return "代码包含被禁止的 API: %s (%s)。出于安全考虑不允许在 eval 中执行。" % [item[0], item[1]]
+	# 词法级扫描: 跳过字符串字面量/注释/预处理器, 只扫描真实代码 token, 避免误报。
+	# 同时做标识符边界检查, 防止 `fooProcess`/`executefield` 之类拼接绕过。
+	var i := 0
+	var length := code.length()
+	while i < length:
+		var c := code[i]
+		# 跳过字符串字面量 ' " (含转义) 和 """ 长字符串
+		if c == '"' or c == "'":
+			var quote := code[i]
+			if i + 2 < length and code[i + 1] == quote and code[i + 2] == quote:
+				i += 3
+				while i + 2 < length and not (code[i] == quote and code[i + 1] == quote and code[i + 2] == quote):
+					i += 1
+				i += 3
+				continue
+			i += 1
+			while i < length:
+				if code[i] == '\\':
+					i += 2
+					continue
+				if code[i] == quote:
+					break
+				i += 1
+			i += 1
+			continue
+		# 跳过 '#' 注释到行尾
+		if c == '#':
+			while i < length and code[i] != '\n':
+				i += 1
+			continue
+		# 跳过 @onready/@export 等注解(不匹配代码, 但避免误认其中的单词)
+		if c == '@':
+			while i < length and (_is_eval_id_char(code[i])):
+				i += 1
+			continue
+		# 扫描一个标识符 token
+		if _is_eval_id_char(c):
+			var start := i
+			while i < length and _is_eval_id_char(code[i]):
+				i += 1
+			var token := code.substr(start, i - start)
+			# 单 token 危险类名(前缀匹配类名本身)
+			for item in _EVAL_FORBIDDEN:
+				var name: String = item[0]
+				if "." in name:
+					continue
+				if token == name:
+					return "代码包含被禁止的 API: %s (%s)。出于安全考虑不允许在 eval 中执行。" % [name, item[1]]
+			# 成员访问: 检查后续是否为 .成员名(如 OS.execute), 支持空格与换行
+			for item in _EVAL_FORBIDDEN:
+				var name: String = item[0]
+				if "." not in name:
+					continue
+				var parts := name.split(".")
+				if token != parts[0]:
+					continue
+				# 跳过 . 与空白
+				var j := i
+				while j < length and (code[j] == ' ' or code[j] == '\t' or code[j] == '\n' or code[j] == '\r'):
+					j += 1
+				if j < length and code[j] == '.':
+					j += 1
+					var k := j
+					while k < length and _is_eval_id_char(code[k]):
+						k += 1
+					if code.substr(j, k - j) == parts[1]:
+						return "代码包含被禁止的 API: %s (%s)。出于安全考虑不允许在 eval 中执行。" % [name, item[1]]
+			continue
+		# 非标识符字符: 继续
+		i += 1
 	return ""
