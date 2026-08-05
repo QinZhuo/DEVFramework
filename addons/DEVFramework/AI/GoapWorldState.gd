@@ -11,6 +11,8 @@ signal changed(key, old_value, new_value)
 
 func set_value(key, value) -> void:
 	var old := _values.get(key, null)
+	if old == value:
+		return
 	_values[key] = value
 	changed.emit(key, old, value)
 

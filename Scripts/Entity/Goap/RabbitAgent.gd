@@ -81,11 +81,19 @@ func _update_awareness() -> void:
 
 
 ## —— 行动：觅食链 ——
+## 注意: 觅食链(寻找食物->走向食物->进食)中, 草可能被其他兔子抢先吃掉导致目标失效。
+## 目标失效时必须清掉 has_food/near_food 状态并重置 _food_target, 否则 replan 后
+## 规划器误以为前置已满足, 直接走"走向食物->进食", _food_target 仍指向不可用的草,
+## 形成"走向食物失败->重规划->走向食物失败"的死循环(卡死)。
 
 func perform_find_food(_action: GoapAction) -> bool:
 	_food_target = _nearest_grass()
 	if _food_target == null:
 		_status("觅食：附近没有草")
+		# 没有可吃的草时清空残留状态, 避免上次失败留下的 has_food/near_food 触发死循环
+		_food_target = null
+		set_state("has_food", false)
+		set_state("near_food", false)
 		return false
 	_status("觅食：发现食物")
 	return true
@@ -93,12 +101,19 @@ func perform_find_food(_action: GoapAction) -> bool:
 
 func perform_walk_to_food(_action: GoapAction) -> Variant:
 	if _food_target == null or not _food_target.is_available():
+		_food_target = null
+		set_state("has_food", false)
+		set_state("near_food", false)
 		return false
 	_status("前往食物")
 	_move_to(_food_target.position, func() -> void:
 		if _food_target != null and _food_target.is_available():
 			notify_action_finished(true)
 		else:
+			# 途中草被吃: 清空状态让 replan 重新寻找食物, 而非拿着失效目标空转
+			_food_target = null
+			set_state("has_food", false)
+			set_state("near_food", false)
 			notify_action_finished(false)
 	)
 	return null
@@ -106,6 +121,9 @@ func perform_walk_to_food(_action: GoapAction) -> Variant:
 
 func perform_eat_food(_action: GoapAction) -> bool:
 	if _food_target == null or not _food_target.is_available():
+		_food_target = null
+		set_state("has_food", false)
+		set_state("near_food", false)
 		return false
 	_status("进食中")
 	_food_target.eaten()
@@ -127,17 +145,42 @@ func _nearest_grass() -> Grass:
 
 
 ## —— 行动：逃跑（异步移动） ——
+## 注意: 逃跑必须"持续远离直到脱离狐狸感知圈", 否则兔子到达单次固定距离的目标后
+## 狐狸仍在 danger_radius 内, predator_near 又被置 true -> 同帧 replan -> 再次逃跑,
+## 形成每帧"逃跑完成->重规划->逃跑"的死循环(卡死)。
 
 func perform_flee(_action: GoapAction) -> Variant:
 	_status("逃跑！")
+	_flee_step()
+	return null
+
+
+## 向远离狐狸的方向跑一步; 到达后若狐狸仍在感知圈内, 继续向更远处跑, 直到脱离
+func _flee_step() -> void:
 	var away := Vector2.RIGHT
 	if _nearest_fox != null:
 		away = body.position - _nearest_fox.body.position
 	if away.length_squared() < 1.0:
 		away = Vector2.RIGHT.rotated(randf() * TAU)
-	var target := EcosystemWorld.clamp_pos(body.position + away.normalized() * 260.0)
-	_move_to(target, func() -> void: notify_action_finished(true))
-	return null
+	var dist_to_fox := body.position.distance_to(_nearest_fox.body.position) if _nearest_fox != null else INF
+	# 目标距离: 至少 260, 若狐狸逼近则需逃出感知圈外再留 60 余量
+	var step := maxf(260.0, danger_radius - dist_to_fox + 60.0)
+	var target := EcosystemWorld.clamp_pos(body.position + away.normalized() * step)
+	_move_to(target, func() -> void:
+		if _fox_still_after_me():
+			_flee_step()
+		else:
+			notify_action_finished(true)
+	)
+
+
+func _fox_still_after_me() -> bool:
+	var fox := _nearest_fox
+	if fox == null or not is_instance_valid(fox):
+		return false
+	if not fox.body.visible:
+		return false
+	return body.position.distance_to(fox.body.position) < danger_radius
 
 
 ## —— 移动 ——
