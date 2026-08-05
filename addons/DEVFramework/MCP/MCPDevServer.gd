@@ -602,7 +602,9 @@ func _log_tool_result(tool_name: String, result: Dictionary) -> void:
 	var is_err: bool = result.get("is_error", false)
 	var head := "[%s] %s 返回: " % [_mode, tool_name]
 	var big := tool_name in ["get_logs", "get_errors", "get_game_logs", "get_game_errors",
-			"read_file", "take_screenshot", "get_scene_tree", "get_game_view", "get_global_classes"]
+			"read_file", "take_screenshot", "get_scene_tree", "get_game_view", "get_global_classes",
+			"classdb_query", "get_node_info", "get_project_info", "get_project_settings",
+			"get_editor_activity", "list_dir", "get_project_setting"]
 	if is_err:
 		LogTool.log("MCP", "%s错误: %s" % [head, text.left(400)])
 		return
@@ -642,6 +644,24 @@ func _fail(text: String) -> Dictionary:
 		"is_error": true,
 		"isError": true,
 		"content": [ {"type": "text", "text": text}],
+	}
+
+
+## 结构化结果封装: 数据同时以 MCP 标准 structuredContent(2025-06-18+) 与
+## content[].text(序列化 JSON, 向后兼容) 输出, 兼容最新官方 SDK 与旧式客户端。
+## 注意: 数据先经 JSON 往返(serialize→parse), 把 NodePath/Vector2/Color 等 Variant
+## 转成 JSON 兼容类型, 保证 structuredContent 是纯 JSON 对象(官方 SDK 客户端可安全解析)。
+func _ok_json(data: Dictionary) -> Dictionary:
+	var json := JSON.stringify(data)
+	var safe_data: Variant = JSON.parse_string(json)
+	if not safe_data is Dictionary:
+		safe_data = data
+	return {
+		"text": json,
+		"is_error": false,
+		"isError": false,
+		"content": [ {"type": "text", "text": json}],
+		"structuredContent": safe_data,
 	}
 
 
@@ -708,21 +728,21 @@ func _call_validate_script(args: Dictionary) -> Dictionary:
 		else:
 			real_errors.append(msg)
 	if reload_err == OK and real_errors.is_empty():
-		return _ok(JSON.stringify({
+		return _ok_json({
 			"valid": true,
 			"message": "脚本语法有效" + ("(含 %d 条可忽略警告)" % warnings.size() if warnings.size() > 0 else ""),
 			"error_latin": 0,
 			"error_text": "",
 			"warnings": warnings,
-		}))
+		})
 	if real_errors.is_empty():
-		return _ok(JSON.stringify({
+		return _ok_json({
 			"valid": true,
 			"message": "脚本语法有效(仅存在被当作错误的警告, 编辑器可正常加载)",
 			"error_latin": 0,
 			"error_text": "",
 			"warnings": warnings,
-		}))
+		})
 	var text := "; ".join(real_errors)
 	var hint := ""
 	if text.contains("hides a global script class"):
@@ -730,7 +750,7 @@ func _call_validate_script(args: Dictionary) -> Dictionary:
 	elif text.contains("Warning treated as error") or text.contains("inferred from a Variant"):
 		hint = " (存在被当作错误的警告: 可在项目设置 GDScript 警告中放宽, 或为相关变量标注显式类型)"
 	var msg := "解析失败: %s%s" % [text, hint]
-	return _ok(JSON.stringify({
+	return _ok_json({
 		"valid": false,
 		"message": msg,
 		"error_line": 0,
@@ -738,7 +758,7 @@ func _call_validate_script(args: Dictionary) -> Dictionary:
 		"hint": hint.strip_edges().trim_prefix(" (").trim_suffix(")"),
 		"errors": real_errors,
 		"warnings": warnings,
-	}))
+	})
 
 
 func _call_validate_resource(args: Dictionary) -> Dictionary:
@@ -750,11 +770,11 @@ func _call_validate_resource(args: Dictionary) -> Dictionary:
 	var res: Resource = ResourceLoader.load(path)
 	if res == null:
 		return _fail("资源加载失败: %s" % path)
-	return _ok(JSON.stringify({
+	return _ok_json({
 		"valid": true,
 		"type": res.get_class(),
 		"message": "资源可正常加载",
-	}))
+	})
 
 
 ## 查询 Godot 类的 API(方法/属性/信号)。用于 AI 写脚本前确认原生 API 用法。
@@ -775,7 +795,7 @@ func _call_classdb_query(args: Dictionary) -> Dictionary:
 		matches.sort()
 		if matches.size() > 50:
 			matches = matches.slice(0, 50)
-		return _ok(JSON.stringify({"mode": "search", "query": search, "match_count": matches.size(), "classes": matches}))
+		return _ok_json({"mode": "search", "query": search, "match_count": matches.size(), "classes": matches})
 
 	if query_class == "":
 		return _fail("必须提供 class_name 或 search")
@@ -818,7 +838,7 @@ func _call_classdb_query(args: Dictionary) -> Dictionary:
 				arg_sig = "()"
 			signals.append("%s%s" % [s.get("name", "?"), arg_sig])
 		out["signals"] = signals
-	return _ok(JSON.stringify(out))
+	return _ok_json(out)
 
 
 ## 获取类的信号列表: ClassDB.class_get_signal_list 对内置类返回空,
@@ -886,7 +906,7 @@ func _call_list_dir(args: Dictionary) -> Dictionary:
 				files.append(f)
 			f = dir.get_next()
 		dir.list_dir_end()
-	return _ok(JSON.stringify({"path": path, "dirs": dirs, "files": files}))
+	return _ok_json({"path": path, "dirs": dirs, "files": files})
 
 
 ## 递归收集目录内容(供 list_dir 使用)
@@ -921,12 +941,12 @@ func _call_get_logs(args: Dictionary) -> Dictionary:
 		var clean: Dictionary = e.duplicate()
 		clean.message = _logger.sanitize(str(e.message))
 		out.append(clean)
-	return _ok(JSON.stringify({
+	return _ok_json({
 		"count": out.size(),
 		"logs": out,
 		"next": int(result.get("next", 0)),
 		"hint": "将 next 作为下次调用的 since 参数即可只取新增日志",
-	}))
+	})
 
 
 func _call_get_errors(args: Dictionary) -> Dictionary:
@@ -944,13 +964,13 @@ func _call_get_errors(args: Dictionary) -> Dictionary:
 		if clean.has("message"):
 			clean.message = _logger.sanitize(str(clean.message))
 		cleaned.append(clean)
-	return _ok(JSON.stringify({
+	return _ok_json({
 		"count": cleaned.size(),
 		"errors": cleaned,
 		"next": int(result.get("next", 0)),
 		"cleared": bool(result.get("cleared", false)),
 		"hint": "将 next 作为下次调用的 since 参数即可只取新增错误",
-	}))
+	})
 
 
 func _call_clear_errors(_args: Dictionary) -> Dictionary:
@@ -999,14 +1019,14 @@ func _call_take_screenshot(args: Dictionary) -> Dictionary:
 	if img_err != OK:
 		return _fail("保存截图失败: 错误码 %d" % img_err)
 	var bytes: PackedByteArray = FileAccess.get_file_as_bytes(path)
-	return _ok(JSON.stringify({
+	return _ok_json({
 		"path": ProjectSettings.globalize_path(path),
 		"res_path": path,
 		"width": img.get_width(),
 		"height": img.get_height(),
 		"bytes": bytes.size() if bytes else 0,
 		"capture_type": capture_type,
-	}))
+	})
 
 
 ## 捕获编辑器视口截图
@@ -1112,7 +1132,7 @@ func _call_get_node_info(args: Dictionary) -> Dictionary:
 		"path": node.get_path(),
 		"properties": _collect_essential_props(node),
 	}
-	return _ok(JSON.stringify(info))
+	return _ok_json(info)
 
 
 ## 提取对 AI 调试最有用的核心属性
@@ -1252,7 +1272,7 @@ func _call_get_project_info(_args: Dictionary) -> Dictionary:
 		"bridge_ready": session_active and _game_ready,
 		"session_active": session_active,
 	}
-	return _ok(JSON.stringify(info))
+	return _ok_json(info)
 
 
 ## 感知编辑器当前状态(用于 AI 与人类协作): 打开场景/选中节点/运行状态等
@@ -1276,7 +1296,7 @@ func _call_get_editor_activity(_args: Dictionary) -> Dictionary:
 			selected.append(n)
 		out["selected_nodes"] = selected.map(func(n: Node): return str(n.get_path()))
 	out["mcp_running"] = is_running()
-	return _ok(JSON.stringify(out))
+	return _ok_json(out)
 
 
 func _call_get_project_settings(_args: Dictionary) -> Dictionary:
@@ -1292,7 +1312,7 @@ func _call_get_project_settings(_args: Dictionary) -> Dictionary:
 		"layers_3d_render": _named_layers("layer_names/3d_render"),
 		"current_scene": root.get_scene_file_path() if root else null,
 	}
-	return _ok(JSON.stringify(info))
+	return _ok_json(info)
 
 
 ## 收集 autoload 单例(名字 -> 路径)
@@ -1481,7 +1501,7 @@ func _call_get_global_classes(_args: Dictionary) -> Dictionary:
 			"base": c.get("base", ""),
 			"class": c.get("class", ""),
 		})
-	return _ok(JSON.stringify({"count": out.size(), "classes": out}))
+	return _ok_json({"count": out.size(), "classes": out})
 
 
 func _call_open_scene(args: Dictionary) -> Dictionary:
@@ -1511,7 +1531,7 @@ func _call_get_project_setting(args: Dictionary) -> Dictionary:
 		return _fail("必须提供 name")
 	if not ProjectSettings.has_setting(name):
 		return _fail("不存在设置项: %s" % name)
-	return _ok(JSON.stringify({"name": name, "value": ProjectSettings.get_setting(name)}))
+	return _ok_json({"name": name, "value": ProjectSettings.get_setting(name)})
 
 
 func _call_set_project_setting(args: Dictionary) -> Dictionary:
@@ -1564,12 +1584,12 @@ func _call_read_file(args: Dictionary) -> Dictionary:
 		content = file.get_as_text()
 	var size := file.get_length()
 	file.close()
-	return _ok(JSON.stringify({
+	return _ok_json({
 		"path": path,
 		"size": size,
 		"encoding": encoding,
 		"content": content
-	}))
+	})
 
 
 func _call_write_file(args: Dictionary) -> Dictionary:
@@ -1590,11 +1610,11 @@ func _call_write_file(args: Dictionary) -> Dictionary:
 	file.store_string(content)
 	var size := file.get_length()
 	file.close()
-	return _ok(JSON.stringify({
+	return _ok_json({
 		"path": path,
 		"size": size,
 		"message": "文件写入成功"
-	}))
+	})
 
 
 func _call_append_file(args: Dictionary) -> Dictionary:
@@ -1611,11 +1631,11 @@ func _call_append_file(args: Dictionary) -> Dictionary:
 	file.store_string(content)
 	var new_size := file.get_length()
 	file.close()
-	return _ok(JSON.stringify({
+	return _ok_json({
 		"path": path,
 		"size": new_size,
 		"message": "内容追加成功"
-	}))
+	})
 
 
 func _call_delete_file(args: Dictionary) -> Dictionary:
@@ -1629,11 +1649,11 @@ func _call_delete_file(args: Dictionary) -> Dictionary:
 		var err := DirAccess.remove_absolute(path)
 		if err != OK:
 			return _fail("无法删除目录: %s (错误码: %d)。注意: 只能删除空目录" % [path, err])
-		return _ok(JSON.stringify({"path": path, "message": "目录删除成功"}))
+		return _ok_json({"path": path, "message": "目录删除成功"})
 	var err := DirAccess.remove_absolute(path)
 	if err != OK:
 		return _fail("无法删除文件: %s (错误码: %d)" % [path, err])
-	return _ok(JSON.stringify({"path": path, "message": "文件删除成功"}))
+	return _ok_json({"path": path, "message": "文件删除成功"})
 
 
 func _call_file_exists(args: Dictionary) -> Dictionary:
@@ -1645,12 +1665,12 @@ func _call_file_exists(args: Dictionary) -> Dictionary:
 	if not exists:
 		var dir := DirAccess.open(path)
 		is_dir = dir != null
-	return _ok(JSON.stringify({
+	return _ok_json({
 		"path": path,
 		"exists": exists or is_dir,
 		"is_directory": is_dir,
 		"message": "文件存在" if exists else ("目录存在" if is_dir else "文件不存在")
-	}))
+	})
 
 
 ## ======= 辅助 =======
@@ -1936,11 +1956,11 @@ func _call_get_game_view(args: Dictionary) -> Dictionary:
 	var viewport_size := viewport.get_visible_rect().size
 	var nodes_info: Array = []
 	_collect_visible_nodes(root, viewport, nodes_info, max_nodes, 0, max_depth)
-	return _ok(JSON.stringify({
+	return _ok_json({
 		"viewport_size": {"x": int(viewport_size.x), "y": int(viewport_size.y)},
 		"node_count": nodes_info.size(),
 		"nodes": nodes_info
-	}))
+	})
 
 
 ## 递归收集可见节点信息(运行时模式, 游戏进程内坐标天然正确)
@@ -2026,10 +2046,10 @@ func _call_simulate_click(args: Dictionary) -> Dictionary:
 	up_event.position = Vector2(x, y)
 	up_event.global_position = Vector2(x, y)
 	Input.parse_input_event(up_event)
-	return _ok(JSON.stringify({
+	return _ok_json({
 		"position": {"x": x, "y": y},
 		"message": "鼠标左键点击事件已发送"
-	}))
+	})
 
 
 ## 运行时: 模拟鼠标拖拽(左键按下->移动到目标->释放)
@@ -2063,11 +2083,11 @@ func _call_simulate_drag(args: Dictionary) -> Dictionary:
 	up_event.position = Vector2(to_x, to_y)
 	up_event.global_position = Vector2(to_x, to_y)
 	Input.parse_input_event(up_event)
-	return _ok(JSON.stringify({
+	return _ok_json({
 		"from": {"x": from_x, "y": from_y},
 		"to": {"x": to_x, "y": to_y},
 		"message": "拖拽事件已发送"
-	}))
+	})
 
 
 ## 运行时: 模拟键盘按键
@@ -2098,11 +2118,11 @@ func _call_simulate_key(args: Dictionary) -> Dictionary:
 	event.keycode = key_code
 	event.pressed = pressed
 	Input.parse_input_event(event)
-	return _ok(JSON.stringify({
+	return _ok_json({
 		"key": key_str,
 		"pressed": pressed,
 		"message": "按键事件已发送"
-	}))
+	})
 
 
 ## 运行时: 捕获游戏视口截图(文件名自动生成)
@@ -2131,14 +2151,14 @@ func _runtime_take_screenshot(args: Dictionary) -> Dictionary:
 	if img_err != OK:
 		return _fail("保存截图失败: 错误码 %d" % img_err)
 	var bytes: PackedByteArray = FileAccess.get_file_as_bytes(path)
-	return _ok(JSON.stringify({
+	return _ok_json({
 		"path": ProjectSettings.globalize_path(path),
 		"res_path": path,
 		"width": img.get_width(),
 		"height": img.get_height(),
 		"bytes": bytes.size() if bytes else 0,
 		"capture_type": "game",
-	}))
+	})
 
 
 ## ======= 编辑器模式的运行时工具转发(经 EngineDebugger 调试线) =======
@@ -2293,6 +2313,8 @@ func _normalize_wire_result(result: Dictionary, _tool_name: String) -> Dictionar
 		"isError": is_err,
 		"content": [ {"type": "text", "text": text}],
 	}
+	if result.get("structuredContent") is Dictionary:
+		out["structuredContent"] = result.get("structuredContent")
 	if result.get("error_category", "") != "":
 		out["error_category"] = result.get("error_category")
 		out["is_retryable"] = bool(result.get("is_retryable", false))
