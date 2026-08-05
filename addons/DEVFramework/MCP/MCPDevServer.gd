@@ -562,9 +562,6 @@ func _handle_jsonrpc(req: Dictionary) -> Dictionary:
 			var result := await _safe_call_handler(_tool_handlers[tool_name], arguments)
 			if result.is_empty():
 				return _jsonrpc_error(req_id, -32603, "Internal error: 工具执行未返回结果")
-			# 记录返回信息到 MCP 日志, 便于诊断"返回异常/空"等问题。仅打印非原始数据
-			# (get_logs / get_errors / get_game_logs / get_game_errors / 文件读写等巨量内容工具截断显示)。
-			_log_tool_result(tool_name, result)
 			return {"jsonrpc": "2.0", "id": req_id, "result": result}
 		"ping":
 			return {"jsonrpc": "2.0", "id": req_id, "result": {}}
