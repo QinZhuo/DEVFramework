@@ -754,7 +754,8 @@ func _call_classdb_query(args: Dictionary) -> Dictionary:
 		out["properties"] = props
 	if want_signals:
 		var signals: Array = []
-		for s in ClassDB.class_get_signal_list(query_class, true):
+		var sigs: Array = _instance_signal_list(query_class)
+		for s in sigs:
 			var arg_sig := ""
 			var arg_names: Array = s.get("args", [])
 			if arg_names.size() > 0:
@@ -767,6 +768,19 @@ func _call_classdb_query(args: Dictionary) -> Dictionary:
 			signals.append("%s%s" % [s.get("name", "?"), arg_sig])
 		out["signals"] = signals
 	return _ok(JSON.stringify(out))
+
+
+## 获取类的信号列表: ClassDB.class_get_signal_list 对内置类返回空,
+## 改为实例化后调 get_signal_list()(实例仅用于读 API, 无需入树)。
+func _instance_signal_list(cname: String) -> Array:
+	if not ClassDB.can_instantiate(cname):
+		return []
+	var inst := ClassDB.instantiate(cname)
+	if inst == null:
+		return []
+	var sigs: Array = inst.get_signal_list()
+	inst.free()
+	return sigs
 
 
 ## 返回类的继承链(从基类到最终祖先)
@@ -1139,30 +1153,18 @@ func _call_add_node(args: Dictionary) -> Dictionary:
 	var owner_root: Node = root
 	var undo := _editor_undo_redo()
 	if undo and is_inside_tree():
-		# 经 UndoRedo 提交, 使 AI 新增节点可用 Ctrl+Z 移除
+		# 经 UndoRedo 提交, 使 AI 新增节点可用 Ctrl+Z 移除。
+		# do/undo 回调挂在 parent 场景节点上, 让 action 进场景历史(而非全局历史)。
 		undo.create_action("MCP: add %s" % new_node.name)
-		undo.add_do_method(self, "_ensure_added", parent, new_node, owner_root)
-		undo.add_undo_method(self, "_ensure_removed", parent, new_node)
+		undo.add_do_method(parent, "add_child", new_node, true)
+		undo.add_undo_method(parent, "remove_child", new_node)
+		undo.add_do_property(new_node, "owner", owner_root)
+		undo.add_undo_property(new_node, "owner", null)
 		undo.commit_action()
 	else:
 		parent.add_child(new_node, true)
 		_assign_owner_recursive(new_node, owner_root)
 	return _ok("已添加节点 %s [%s] 到 %s" % [new_node.name, new_node.get_class(), parent.name])
-
-
-## UndoRedo 的 do 回调: 添加节点并赋 owner(幂等, 已挂父亲则只补 owner)
-func _ensure_added(parent: Node, node: Node, owner_root: Node) -> void:
-	if node.get_parent() == null:
-		parent.add_child(node, true)
-	if node.owner == null:
-		_assign_owner_recursive(node, owner_root)
-
-
-## UndoRedo 的 undo 回调: 移除节点(幂等)
-func _ensure_removed(parent: Node, node: Node) -> void:
-	if node.get_parent() == parent:
-		parent.remove_child(node)
-	node.queue_free()
 
 
 ## 递归把节点及其子树 owner 设为场景根, 保证新增节点可随场景保存
@@ -1615,7 +1617,7 @@ func _resolve_node(path: String) -> Node:
 	var root := _edited_root()
 	if root == null:
 		return null
-	if path == "root" or path == "/":
+	if path == "root" or path == "/" or path == str(root.name):
 		return root
 	if path.begins_with("@"):
 		return root.find_child(path.substr(1), true, false)

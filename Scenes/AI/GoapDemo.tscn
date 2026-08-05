@@ -34,8 +34,6 @@ unique_name_in_owner = true
 color = Color(0.15, 0.28, 0.18, 1)
 polygon = PackedVector2Array(44, 44, 1108, 44, 1108, 596, 44, 596)
 
-[node name="TestLabel" type="Label" parent="World" unique_id=915651258]
-
 [node name="UI" type="PanelContainer" parent="." unique_id=1431370018]
 layout_mode = 0
 anchor_left = 1.0
