@@ -17,7 +17,6 @@ const HUNT_ACTION := preload("res://Assets/Def/Goap/Ecosystem/捕食.tres")
 @export var move_speed: float = 130.0
 
 var body: BodyVisual
-var _prey_target: RabbitAgent = null
 var _move_target := Vector2.ZERO
 var _moving := false
 var _move_done: Callable = Callable()
@@ -42,7 +41,6 @@ func _ready_goap() -> void:
 func _process(delta: float) -> void:
 	super._process(delta)
 	_update_movement(delta)
-	_update_awareness()
 	if not has_plan() and _status_label:
 		_status_label.text = "游荡中"
 
@@ -56,9 +54,6 @@ func _setup_body() -> void:
 
 
 ## —— 感知 ——
-
-func _update_awareness() -> void:
-	_prey_target = _nearest_rabbit()
 
 
 func _nearest_rabbit() -> RabbitAgent:
@@ -76,16 +71,18 @@ func _nearest_rabbit() -> RabbitAgent:
 
 
 ## —— 行动：狩猎链 ——
-## 注意: 狩猎链(寻找猎物->追踪猎物->捕食)中, 兔子可能被另一只狐狸抢先捕食而隐藏。
-## 目标失效时必须清掉 has_prey/near_prey 状态并重置 _prey_target, 否则 replan 后
-## 规划器误以为前置已满足, 直接走"追踪猎物->捕食", _prey_target 仍指向失效的兔子,
-## 形成"追踪猎物失败->重规划->追踪猎物失败"的死循环(卡死)。
+## 猎物绑定到 action.target（由行动生命周期 begin/end 自动管理，无需手写成员清理）。
+## 兔子可能被另一只狐狸抢先捕食而隐藏；行动返回失败后框架进入失败冷却，
+## 并通过 begin(可重新找)→end(清 target)→冷却→重规划 的过程自然收敛，不会死循环。
 
-func perform_find_prey(_action: GoapAction) -> bool:
-	_prey_target = _nearest_rabbit()
-	if _prey_target == null:
+func begin_find_prey(action: GoapAction) -> void:
+	action.target = _nearest_rabbit()
+
+
+func perform_find_prey(action: GoapAction) -> bool:
+	var rabbit := action.target as RabbitAgent
+	if rabbit == null:
 		_status("搜寻猎物")
-		_prey_target = null
 		set_state("has_prey", false)
 		set_state("near_prey", false)
 		return false
@@ -93,20 +90,26 @@ func perform_find_prey(_action: GoapAction) -> bool:
 	return true
 
 
-func perform_chase_prey(_action: GoapAction) -> Variant:
-	if _prey_target == null or not _prey_target.body.visible:
-		_prey_target = null
+func begin_chase_prey(action: GoapAction) -> void:
+	var rabbit := action.target as RabbitAgent
+	if rabbit == null or not rabbit.body.visible:
+		action.target = _nearest_rabbit()
+
+
+func perform_chase_prey(action: GoapAction) -> Variant:
+	var rabbit := action.target as RabbitAgent
+	if rabbit == null or not rabbit.body.visible:
 		set_state("has_prey", false)
 		set_state("near_prey", false)
 		return false
 	_status("追捕中")
-	_move_to(_prey_target.body.position, func() -> void:
-		if _prey_target != null and _prey_target.body.visible \
-				and body.position.distance_to(_prey_target.body.position) < 16.0:
+	_move_to(rabbit.body.position, func() -> void:
+		var r := action.target as RabbitAgent
+		if r != null and r.body.visible \
+				and body.position.distance_to(r.body.position) < 16.0:
 			notify_action_finished(true)
 		else:
 			# 途中猎物被其他狐狸捕食: 清空状态让 replan 重新寻找猎物
-			_prey_target = null
 			set_state("has_prey", false)
 			set_state("near_prey", false)
 			notify_action_finished(false)
@@ -114,14 +117,20 @@ func perform_chase_prey(_action: GoapAction) -> Variant:
 	return null
 
 
-func perform_hunt(_action: GoapAction) -> bool:
-	if _prey_target == null or not _prey_target.body.visible:
-		_prey_target = null
+func begin_hunt(action: GoapAction) -> void:
+	# 捕食是独立规划的新行动, target 需重新绑定(狐狸已贴近猎物, 最近的兔子即目标)
+	if action.target == null:
+		action.target = _nearest_rabbit()
+
+
+func perform_hunt(action: GoapAction) -> bool:
+	var rabbit := action.target as RabbitAgent
+	if rabbit == null or not rabbit.body.visible:
 		set_state("has_prey", false)
 		set_state("near_prey", false)
 		return false
 	_status("捕食！")
-	_prey_target.being_eaten()
+	rabbit.being_eaten()
 	return true
 
 

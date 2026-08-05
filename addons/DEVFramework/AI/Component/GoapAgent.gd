@@ -26,6 +26,13 @@ class_name GoapAgent extends Component
 @export_range(2, 20) var max_plan_depth: int = 12
 @export var auto_plan: bool = true
 @export var replan_after_action: bool = true
+## 行动失败后重新规划的最小冷却时间（秒）。防止"失败->立即重规划->再失败"的同帧
+## 死循环刷爆 CPU。连续失败会退避（见 failure_backoff_factor）。
+@export_range(0.0, 5.0, 0.05) var failure_replan_delay: float = 0.5
+## 连续失败退避倍数：第 n 次失败冷却 = failure_replan_delay * factor^(n-1)（封顶见 failure_backoff_max）
+@export_range(1.0, 4.0, 0.1) var failure_backoff_factor: float = 1.5
+## 退避冷却封顶（秒）
+@export_range(0.1, 10.0, 0.1) var failure_backoff_max: float = 3.0
 @export var debug_enabled: bool = false
 
 signal plan_found(goal: GoapGoal, plan: Array)
@@ -47,6 +54,8 @@ var _current_action: GoapAction
 var _state: AgentState = AgentState.IDLE
 var _replan_timer := 0.0
 var _world_dirty := true
+var _fail_streak := 0
+var _last_fail_time := 0.0
 
 
 func _ready() -> void:
@@ -73,6 +82,9 @@ func tick(delta: float) -> void:
 		return
 	_replan_timer += delta
 	if _state == AgentState.IDLE and (_world_dirty or _replan_timer >= replan_interval):
+		# 失败冷却中：即使 dirty 也不立即重规划，避免死循环刷爆 CPU
+		if _in_failure_cooldown():
+			return
 		_replan_timer = 0.0
 		replan()
 
@@ -97,6 +109,10 @@ func mark_dirty() -> void:
 ## 立即重新规划并（若有方案）开始执行
 func replan() -> void:
 	if paused:
+		return
+	# 失败冷却期内拒绝重规划，防止 call_deferred/replan 死循环绕过 tick 冷却
+	if _in_failure_cooldown():
+		_world_dirty = true
 		return
 	_world_dirty = false
 	var result := _try_plan()
@@ -138,7 +154,16 @@ func _execute_next_action() -> void:
 		_finish_plan(true)
 		return
 	var action: GoapAction = current_plan.pop_front()
+	# 执行前校验：行动前提 / 附加条件在规划后可能已失效（如目标被抢占、状态变化）。
+	# 不满足则丢弃整个剩余计划重新规划，避免用陈旧世界状态硬执行导致反复失败。
+	if not action.can_run(world_state, self):
+		current_plan.clear()
+		action.end(self)
+		_enter_failure_cooldown()
+		call_deferred("replan")
+		return
 	_current_action = action
+	action.begin(self)
 	action_started.emit(action)
 	action.execute(self)
 
@@ -149,16 +174,37 @@ func notify_action_finished(success: bool) -> void:
 	_current_action = null
 	if action == null:
 		return
+	action.end(self)
 	action_finished.emit(action, success)
 	if debug_enabled:
 		LogTool.log("GOAP", "%s 行动 %s %s" % [name, action.def.name, "完成" if success else "失败"])
 	if success:
 		action.apply_effects(world_state)
-	if not success or replan_after_action:
+		_fail_streak = 0
+	if not success:
+		_enter_failure_cooldown()
+	if not success:
+		# 失败：冷却后重规划。冷却期内即使 dirty 也不会立即重规划。
+		call_deferred("replan")
+	elif replan_after_action:
 		# 延迟到帧末重规划，避免行动同步完成时 replan→execute→notify 同帧递归（栈溢出）
 		call_deferred("replan")
 	else:
 		_execute_next_action()
+
+
+## 记录一次失败并进入重规划冷却（连续失败指数退避）
+func _enter_failure_cooldown() -> void:
+	_fail_streak += 1
+	var delay := minf(failure_replan_delay * pow(failure_backoff_factor, _fail_streak - 1.0), failure_backoff_max)
+	_last_fail_time = Time.get_ticks_msec() / 1000.0 + delay
+
+
+## 当前是否处于失败冷却期
+func _in_failure_cooldown() -> bool:
+	if _fail_streak <= 0:
+		return false
+	return (Time.get_ticks_msec() / 1000.0) < _last_fail_time
 
 
 func _finish_plan(success: bool) -> void:
@@ -175,6 +221,8 @@ func reset_plan() -> void:
 	_current_action = null
 	current_plan.clear()
 	_world_dirty = true
+	_fail_streak = 0
+	_last_fail_time = 0.0
 
 
 func get_current_action() -> GoapAction:

@@ -46,6 +46,8 @@ static func _out(level: Level, tag: String, objs: Array) -> void:
 		return
 
 	var msg := " ".join(objs.map(str))
+	# print_rich 会把 [ ] 当 BBCode 解析, 消息里含源码/路径/字典时需转义, 否则 [img] 等误判导致资源加载错误甚至崩溃
+	msg = msg.replace("[", "[lb]").replace("]", "[rb]")
 	var now := Time.get_ticks_usec()
 	var diff_usec := now - _last_ts_usec if _last_ts_usec > 0 else 0
 	_last_ts_usec = now

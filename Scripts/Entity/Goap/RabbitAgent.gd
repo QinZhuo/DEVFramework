@@ -20,7 +20,6 @@ const FLEE_ACTION := preload("res://Assets/Def/Goap/Ecosystem/逃跑.tres")
 @export_range(80.0, 400.0) var danger_radius: float = 170.0
 
 var body: BodyVisual
-var _food_target: Grass = null
 var _nearest_fox: FoxAgent = null
 var _move_target := Vector2.ZERO
 var _moving := false
@@ -81,17 +80,18 @@ func _update_awareness() -> void:
 
 
 ## —— 行动：觅食链 ——
-## 注意: 觅食链(寻找食物->走向食物->进食)中, 草可能被其他兔子抢先吃掉导致目标失效。
-## 目标失效时必须清掉 has_food/near_food 状态并重置 _food_target, 否则 replan 后
-## 规划器误以为前置已满足, 直接走"走向食物->进食", _food_target 仍指向不可用的草,
-## 形成"走向食物失败->重规划->走向食物失败"的死循环(卡死)。
+## 目标草绑定到 action.target（由行动生命周期 begin/end 自动管理，无需手写成员清理）。
+## 草可能被其他兔子抢先吃掉导致 target 失效；行动返回失败后框架进入失败冷却，
+## 并通过 begin(可重新找草)→end(清 target)→冷却→重规划 的过程自然收敛，不会死循环。
 
-func perform_find_food(_action: GoapAction) -> bool:
-	_food_target = _nearest_grass()
-	if _food_target == null:
+func begin_find_food(action: GoapAction) -> void:
+	action.target = _nearest_grass()
+
+
+func perform_find_food(action: GoapAction) -> bool:
+	var grass := action.target as Grass
+	if grass == null:
 		_status("觅食：附近没有草")
-		# 没有可吃的草时清空残留状态, 避免上次失败留下的 has_food/near_food 触发死循环
-		_food_target = null
 		set_state("has_food", false)
 		set_state("near_food", false)
 		return false
@@ -99,19 +99,25 @@ func perform_find_food(_action: GoapAction) -> bool:
 	return true
 
 
-func perform_walk_to_food(_action: GoapAction) -> Variant:
-	if _food_target == null or not _food_target.is_available():
-		_food_target = null
+func begin_walk_to_food(action: GoapAction) -> void:
+	var grass := action.target as Grass
+	if grass == null or not grass.is_available():
+		action.target = _nearest_grass()
+
+
+func perform_walk_to_food(action: GoapAction) -> Variant:
+	var grass := action.target as Grass
+	if grass == null or not grass.is_available():
 		set_state("has_food", false)
 		set_state("near_food", false)
 		return false
 	_status("前往食物")
-	_move_to(_food_target.position, func() -> void:
-		if _food_target != null and _food_target.is_available():
+	_move_to(grass.position, func() -> void:
+		var g := action.target as Grass
+		if g != null and g.is_available():
 			notify_action_finished(true)
 		else:
 			# 途中草被吃: 清空状态让 replan 重新寻找食物, 而非拿着失效目标空转
-			_food_target = null
 			set_state("has_food", false)
 			set_state("near_food", false)
 			notify_action_finished(false)
@@ -119,14 +125,20 @@ func perform_walk_to_food(_action: GoapAction) -> Variant:
 	return null
 
 
-func perform_eat_food(_action: GoapAction) -> bool:
-	if _food_target == null or not _food_target.is_available():
-		_food_target = null
+func begin_eat_food(action: GoapAction) -> void:
+	# 进食是独立规划的新行动, target 需重新绑定(兔子已站在食物旁, 最近的草即目标)
+	if action.target == null:
+		action.target = _nearest_grass()
+
+
+func perform_eat_food(action: GoapAction) -> bool:
+	var grass := action.target as Grass
+	if grass == null or not grass.is_available():
 		set_state("has_food", false)
 		set_state("near_food", false)
 		return false
 	_status("进食中")
-	_food_target.eaten()
+	grass.eaten()
 	return true
 
 
