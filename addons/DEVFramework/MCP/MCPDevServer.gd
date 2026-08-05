@@ -50,6 +50,8 @@ var _game_ready := false
 ## 编辑器模式: 等待游戏响应的请求表 req_id -> 结果(未就绪为 null)
 var _pending := {}
 var _next_req_id := 1
+## 编辑器模式: 游戏是否处于断点暂停状态(脚本错误/断点导致主循环暂停)
+var _game_breaked := false
 
 
 ## ------- 生命周期(autoload) -------
@@ -130,10 +132,28 @@ func _on_session_started(session_id: int) -> void:
 func _on_session_stopped(session_id: int) -> void:
 	LogTool.log("MCP", "游戏调试会话已结束(session=%d)" % session_id)
 	_game_ready = false
+	_game_breaked = false
 	var msg := "游戏进程已停止(正常结束或崩溃), 所有未完成的运行时调用被取消。请先 run_game 重新启动游戏后再试。"
 	for req_id in _pending:
 		if _pending[req_id] == null:
 			_pending[req_id] = _err(msg, "game_stopped", true, "调用 run_game 重新启动游戏, 等待调试线就绪后重试")
+
+
+## 游戏进入断点暂停(脚本错误/断点触发, 主循环暂停但调试线仍在)。
+## 此时运行时工具若发请求会干等超时, 应立即填充未决请求为明确错误, 让 AI 知道是"游戏被调试器暂停"而非无响应。
+func _on_session_breaked(_session_id: int, can_debug: bool) -> void:
+	_game_breaked = true
+	LogTool.log("MCP", "游戏已进入断点暂停(调试循环=%s)。运行时工具会立即返回明确错误, 可用 debug_continue 让游戏继续。" % str(can_debug))
+	var msg := "游戏因脚本错误/断点被调试器暂停(主循环未运行)。可调用 debug_continue 让游戏继续; 若要修复脚本错误则 stop_game 后改代码重跑。"
+	for req_id in _pending:
+		if _pending[req_id] == null:
+			_pending[req_id] = _err(msg, "game_breaked", true, "调用 debug_continue 让游戏继续, 或 stop_game 修复脚本错误后重启")
+
+
+## 游戏解除断点暂停, 恢复运行
+func _on_session_continued(_session_id: int) -> void:
+	_game_breaked = false
+	LogTool.log("MCP", "游戏已恢复运行(解除断点暂停)")
 
 
 ## 编辑器进程: 编辑器模式显式启动(由 plugin.gd 在启用插件时调用)。
@@ -2238,11 +2258,33 @@ func _register_game_play_tools() -> void:
 		{"type": "object", "properties": {}},
 		func(args): return await _call_runtime_proxy("clear_game_errors", args))
 
+	_add_tool("debug_continue",
+		"让因脚本错误/断点被调试器暂停的游戏继续运行(等效编辑器 Debugger 面板的 Continue 按钮, 不转发游戏进程)。当工具报错'游戏处于断点暂停'时调用。",
+		{"type": "object", "properties": {}},
+		_call_debug_continue)
+
+
+## 编辑器进程: 解除游戏断点暂停(等效编辑器的 Continue 按钮)
+func _call_debug_continue(_args: Dictionary) -> Dictionary:
+	if debugger_plugin == null or not debugger_plugin.has_active_session():
+		return _fail("没有运行中的游戏, 无需继续")
+	if not debugger_plugin.is_breaked():
+		return _ok("游戏当前未处于断点暂停状态, 无需继续")
+	if debugger_plugin.debug_continue():
+		_game_breaked = false
+		return _ok("已让游戏继续运行(解除断点暂停)")
+	return _err("无法解除断点暂停", "internal", false, "尝试 stop_game 后重新 run_game")
+
 
 ## 转发工具调用到游戏进程(经 EngineDebugger 调试线)。仅编辑器模式。
 func _call_runtime_proxy(tool_name: String, args: Dictionary) -> Dictionary:
 	if debugger_plugin == null or not debugger_plugin.has_active_session():
 		return _err("游戏未运行。请先使用 run_game 启动游戏", "game_stopped", true, "调用 run_game 启动游戏, 等待调试线就绪后重试")
+	if _game_breaked:
+		# 游戏已被调试器断点暂停(脚本错误/断点), 主循环未运行, 调用必然超时。
+		# 立即返回明确错误, 而非干等 20s; 同时让 AI 知道可以用 debug_continue 恢复。
+		return _err("游戏处于断点暂停状态(脚本错误/断点, 主循环未运行)。调用会被挂起, 请先处理:\n1) 用 get_game_errors 查看具体脚本错误并 decide 修复; 2) 调用 debug_continue 让游戏继续; 或 stop_game 修复后重启。",
+			"game_breaked", true, "调用 debug_continue 让游戏继续, 或用 get_game_errors 查看错误后修复")
 	if not _game_ready:
 		return _err("游戏调试线尚未就绪", "transient", true, "等待游戏启动完成(可稍后重试, 或重新 run_game)")
 	var req_id := _next_req_id
