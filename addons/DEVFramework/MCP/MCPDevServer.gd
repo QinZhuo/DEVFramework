@@ -782,8 +782,9 @@ func _capture_editor_viewport() -> Image:
 	if viewport == null or tree == null:
 		return null
 	await _wait_frames(tree, 3, 2500)
-	# 用 frame_post_draw 等待渲染线程完成, 避免 force_draw 同步阻塞导致编辑器卡顿
-	await RenderingServer.frame_post_draw
+	# 编辑器进程的 RenderingServer.frame_post_draw 不一定按时触发(与游戏的标准帧循环不同),
+	# 等待其会永久挂起。编辑器主循环由 process_frame 驱动, 等帧后直接读纹理即可。
+	# 也不要调用 RenderingServer.force_draw(): 在线程化渲染下同步阻塞可能卡住编辑器。
 	return viewport.get_texture().get_image()
 
 
