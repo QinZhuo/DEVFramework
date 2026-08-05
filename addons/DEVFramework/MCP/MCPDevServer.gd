@@ -611,46 +611,7 @@ func _collect_runtime_error(err_before: int) -> String:
 	return "%s  (%s:%s %s)" % [msg, f, ln, fn]
 
 
-## 把工具调用结果摘要记录到 MCP 日志, 便于诊断"返回异常/空"等问题。
-## 巨型内容工具(get_logs/get_errors/get_game_logs/get_game_errors/read_file/take_screenshot 等)
-## 只打印结构摘要, 避免日志被撑爆。
-func _log_tool_result(tool_name: String, result: Dictionary) -> void:
-	var text: String = str(result.get("text", ""))
-	var is_err: bool = result.get("is_error", false)
-	var head := "[%s] %s 返回: " % [_mode, tool_name]
-	var big := tool_name in ["get_logs", "get_errors", "get_game_logs", "get_game_errors",
-			"read_file", "take_screenshot", "get_scene_tree", "get_game_view", "get_global_classes",
-			"classdb_query", "get_node_info", "get_project_info", "get_project_settings",
-			"get_editor_activity", "list_dir", "get_project_setting"]
-	if is_err:
-		LogTool.log("MCP", "%s错误: %s" % [head, text.left(400)])
-		return
-	if big:
-		# 只打顶层结构(键/计数), 不打全文
-		var summary := ""
-		var t := text.strip_edges()
-		if t.begins_with("{") or t.begins_with("["):
-			var parsed: Variant = JSON.parse_string(t)
-			if parsed is Dictionary:
-				for key in parsed.keys():
-					var v = parsed[key]
-					var vdesc: String = str(v)
-					if v is Array:
-						vdesc = "Array[%d]" % v.size()
-					elif v is Dictionary:
-						vdesc = "Dict{%d}" % v.size()
-					summary += "%s=%s " % [key, vdesc]
-		if summary.is_empty():
-			summary = t.left(200)
-		LogTool.log("MCP", "%s%s" % [head, summary])
-	else:
-		LogTool.log("MCP", "%s%s" % [head, text.left(400)])
-
-
 ## 统一工具结果封装
-## 同时输出 MCP 标准字段(content 数组 + 驼峰 isError)与自定义字段(text/is_error),
-## 兼容官方 SDK 客户端(读 content/isError)与旧式客户端/内部逻辑(读 text/is_error)。
-func _ok(text: String) -> Dictionary:
 	return {
 		"text": text,
 		"is_error": false,
