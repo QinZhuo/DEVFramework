@@ -233,6 +233,17 @@ func _register_validate_tools() -> void:
 		{"type": "object", "properties": {"path": {"type": "string", "description": "目录路径, 默认 res://"}, "recursive": {"type": "boolean", "description": "是否递归列出子目录, 默认 false"}}},
 		_call_list_dir)
 
+	_add_tool("classdb_query",
+		"查询 Godot 类的 API: 类的方法/属性/信号/枚举。用于 AI 写脚本前确认 Godot 原生 API 的正确用法与签名。可按关键字模糊搜索类名, 或查询指定类的成员。返回结构化 JSON。",
+		{"type": "object", "properties": {
+			"class_name": {"type": "string", "description": "要查询的类名(如 CharacterBody2D/Button), 提供后返回该类的成员清单"},
+			"search": {"type": "string", "description": "按关键字模糊搜索类名(如 'body' 匹配 CharacterBody2D/RigidBody2D 等)"},
+			"methods": {"type": "boolean", "description": "是否返回方法清单, 默认 true"},
+			"properties": {"type": "boolean", "description": "是否返回属性清单, 默认 true"},
+			"signals": {"type": "boolean", "description": "是否返回信号清单, 默认 true"}
+		}},
+		_call_classdb_query)
+
 
 ## -- 日志/错误 --
 func _register_log_tools() -> void:
@@ -282,7 +293,7 @@ func _register_scene_tools() -> void:
 		_call_get_node_info)
 
 	_add_tool("set_node_property",
-		"修改当前编辑场景中指定节点的属性值(用于调试调整逻辑)。修改仅影响内存中的场景, 不会写回 .tscn 文件直到手动保存。",
+		"修改当前编辑场景中指定节点的属性值(用于调试调整逻辑)。修改经 UndoRedo 提交, 用户可按 Ctrl+Z 撤销。修改仅影响内存中的场景, 不会写回 .tscn 文件直到 save_scene。",
 		{"type": "object", "properties": {"path": {"type": "string", "description": "节点路径(编辑场景内)"}, "property": {"type": "string", "description": "属性名"}, "value": {"description": "新值(支持数字/字符串/布尔; Vector2 等可传 '1,2' 字符串)"}}},
 		_call_set_node_property)
 
@@ -295,7 +306,7 @@ func _register_scene_tools() -> void:
 ## -- 场景编辑 --
 func _register_scene_edit_tools() -> void:
 	_add_tool("add_node",
-		"在当前编辑场景中添加节点或实例化子场景。parent 为父节点路径(缺省根), node_type 为节点类型类名(如 Sprite2D/CharacterBody2D/Label)或子场景 res:// 路径。",
+		"在当前编辑场景中添加节点或实例化子场景。parent 为父节点路径(缺省根), node_type 为节点类型类名(如 Sprite2D/CharacterBody2D/Label)或子场景 res:// 路径。添加经 UndoRedo 提交, 用户可按 Ctrl+Z 移除。",
 		{"type": "object", "properties": {"parent": {"type": "string", "description": "父节点路径(编辑场景内), 缺省为场景根"}, "node_type": {"type": "string", "description": "节点类型类名或子场景 res:// 路径"}, "name": {"type": "string", "description": "新节点名称(可选)"}}},
 		_call_add_node)
 
@@ -316,6 +327,11 @@ func _register_project_tools() -> void:
 		"获取项目关键配置(主场景/autoload/输入映射/图层命名等), 帮助 AI 理解项目约定。",
 		{"type": "object", "properties": {}},
 		_call_get_project_settings)
+
+	_add_tool("get_editor_activity",
+		"获取编辑器当前状态: 打开的场景、选中的节点、运行中的游戏、文件系统选中项等。用于 AI 与人类协作时感知用户在编辑器里做了什么, 避免踩踏改动。",
+		{"type": "object", "properties": {}},
+		_call_get_editor_activity)
 
 
 ## -- 运行游戏 --
@@ -690,6 +706,99 @@ func _call_validate_resource(args: Dictionary) -> Dictionary:
 	}))
 
 
+## 查询 Godot 类的 API(方法/属性/信号)。用于 AI 写脚本前确认原生 API 用法。
+func _call_classdb_query(args: Dictionary) -> Dictionary:
+	var query_class: String = str(args.get("class_name", ""))
+	var search: String = str(args.get("search", ""))
+	var want_methods: bool = args.get("methods", true)
+	var want_props: bool = args.get("properties", true)
+	var want_signals: bool = args.get("signals", true)
+
+	# 模糊搜索类名
+	if search != "":
+		var matches: Array = []
+		var all_classes := ClassDB.get_class_list()
+		for c in all_classes:
+			if str(c).to_lower().contains(search.to_lower()):
+				matches.append(c)
+		matches.sort()
+		if matches.size() > 50:
+			matches = matches.slice(0, 50)
+		return _ok(JSON.stringify({"mode": "search", "query": search, "match_count": matches.size(), "classes": matches}))
+
+	if query_class == "":
+		return _fail("必须提供 class_name 或 search")
+	if not ClassDB.class_exists(query_class):
+		return _fail("类不存在: %s(请用 search 模糊搜索)" % query_class)
+
+	var out := {"class_name": query_class, "inherits": _class_inheritance_chain(query_class)}
+	if want_methods:
+		var methods: Array = []
+		for m in ClassDB.class_get_method_list(query_class, true):
+			var arg_sig := ""
+			var arg_names: Array = m.get("args", [])
+			if arg_names.size() > 0:
+				var parts := PackedStringArray()
+				for a in arg_names:
+					parts.append("%s:%s" % [a.get("name", "?"), a.get("type", "?")])
+				arg_sig = "(" + ", ".join(parts) + ")"
+			else:
+				arg_sig = "()"
+			var ret: int = int(m.get("return", {}).get("type", 0)) if m.get("return", {}) is Dictionary else 0
+			methods.append("%s%s -> %s" % [m.get("name", "?"), arg_sig, _type_name(ret)])
+		out["methods"] = methods
+	if want_props:
+		var props: Array = []
+		for p in ClassDB.class_get_property_list(query_class, true):
+			props.append("%s : %s" % [p.get("name", "?"), _type_name(int(p.get("type", 0)))])
+		out["properties"] = props
+	if want_signals:
+		var signals: Array = []
+		for s in ClassDB.class_get_signal_list(query_class, true):
+			var arg_sig := ""
+			var arg_names: Array = s.get("args", [])
+			if arg_names.size() > 0:
+				var parts := PackedStringArray()
+				for a in arg_names:
+					parts.append("%s:%s" % [a.get("name", "?"), a.get("type", "?")])
+				arg_sig = "(" + ", ".join(parts) + ")"
+			else:
+				arg_sig = "()"
+			signals.append("%s%s" % [s.get("name", "?"), arg_sig])
+		out["signals"] = signals
+	return _ok(JSON.stringify(out))
+
+
+## 返回类的继承链(从基类到最终祖先)
+func _class_inheritance_chain(cname: String) -> Array:
+	var chain: Array = []
+	var cur := cname
+	while cur != "" and ClassDB.class_exists(cur):
+		chain.append(cur)
+		cur = ClassDB.get_parent_class(cur)
+	return chain
+
+
+## 将 Godot 类型枚举值转为可读类型名
+func _type_name(type_id: int) -> String:
+	match type_id:
+		TYPE_NIL: return "null"
+		TYPE_BOOL: return "bool"
+		TYPE_INT: return "int"
+		TYPE_FLOAT: return "float"
+		TYPE_STRING: return "String"
+		TYPE_VECTOR2: return "Vector2"
+		TYPE_VECTOR3: return "Vector3"
+		TYPE_COLOR: return "Color"
+		TYPE_ARRAY: return "Array"
+		TYPE_DICTIONARY: return "Dictionary"
+		TYPE_OBJECT: return "Object"
+		TYPE_NODE_PATH: return "NodePath"
+		TYPE_PACKED_STRING_ARRAY: return "PackedStringArray"
+		_:
+			if type_id >= TYPE_OBJECT:
+				return "Object/%s" % type_id
+			return "type_%d" % type_id
 func _call_list_dir(args: Dictionary) -> Dictionary:
 	var path: String = str(args.get("path", "res://"))
 	var recursive: bool = _to_bool(args.get("recursive", false))
@@ -971,7 +1080,15 @@ func _call_set_node_property(args: Dictionary) -> Dictionary:
 		typed = _coerce_value(value, typeof(current))
 	if typed == null and value != null:
 		return _fail("无法转换值 %s 为属性类型" % str(value))
-	node.set(property, typed)
+	# 经 UndoRedo 提交, 使 AI 的修改可用 Ctrl+Z 撤销(Ctrl+Z 作用于当前编辑场景)
+	var undo := _editor_undo_redo()
+	if undo:
+		undo.create_action("MCP: set %s.%s" % [node.name, property])
+		undo.add_do_property(node, property, typed)
+		undo.add_undo_property(node, property, current)
+		undo.commit_action()
+	else:
+		node.set(property, typed)
 	return _ok("已设置 %s.%s = %s" % [path, property, str(node.get(property))])
 
 
@@ -1019,9 +1136,33 @@ func _call_add_node(args: Dictionary) -> Dictionary:
 			return _fail("无法实例化节点类型: %s" % node_type)
 	if not new_name.is_empty():
 		new_node.name = new_name
-	parent.add_child(new_node, true)
-	_assign_owner_recursive(new_node, root)
+	var owner_root: Node = root
+	var undo := _editor_undo_redo()
+	if undo and is_inside_tree():
+		# 经 UndoRedo 提交, 使 AI 新增节点可用 Ctrl+Z 移除
+		undo.create_action("MCP: add %s" % new_node.name)
+		undo.add_do_method(self, "_ensure_added", parent, new_node, owner_root)
+		undo.add_undo_method(self, "_ensure_removed", parent, new_node)
+		undo.commit_action()
+	else:
+		parent.add_child(new_node, true)
+		_assign_owner_recursive(new_node, owner_root)
 	return _ok("已添加节点 %s [%s] 到 %s" % [new_node.name, new_node.get_class(), parent.name])
+
+
+## UndoRedo 的 do 回调: 添加节点并赋 owner(幂等, 已挂父亲则只补 owner)
+func _ensure_added(parent: Node, node: Node, owner_root: Node) -> void:
+	if node.get_parent() == null:
+		parent.add_child(node, true)
+	if node.owner == null:
+		_assign_owner_recursive(node, owner_root)
+
+
+## UndoRedo 的 undo 回调: 移除节点(幂等)
+func _ensure_removed(parent: Node, node: Node) -> void:
+	if node.get_parent() == parent:
+		parent.remove_child(node)
+	node.queue_free()
 
 
 ## 递归把节点及其子树 owner 设为场景根, 保证新增节点可随场景保存
@@ -1059,6 +1200,30 @@ func _call_get_project_info(_args: Dictionary) -> Dictionary:
 		"session_active": session_active,
 	}
 	return _ok(JSON.stringify(info))
+
+
+## 感知编辑器当前状态(用于 AI 与人类协作): 打开场景/选中节点/运行状态等
+func _call_get_editor_activity(_args: Dictionary) -> Dictionary:
+	if not Engine.is_editor_hint():
+		return _fail("仅在编辑器模式可用")
+	var out := {
+		"mode": "editor",
+		"game_running": debugger_plugin != null and debugger_plugin.has_active_session(),
+		"bridge_ready": debugger_plugin != null and _game_ready,
+	}
+	# 打开的场景与选中节点
+	var root := _edited_root()
+	if root:
+		out["open_scene"] = root.get_scene_file_path()
+		out["scene_name"] = str(root.name)
+	var selection := EditorInterface.get_selection()
+	if selection != null:
+		var selected: Array[Node] = []
+		for n in selection.get_selected_nodes():
+			selected.append(n)
+		out["selected_nodes"] = selected.map(func(n: Node): return str(n.get_path()))
+	out["mcp_running"] = is_running()
+	return _ok(JSON.stringify(out))
 
 
 func _call_get_project_settings(_args: Dictionary) -> Dictionary:
@@ -1461,6 +1626,14 @@ func _resolve_node(path: String) -> Node:
 	if n:
 		return n
 	return root.find_child(path, true, false)
+
+
+## 获取编辑器 UndoRedo 管理器(仅编辑器模式)。所有场景变异工具经它提交,
+## 使 AI 的修改可被用户 Ctrl+Z 撤销。非编辑器/不可用时返回 null(调用方应兜底直接修改)。
+func _editor_undo_redo() -> EditorUndoRedoManager:
+	if not Engine.is_editor_hint():
+		return null
+	return EditorInterface.get_editor_undo_redo()
 
 
 ## 自动推断并转换参数类型(无需知道目标类型)

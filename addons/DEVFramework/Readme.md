@@ -586,14 +586,16 @@ claude mcp list        # 查看已配置
 | `validate_script` | 校验 GDScript 语法/可编译性（传 `path` 或 `code`，兼容非 `@tool`/纯工具类脚本）|
 | `validate_resource` | 校验资源/场景能否被引擎加载 |
 | `list_dir` | 列出目录内容（支持递归）|
+| `classdb_query` | 查询 Godot 类的 API（方法/属性/信号签名）或按关键字搜索类名，供 AI 写脚本前确认原生 API |
 | `get_logs` | 读取编辑器控制台日志（增量/关键字/截断）|
 | `get_errors` | 读取捕获的错误（含来源文件、行号、**GDScript 栈追踪**）|
 | `clear_errors` | 清空错误缓冲区 |
 | `take_screenshot` | 捕获编辑器当前窗口画面（存到 `user://mcp_screenshots/`）|
 | `get_scene_tree` | 获取当前编辑场景的节点树结构 |
 | `get_node_info` | 读取编辑场景中指定节点属性列表及当前值 |
-| `set_node_property` | 修改编辑场景中节点属性（需手动保存才写回 .tscn）|
+| `set_node_property` | 修改编辑场景中节点属性（经 UndoRedo 提交，可 Ctrl+Z 撤销；保存才写回 .tscn）|
 | `call_node_method` | 触发编辑场景中节点方法 |
+| `get_editor_activity` | 感知编辑器当前状态（打开场景/选中节点/运行中游戏），用于 AI 与人类协作不踩踏 |
 | `get_project_info` | 项目/版本/当前编辑场景等环境信息 |
 | `get_project_settings` | 主场景/autoload/输入映射/图层命名等关键配置 |
 | `run_game` / `stop_game` | 独立进程启动/停止游戏（日志并入 `get_logs`）|
@@ -615,6 +617,33 @@ claude mcp list        # 查看已配置
 3. AI `get_scene_tree` / `get_node_info` 理解当前编辑场景的节点与属性。
 4. AI 用 `set_node_property` / `call_node_method` 快速验证逻辑，`get_errors` 定位报错。
 5. `take_screenshot` 查看编辑器画面实际表现。
+
+### 6. AI 开发规范（AI 助手必读）
+
+本框架让 AI 不仅能读项目，还能按**项目既有规范**安全地修改场景与脚本。请遵循以下规则，保证 AI 的改动符合"正常游戏开发规范"且不会破坏用户的工作。
+
+**架构与目录约定**
+- 项目遵循 **Def（静态数据 .tres）→ Entity（运行时实体）→ View（显示）** 三层架构，配合 `Tool/*` 静态工具类。
+- 代码按类目放到 `Scripts/Def/`、`Scripts/Entity/`、`Scripts/View/`，不要把所有脚本塞进单个场景脚本。
+- **UI 等可显示内容一律用场景（.tscn）搭建，不要用代码 `new`**（见框架 `View/*` 与 `UITool`）。改动 UI 优先在场景里调整节点属性，而非写代码生成。
+- 优先**配置驱动**：能通过 `.tres` 资源配置的数据（数值、效果、标签、GOAP 行动/目标）就用资源，不硬编码在脚本里。
+- 写脚本时使用显式类型标注（`func foo(x: int) -> void`）、`@onready` 获取节点引用、`@export` 暴露可调参数，与 `Scenes/AI/GoapDemo.gd` 等示例风格一致。
+
+**MCP 工具使用规范**
+- 改任何场景节点前，先用 `get_scene_tree` / `get_node_info` 看清结构与当前属性，再动手。
+- **不确定 Godot 原生 API 的用法时，先用 `classdb_query` 查询**（方法/属性/信号签名），再写代码，避免臆造 API。
+- `set_node_property` 与 `add_node` 已接入 UndoRedo，AI 的修改用户可按 **Ctrl+Z 撤销**——请放心使用，但也不要反复试探性乱改，尽量一次改对。
+- 修改场景节点或新建脚本/资源后，记得 `save_scene` / `reload_project`，否则改动不会持久化或全局类不生效。
+- 长任务（重编译、生成音频、导出）会占用编辑器，且单次 MCP 调用有超时，**拆成小步骤**完成，不要一次塞超长指令。
+- 排查脚本问题时：先 `validate_script` 验证语法，再 `get_errors` 看运行期错误（含栈追踪），配合 `get_logs` 定位。
+
+**安全边界**
+- 编辑器 **运行游戏时**（`get_editor_activity` 显示 game_running=true），应避免对编辑场景做结构性改动；如需改结构先 `stop_game`。
+- `eval_code` / `game_eval` 可执行任意 GDScript，是**可信开发者工具**，AI 应最小权限使用：只读/求解优先，改动场景尽量走 `set_node_property` 等专门工具而非 eval。
+- `write_file` / `delete_file` 会直接读写磁盘，先确认路径无误，避免越界到已知目标文件之外。
+
+**协作约定**
+- 动手前先 `get_editor_activity` 看用户在编辑器里做了什么（打开哪个场景/选中哪个节点/是否在运行游戏），避免与用户正在进行的操作踩踏。
 
 ---
 
