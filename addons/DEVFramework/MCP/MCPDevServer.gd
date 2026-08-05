@@ -37,11 +37,11 @@ static var instance: MCPDevServer
 
 var _http: MCPTcpHttpServer
 var _logger: MCPLogger
-var _port := 8931
+var _port := int(ProjectSettings.get_setting(SETTING_PORT, 8931))
 var _enabled := true
-var _tool_handlers := {}        # 工具名 -> Callable
-var _tool_defs := []            # 工具定义列表(MCP 格式)
-var _mode := MODE_EDITOR        # editor / runtime
+var _tool_handlers := {} # 工具名 -> Callable
+var _tool_defs := [] # 工具定义列表(MCP 格式)
+var _mode := MODE_EDITOR # editor / runtime
 
 ## 编辑器模式: 指向 MCPDebuggerPlugin(由 plugin.gd 注入)
 var debugger_plugin: MCPDebuggerPlugin = null
@@ -453,13 +453,13 @@ func _on_request(method: String, path: String, headers: Dictionary, body: Packed
 	if not token.is_empty():
 		var auth := str(headers.get("authorization", ""))
 		if auth != "Bearer " + token:
-			_http.send_response(stream, 401, _cors_headers(headers), JSON.stringify({"jsonrpc": "2.0", "error": {"code": -32000, "message": "Unauthorized"}, "id": null}))
+			_http.send_response(stream, 401, _cors_headers(headers), JSON.stringify({"jsonrpc": "2.0", "error": {"code": - 32000, "message": "Unauthorized"}, "id": null}))
 			return
 	# 校验 Origin: 拦截浏览器/外部站点的跨域调用(eval_code 可执行任意代码, 防本机 RCE)。
 	# 无 Origin(本地 CLI/工具)或本机 Origin 放行。
 	var origin := str(headers.get("origin", "")).to_lower()
 	if not origin.is_empty() and not (origin.begins_with("http://127.0.0.1") or origin.begins_with("http://localhost") or origin.begins_with("http://0.0.0.0")):
-		_http.send_response(stream, 403, _cors_headers(headers), JSON.stringify({"jsonrpc": "2.0", "error": {"code": -32000, "message": "Forbidden"}, "id": null}))
+		_http.send_response(stream, 403, _cors_headers(headers), JSON.stringify({"jsonrpc": "2.0", "error": {"code": - 32000, "message": "Forbidden"}, "id": null}))
 		return
 	var parsed: Variant = JSON.parse_string(body.get_string_from_utf8())
 	if parsed == null or not parsed is Dictionary:
@@ -570,7 +570,11 @@ func _safe_call_handler(handler: Callable, arguments: Dictionary) -> Dictionary:
 	if _logger and _logger.get_error_count() > err_before:
 		var outcome := _collect_runtime_error(err_before)
 		var base: Dictionary = result
-		base["text"] = str(base.get("text", "")) + "\n[警告] 执行过程中捕获运行期错误:\n%s" % outcome
+		var new_text := str(base.get("text", "")) + "\n[警告] 执行过程中捕获运行期错误:\n%s" % outcome
+		base["text"] = new_text
+		# 同步更新 MCP 标准 content 数组, 保证官方 SDK 客户端也能看到诊断信息
+		if base.get("content") is Array and not base["content"].is_empty() and base["content"][0] is Dictionary:
+			base["content"][0]["text"] = new_text
 	return result
 
 
@@ -621,12 +625,24 @@ func _log_tool_result(tool_name: String, result: Dictionary) -> void:
 
 
 ## 统一工具结果封装
+## 同时输出 MCP 标准字段(content 数组 + 驼峰 isError)与自定义字段(text/is_error),
+## 兼容官方 SDK 客户端(读 content/isError)与旧式客户端/内部逻辑(读 text/is_error)。
 func _ok(text: String) -> Dictionary:
-	return {"text": text, "is_error": false}
+	return {
+		"text": text,
+		"is_error": false,
+		"isError": false,
+		"content": [ {"type": "text", "text": text}],
+	}
 
 
 func _fail(text: String) -> Dictionary:
-	return {"text": text, "is_error": true}
+	return {
+		"text": text,
+		"is_error": true,
+		"isError": true,
+		"content": [ {"type": "text", "text": text}],
+	}
 
 
 ## 结构化错误封装(MCP 工具执行错误)。category 语义:
@@ -639,6 +655,8 @@ func _err(text: String, category: String, retryable: bool, recovery: String) -> 
 	return {
 		"text": text,
 		"is_error": true,
+		"isError": true,
+		"content": [ {"type": "text", "text": text}],
 		"error_category": category,
 		"is_retryable": retryable,
 		"recovery": recovery,
@@ -952,7 +970,7 @@ func _call_take_screenshot(args: Dictionary) -> Dictionary:
 
 	var filename := "mcp_%s" % Time.get_datetime_string_from_system().replace(":", "-").replace(" ", "_")
 	# 清理文件名中的非法字符(Windows 不支持 : / \ * ? " < > |)
-	filename = filename.replace("/", "_").replace("\\", "_").replace("*", "_").replace("?", "_")\
+	filename = filename.replace("/", "_").replace("\\", "_").replace("*", "_").replace("?", "_") \
 		.replace("\"", "_").replace("<", "_").replace(">", "_").replace("|", "_")
 	if not filename.ends_with(".png"):
 		filename += ".png"
@@ -967,7 +985,7 @@ func _call_take_screenshot(args: Dictionary) -> Dictionary:
 			img = await _capture_scene_thumbnail(args)
 			if img == null or img.is_empty():
 				return _fail("场景缩略图生成失败: 无法渲染场景或场景为空")
-		_:  # "editor"
+		_: # "editor"
 			img = await _capture_editor_viewport()
 			if img == null or img.is_empty():
 				return _fail("截图失败: 编辑器视口纹理为空")
@@ -1762,7 +1780,7 @@ func _is_numeric(s: String) -> bool:
 			has_dot = true
 		else:
 			var code := c.unicode_at(0)
-			if code < 48 or code > 57:  # '0'-'9'
+			if code < 48 or code > 57: # '0'-'9'
 				return false
 		i += 1
 	return true
@@ -2261,9 +2279,19 @@ func _fetch_recent_game_error(tool_name: String) -> String:
 
 ## 归一化来自游戏的 wire 结果, 保留结构化错误元数据供 AI 决策
 func _normalize_wire_result(result: Dictionary, _tool_name: String) -> Dictionary:
+	var text: String = str(result.get("text", ""))
+	if text.is_empty() and result.get("content") is Array:
+		var c: Array = result["content"]
+		if not c.is_empty() and c[0] is Dictionary:
+			text = str(c[0].get("text", ""))
+	var is_err: bool = bool(result.get("is_error", false))
+	if result.has("isError"):
+		is_err = bool(result.get("isError", is_err))
 	var out := {
-		"text": str(result.get("text", "")),
-		"is_error": bool(result.get("is_error", false)),
+		"text": text,
+		"is_error": is_err,
+		"isError": is_err,
+		"content": [ {"type": "text", "text": text}],
 	}
 	if result.get("error_category", "") != "":
 		out["error_category"] = result.get("error_category")
