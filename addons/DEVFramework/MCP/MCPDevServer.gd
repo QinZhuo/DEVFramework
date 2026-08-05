@@ -610,17 +610,21 @@ func _log_tool_result(tool_name: String, result: Dictionary) -> void:
 		return
 	if big:
 		# 只打顶层结构(键/计数), 不打全文
-		var parsed: Variant = JSON.parse_string(text)
 		var summary := ""
-		if parsed is Dictionary:
-			for key in parsed.keys():
-				var v = parsed[key]
-				var vdesc: String = str(v)
-				if v is Array:
-					vdesc = "Array[%d]" % v.size()
-				elif v is Dictionary:
-					vdesc = "Dict{%d}" % v.size()
-				summary += "%s=%s " % [key, vdesc]
+		var t := text.strip_edges()
+		if t.begins_with("{") or t.begins_with("["):
+			var parsed: Variant = JSON.parse_string(t)
+			if parsed is Dictionary:
+				for key in parsed.keys():
+					var v = parsed[key]
+					var vdesc: String = str(v)
+					if v is Array:
+						vdesc = "Array[%d]" % v.size()
+					elif v is Dictionary:
+						vdesc = "Dict{%d}" % v.size()
+					summary += "%s=%s " % [key, vdesc]
+		if summary.is_empty():
+			summary = t.left(200)
 		LogTool.log("MCP", "%s%s" % [head, summary])
 	else:
 		LogTool.log("MCP", "%s%s" % [head, text.left(400)])
