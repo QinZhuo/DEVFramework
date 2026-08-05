@@ -1,19 +1,19 @@
 @tool
-## MCP 开发服务器(autoload 单例, 双模式)
+## MCP 开发服务器(autoload 单例, 编辑器/游戏双角色)
 ## 以 autoload 形式注册, 在编辑器和游戏进程中都会加载(见 project.godot [autoload]):
-##   - 编辑器模式(Engine.is_editor_hint): 在 8932 端口提供编辑器工具(场景树/节点/项目设置/截图等)
-##     以及游戏运行时工具(经 HTTP 转发到游戏进程的运行时服务器)
-##   - 运行时模式: run_game 启动游戏时传入 --mcp-runtime-port, 游戏进程内的 autoload
-##     在对应端口开启运行时服务器, 原生提供 get_game_view / simulate_click / simulate_drag /
-##     simulate_key / take_screenshot / game_eval / 游戏日志等。因为在游戏进程内,
-##     Input.parse_input_event 等引擎 API 直接生效, 这是 Godot 最原生最不易出错的形态。
-## 生命周期由 autoload 自身接管, 不再依赖 plugin.gd; 也无需再为"避开 autoload"做任何特殊处理。
+##   - 编辑器进程(Engine.is_editor_hint): 由 plugin.gd 持有节点并 start_editor(),
+##     在 8932 端口提供编辑器工具(场景树/节点/项目设置/截图等)以及游戏运行时工具。
+##   - 游戏进程: 不开启任何端口, 注册 EngineDebugger 消息捕获器("dev_mcp"),
+##     通过编辑器↔游戏的调试线(EngineDebugger wire)接收并原生执行运行时工具:
+##     get_game_view / simulate_click / simulate_drag / simulate_key / take_screenshot /
+##     game_eval / 游戏日志等。因为在游戏进程内, Input.parse_input_event 等引擎 API 直接生效。
+## 编辑器↔游戏通信走 Godot 自带调试线(编辑器以调试模式启动游戏时自动建立), 零额外端口。
+## 桥接由 MCPDebuggerPlugin(EditorDebuggerPlugin)负责, 生命周期由 plugin.gd 控制。
 class_name MCPDevServer extends Node
 
 ## ------- 配置项(ProjectSettings) -------
 const SETTING_ENABLED := "dev_framework/mcp/enabled"
 const SETTING_PORT := "dev_framework/mcp/port"
-const SETTING_RUNTIME_PORT := "dev_framework/mcp/runtime_port"
 const SETTING_TOKEN := "dev_framework/mcp/token"
 const SETTING_MAX_MESSAGES := "dev_framework/mcp/max_messages"
 
@@ -23,11 +23,14 @@ const CORE_PROP_NAMES := ["name", "position", "scale", "rotation", "rotation_deg
 ## ------- MCP 常量 -------
 const PROTOCOL_VERSION := "2025-03-26"
 const SERVER_NAME := "devframework-godot-mcp"
-const SERVER_VERSION := "0.2.0"
+const SERVER_VERSION := "0.3.0"
 
 ## 模式
 const MODE_EDITOR := "editor"
 const MODE_RUNTIME := "runtime"
+
+## 调试线消息前缀(编辑器↔游戏 EngineDebugger wire)
+const DEBUGGER_PREFIX := "dev_mcp"
 
 ## 全局唯一实例(编辑器/游戏进程各自持有)
 static var instance: MCPDevServer
@@ -35,14 +38,18 @@ static var instance: MCPDevServer
 var _http: MCPTcpHttpServer
 var _logger: MCPLogger
 var _port := 8932
-var _runtime_port := 8933
 var _enabled := true
 var _tool_handlers := {}        # 工具名 -> Callable
 var _tool_defs := []            # 工具定义列表(MCP 格式)
 var _mode := MODE_EDITOR        # editor / runtime
 
-## 编辑器模式: 运行中游戏进程 PID(0=未运行)
-var _run_pid := 0
+## 编辑器模式: 指向 MCPDebuggerPlugin(由 plugin.gd 注入)
+var debugger_plugin: MCPDebuggerPlugin = null
+## 编辑器模式: 游戏进程 MCP 桥接是否就绪(收到 dev_mcp:ready)
+var _game_ready := false
+## 编辑器模式: 等待游戏响应的请求表 req_id -> 结果(未就绪为 null)
+var _pending := {}
+var _next_req_id := 1
 
 
 ## ------- 生命周期(autoload) -------
@@ -50,31 +57,90 @@ func _ready() -> void:
 	instance = self
 	_enabled = ProjectSettings.get_setting(SETTING_ENABLED, true)
 	_port = int(ProjectSettings.get_setting(SETTING_PORT, 8932))
-	_runtime_port = int(ProjectSettings.get_setting(SETTING_RUNTIME_PORT, _port + 1))
 	if Engine.is_editor_hint():
-		# 编辑器进程: autoload 的生命周期完全由 plugin.gd 控制(启用时 start_editor()/停用时 stop())。
+		# 编辑器进程: 生命周期完全由 plugin.gd 控制(启用时 start_editor()/停用时 stop())。
 		# 这里仅登记 instance, 不自动启动, 避免与插件开关产生端口/生命周期冲突。
 		return
-	# 游戏进程: 仅当带 --mcp-runtime-port 参数时才开启运行时服务器(正常手动运行不受影响)
+	# 游戏进程: 仅注册调试线消息捕获器, 供编辑器经 EngineDebugger wire 调用运行时工具。
+	# 不开启任何端口; 正常手动运行/发布版无调试线, 捕获器注册后无消息到达, 无副作用。
 	if not _enabled:
 		return
-	var rp := _get_cmdline_int("--mcp-runtime-port", 0)
-	if rp > 0:
-		_mode = MODE_RUNTIME
-		_port = rp
-		_runtime_port = rp
-		_logger = MCPLogger.new()
-		OS.add_logger(_logger)
-		_register_runtime_tools()
-		start()
+	_mode = MODE_RUNTIME
+	_logger = MCPLogger.new()
+	OS.add_logger(_logger)
+	_register_runtime_tools()
+	EngineDebugger.register_message_capture(DEBUGGER_PREFIX, _on_debugger_message)
+	# 通知编辑器侧桥接已就绪(仅在调试线激活时有意义, 未连接时 send_message 无害)
+	EngineDebugger.send_message(DEBUGGER_PREFIX + ":ready", [])
 
 
-## 编辑器模式显式启动(由 plugin.gd 在启用插件时调用)
+## 游戏进程: 处理编辑器经调试线发来的 dev_mcp:call 消息。
+## 返回 true 表示消息已被消费(注册捕获器协议要求)。
+func _on_debugger_message(message: String, data: Array) -> bool:
+	if not message.begins_with(DEBUGGER_PREFIX + ":"):
+		return false
+	var kind := message.get_slice(":", 1)
+	if kind != "call" or data.size() < 3:
+		return true
+	var req_id := int(data[0])
+	var tool_name := str(data[1])
+	var args: Dictionary = data[2] if data[2] is Dictionary else {}
+	# 分发到已注册的运行时工具, 结果经调试线回发(不阻塞调用方; fire-and-forget)
+	_call_runtime_tool_async(req_id, tool_name, args)
+	return true
+
+
+func _call_runtime_tool_async(req_id: int, tool_name: String, args: Dictionary) -> void:
+	var result: Dictionary
+	if _tool_handlers.has(tool_name):
+		result = await _tool_handlers[tool_name].call(args)
+	else:
+		result = _fail("未知运行时工具: %s" % tool_name)
+	EngineDebugger.send_message(DEBUGGER_PREFIX + ":result", [req_id, result])
+
+
+## 编辑器进程: MCPDebuggerPlugin._capture 委托至此(处理 ready/result)。
+func _on_debugger_capture(message: String, data: Array) -> bool:
+	if not message.begins_with(DEBUGGER_PREFIX + ":"):
+		return false
+	var kind := message.get_slice(":", 1)
+	match kind:
+		"ready":
+			_game_ready = true
+			LogTool.log("MCP", "游戏调试线桥接已就绪")
+		"result":
+			if data.size() >= 2:
+				var req_id := int(data[0])
+				_pending[req_id] = data[1]
+	return true
+
+
+## 编辑器进程: 游戏调试会话建立/结束(由 MCPDebuggerPlugin 连接信号调用)
+func _on_session_started(session_id: int) -> void:
+	LogTool.log("MCP", "游戏调试会话已建立(session=%d)" % session_id)
+	_game_ready = false
+	_pending.clear()
+
+
+func _on_session_stopped(session_id: int) -> void:
+	LogTool.log("MCP", "游戏调试会话已结束(session=%d)" % session_id)
+	_game_ready = false
+	for req_id in _pending:
+		if _pending[req_id] == null:
+			_pending[req_id] = {"is_error": true, "text": "游戏调试会话已结束, 请求被取消"}
+	_pending.clear()
+
+
+## 编辑器进程: 编辑器模式显式启动(由 plugin.gd 在启用插件时调用)。
+## 尊重 dev_framework/mcp/enabled 主开关: 为 false 时不启动服务器(与游戏进程行为一致)。
 func start_editor() -> void:
 	if _http:
 		return
 	_mode = MODE_EDITOR
-	_enabled = true
+	_enabled = ProjectSettings.get_setting(SETTING_ENABLED, true)
+	if not _enabled:
+		LogTool.log("MCP", "dev_framework/mcp/enabled=false, 编辑器 MCP 服务器已跳过启动")
+		return
 	if _logger == null:
 		_logger = MCPLogger.new()
 		OS.add_logger(_logger)
@@ -82,13 +148,10 @@ func start_editor() -> void:
 	start()
 
 
-## 每帧驱动 HTTP 服务器 + 检测游戏进程退出
+## 每帧驱动 HTTP 服务器
 func _process(_delta: float) -> void:
 	if _http:
 		_http.poll()
-	if _mode == MODE_EDITOR:
-		if _run_pid != 0 and not OS.is_process_running(_run_pid):
-			_run_pid = 0
 
 
 ## 关闭服务器并移除 Logger(退出时由引擎自动调用)
@@ -97,15 +160,6 @@ func _exit_tree() -> void:
 	if _logger:
 		OS.remove_logger(_logger)
 		_logger = null
-
-
-## 读取命令行整数参数, 不存在返回默认值
-func _get_cmdline_int(key: String, default: int) -> int:
-	var args := OS.get_cmdline_args()
-	for i in args.size():
-		if args[i] == key and i + 1 < args.size():
-			return int(args[i + 1])
-	return default
 
 
 ## ------- 服务器启停 -------
@@ -178,17 +232,17 @@ func _register_validate_tools() -> void:
 ## -- 日志/错误 --
 func _register_log_tools() -> void:
 	_add_tool("get_logs",
-		"获取日志(print/printerr 输出)。支持 since 索引增量获取, 以及按关键字过滤、截断数量。返回日志数组(含时间戳/是否错误流)。",
-		{"type": "object", "properties": {"since": {"type": "integer", "description": "从上一次获取的索引之后增量获取, 默认从头全部"}, "keyword": {"type": "string", "description": "过滤包含此关键字的日志"}, "max": {"type": "integer", "description": "最多返回条数, 默认 200"}}},
+		"获取日志(print/printerr 输出)。返回日志数组(含时间戳/是否错误流)。游戏运行时返回游戏进程日志, 否则返回编辑器日志。",
+		{"type": "object", "properties": {"max": {"type": "integer", "description": "最多返回条数, 默认 200"}}},
 		_call_get_logs)
 
 	_add_tool("get_errors",
-		"获取捕获的错误(脚本错误/assert/push_error 等), 每个错误包含信息、来源文件、行号、类型及 GDScript 栈追踪。这是定位崩溃与逻辑错误的关键工具。",
-		{"type": "object", "properties": {"since": {"type": "integer", "description": "增量获取索引, 默认全部"}, "max": {"type": "integer", "description": "最多返回条数, 默认 100"}}},
+		"获取捕获的错误(脚本错误/assert/push_error 等), 每个错误包含信息、来源文件、行号、类型及 GDScript 栈追踪。游戏运行时返回游戏进程错误, 否则返回编辑器错误。",
+		{"type": "object", "properties": {"max": {"type": "integer", "description": "最多返回条数, 默认 100"}}},
 		_call_get_errors)
 
 	_add_tool("clear_errors",
-		"清空已捕获的错误缓冲区, 便于开始新一轮调试观察。",
+		"清空已捕获的错误缓冲区, 便于开始新一轮调试观察。游戏运行时清空游戏进程错误。",
 		{"type": "object", "properties": {}},
 		_call_clear_errors)
 
@@ -196,13 +250,10 @@ func _register_log_tools() -> void:
 ## -- 截图 --
 func _register_screenshot_tools() -> void:
 	_add_tool("take_screenshot",
-		"捕获编辑器当前视口(编辑器窗口)的截图并保存到本地(res://.godot/mcp_screenshots/)。返回截图文件路径、像素尺寸与占用字节。AI 可通过文件路径读取分析画面。可选 max_width 限制最大宽度以降采样(减少 AI 读图开销)。可选 capture_type: 'editor' 编辑器视口(默认), 'scene' 当前场景缩略图, 'game' 运行中的游戏画面(需先 run_game)。",
+		"捕获画面并保存到本地。capture_type: 'editor' 编辑器视口(默认), 'scene' 当前场景缩略图, 'game' 运行中的游戏画面(需游戏在运行)。返回截图文件路径、像素尺寸与占用字节。AI 可通过文件路径读取分析画面。",
 		{"type": "object", "properties": {
-			"filename": {"type": "string", "description": "截图文件名(不含路径), 默认自动按时间命名"},
-			"max_width": {"type": "integer", "description": "可选: 若截图宽度超过该值则等比缩小以便 AI 读图(默认不缩放)"},
 			"capture_type": {"type": "string", "description": "截图类型: 'editor' 编辑器视口(默认), 'scene' 当前场景缩略图, 'game' 运行中的游戏画面"},
-			"scene_path": {"type": "string", "description": "当 capture_type='scene' 时, 指定场景路径(默认当前编辑场景)"},
-			"thumbnail_size": {"type": "integer", "description": "场景缩略图尺寸(像素, 默认 256)"}
+			"max_width": {"type": "integer", "description": "若截图宽度超过该值则等比缩小以便 AI 读图(默认不缩放)"}
 		}},
 		_call_take_screenshot)
 
@@ -259,12 +310,12 @@ func _register_project_tools() -> void:
 ## -- 运行游戏 --
 func _register_run_tools() -> void:
 	_add_tool("run_game",
-		"启动项目(独立进程)以便实际测试。必须提供 scene: 要运行的场景 res:// 路径(如 res://Scenes/Main/Main.tscn), 缺省会报错。游戏进程会以 --mcp-runtime-port 开启运行时服务器, 之后 get_game_view / simulate_click / simulate_drag / simulate_key / take_screenshot(capture_type=game) / game_eval / get_game_logs 等运行时工具将可用(经编辑器转发)。",
-		{"type": "object", "properties": {"scene": {"type": "string", "description": "要运行的场景 res:// 路径, 必填(如 res://Scenes/Main/Main.tscn)"}}, "required": ["scene"]},
+		"以编辑器调试模式启动游戏(等效 F5, 自动建立 EngineDebugger 调试线)。scene 可选, 缺省用项目主场景。启动后 get_game_view / simulate_click / simulate_drag / simulate_key / take_screenshot(capture_type=game) / game_eval / get_game_logs 等运行时工具经调试线可用。",
+		{"type": "object", "properties": {"scene": {"type": "string", "description": "要运行的场景 res:// 路径, 缺省用主场景"}}},
 		_call_run_game)
 
 	_add_tool("stop_game",
-		"停止当前运行中的游戏进程(若在运行)。",
+		"停止当前运行中的游戏(等效编辑器停止运行)。",
 		{"type": "object", "properties": {}},
 		_call_stop_game)
 
@@ -272,10 +323,8 @@ func _register_run_tools() -> void:
 ## -- 开发辅助(重载/求值/设置) --
 func _register_dev_tools() -> void:
 	_add_tool("reload_project",
-		"触发编辑器重新扫描项目: 重建全局类缓存(新增 class_name 立即生效) + 重扫资源文件。新脚本/新资源不生效时调用此工具。可选 reopen_scene 重载当前编辑场景(未保存修改会丢失)。",
-		{"type": "object", "properties": {
-			"reopen_scene": {"type": "boolean", "description": "是否重载当前编辑场景, 默认 false(注意: 未保存修改会丢失)"}
-		}},
+		"触发编辑器重新扫描项目: 重建全局类缓存(新增 class_name 立即生效) + 重扫资源文件。新脚本/新资源不生效时调用此工具。",
+		{"type": "object", "properties": {}},
 		_call_reload_project)
 
 	_add_tool("eval_code",
@@ -305,7 +354,7 @@ func _register_dev_tools() -> void:
 
 	_add_tool("set_project_setting",
 		"修改任意项目设置项并保存(ProjectSettings)。value 传 JSON 值。",
-		{"type": "object", "properties": {"name": {"type": "string", "description": "设置项名称"}, "value": {"description": "新值"}, "save": {"type": "boolean", "description": "是否立即保存到 project.godot, 默认 true"}}},
+		{"type": "object", "properties": {"name": {"type": "string", "description": "设置项名称"}, "value": {"description": "新值"}}},
 		_call_set_project_setting)
 
 	_add_tool("save_all",
@@ -330,11 +379,10 @@ func _register_file_tools() -> void:
 		_call_read_file)
 
 	_add_tool("write_file",
-		"写入内容到指定路径的文件。如果文件不存在会创建, 存在则覆盖。支持创建目录。",
+		"写入内容到指定路径的文件。如果文件不存在会创建(自动创建缺失目录), 存在则覆盖。",
 		{"type": "object", "properties": {
 			"path": {"type": "string", "description": "文件路径(res:// 或 user://)"},
-			"content": {"type": "string", "description": "要写入的内容"},
-			"create_dirs": {"type": "boolean", "description": "是否自动创建不存在的目录, 默认 true"}
+			"content": {"type": "string", "description": "要写入的内容"}
 		}, "required": ["path", "content"]},
 		_call_write_file)
 
@@ -614,29 +662,24 @@ func _collect_dir(base: String, dirs: Array, files: Array) -> void:
 func _call_get_logs(args: Dictionary) -> Dictionary:
 	if _logger == null:
 		return _fail("日志捕获器未就绪")
-	var since: int = int(args.get("since", 0))
-	var keyword: String = str(args.get("keyword", ""))
 	var max: int = int(args.get("max", 200))
-	var result: Dictionary = _logger.take_logs_since(since)
+	var result: Dictionary = _logger.take_logs_since(0)
 	var entries: Array = result.entries
 	var out: Array = []
-	for e in entries:
+	var start := maxi(0, entries.size() - max)
+	for i in range(start, entries.size()):
+		var e: Dictionary = entries[i]
 		var clean: Dictionary = e.duplicate()
 		clean.message = _logger.sanitize(str(e.message))
-		if not keyword.is_empty() and keyword not in str(clean.message):
-			continue
 		out.append(clean)
-		if out.size() >= max:
-			break
-	return _ok(JSON.stringify({"next": result.next, "count": out.size(), "logs": out}))
+	return _ok(JSON.stringify({"count": out.size(), "logs": out}))
 
 
 func _call_get_errors(args: Dictionary) -> Dictionary:
 	if _logger == null:
 		return _fail("错误捕获器未就绪")
 	var max: int = int(args.get("max", 100))
-	var since: int = int(args.get("since", 0))
-	var result: Dictionary = _logger.take_errors_since(since)
+	var result: Dictionary = _logger.take_errors_since(0)
 	var out: Array = result.entries.duplicate()
 	if out.size() > max:
 		out = out.slice(out.size() - max)
@@ -646,7 +689,7 @@ func _call_get_errors(args: Dictionary) -> Dictionary:
 		if clean.has("message"):
 			clean.message = _logger.sanitize(str(clean.message))
 		cleaned.append(clean)
-	return _ok(JSON.stringify({"count": cleaned.size(), "errors": cleaned, "next": result.next}))
+	return _ok(JSON.stringify({"count": cleaned.size(), "errors": cleaned}))
 
 
 func _call_clear_errors(_args: Dictionary) -> Dictionary:
@@ -664,9 +707,7 @@ func _call_take_screenshot(args: Dictionary) -> Dictionary:
 		# 运行时模式: 直接截游戏画面
 		return await _runtime_take_screenshot(args)
 
-	var filename: String = str(args.get("filename", ""))
-	if filename.is_empty():
-		filename = "mcp_%s" % Time.get_datetime_string_from_system().replace(":", "-").replace(" ", "_")
+	var filename := "mcp_%s" % Time.get_datetime_string_from_system().replace(":", "-").replace(" ", "_")
 	# 清理文件名中的非法字符(Windows 不支持 : / \ * ? " < > |)
 	filename = filename.replace("/", "_").replace("\\", "_").replace("*", "_").replace("?", "_")\
 		.replace("\"", "_").replace("<", "_").replace(">", "_").replace("|", "_")
@@ -722,19 +763,17 @@ func _capture_editor_viewport() -> Image:
 	return viewport.get_texture().get_image()
 
 
-## 生成场景缩略图
-func _capture_scene_thumbnail(args: Dictionary) -> Image:
+## 生成当前编辑场景的缩略图
+func _capture_scene_thumbnail(_args: Dictionary) -> Image:
 	if not Engine.is_editor_hint():
 		return null
-	var scene_path: String = str(args.get("scene_path", ""))
-	var thumbnail_size: int = int(args.get("thumbnail_size", 256))
+	var thumbnail_size := 256
+	var root := _edited_root()
+	if root == null:
+		return null
+	var scene_path := root.get_scene_file_path()
 	if scene_path.is_empty():
-		var root := _edited_root()
-		if root == null:
-			return null
-		scene_path = root.get_scene_file_path()
-		if scene_path.is_empty():
-			return null
+		return null
 	if not ResourceLoader.exists(scene_path):
 		return null
 	var scene_res: Resource = ResourceLoader.load(scene_path)
@@ -924,7 +963,7 @@ func _call_get_project_info(_args: Dictionary) -> Dictionary:
 		"mode": _mode,
 		"mcp_port": _port,
 		"mcp_running": is_running(),
-		"game_running": _run_pid != 0,
+		"game_running": debugger_plugin != null and debugger_plugin.has_active_session(),
 	}
 	return _ok(JSON.stringify(info))
 
@@ -982,11 +1021,14 @@ func _named_layers(setting_key: String) -> Dictionary:
 func _call_run_game(args: Dictionary) -> Dictionary:
 	if not Engine.is_editor_hint():
 		return _fail("仅在编辑器模式可运行游戏")
-	if _run_pid != 0:
-		return _fail("游戏已在运行(pid=%d)。如需重启请先 stop_game。" % _run_pid)
+	if debugger_plugin != null and debugger_plugin.has_active_session():
+		return _fail("游戏已在运行(活跃调试会话)。如需重启请先 stop_game。")
 	var scene := str(args.get("scene", ""))
 	if scene.is_empty():
-		return _fail("必须提供 scene(要运行的场景 res:// 路径), 例如 res://Scenes/Main/Main.tscn")
+		# 未指定时用主场景
+		scene = str(ProjectSettings.get_setting("application/run/main_scene", ""))
+		if scene.is_empty():
+			return _fail("必须提供 scene(要运行的场景 res:// 路径), 例如 res://Scenes/Main/Main.tscn")
 	if not scene.begins_with("res://"):
 		scene = "res://" + scene
 	if not ResourceLoader.exists(scene):
@@ -994,52 +1036,46 @@ func _call_run_game(args: Dictionary) -> Dictionary:
 	var scene_res: Resource = ResourceLoader.load(scene)
 	if not scene_res is PackedScene:
 		return _fail("不是有效场景文件: %s(类型: %s)" % [scene, scene_res.get_class() if scene_res else "null"])
-	var exe := OS.get_executable_path()
-	# 关键: 传入 --mcp-runtime-port, 游戏进程内的 autoload 会开启运行时服务器
-	var args_arr := PackedStringArray([
-		"--path", ProjectSettings.globalize_path("res://"),
-		scene,
-		"--mcp-runtime-port", str(_runtime_port),
-	])
-	_run_pid = OS.create_process(exe, args_arr)
-	if _run_pid == 0:
-		return _fail("启动游戏进程失败(OS.create_process 返回 0)。可检查路径: %s" % exe)
-	return _ok("已启动游戏(独立进程, pid=%d) 场景=%s。运行时服务器端口=%d, 已可用运行时工具: get_game_view / simulate_click / simulate_drag / simulate_key / take_screenshot(game) / game_eval / get_game_logs。" % [_run_pid, scene, _runtime_port])
+	# 以调试模式启动(等效编辑器 F5): 编辑器自动建立 EngineDebugger 调试线,
+	# 游戏进程内的 autoload 注册消息捕获器并回发 ready, 之后运行时工具经调试线可用。
+	EditorInterface.play_custom_scene(scene)
+	var ready := await _wait_game_ready(15.0)
+	if not ready:
+		return _ok("已启动游戏(调试模式, 场景=%s)。但 MCP 调试线 %d 秒内未就绪, 请稍后重试运行时工具。" % [scene, int(15.0)])
+	return _ok("已启动游戏(调试模式, 场景=%s)。调试线已就绪, 已可用运行时工具: get_game_view / simulate_click / simulate_drag / simulate_key / take_screenshot(capture_type=game) / game_eval / get_game_logs / get_game_errors。" % scene)
 
 
 func _call_stop_game(_args: Dictionary) -> Dictionary:
-	if _run_pid == 0:
+	if not Engine.is_editor_hint():
+		return _fail("仅在编辑器模式可停止游戏")
+	if debugger_plugin == null or not debugger_plugin.has_active_session():
 		return _fail("当前没有运行中的游戏")
-	if OS.is_process_running(_run_pid):
-		OS.kill(_run_pid)
-	_run_pid = 0
+	EditorInterface.stop_playing_scene()
+	_game_ready = false
 	return _ok("已停止游戏")
+
+
+## 等待游戏进程的调试线桥接就绪(session 已激活 且 收到 dev_mcp:ready), 超时返回 false
+func _wait_game_ready(timeout_sec: float) -> bool:
+	var deadline := Time.get_ticks_msec() + int(timeout_sec * 1000)
+	while Time.get_ticks_msec() < deadline:
+		if debugger_plugin != null and _game_ready and debugger_plugin.has_active_session():
+			return true
+		await get_tree().create_timer(0.3).timeout
+	return false
 
 
 ## ======= 开发辅助工具实现 =======
 
-func _call_reload_project(args: Dictionary) -> Dictionary:
+func _call_reload_project(_args: Dictionary) -> Dictionary:
 	if not Engine.is_editor_hint():
 		return _fail("仅在编辑器模式可用")
-	var reopen: bool = _to_bool(args.get("reopen_scene", false))
 	var fs := EditorInterface.get_resource_filesystem()
 	if fs == null:
 		return _fail("编辑器文件系统不可用")
-	var current := ""
-	if _edited_root() != null:
-		current = _edited_root().get_scene_file_path()
 	fs.scan_sources()
 	fs.scan()
-	var msg := "已触发项目重载: scan_sources(重建类缓存) + scan(重扫资源)。扫描将在后台进行, 新资源可能需要片刻才能生效。"
-	if reopen and not current.is_empty():
-		var tree := EditorInterface.get_base_control().get_tree()
-		if tree:
-			await tree.create_timer(1.0).timeout
-		EditorInterface.open_scene_from_path(current)
-		msg += " 已重载当前场景 %s。注意: 未保存修改可能已丢失。" % current
-	elif reopen and current.is_empty():
-		msg += " 提示: 当前没有打开的场景, 未执行场景重载。"
-	return _ok(msg)
+	return _ok("已触发项目重载: scan_sources(重建类缓存) + scan(重扫资源)。扫描将在后台进行, 新资源可能需要片刻才能生效。")
 
 
 func _call_eval_code(args: Dictionary) -> Dictionary:
@@ -1150,9 +1186,8 @@ func _call_set_project_setting(args: Dictionary) -> Dictionary:
 		return _fail("必须提供 name")
 	var value: Variant = args.get("value", null)
 	ProjectSettings.set_setting(name, value)
-	if _to_bool(args.get("save", true)):
-		ProjectSettings.save()
-	return _ok("已设置 %s = %s" % [name, str(value)])
+	ProjectSettings.save()
+	return _ok("已设置 %s = %s 并保存" % [name, str(value)])
 
 
 func _call_save_all(_args: Dictionary) -> Dictionary:
@@ -1206,12 +1241,10 @@ func _call_read_file(args: Dictionary) -> Dictionary:
 func _call_write_file(args: Dictionary) -> Dictionary:
 	var path: String = str(args.get("path", ""))
 	var content: String = str(args.get("content", ""))
-	var create_dirs: bool = _to_bool(args.get("create_dirs", true))
 	if path.is_empty():
 		return _fail("必须提供 path")
-	if create_dirs:
-		var dir_path := path.get_base_dir()
-		if not dir_path.is_empty():
+	var dir_path := path.get_base_dir()
+	if not dir_path.is_empty():
 			var dir := DirAccess.open(dir_path)
 			if dir == null:
 				var err := DirAccess.make_dir_recursive_absolute(dir_path)
@@ -1485,19 +1518,15 @@ func _register_runtime_tools() -> void:
 	_add_tool("get_game_view",
 		"分析游戏运行时场景中所有可见节点的屏幕位置和大小信息。用于AI理解游戏画面布局以决定点击/拖拽目标。返回每个节点的名称、类型、屏幕坐标、尺寸、层级(z_index)、可见性及文本信息。",
 		{"type": "object", "properties": {
-			"max_nodes": {"type": "integer", "description": "最多返回节点数, 默认 50"},
-			"include_hidden": {"type": "boolean", "description": "是否包含不可见节点, 默认 false"},
-			"filter_type": {"type": "string", "description": "过滤节点类型, 如 'Button', 'Label', 'Sprite2D'"}
+			"max_nodes": {"type": "integer", "description": "最多返回节点数, 默认 50"}
 		}},
 		_call_get_game_view)
 
 	_add_tool("simulate_click",
-		"在游戏窗口内模拟一次鼠标点击(按下+释放)。坐标为游戏视口坐标。用于AI自动化测试游戏交互(按钮/UI 点击等)。",
+		"在游戏窗口内模拟一次鼠标左键点击(按下+释放)。坐标为游戏视口坐标。用于AI自动化测试游戏交互(按钮/UI 点击等)。",
 		{"type": "object", "properties": {
 			"x": {"type": "integer", "description": "屏幕X坐标"},
-			"y": {"type": "integer", "description": "屏幕Y坐标"},
-			"button": {"type": "string", "description": "鼠标按钮: 'left'(左键), 'right'(右键), 'middle'(中键), 默认 'left'"},
-			"double_click": {"type": "boolean", "description": "是否双击, 默认 false"}
+			"y": {"type": "integer", "description": "屏幕Y坐标"}
 		}, "required": ["x", "y"]},
 		_call_simulate_click)
 
@@ -1507,8 +1536,7 @@ func _register_runtime_tools() -> void:
 			"from_x": {"type": "integer", "description": "起始X坐标"},
 			"from_y": {"type": "integer", "description": "起始Y坐标"},
 			"to_x": {"type": "integer", "description": "目标X坐标"},
-			"to_y": {"type": "integer", "description": "目标Y坐标"},
-			"duration": {"type": "number", "description": "拖拽持续时间(秒), 默认 0.5"}
+			"to_y": {"type": "integer", "description": "目标Y坐标"}
 		}, "required": ["from_x", "from_y", "to_x", "to_y"]},
 		_call_simulate_drag)
 
@@ -1516,19 +1544,16 @@ func _register_runtime_tools() -> void:
 		"在游戏窗口内模拟一次键盘按键(按下/释放)。用于AI测试键盘交互。",
 		{"type": "object", "properties": {
 			"key": {"type": "string", "description": "按键名称, 如 'space', 'enter', 'escape', 'a'-'z', '0'-'9'"},
-			"pressed": {"type": "boolean", "description": "true=按下, false=释放, 默认 true"},
-			"shift": {"type": "boolean", "description": "是否按住Shift, 默认 false"},
-			"ctrl": {"type": "boolean", "description": "是否按住Ctrl, 默认 false"}
+			"pressed": {"type": "boolean", "description": "true=按下, false=释放, 默认 true"}
 		}, "required": ["key"]},
 		_call_simulate_key)
 
 	_add_tool("take_screenshot",
 		"捕获游戏运行视口的截图并保存到本地(user://mcp_screenshots/)。返回截图文件路径、像素尺寸与占用字节。AI 可通过文件路径读取分析画面。可选 max_width 限制最大宽度以降采样。",
 		{"type": "object", "properties": {
-			"filename": {"type": "string", "description": "截图文件名(不含路径), 默认自动按时间命名"},
 			"max_width": {"type": "integer", "description": "可选: 若截图宽度超过该值则等比缩小以便 AI 读图(默认不缩放)"}
 		}},
-		_call_take_screenshot)
+		_runtime_take_screenshot)
 
 	_add_tool("game_eval",
 		"在游戏进程中执行一段 GDScript 代码, 可访问当前游戏场景树(get_tree()/get_node()/get_viewport() 等)。常用于读取游戏运行状态/修改变量/触发逻辑。代码中可显式 return 返回值。",
@@ -1536,13 +1561,13 @@ func _register_runtime_tools() -> void:
 		_call_eval_code)
 
 	_add_tool("get_game_logs",
-		"获取游戏进程的日志(print/printerr 输出)。支持 since 索引增量获取、按关键字过滤、截断数量。",
-		{"type": "object", "properties": {"since": {"type": "integer", "description": "增量索引"}, "keyword": {"type": "string", "description": "关键字过滤"}, "max": {"type": "integer", "description": "最多条数, 默认 200"}}},
+		"获取游戏进程的日志(print/printerr 输出)。",
+		{"type": "object", "properties": {"max": {"type": "integer", "description": "最多条数, 默认 200"}}},
 		_call_get_logs)
 
 	_add_tool("get_game_errors",
 		"获取游戏进程捕获的错误(脚本错误/assert/push_error 等), 含来源文件、行号、类型及 GDScript 栈追踪。",
-		{"type": "object", "properties": {"since": {"type": "integer", "description": "增量索引"}, "max": {"type": "integer", "description": "最多条数, 默认 100"}}},
+		{"type": "object", "properties": {"max": {"type": "integer", "description": "最多条数, 默认 100"}}},
 		_call_get_errors)
 
 	_add_tool("clear_game_errors",
@@ -1554,15 +1579,13 @@ func _register_runtime_tools() -> void:
 ## 运行时: 分析游戏场景中可见节点的屏幕位置
 func _call_get_game_view(args: Dictionary) -> Dictionary:
 	var max_nodes: int = int(args.get("max_nodes", 50))
-	var include_hidden: bool = _to_bool(args.get("include_hidden", false))
-	var filter_type: String = str(args.get("filter_type", ""))
 	var root := get_tree().current_scene
 	if root == null:
 		return _fail("当前没有运行中的场景")
 	var viewport := get_viewport()
 	var viewport_size := viewport.get_visible_rect().size
 	var nodes_info: Array = []
-	_collect_visible_nodes(root, viewport, nodes_info, max_nodes, include_hidden, filter_type, 0)
+	_collect_visible_nodes(root, viewport, nodes_info, max_nodes, 0)
 	return _ok(JSON.stringify({
 		"viewport_size": {"x": int(viewport_size.x), "y": int(viewport_size.y)},
 		"node_count": nodes_info.size(),
@@ -1571,17 +1594,13 @@ func _call_get_game_view(args: Dictionary) -> Dictionary:
 
 
 ## 递归收集可见节点信息(运行时模式, 游戏进程内坐标天然正确)
-func _collect_visible_nodes(node: Node, viewport: Viewport, result: Array, max_nodes: int, include_hidden: bool, filter_type: String, depth: int) -> void:
+func _collect_visible_nodes(node: Node, viewport: Viewport, result: Array, max_nodes: int, depth: int) -> void:
 	if result.size() >= max_nodes:
 		return
 	if depth > 10:
 		return
-	var is_visible := true
-	if node is CanvasItem:
-		var canvas_item := node as CanvasItem
-		if not include_hidden and not canvas_item.visible:
-			return
-		is_visible = canvas_item.visible
+	if node is CanvasItem and not (node as CanvasItem).visible:
+		return
 	if node.name != "" and not str(node.name).begins_with("@"):
 		var screen_pos := Vector2.ZERO
 		var screen_size := Vector2.ZERO
@@ -1611,89 +1630,70 @@ func _collect_visible_nodes(node: Node, viewport: Viewport, result: Array, max_n
 		var script_class_str: String = ""
 		if node.get_script() != null:
 			script_class_str = str(node.get_script_class())
-		if filter_type.is_empty() or class_name_str.containsn(filter_type) or script_class_str.containsn(filter_type):
-			var info := {
-				"name": str(node.name),
-				"class": class_name_str,
-				"script_class": script_class_str,
-				"screen_position": {"x": int(screen_pos.x), "y": int(screen_pos.y)},
-				"screen_size": {"x": int(screen_size.x), "y": int(screen_size.y)},
-				"z_index": z_index,
-				"visible": is_visible
-			}
-			if node is Button:
-				info["text"] = (node as Button).text
-				info["disabled"] = (node as Button).disabled
-			elif node is Label:
-				info["text"] = (node as Label).text
-			elif node is Sprite2D:
-				var sprite := node as Sprite2D
-				if sprite.texture:
-					info["texture_size"] = {"x": sprite.texture.get_width(), "y": sprite.texture.get_height()}
-			elif node is Control:
-				var control := node as Control
-				info["rect"] = {"x": int(control.position.x), "y": int(control.position.y), "w": int(control.size.x), "h": int(control.size.y)}
-			elif node is Polygon2D:
+		var info := {
+			"name": str(node.name),
+			"class": class_name_str,
+			"script_class": script_class_str,
+			"screen_position": {"x": int(screen_pos.x), "y": int(screen_pos.y)},
+			"screen_size": {"x": int(screen_size.x), "y": int(screen_size.y)},
+			"z_index": z_index,
+			"visible": true
+		}
+		if node is Button:
+			info["text"] = (node as Button).text
+			info["disabled"] = (node as Button).disabled
+		elif node is Label:
+			info["text"] = (node as Label).text
+		elif node is Sprite2D:
+			var sprite := node as Sprite2D
+			if sprite.texture:
+				info["texture_size"] = {"x": sprite.texture.get_width(), "y": sprite.texture.get_height()}
+		elif node is Control:
+			var control := node as Control
+			info["rect"] = {"x": int(control.position.x), "y": int(control.position.y), "w": int(control.size.x), "h": int(control.size.y)}
+		elif node is Polygon2D:
 				var polygon := node as Polygon2D
 				info["polygon_count"] = polygon.polygon.size()
-			result.append(info)
+		result.append(info)
 	for child in node.get_children():
-		_collect_visible_nodes(child, viewport, result, max_nodes, include_hidden, filter_type, depth + 1)
+		_collect_visible_nodes(child, viewport, result, max_nodes, depth + 1)
 
 
-## 运行时: 模拟鼠标点击(游戏进程内 Input.parse_input_event 直接生效)
+## 运行时: 模拟鼠标左键点击(游戏进程内 Input.parse_input_event 直接生效)
 func _call_simulate_click(args: Dictionary) -> Dictionary:
 	var x: int = int(args.get("x", 0))
 	var y: int = int(args.get("y", 0))
-	var button_str: String = str(args.get("button", "left")).to_lower()
-	var double_click: bool = _to_bool(args.get("double_click", false))
-	var button_index: MouseButton
-	match button_str:
-		"left":
-			button_index = MOUSE_BUTTON_LEFT
-		"right":
-			button_index = MOUSE_BUTTON_RIGHT
-		"middle":
-			button_index = MOUSE_BUTTON_MIDDLE
-		_:
-			return _fail("未知的鼠标按钮: %s" % button_str)
 	var down_event := InputEventMouseButton.new()
-	down_event.button_index = button_index
+	down_event.button_index = MOUSE_BUTTON_LEFT
 	down_event.pressed = true
 	down_event.position = Vector2(x, y)
 	down_event.global_position = Vector2(x, y)
-	down_event.double_click = double_click
 	Input.parse_input_event(down_event)
 	var up_event := InputEventMouseButton.new()
-	up_event.button_index = button_index
+	up_event.button_index = MOUSE_BUTTON_LEFT
 	up_event.pressed = false
 	up_event.position = Vector2(x, y)
 	up_event.global_position = Vector2(x, y)
 	Input.parse_input_event(up_event)
 	return _ok(JSON.stringify({
 		"position": {"x": x, "y": y},
-		"button": button_str,
-		"double_click": double_click,
-		"message": "点击事件已发送"
+		"message": "鼠标左键点击事件已发送"
 	}))
 
 
-## 运行时: 模拟鼠标拖拽
+## 运行时: 模拟鼠标拖拽(左键按下->移动到目标->释放)
 func _call_simulate_drag(args: Dictionary) -> Dictionary:
 	var from_x: int = int(args.get("from_x", 0))
 	var from_y: int = int(args.get("from_y", 0))
 	var to_x: int = int(args.get("to_x", 0))
 	var to_y: int = int(args.get("to_y", 0))
-	var duration: float = float(args.get("duration", 0.5))
 	var down_event := InputEventMouseButton.new()
 	down_event.button_index = MOUSE_BUTTON_LEFT
 	down_event.pressed = true
 	down_event.position = Vector2(from_x, from_y)
 	down_event.global_position = Vector2(from_x, from_y)
 	Input.parse_input_event(down_event)
-	var steps_calc: int = int(duration * 60)
-	var steps: int = 10 if steps_calc < 10 else steps_calc
-	var step_duration: float = duration / float(steps)
+	var steps := 15
 	for i in range(steps + 1):
 		var t := float(i) / float(steps)
 		var current_x := lerpf(float(from_x), float(to_x), t)
@@ -1705,7 +1705,7 @@ func _call_simulate_drag(args: Dictionary) -> Dictionary:
 		move_event.button_mask = MOUSE_BUTTON_MASK_LEFT
 		Input.parse_input_event(move_event)
 		if i < steps:
-			await get_tree().create_timer(step_duration).timeout
+			await get_tree().create_timer(0.016).timeout
 	var up_event := InputEventMouseButton.new()
 	up_event.button_index = MOUSE_BUTTON_LEFT
 	up_event.pressed = false
@@ -1715,7 +1715,6 @@ func _call_simulate_drag(args: Dictionary) -> Dictionary:
 	return _ok(JSON.stringify({
 		"from": {"x": from_x, "y": from_y},
 		"to": {"x": to_x, "y": to_y},
-		"duration": duration,
 		"message": "拖拽事件已发送"
 	}))
 
@@ -1724,8 +1723,6 @@ func _call_simulate_drag(args: Dictionary) -> Dictionary:
 func _call_simulate_key(args: Dictionary) -> Dictionary:
 	var key_str: String = str(args.get("key", "")).to_lower()
 	var pressed: bool = _to_bool(args.get("pressed", true))
-	var shift: bool = _to_bool(args.get("shift", false))
-	var ctrl: bool = _to_bool(args.get("ctrl", false))
 	var key_code: Key
 	match key_str:
 		"space": key_code = KEY_SPACE
@@ -1749,27 +1746,18 @@ func _call_simulate_key(args: Dictionary) -> Dictionary:
 	var event := InputEventKey.new()
 	event.keycode = key_code
 	event.pressed = pressed
-	event.shift_pressed = shift
-	event.ctrl_pressed = ctrl
 	Input.parse_input_event(event)
 	return _ok(JSON.stringify({
 		"key": key_str,
 		"pressed": pressed,
-		"shift": shift,
-		"ctrl": ctrl,
 		"message": "按键事件已发送"
 	}))
 
 
-## 运行时: 捕获游戏视口截图
+## 运行时: 捕获游戏视口截图(文件名自动生成)
 func _runtime_take_screenshot(args: Dictionary) -> Dictionary:
-	var filename: String = str(args.get("filename", ""))
-	if filename.is_empty():
-		filename = "mcp_%s" % Time.get_datetime_string_from_system().replace(":", "-").replace(" ", "_")
-	filename = filename.replace("/", "_").replace("\\", "_").replace("*", "_").replace("?", "_")\
-		.replace("\"", "_").replace("<", "_").replace(">", "_").replace("|", "_")
-	if not filename.ends_with(".png"):
-		filename += ".png"
+	var filename := "mcp_%s" % Time.get_datetime_string_from_system().replace(":", "-").replace(" ", "_")
+	filename += ".png"
 	var dir_path := "user://mcp_screenshots"
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(dir_path))
 	await get_tree().process_frame
@@ -1799,110 +1787,82 @@ func _runtime_take_screenshot(args: Dictionary) -> Dictionary:
 	}))
 
 
-## ======= 编辑器模式的运行时工具转发 =======
+## ======= 编辑器模式的运行时工具转发(经 EngineDebugger 调试线) =======
 
 func _register_game_play_tools() -> void:
-	# 编辑器模式下, 运行时工具经 HTTP 转发到游戏进程的运行时服务器
+	# 编辑器模式下, 运行时工具经调试线转发到游戏进程(需先 run_game 启动游戏)
 	_add_tool("get_game_view",
-		"分析游戏运行时场景中所有可见节点的屏幕位置和大小信息(经编辑器转发到游戏进程)。需先 run_game 启动游戏。用于AI理解游戏画面布局以决定点击/拖拽目标。",
+		"分析游戏运行时场景中所有可见节点的屏幕位置和大小信息(经调试线转发到游戏进程)。需先 run_game 启动游戏。用于AI理解游戏画面布局以决定点击/拖拽目标。",
 		{"type": "object", "properties": {
-			"max_nodes": {"type": "integer", "description": "最多返回节点数, 默认 50"},
-			"include_hidden": {"type": "boolean", "description": "是否包含不可见节点, 默认 false"},
-			"filter_type": {"type": "string", "description": "过滤节点类型, 如 'Button', 'Label', 'Sprite2D'"}
+			"max_nodes": {"type": "integer", "description": "最多返回节点数, 默认 50"}
 		}},
 		func(args): return await _call_runtime_proxy("get_game_view", args))
 
 	_add_tool("simulate_click",
-		"在游戏窗口内模拟一次鼠标点击(经编辑器转发到游戏进程)。需先 run_game 启动游戏。坐标为游戏视口坐标。",
+		"在游戏窗口内模拟一次鼠标左键点击(按下+释放)(经调试线转发到游戏进程)。需先 run_game 启动游戏。坐标为游戏视口坐标。",
 		{"type": "object", "properties": {
 			"x": {"type": "integer", "description": "屏幕X坐标"},
-			"y": {"type": "integer", "description": "屏幕Y坐标"},
-			"button": {"type": "string", "description": "鼠标按钮: 'left'(左键), 'right'(右键), 'middle'(中键), 默认 'left'"},
-			"double_click": {"type": "boolean", "description": "是否双击, 默认 false"}
+			"y": {"type": "integer", "description": "屏幕Y坐标"}
 		}, "required": ["x", "y"]},
 		func(args): return await _call_runtime_proxy("simulate_click", args))
 
 	_add_tool("simulate_drag",
-		"在游戏窗口内模拟从起始位置拖拽到目标位置(经编辑器转发到游戏进程)。需先 run_game 启动游戏。",
+		"在游戏窗口内模拟从起始位置拖拽到目标位置(按下->移动->释放)(经调试线转发到游戏进程)。需先 run_game 启动游戏。",
 		{"type": "object", "properties": {
 			"from_x": {"type": "integer", "description": "起始X坐标"},
 			"from_y": {"type": "integer", "description": "起始Y坐标"},
 			"to_x": {"type": "integer", "description": "目标X坐标"},
-			"to_y": {"type": "integer", "description": "目标Y坐标"},
-			"duration": {"type": "number", "description": "拖拽持续时间(秒), 默认 0.5"}
+			"to_y": {"type": "integer", "description": "目标Y坐标"}
 		}, "required": ["from_x", "from_y", "to_x", "to_y"]},
 		func(args): return await _call_runtime_proxy("simulate_drag", args))
 
 	_add_tool("simulate_key",
-		"在游戏窗口内模拟一次键盘按键(经编辑器转发到游戏进程)。需先 run_game 启动游戏。",
+		"在游戏窗口内模拟一次键盘按键(按下/释放)(经调试线转发到游戏进程)。需先 run_game 启动游戏。",
 		{"type": "object", "properties": {
 			"key": {"type": "string", "description": "按键名称, 如 'space', 'enter', 'escape', 'a'-'z', '0'-'9'"},
-			"pressed": {"type": "boolean", "description": "true=按下, false=释放, 默认 true"},
-			"shift": {"type": "boolean", "description": "是否按住Shift, 默认 false"},
-			"ctrl": {"type": "boolean", "description": "是否按住Ctrl, 默认 false"}
+			"pressed": {"type": "boolean", "description": "true=按下, false=释放, 默认 true"}
 		}, "required": ["key"]},
 		func(args): return await _call_runtime_proxy("simulate_key", args))
 
 	_add_tool("game_eval",
-		"在游戏进程中执行一段 GDScript 代码(经编辑器转发到游戏进程)。需先 run_game 启动游戏。可访问游戏场景树。",
+		"在游戏进程中执行一段 GDScript 代码(经调试线转发到游戏进程)。需先 run_game 启动游戏。可访问游戏场景树。",
 		{"type": "object", "properties": {"code": {"type": "string", "description": "要执行的 GDScript 代码"}}},
 		func(args): return await _call_runtime_proxy("game_eval", args))
 
 	_add_tool("get_game_logs",
-		"获取游戏进程的日志(经编辑器转发到游戏进程)。需先 run_game 启动游戏。",
-		{"type": "object", "properties": {"since": {"type": "integer", "description": "增量索引"}, "keyword": {"type": "string", "description": "关键字过滤"}, "max": {"type": "integer", "description": "最多条数, 默认 200"}}},
+		"获取游戏进程的日志(经调试线转发到游戏进程)。需先 run_game 启动游戏。",
+		{"type": "object", "properties": {"max": {"type": "integer", "description": "最多条数, 默认 200"}}},
 		func(args): return await _call_runtime_proxy("get_game_logs", args))
 
 	_add_tool("get_game_errors",
-		"获取游戏进程捕获的错误(经编辑器转发到游戏进程)。需先 run_game 启动游戏。",
-		{"type": "object", "properties": {"since": {"type": "integer", "description": "增量索引"}, "max": {"type": "integer", "description": "最多条数, 默认 100"}}},
+		"获取游戏进程捕获的错误(经调试线转发到游戏进程)。需先 run_game 启动游戏。",
+		{"type": "object", "properties": {"max": {"type": "integer", "description": "最多条数, 默认 100"}}},
 		func(args): return await _call_runtime_proxy("get_game_errors", args))
 
 	_add_tool("clear_game_errors",
-		"清空游戏进程的错误缓冲区(经编辑器转发到游戏进程)。需先 run_game 启动游戏。",
+		"清空游戏进程的错误缓冲区(经调试线转发到游戏进程)。需先 run_game 启动游戏。",
 		{"type": "object", "properties": {}},
 		func(args): return await _call_runtime_proxy("clear_game_errors", args))
 
 
-## 转发工具调用到游戏进程的运行时服务器(仅编辑器模式)
+## 转发工具调用到游戏进程(经 EngineDebugger 调试线)。仅编辑器模式。
 func _call_runtime_proxy(tool_name: String, args: Dictionary) -> Dictionary:
-	if _run_pid == 0:
+	if debugger_plugin == null or not debugger_plugin.has_active_session():
 		return _fail("游戏未运行。请先使用 run_game 启动游戏")
-	if not OS.is_process_running(_run_pid):
-		_run_pid = 0
-		return _fail("游戏进程已退出。请重新 run_game 启动游戏")
-	var url := "http://127.0.0.1:%d/mcp" % _runtime_port
-	var payload := {
-		"jsonrpc": "2.0",
-		"id": 1,
-		"method": "tools/call",
-		"params": {"name": tool_name, "arguments": args},
-	}
-	var token: String = ProjectSettings.get_setting(SETTING_TOKEN, "")
-	var headers := PackedStringArray(["Content-Type: application/json"])
-	if not token.is_empty():
-		headers.append("Authorization: Bearer " + token)
-	var req := HTTPRequest.new()
-	add_child(req)
-	var err := req.request(url, headers, HTTPClient.METHOD_POST, JSON.stringify(payload))
-	if err != OK:
-		req.queue_free()
-		return _fail("无法连接游戏运行时服务器(%s): 请求发送失败(err=%d)。请确认 run_game 已启动。" % [url, err])
-	var resp: Array = await req.request_completed
-	req.queue_free()
-	var resp_code: int = resp[1]
-	if resp_code != 200:
-		return _fail("游戏运行时服务器返回 HTTP %d。游戏可能尚未就绪, 请稍后重试。" % resp_code)
-	var parsed: Variant = JSON.parse_string(resp[3].get_string_from_utf8())
-	if parsed == null or not parsed is Dictionary:
-		return _fail("游戏运行时服务器响应解析失败")
-	var result: Dictionary = parsed.get("result", {})
-	var content: Array = result.get("content", [])
-	var text := ""
-	for c in content:
-		if c is Dictionary and c.get("type") == "text":
-			text += str(c.get("text", ""))
-	return {
-		"text": text,
-		"is_error": bool(result.get("isError", false)),
-	}
+	if not _game_ready:
+		return _fail("游戏调试线尚未就绪。请稍后重试(可先 run_game 等待启动完成)")
+	var req_id := _next_req_id
+	_next_req_id += 1
+	_pending[req_id] = null
+	debugger_plugin.send_call(req_id, tool_name, args)
+	# 轮询等待游戏响应(最多 20s; 会话断开时由 _on_session_stopped 填入失败结果)
+	var deadline := Time.get_ticks_msec() + 20000
+	while Time.get_ticks_msec() < deadline:
+		if _pending.has(req_id) and _pending[req_id] != null:
+			var result: Dictionary = _pending[req_id]
+			_pending.erase(req_id)
+			return {"text": str(result.get("text", "")), "is_error": bool(result.get("is_error", false))}
+		await get_tree().process_frame
+	if _pending.has(req_id):
+		_pending.erase(req_id)
+	return _fail("游戏进程响应超时(20s)。工具: %s" % tool_name)

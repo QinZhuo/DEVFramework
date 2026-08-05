@@ -34,6 +34,8 @@ unique_name_in_owner = true
 color = Color(0.15, 0.28, 0.18, 1)
 polygon = PackedVector2Array(44, 44, 1108, 44, 1108, 596, 44, 596)
 
+[node name="TestLabel" type="Label" parent="World" unique_id=915651258]
+
 [node name="UI" type="PanelContainer" parent="." unique_id=1431370018]
 layout_mode = 0
 anchor_left = 1.0
@@ -54,7 +56,7 @@ theme_override_constants/separation = 8
 
 [node name="Title" type="Label" parent="UI/VBox" unique_id=835913187]
 layout_mode = 2
-text = "GOAP 演示 · 2D 生态箱"
+text = "GOAP ��ʾ �� 2D ��̬��"
 horizontal_alignment = 1
 
 [node name="StatsLabel" type="Label" parent="UI/VBox" unique_id=1999068854]
