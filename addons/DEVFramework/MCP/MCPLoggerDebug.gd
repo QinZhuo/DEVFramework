@@ -113,51 +113,24 @@ func _strip_ansi(text: String) -> String:
 ## 获取新增日志(自 last_index 起), 返回 [entries, new_index]
 ## 环形缓冲容量满后头部被丢弃, 用逻辑索引(_base_index + 数组偏移)保证增量语义稳定
 func take_logs_since(last_index: int) -> Dictionary:
-	return _take_filtered(last_index, true, "", false)
-
-
-## 获取新增日志并过滤: keyword 匹配消息文本(空=不过滤), errors_only=true 只返回错误流
-func take_logs_filtered(last_index: int, keyword: String, errors_only: bool) -> Dictionary:
-	return _take_filtered(last_index, true, keyword, errors_only)
+	_mutex.lock()
+	var new_entries: Array = []
+	var start := maxi(last_index, _base_index)
+	for i in range(start, _base_index + _messages.size()):
+		new_entries.append(_messages[i - _base_index])
+	var result := {"entries": new_entries, "next": _base_index + _messages.size()}
+	_mutex.unlock()
+	return result
 
 
 ## 获取新增错误
 func take_errors_since(last_index: int) -> Dictionary:
-	return _take_filtered(last_index, false, "", false)
-
-
-## 获取新增错误并过滤: keyword 匹配 message/code/file
-func take_errors_filtered(last_index: int, keyword: String) -> Dictionary:
-	return _take_filtered(last_index, false, keyword, false)
-
-
-func _take_filtered(last_index: int, is_log: bool, keyword: String, errors_only: bool) -> Dictionary:
 	_mutex.lock()
-	var kw := keyword.strip_edges().to_lower()
+	var start := maxi(last_index, 0)
 	var new_entries: Array = []
-	var start := last_index
-	var src: Array
-	if is_log:
-		start = maxi(last_index, _base_index)
-		src = _messages
-	else:
-		src = _errors
-	for i in range(start, src.size() + ( _base_index if is_log else 0 )):
-		var entry: Dictionary = src[i - _base_index if is_log else i]
-		if is_log:
-			if errors_only and not entry.get("is_error", false):
-				continue
-			if not kw.is_empty() and not str(entry.get("message", "")).to_lower().contains(kw):
-				continue
-		else:
-			if not kw.is_empty():
-				var hay := "%s %s %s" % [
-					entry.get("message", ""), entry.get("code", ""), entry.get("file", "")]
-				if not hay.to_lower().contains(kw):
-					continue
-		new_entries.append(entry)
-	var next_index := (_base_index + _messages.size()) if is_log else _errors.size()
-	var result := {"entries": new_entries, "next": next_index, "cleared": _errors.is_empty()}
+	for i in range(start, _errors.size()):
+		new_entries.append(_errors[i])
+	var result := {"entries": new_entries, "next": _errors.size(), "cleared": _errors.is_empty()}
 	_mutex.unlock()
 	return result
 

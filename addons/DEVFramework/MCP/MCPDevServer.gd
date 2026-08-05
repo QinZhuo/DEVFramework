@@ -5,8 +5,8 @@
 ##     在 8932 端口提供编辑器工具(场景树/节点/项目设置/截图等)以及游戏运行时工具。
 ##   - 游戏进程: 不开启任何端口, 注册 EngineDebugger 消息捕获器("dev_mcp"),
 ##     通过编辑器↔游戏的调试线(EngineDebugger wire)接收并原生执行运行时工具:
-##     get_game_view / simulate_click / simulate_drag / simulate_key / take_screenshot /
-##     game_eval / 游戏日志等。因为在游戏进程内, Input.parse_input_event 等引擎 API 直接生效。
+##     take_screenshot(view文本化/game真实截图) / simulate_click / simulate_drag /
+##     simulate_key / game_eval / 游戏日志等。因为在游戏进程内, Input.parse_input_event 等引擎 API 直接生效。
 ## 编辑器↔游戏通信走 Godot 自带调试线(编辑器以调试模式启动游戏时自动建立), 零额外端口。
 ## 桥接由 MCPDebuggerPlugin(EditorDebuggerPlugin)负责, 生命周期由 plugin.gd 控制。
 class_name MCPDevServer extends Node
@@ -239,12 +239,12 @@ func _register_editor_tools() -> void:
 ## -- 脚本/资源验证 --
 func _register_validate_tools() -> void:
 	_add_tool("validate_script",
-		"校验 GDScript 语法/可编译性(不执行)。path 或 code 二选一。返回是否有效及错误。",
+		"验证一个 GDScript 脚本的语法与可编译性(不执行)。返回是否有效及错误明细。可传 'path'(res://路径) 读取磁盘脚本, 或 'code'(源码文本)直接验证。注意: 仅存在'被当作错误的警告'(如 untyped_declaration)时会判为有效并在 warnings 中列出; 若验证的脚本 class_name 与已加载类同名(如 addons 内已加载脚本)属环境冲突, 会提示 hint。",
 		{"type": "object", "properties": {"path": {"type": "string", "description": "脚本 res:// 路径, 与 code 二选一"}, "code": {"type": "string", "description": "GDScript 源码文本, 与 path 二选一"}}},
 		_call_validate_script)
 
 	_add_tool("validate_resource",
-		"验证一个资源/场景文件能否被引擎正确加载。返回是否可加载、类型及错误信息。排查 .tres/.tscn 损坏或依赖缺失。",
+		"验证一个资源/场景文件能否被引擎正确加载。返回是否可加载、资源类型及错误信息。常见于排查 .tres/.tscn 资源损坏或依赖缺失。",
 		{"type": "object", "properties": {"path": {"type": "string", "description": "资源 res:// 路径"}}},
 		_call_validate_resource)
 
@@ -254,7 +254,7 @@ func _register_validate_tools() -> void:
 		_call_list_dir)
 
 	_add_tool("classdb_query",
-		"查询 Godot 类 API(方法/属性/信号/枚举)。可模糊搜类名或查指定类成员。返回结构化 JSON。",
+		"查询 Godot 类的 API: 类的方法/属性/信号/枚举。用于 AI 写脚本前确认 Godot 原生 API 的正确用法与签名。可按关键字模糊搜索类名, 或查询指定类的成员。返回结构化 JSON。",
 		{"type": "object", "properties": {
 			"class_name": {"type": "string", "description": "要查询的类名(如 CharacterBody2D/Button), 提供后返回该类的成员清单"},
 			"search": {"type": "string", "description": "按关键字模糊搜索类名(如 'body' 匹配 CharacterBody2D/RigidBody2D 等)"},
@@ -268,21 +268,18 @@ func _register_validate_tools() -> void:
 ## -- 日志/错误 --
 func _register_log_tools() -> void:
 	_add_tool("get_logs",
-		"获取日志(print/printerr)。游戏运行时返回游戏日志, 否则编辑器日志。参数: since=增量游标, keyword=按关键字过滤消息(推荐用此减少token), errors_only=只取错误流, max=最大条数。",
+		"获取日志(print/printerr 输出)。返回日志数组(含时间戳/是否错误流)与 next 游标。游戏运行时返回游戏进程日志, 否则返回编辑器日志。增量用法: 把上次返回的 next 作为 since 参数, 只取新增日志, 节省上下文。",
 		{"type": "object", "properties": {
-			"max": {"type": "integer", "description": "最大条数, 默认 50"},
-			"since": {"type": "integer", "description": "增量游标(上次 next), 默认 0=全量"},
-			"keyword": {"type": "string", "description": "只返回含此关键字的消息(不区分大小写), 空=不过滤"},
-			"errors_only": {"type": "boolean", "description": "true 时只返回错误/警告流, 默认 false"}
+			"max": {"type": "integer", "description": "最多返回条数, 默认 200"},
+			"since": {"type": "integer", "description": "增量游标(上次返回的 next), 只返回此位置之后的日志, 默认 0=全量"}
 		}},
 		_call_get_logs)
 
 	_add_tool("get_errors",
-		"获取错误(脚本错误/assert/push_error, 含来源/行号/栈)。游戏运行时返回游戏错误, 否则编辑器错误。参数: since=增量游标, keyword=按错误消息/文件过滤, max=最大条数。",
+		"获取捕获的错误(脚本错误/assert/push_error 等), 每个错误包含信息、来源文件、行号、类型及 GDScript 栈追踪。返回 next 游标。游戏运行时返回游戏进程错误, 否则返回编辑器错误。增量用法: 把上次返回的 next 作为 since 参数, 只取新增错误。",
 		{"type": "object", "properties": {
-			"max": {"type": "integer", "description": "最大条数, 默认 20"},
-			"since": {"type": "integer", "description": "增量游标(上次 next), 默认 0=全量"},
-			"keyword": {"type": "string", "description": "只返回消息/文件含此关键字的错误(不区分大小写), 空=不过滤"}
+			"max": {"type": "integer", "description": "最多返回条数, 默认 100"},
+			"since": {"type": "integer", "description": "增量游标(上次返回的 next), 只返回此位置之后的错误, 默认 0=全量"}
 		}},
 		_call_get_errors)
 
@@ -295,10 +292,12 @@ func _register_log_tools() -> void:
 ## -- 截图 --
 func _register_screenshot_tools() -> void:
 	_add_tool("take_screenshot",
-		"捕获画面存本地。capture_type: 'editor' 编辑器视口(默认), 'scene' 场景缩略图, 'game' 运行中游戏画面。返回文件路径/尺寸/字节。默认降采样到 1280 宽, 可传更大 max_width。",
+		"画面感知工具, 有文本化截图与真实截图两种模式。默认用 'text'(文本化截图, 推荐): 不保存图片, 直接返回运行中游戏画面的可见节点布局(名称/类型/屏幕坐标/尺寸/文本), 适合点击游玩模拟与无图像输入的AI, 大幅节省token。大部分场景都应使用此模式; 仅当需要查看具体画面表现(颜色/光影/视觉细节)时才用 capture_type='game' 真实截图(保存PNG并返回路径)。其他类型: 'editor' 编辑器视口截图, 'scene' 当前场景缩略图。真实截图默认附带 'text' 文本快照, 可用 include_text=false 关闭。",
 		{"type": "object", "properties": {
-			"capture_type": {"type": "string", "description": "截图类型: 'editor' 编辑器视口(默认), 'scene' 当前场景缩略图, 'game' 运行中的游戏画面"},
-			"max_width": {"type": "integer", "description": "最大宽度, 超过则等比缩小。默认 1280, 传 0 或更大值可保留原始分辨率"}
+			"capture_type": {"type": "string", "description": "模式: 'text' 文本化截图(默认, 推荐, 需游戏运行), 'game' 真实游戏截图(需游戏运行), 'editor' 编辑器视口截图, 'scene' 当前场景缩略图"},
+			"max_width": {"type": "integer", "description": "仅真实截图生效: 最大宽度, 超过则等比缩小。默认 1280, 传 0 或更大值可保留原始分辨率"},
+			"include_text": {"type": "boolean", "description": "仅真实截图生效: 是否附带文本化截图(text 字段), 默认 true"},
+			"text_max_nodes": {"type": "integer", "description": "文本化截图最多节点数, 默认 50"}
 		}},
 		_call_take_screenshot)
 
@@ -316,8 +315,8 @@ func _register_scene_tools() -> void:
 		_call_get_node_info)
 
 	_add_tool("set_node_property",
-		"修改当前编辑场景中指定节点的属性值(经 UndoRedo, 保存后才写回 .tscn)。",
-		{"type": "object", "properties": {"path": {"type": "string", "description": "节点路径(编辑场景内)"}, "property": {"type": "string", "description": "属性名"}, "value": {"description": "新值(数字/字符串/布尔; Vector2 可传 '1,2')"}}},
+		"修改当前编辑场景中指定节点的属性值(用于调试调整逻辑)。修改经 UndoRedo 提交, 用户可按 Ctrl+Z 撤销。修改仅影响内存中的场景, 不会写回 .tscn 文件直到 save_scene。",
+		{"type": "object", "properties": {"path": {"type": "string", "description": "节点路径(编辑场景内)"}, "property": {"type": "string", "description": "属性名"}, "value": {"description": "新值(支持数字/字符串/布尔; Vector2 等可传 '1,2' 字符串)"}}},
 		_call_set_node_property)
 
 	_add_tool("call_node_method",
@@ -329,12 +328,12 @@ func _register_scene_tools() -> void:
 ## -- 场景编辑 --
 func _register_scene_edit_tools() -> void:
 	_add_tool("add_node",
-		"在当前编辑场景中添加节点或实例化子场景(经 UndoRedo 提交, 可 Ctrl+Z 撤销)。",
+		"在当前编辑场景中添加节点或实例化子场景。parent 为父节点路径(缺省根), node_type 为节点类型类名(如 Sprite2D/CharacterBody2D/Label)或子场景 res:// 路径。添加经 UndoRedo 提交, 用户可按 Ctrl+Z 移除。",
 		{"type": "object", "properties": {"parent": {"type": "string", "description": "父节点路径(编辑场景内), 缺省为场景根"}, "node_type": {"type": "string", "description": "节点类型类名或子场景 res:// 路径"}, "name": {"type": "string", "description": "新节点名称(可选)"}}},
 		_call_add_node)
 
 	_add_tool("save_scene",
-		"保存当前正在编辑的场景到磁盘(改动需保存后才写回 .tscn)。",
+		"保存当前正在编辑的场景到磁盘(set_node_property/add_node 的改动需要保存后才会写回 .tscn)。",
 		{"type": "object", "properties": {}},
 		_call_save_scene)
 
@@ -352,7 +351,7 @@ func _register_project_tools() -> void:
 		_call_get_project_settings)
 
 	_add_tool("get_editor_activity",
-		"获取编辑器当前状态: 打开的场景、选中节点、运行中的游戏等。用于感知用户操作避免踩踏改动。",
+		"获取编辑器当前状态: 打开的场景、选中的节点、运行中的游戏、文件系统选中项等。用于 AI 与人类协作时感知用户在编辑器里做了什么, 避免踩踏改动。",
 		{"type": "object", "properties": {}},
 		_call_get_editor_activity)
 
@@ -360,7 +359,7 @@ func _register_project_tools() -> void:
 ## -- 运行游戏 --
 func _register_run_tools() -> void:
 	_add_tool("run_game",
-		"以编辑器调试模式启动游戏(等效 F5, 自动建立调试线)。scene 可选, 缺省用主场景。启动后 get_game_view/simulate_*/game_eval/get_game_logs/take_screenshot 等运行时工具可用。",
+		"以编辑器调试模式启动游戏(等效 F5, 自动建立 EngineDebugger 调试线)。scene 可选, 缺省用项目主场景。启动后 take_screenshot(默认text文本化截图, 或 capture_type=game 真实截图) / simulate_click / simulate_drag / simulate_key / game_eval / get_game_logs 等运行时工具经调试线可用。",
 		{"type": "object", "properties": {"scene": {"type": "string", "description": "要运行的场景 res:// 路径, 缺省用主场景"}}},
 		_call_run_game)
 
@@ -373,13 +372,13 @@ func _register_run_tools() -> void:
 ## -- 开发辅助(重载/求值/设置) --
 func _register_dev_tools() -> void:
 	_add_tool("reload_project",
-		"触发编辑器重新扫描项目: 重建全局类缓存 + 重扫资源文件。新脚本/资源不生效时调用。",
+		"触发编辑器重新扫描项目: 重建全局类缓存(新增 class_name 立即生效) + 重扫资源文件。新脚本/新资源不生效时调用此工具。",
 		{"type": "object", "properties": {}},
 		_call_reload_project)
 
 	_add_tool("eval_code",
-		"在编辑器进程中执行一段 GDScript 代码(查值/调工具/验证逻辑)。可显式 return 返回值; print 进 get_logs。可访问场景树。注意: 字符串内换行用 char(10) 而非 '\\n'。",
-		{"type": "object", "properties": {"code": {"type": "string", "description": "要执行的 GDScript 代码"}}},
+		"在编辑器进程中执行一段 GDScript 代码(常用于查值/调工具/验证逻辑)。代码中可显式 return 返回值; print 输出会进入 get_logs。代码会被包装为挂到场景树的 Node 方法, 因此可直接使用 get_tree()/get_node() 访问场景。缩进自动归一化(tab/空格均可)。注意: 字符串内需要换行请用 char(10) 而非 '\\n'(JSON 传输会拆行导致字符串被破坏)。",
+		{"type": "object", "properties": {"code": {"type": "string", "description": "要执行的 GDScript 代码(方法体内容, 缩进由服务器自动处理)"}}},
 		_call_eval_code)
 
 	_add_tool("get_global_classes",
@@ -398,7 +397,7 @@ func _register_dev_tools() -> void:
 		_call_set_main_scene)
 
 	_add_tool("get_project_setting",
-		"读取任意项目设置项(ProjectSettings), 如 application/config/name 等。",
+		"读取任意项目设置项的值(ProjectSettings), 如 application/config/name、audio/buses/default_bus_layout 等。",
 		{"type": "object", "properties": {"name": {"type": "string", "description": "设置项名称"}}},
 		_call_get_project_setting)
 
@@ -565,6 +564,9 @@ func _handle_jsonrpc(req: Dictionary) -> Dictionary:
 			var result := await _safe_call_handler(_tool_handlers[tool_name], arguments)
 			if result.is_empty():
 				return _jsonrpc_error(req_id, -32603, "Internal error: 工具执行未返回结果")
+			# 记录返回信息到 MCP 日志, 便于诊断"返回异常/空"等问题。仅打印非原始数据
+			# (get_logs / get_errors / get_game_logs / get_game_errors / 文件读写等巨量内容工具截断显示)。
+			_log_tool_result(tool_name, result)
 			return {"jsonrpc": "2.0", "id": req_id, "result": result}
 		"ping":
 			return {"jsonrpc": "2.0", "id": req_id, "result": {}}
@@ -612,6 +614,42 @@ func _collect_runtime_error(err_before: int) -> String:
 	var ln := str(e.get("line", ""))
 	var fn := str(e.get("function", ""))
 	return "%s  (%s:%s %s)" % [msg, f, ln, fn]
+
+
+## 把工具调用结果摘要记录到 MCP 日志, 便于诊断"返回异常/空"等问题。
+## 巨型内容工具(get_logs/get_errors/get_game_logs/get_game_errors/read_file/take_screenshot 等)
+## 只打印结构摘要, 避免日志被撑爆。
+func _log_tool_result(tool_name: String, result: Dictionary) -> void:
+	var text: String = str(result.get("text", ""))
+	var is_err: bool = result.get("is_error", false)
+	var head := "[%s] %s 返回: " % [_mode, tool_name]
+	var big := tool_name in ["get_logs", "get_errors", "get_game_logs", "get_game_errors",
+			"read_file", "take_screenshot", "get_scene_tree", "get_global_classes",
+			"classdb_query", "get_node_info", "get_project_info", "get_project_settings",
+			"get_editor_activity", "list_dir", "get_project_setting"]
+	if is_err:
+		LogTool.log("MCP", "%s错误: %s" % [head, text.left(400)])
+		return
+	if big:
+		# 只打顶层结构(键/计数), 不打全文
+		var summary := ""
+		var t := text.strip_edges()
+		if t.begins_with("{") or t.begins_with("["):
+			var parsed: Variant = JSON.parse_string(t)
+			if parsed is Dictionary:
+				for key in parsed.keys():
+					var v = parsed[key]
+					var vdesc: String = str(v)
+					if v is Array:
+						vdesc = "Array[%d]" % v.size()
+					elif v is Dictionary:
+						vdesc = "Dict{%d}" % v.size()
+					summary += "%s=%s " % [key, vdesc]
+		if summary.is_empty():
+			summary = t.left(200)
+		LogTool.log("MCP", "%s%s" % [head, summary])
+	else:
+		LogTool.log("MCP", "%s%s" % [head, text.left(400)])
 
 
 ## 统一工具结果封装
@@ -917,14 +955,10 @@ func _collect_dir(base: String, dirs: Array, files: Array) -> void:
 func _call_get_logs(args: Dictionary) -> Dictionary:
 	if _logger == null:
 		return _fail("日志捕获器未就绪")
-	var max: int = int(args.get("max", 50))
+	var max: int = int(args.get("max", 200))
 	# since: 上次拉取返回的 next 游标, 增量拉取新日志以节省上下文(token)。默认 0 = 全量。
 	var since: int = int(args.get("since", 0))
-	# keyword: 只返回消息含该关键字的日志(不区分大小写), 空串=不过滤。如 "ERROR" / "GoapAgent" / "MCP"。
-	var keyword: String = str(args.get("keyword", ""))
-	# errors_only: true 时只返回错误流(stderr/错误日志)。
-	var errors_only: bool = bool(args.get("errors_only", false))
-	var result: Dictionary = _logger.take_logs_filtered(since, keyword, errors_only)
+	var result: Dictionary = _logger.take_logs_since(since)
 	var entries: Array = result.entries
 	var out: Array = []
 	var start := maxi(0, entries.size() - max)
@@ -937,18 +971,16 @@ func _call_get_logs(args: Dictionary) -> Dictionary:
 		"count": out.size(),
 		"logs": out,
 		"next": int(result.get("next", 0)),
-		"filtered": {"keyword": keyword, "errors_only": errors_only},
-		"hint": "将 next 作为下次调用的 since 参数增量拉取; 用 keyword 过滤关键字可大幅减少 token",
+		"hint": "将 next 作为下次调用的 since 参数即可只取新增日志",
 	})
 
 
 func _call_get_errors(args: Dictionary) -> Dictionary:
 	if _logger == null:
 		return _fail("错误捕获器未就绪")
-	var max: int = int(args.get("max", 20))
+	var max: int = int(args.get("max", 100))
 	var since: int = int(args.get("since", 0))
-	var keyword: String = str(args.get("keyword", ""))
-	var result: Dictionary = _logger.take_errors_filtered(since, keyword)
+	var result: Dictionary = _logger.take_errors_since(since)
 	var out: Array = result.entries.duplicate()
 	if out.size() > max:
 		out = out.slice(out.size() - max)
@@ -963,7 +995,7 @@ func _call_get_errors(args: Dictionary) -> Dictionary:
 		"errors": cleaned,
 		"next": int(result.get("next", 0)),
 		"cleared": bool(result.get("cleared", false)),
-		"hint": "将 next 作为下次调用的 since 参数增量拉取; 用 keyword 过滤错误关键字可减少 token",
+		"hint": "将 next 作为下次调用的 since 参数即可只取新增错误",
 	})
 
 
@@ -974,12 +1006,12 @@ func _call_clear_errors(_args: Dictionary) -> Dictionary:
 
 
 func _call_take_screenshot(args: Dictionary) -> Dictionary:
-	# 游戏运行画面: 转发到游戏进程运行时服务器原生截图
-	var capture_type: String = str(args.get("capture_type", "editor"))
-	if capture_type == "game":
+	# text(文本化截图) 与 game(真实截图) 都分析游戏运行画面: 编辑器模式经调试线转发到游戏进程
+	var capture_type: String = str(args.get("capture_type", "text"))
+	if capture_type == "text" or capture_type == "game":
 		if _mode == MODE_EDITOR:
 			return await _call_runtime_proxy("take_screenshot", args)
-		# 运行时模式: 直接截游戏画面
+		# 运行时模式: 直接处理
 		return await _runtime_take_screenshot(args)
 
 	var filename := "mcp_%s" % Time.get_datetime_string_from_system().replace(":", "-").replace(" ", "_")
@@ -1367,7 +1399,7 @@ func _call_run_game(args: Dictionary) -> Dictionary:
 	var ready := await _wait_game_ready(15.0)
 	if not ready:
 		return _ok("已启动游戏(调试模式, 场景=%s)。但 MCP 调试线 %d 秒内未就绪, 请稍后重试运行时工具。" % [scene, int(15.0)])
-	return _ok("已启动游戏(调试模式, 场景=%s)。调试线已就绪, 已可用运行时工具: get_game_view / simulate_click / simulate_drag / simulate_key / take_screenshot(capture_type=game) / game_eval / get_game_logs / get_game_errors。" % scene)
+	return _ok("已启动游戏(调试模式, 场景=%s)。调试线已就绪, 已可用运行时工具: take_screenshot(默认text文本化截图, capture_type=game 真实截图) / simulate_click / simulate_drag / simulate_key / game_eval / get_game_logs / get_game_errors。" % scene)
 
 
 func _call_stop_game(_args: Dictionary) -> Dictionary:
@@ -1876,16 +1908,8 @@ func _coerce_value(value: Variant, target_type: int) -> Variant:
 func _register_runtime_tools() -> void:
 	_tool_handlers.clear()
 	_tool_defs.clear()
-	_add_tool("get_game_view",
-		"分析游戏运行时可见节点的屏幕位置/大小/层级/z_index/文本。用于AI决定点击/拖拽目标。不可见与纯逻辑节点被剪枝, 可用 max_depth/max_nodes 限制成本。",
-		{"type": "object", "properties": {
-			"max_nodes": {"type": "integer", "description": "最多返回节点数, 默认 50"},
-			"max_depth": {"type": "integer", "description": "最多递归深度, 默认 10"}
-		}},
-		_call_get_game_view)
-
 	_add_tool("simulate_click",
-		"在游戏窗口模拟一次鼠标左键点击(按下+释放)。坐标=游戏视口坐标。",
+		"在游戏窗口内模拟一次鼠标左键点击(按下+释放)。坐标为游戏视口坐标。用于AI自动化测试游戏交互(按钮/UI 点击等)。",
 		{"type": "object", "properties": {
 			"x": {"type": "integer", "description": "屏幕X坐标"},
 			"y": {"type": "integer", "description": "屏幕Y坐标"}
@@ -1893,7 +1917,7 @@ func _register_runtime_tools() -> void:
 		_call_simulate_click)
 
 	_add_tool("simulate_drag",
-		"在游戏窗口模拟从起始位置拖拽到目标位置(按下->移动->释放)。",
+		"在游戏窗口内模拟从起始位置拖拽到目标位置(按下->移动->释放)。用于AI测试拖拽交互。",
 		{"type": "object", "properties": {
 			"from_x": {"type": "integer", "description": "起始X坐标"},
 			"from_y": {"type": "integer", "description": "起始Y坐标"},
@@ -1903,7 +1927,7 @@ func _register_runtime_tools() -> void:
 		_call_simulate_drag)
 
 	_add_tool("simulate_key",
-		"在游戏窗口模拟一次键盘按键(按下/释放)。",
+		"在游戏窗口内模拟一次键盘按键(按下/释放)。用于AI测试键盘交互。",
 		{"type": "object", "properties": {
 			"key": {"type": "string", "description": "按键名称, 如 'space', 'enter', 'escape', 'a'-'z', '0'-'9'"},
 			"pressed": {"type": "boolean", "description": "true=按下, false=释放, 默认 true"}
@@ -1911,33 +1935,33 @@ func _register_runtime_tools() -> void:
 		_call_simulate_key)
 
 	_add_tool("take_screenshot",
-		"捕获游戏视口截屏存本地(user://mcp_screenshots/), 返回路径/尺寸/字节。默认降采样 1280 宽, 可传更大 max_width。",
+		"画面感知工具。默认 'text'(文本化截图, 推荐): 不保存图片, 返回运行中游戏画面的可见节点布局(名称/类型/屏幕坐标/尺寸/文本), 适合点击游玩模拟与无图像输入的AI, 大幅节省token。大部分场景用此模式; 仅需查看具体画面表现时才用 capture_type='game' 真实截图(保存PNG到 user://mcp_screenshots/ 并返回路径, 附带 text 文本快照, 可用 include_text=false 关闭)。",
 		{"type": "object", "properties": {
-			"max_width": {"type": "integer", "description": "最大宽度, 超过则等比缩小。默认 1280, 传 0 或更大值可保留原始分辨率"}
+			"capture_type": {"type": "string", "description": "模式: 'text' 文本化截图(默认, 推荐), 'game' 真实游戏截图(保存PNG)"},
+			"max_width": {"type": "integer", "description": "仅真实截图生效: 最大宽度, 超过则等比缩小。默认 1280, 传 0 或更大值可保留原始分辨率"},
+			"include_text": {"type": "boolean", "description": "仅真实截图生效: 是否附带文本化截图(text 字段), 默认 true"},
+			"text_max_nodes": {"type": "integer", "description": "文本化截图最多节点数, 默认 50"}
 		}},
 		_runtime_take_screenshot)
 
 	_add_tool("game_eval",
-		"在游戏进程中执行一段 GDScript 代码(可访问场景树, 读取状态/改变量/触发逻辑), 可 return 返回值。注意: get_node() 相对路径基于 eval 脚本实例, 访问场景节点请用 /root/场景名/子路径。",
-		{"type": "object", "properties": {"code": {"type": "string", "description": "要执行的 GDScript 代码"}}},
+		"在游戏进程中执行一段 GDScript 代码, 可访问当前游戏场景树(get_tree()/get_node()/get_viewport() 等)。常用于读取游戏运行状态/修改变量/触发逻辑。代码中可显式 return 返回值。注意: get_node() 相对路径基于 eval 脚本实例(挂在场景树 root 下), 访问场景节点请用绝对路径 /root/场景名/子路径 或 get_tree().current_scene.get_node(...)。",
+		{"type": "object", "properties": {"code": {"type": "string", "description": "要执行的 GDScript 代码(方法体内容, 缩进由服务器自动处理)"}}},
 		_call_eval_code)
 
 	_add_tool("get_game_logs",
-		"获取游戏进程日志。参数: since=增量游标, keyword=按关键字过滤(推荐), errors_only=只取错误流, max=最大条数。",
+		"获取游戏进程的日志(print/printerr 输出)。返回 next 游标, 增量用法: 把上次返回的 next 作为 since 参数, 只取新增日志, 节省上下文。",
 		{"type": "object", "properties": {
-			"max": {"type": "integer", "description": "最大条数, 默认 50"},
-			"since": {"type": "integer", "description": "增量游标(上次 next), 默认 0=全量"},
-			"keyword": {"type": "string", "description": "只返回含此关键字的日志(不区分大小写), 空=不过滤"},
-			"errors_only": {"type": "boolean", "description": "true 时只返回错误/警告流, 默认 false"}
+			"max": {"type": "integer", "description": "最多条数, 默认 200"},
+			"since": {"type": "integer", "description": "增量游标(上次返回的 next), 只返回此位置之后的日志, 默认 0=全量"}
 		}},
 		_call_get_logs)
 
 	_add_tool("get_game_errors",
-		"获取游戏进程错误(脚本错误/assert/push_error, 含来源/行号/栈)。参数: since=增量游标, keyword=按关键字过滤, max=最大条数。",
+		"获取游戏进程捕获的错误(脚本错误/assert/push_error 等), 含来源文件、行号、类型及 GDScript 栈追踪。返回 next 游标, 增量用法: 把上次返回的 next 作为 since 参数, 只取新增错误。",
 		{"type": "object", "properties": {
-			"max": {"type": "integer", "description": "最大条数, 默认 20"},
-			"since": {"type": "integer", "description": "增量游标(上次 next), 默认 0=全量"},
-			"keyword": {"type": "string", "description": "只返回消息/文件含此关键字的错误(不区分大小写), 空=不过滤"}
+			"max": {"type": "integer", "description": "最多条数, 默认 100"},
+			"since": {"type": "integer", "description": "增量游标(上次返回的 next), 只返回此位置之后的错误, 默认 0=全量"}
 		}},
 		_call_get_errors)
 
@@ -1945,27 +1969,6 @@ func _register_runtime_tools() -> void:
 		"清空游戏进程的错误缓冲区。",
 		{"type": "object", "properties": {}},
 		_call_clear_errors)
-
-
-## 运行时: 分析游戏场景中可见节点的屏幕位置
-func _call_get_game_view(args: Dictionary) -> Dictionary:
-	var max_nodes: int = int(args.get("max_nodes", 50))
-	var max_depth: int = int(args.get("max_depth", 10))
-	var tree := get_tree()
-	if tree == null or tree.current_scene == null:
-		return _fail("当前没有运行中的场景")
-	var viewport := get_viewport()
-	var viewport_size := viewport.get_visible_rect().size
-	var nodes_info: Array = []
-	# 从场景树根的所有子节点遍历(current_scene + autoload + 其他根),
-	# autoload 下的 UI(如 HUD) 是 root 直属子节点, 仅遍历 current_scene 会漏掉它们
-	for child in tree.root.get_children():
-		_collect_visible_nodes(child, viewport, nodes_info, max_nodes, 0, max_depth)
-	return _ok_json({
-		"viewport_size": {"x": int(viewport_size.x), "y": int(viewport_size.y)},
-		"node_count": nodes_info.size(),
-		"nodes": nodes_info
-	})
 
 
 ## 递归收集可见节点信息(运行时模式, 游戏进程内坐标天然正确)
@@ -2133,6 +2136,18 @@ func _call_simulate_key(args: Dictionary) -> Dictionary:
 
 ## 运行时: 捕获游戏视口截图(文件名自动生成)
 func _runtime_take_screenshot(args: Dictionary) -> Dictionary:
+	var capture_type: String = str(args.get("capture_type", "text"))
+	# 纯文本化截图模式(text): 不保存图片, 直接返回可见节点布局快照。
+	# 适合点击游玩模拟与无法识别图像的 AI, 大幅节省 token。默认模式。
+	if capture_type == "text":
+		var text_max_nodes := int(args.get("text_max_nodes", 50))
+		var text_data := _build_game_view_snapshot(text_max_nodes)
+		return _ok_json({
+			"capture_type": "text",
+			"is_text_view": true,
+			"text": text_data,
+			"hint": "文本化截图(text, 默认): 用于点击/拖拽游玩模拟与无图像输入的AI, 省token。大部分场景用此模式即可; 仅需查看具体画面表现时才用 capture_type='game' 真实截图。",
+		})
 	var filename := "mcp_%s" % Time.get_datetime_string_from_system().replace(":", "-").replace(" ", "_")
 	filename += ".png"
 	var dir_path := "user://mcp_screenshots"
@@ -2157,30 +2172,49 @@ func _runtime_take_screenshot(args: Dictionary) -> Dictionary:
 	if img_err != OK:
 		return _fail("保存截图失败: 错误码 %d" % img_err)
 	var bytes: PackedByteArray = FileAccess.get_file_as_bytes(path)
-	return _ok_json({
+	var result: Dictionary = {
 		"path": ProjectSettings.globalize_path(path),
 		"res_path": path,
 		"width": img.get_width(),
 		"height": img.get_height(),
 		"bytes": bytes.size() if bytes else 0,
 		"capture_type": "game",
-	})
+	}
+	# 整合文本化截图快照(text): 截图同时返回画面可见节点布局,
+	# 供 AI 在无图像输入时也能理解画面。可用 include_text=false 关闭, text_max_nodes 控制节点数。
+	if bool(args.get("include_text", true)):
+		var text_max_nodes := int(args.get("text_max_nodes", 50))
+		result["text"] = _build_game_view_snapshot(text_max_nodes)
+	return _ok_json(result)
+
+
+## 收集游戏画面文本化视图(可见节点布局快照, 即"文本化的截图")
+func _build_game_view_snapshot(max_nodes: int) -> Dictionary:
+	var tree := get_tree()
+	if tree == null:
+		return {}
+	var viewport := get_viewport()
+	if viewport == null:
+		return {}
+	var viewport_size := viewport.get_visible_rect().size
+	var nodes_info: Array = []
+	# 从场景树根的所有子节点遍历(current_scene + autoload + 其他根),
+	# autoload 下的 UI(如 HUD) 是 root 直属子节点, 仅遍历 current_scene 会漏掉它们
+	for child in tree.root.get_children():
+		_collect_visible_nodes(child, viewport, nodes_info, max_nodes, 0, 10)
+	return {
+		"viewport_size": {"x": int(viewport_size.x), "y": int(viewport_size.y)},
+		"node_count": nodes_info.size(),
+		"nodes": nodes_info,
+	}
 
 
 ## ======= 编辑器模式的运行时工具转发(经 EngineDebugger 调试线) =======
 
 func _register_game_play_tools() -> void:
 	# 编辑器模式下, 运行时工具经调试线转发到游戏进程(需先 run_game 启动游戏)
-	_add_tool("get_game_view",
-		"分析游戏运行时可见节点的屏幕位置/大小/层级/文本。用于AI决定点击/拖拽目标。不可见与纯逻辑节点被剪枝, 可用 max_depth/max_nodes 限制成本。",
-		{"type": "object", "properties": {
-			"max_nodes": {"type": "integer", "description": "最多返回节点数, 默认 50"},
-			"max_depth": {"type": "integer", "description": "最多递归深度, 默认 10"}
-		}},
-		func(args): return await _call_runtime_proxy("get_game_view", args))
-
 	_add_tool("simulate_click",
-		"在游戏窗口内模拟一次鼠标左键点击(按下+释放)。坐标=游戏视口坐标。",
+		"在游戏窗口内模拟一次鼠标左键点击(按下+释放)(经调试线转发到游戏进程)。需先 run_game 启动游戏。坐标为游戏视口坐标。",
 		{"type": "object", "properties": {
 			"x": {"type": "integer", "description": "屏幕X坐标"},
 			"y": {"type": "integer", "description": "屏幕Y坐标"}
@@ -2188,7 +2222,7 @@ func _register_game_play_tools() -> void:
 		func(args): return await _call_runtime_proxy("simulate_click", args))
 
 	_add_tool("simulate_drag",
-		"在游戏窗口内模拟从起始位置拖拽到目标位置(按下->移动->释放)。",
+		"在游戏窗口内模拟从起始位置拖拽到目标位置(按下->移动->释放)(经调试线转发到游戏进程)。需先 run_game 启动游戏。",
 		{"type": "object", "properties": {
 			"from_x": {"type": "integer", "description": "起始X坐标"},
 			"from_y": {"type": "integer", "description": "起始Y坐标"},
@@ -2198,7 +2232,7 @@ func _register_game_play_tools() -> void:
 		func(args): return await _call_runtime_proxy("simulate_drag", args))
 
 	_add_tool("simulate_key",
-		"在游戏窗口内模拟一次键盘按键(按下/释放)。",
+		"在游戏窗口内模拟一次键盘按键(按下/释放)(经调试线转发到游戏进程)。需先 run_game 启动游戏。",
 		{"type": "object", "properties": {
 			"key": {"type": "string", "description": "按键名称, 如 'space', 'enter', 'escape', 'a'-'z', '0'-'9'"},
 			"pressed": {"type": "boolean", "description": "true=按下, false=释放, 默认 true"}
@@ -2206,36 +2240,33 @@ func _register_game_play_tools() -> void:
 		func(args): return await _call_runtime_proxy("simulate_key", args))
 
 	_add_tool("game_eval",
-		"在游戏进程中执行一段 GDScript 代码(可访问场景树, 读取状态/改变量/触发逻辑), 可 return 返回值。",
+		"在游戏进程中执行一段 GDScript 代码(经调试线转发到游戏进程)。需先 run_game 启动游戏。可访问游戏场景树。",
 		{"type": "object", "properties": {"code": {"type": "string", "description": "要执行的 GDScript 代码"}}},
 		func(args): return await _call_game_eval_proxy(args))
 
 	_add_tool("get_game_logs",
-		"获取游戏进程日志(经调试线转发)。参数: since=增量游标, keyword=按关键字过滤(推荐), errors_only=只取错误流, max=最大条数。",
+		"获取游戏进程的日志(经调试线转发到游戏进程)。需先 run_game 启动游戏。返回 next 游标, 增量用法: 把上次返回的 next 作为 since 参数, 只取新增日志, 节省上下文。",
 		{"type": "object", "properties": {
-			"max": {"type": "integer", "description": "最大条数, 默认 50"},
-			"since": {"type": "integer", "description": "增量游标(上次 next), 默认 0=全量"},
-			"keyword": {"type": "string", "description": "只返回含此关键字的日志(不区分大小写), 空=不过滤"},
-			"errors_only": {"type": "boolean", "description": "true 时只返回错误/警告流, 默认 false"}
+			"max": {"type": "integer", "description": "最多条数, 默认 200"},
+			"since": {"type": "integer", "description": "增量游标(上次返回的 next), 只返回此位置之后的日志, 默认 0=全量"}
 		}},
 		func(args): return await _call_runtime_proxy("get_game_logs", args))
 
 	_add_tool("get_game_errors",
-		"获取游戏进程错误(经调试线转发)。参数: since=增量游标, keyword=按关键字过滤, max=最大条数。",
+		"获取游戏进程捕获的错误(经调试线转发到游戏进程)。需先 run_game 启动游戏。返回 next 游标, 增量用法: 把上次返回的 next 作为 since 参数, 只取新增错误。",
 		{"type": "object", "properties": {
-			"max": {"type": "integer", "description": "最大条数, 默认 20"},
-			"since": {"type": "integer", "description": "增量游标(上次 next), 默认 0=全量"},
-			"keyword": {"type": "string", "description": "只返回消息/文件含此关键字的错误(不区分大小写), 空=不过滤"}
+			"max": {"type": "integer", "description": "最多条数, 默认 100"},
+			"since": {"type": "integer", "description": "增量游标(上次返回的 next), 只返回此位置之后的错误, 默认 0=全量"}
 		}},
 		func(args): return await _call_runtime_proxy("get_game_errors", args))
 
 	_add_tool("clear_game_errors",
-		"清空游戏进程的错误缓冲区。",
+		"清空游戏进程的错误缓冲区(经调试线转发到游戏进程)。需先 run_game 启动游戏。",
 		{"type": "object", "properties": {}},
 		func(args): return await _call_runtime_proxy("clear_game_errors", args))
 
 	_add_tool("debug_continue",
-		"让因脚本错误/断点被调试器暂停的游戏继续运行(等效 Debugger 面板 Continue, 不转发游戏进程)。报错'游戏处于断点暂停'时调用。",
+		"让因脚本错误/断点被调试器暂停的游戏继续运行(等效编辑器 Debugger 面板的 Continue 按钮, 不转发游戏进程)。当工具报错'游戏处于断点暂停'时调用。",
 		{"type": "object", "properties": {}},
 		_call_debug_continue)
 
