@@ -1666,9 +1666,9 @@ func _register_runtime_tools() -> void:
 		_call_simulate_key)
 
 	_add_tool("take_screenshot",
-		"捕获游戏运行视口的截图并保存到本地(user://mcp_screenshots/)。返回截图文件路径、像素尺寸与占用字节。AI 可通过文件路径读取分析画面。可选 max_width 限制最大宽度以降采样。",
+		"捕获游戏运行视口的截图并保存到本地(user://mcp_screenshots/)。返回截图文件路径、像素尺寸与占用字节。AI 可通过文件路径读取分析画面。截图默认降采样到 1280 宽以控制体积, 需要更高分辨率可传更大的 max_width。",
 		{"type": "object", "properties": {
-			"max_width": {"type": "integer", "description": "可选: 若截图宽度超过该值则等比缩小以便 AI 读图(默认不缩放)"}
+			"max_width": {"type": "integer", "description": "最大宽度, 超过则等比缩小。默认 1280, 传 0 或更大值可保留原始分辨率"}
 		}},
 		_runtime_take_screenshot)
 
@@ -1678,13 +1678,19 @@ func _register_runtime_tools() -> void:
 		_call_eval_code)
 
 	_add_tool("get_game_logs",
-		"获取游戏进程的日志(print/printerr 输出)。",
-		{"type": "object", "properties": {"max": {"type": "integer", "description": "最多条数, 默认 200"}}},
+		"获取游戏进程的日志(print/printerr 输出)。返回 next 游标, 增量用法: 把上次返回的 next 作为 since 参数, 只取新增日志, 节省上下文。",
+		{"type": "object", "properties": {
+			"max": {"type": "integer", "description": "最多条数, 默认 200"},
+			"since": {"type": "integer", "description": "增量游标(上次返回的 next), 只返回此位置之后的日志, 默认 0=全量"}
+		}},
 		_call_get_logs)
 
 	_add_tool("get_game_errors",
-		"获取游戏进程捕获的错误(脚本错误/assert/push_error 等), 含来源文件、行号、类型及 GDScript 栈追踪。",
-		{"type": "object", "properties": {"max": {"type": "integer", "description": "最多条数, 默认 100"}}},
+		"获取游戏进程捕获的错误(脚本错误/assert/push_error 等), 含来源文件、行号、类型及 GDScript 栈追踪。返回 next 游标, 增量用法: 把上次返回的 next 作为 since 参数, 只取新增错误。",
+		{"type": "object", "properties": {
+			"max": {"type": "integer", "description": "最多条数, 默认 100"},
+			"since": {"type": "integer", "description": "增量游标(上次返回的 next), 只返回此位置之后的错误, 默认 0=全量"}
+		}},
 		_call_get_errors)
 
 	_add_tool("clear_game_errors",
@@ -1914,9 +1920,10 @@ func _runtime_take_screenshot(args: Dictionary) -> Dictionary:
 func _register_game_play_tools() -> void:
 	# 编辑器模式下, 运行时工具经调试线转发到游戏进程(需先 run_game 启动游戏)
 	_add_tool("get_game_view",
-		"分析游戏运行时场景中所有可见节点的屏幕位置和大小信息(经调试线转发到游戏进程)。需先 run_game 启动游戏。用于AI理解游戏画面布局以决定点击/拖拽目标。",
+		"分析游戏运行时场景中所有可见节点的屏幕位置和大小信息(经调试线转发到游戏进程)。需先 run_game 启动游戏。用于AI理解游戏画面布局以决定点击/拖拽目标。不可见节点与纯逻辑节点(如 Node 容器)会被剪枝, 大树可用 max_depth/max_nodes 限制遍历成本。",
 		{"type": "object", "properties": {
-			"max_nodes": {"type": "integer", "description": "最多返回节点数, 默认 50"}
+			"max_nodes": {"type": "integer", "description": "最多返回节点数, 默认 50"},
+			"max_depth": {"type": "integer", "description": "最多递归深度, 默认 10"}
 		}},
 		func(args): return await _call_runtime_proxy("get_game_view", args))
 
@@ -1952,13 +1959,19 @@ func _register_game_play_tools() -> void:
 		func(args): return await _call_game_eval_proxy(args))
 
 	_add_tool("get_game_logs",
-		"获取游戏进程的日志(经调试线转发到游戏进程)。需先 run_game 启动游戏。",
-		{"type": "object", "properties": {"max": {"type": "integer", "description": "最多条数, 默认 200"}}},
+		"获取游戏进程的日志(经调试线转发到游戏进程)。需先 run_game 启动游戏。返回 next 游标, 增量用法: 把上次返回的 next 作为 since 参数, 只取新增日志, 节省上下文。",
+		{"type": "object", "properties": {
+			"max": {"type": "integer", "description": "最多条数, 默认 200"},
+			"since": {"type": "integer", "description": "增量游标(上次返回的 next), 只返回此位置之后的日志, 默认 0=全量"}
+		}},
 		func(args): return await _call_runtime_proxy("get_game_logs", args))
 
 	_add_tool("get_game_errors",
-		"获取游戏进程捕获的错误(经调试线转发到游戏进程)。需先 run_game 启动游戏。",
-		{"type": "object", "properties": {"max": {"type": "integer", "description": "最多条数, 默认 100"}}},
+		"获取游戏进程捕获的错误(经调试线转发到游戏进程)。需先 run_game 启动游戏。返回 next 游标, 增量用法: 把上次返回的 next 作为 since 参数, 只取新增错误。",
+		{"type": "object", "properties": {
+			"max": {"type": "integer", "description": "最多条数, 默认 100"},
+			"since": {"type": "integer", "description": "增量游标(上次返回的 next), 只返回此位置之后的错误, 默认 0=全量"}
+		}},
 		func(args): return await _call_runtime_proxy("get_game_errors", args))
 
 	_add_tool("clear_game_errors",
