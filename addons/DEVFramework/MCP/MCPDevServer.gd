@@ -782,7 +782,8 @@ func _capture_editor_viewport() -> Image:
 	if viewport == null or tree == null:
 		return null
 	await _wait_frames(tree, 3, 2500)
-	RenderingServer.force_draw(false)
+	# 用 frame_post_draw 等待渲染线程完成, 避免 force_draw 同步阻塞导致编辑器卡顿
+	await RenderingServer.frame_post_draw
 	return viewport.get_texture().get_image()
 
 
@@ -1810,11 +1811,13 @@ func _runtime_take_screenshot(args: Dictionary) -> Dictionary:
 	filename += ".png"
 	var dir_path := "user://mcp_screenshots"
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(dir_path))
-	await get_tree().process_frame
-	RenderingServer.force_draw(false)
 	var viewport := get_viewport()
 	if viewport == null:
 		return _fail("无法获取游戏视口")
+	# 等待渲染线程完成本帧绘制后再读纹理。
+	# 不要用 RenderingServer.force_draw(): 它在线程化渲染 + vsync 下会阻塞主线程等渲染线程,
+	# 可导致窗口"未响应"、渲染帧停止(已实测复现)。
+	await RenderingServer.frame_post_draw
 	var img: Image = viewport.get_texture().get_image()
 	if img == null or img.is_empty():
 		return _fail("游戏截图失败: 视口纹理为空")
