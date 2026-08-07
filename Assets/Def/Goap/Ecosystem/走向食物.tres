@@ -1,0 +1,14 @@
+[gd_resource type="Resource" load_steps=2 format=3 uid="uid://ecogwalkfood01"]
+
+[ext_resource type="Script" path="res://addons/DEVFramework/AI/Def/GoapActionDef.gd" id="1_script"]
+
+[resource]
+script = ExtResource("1_script")
+preconditions = {
+"has_food": true
+}
+effects = {
+"near_food": true
+}
+cost = 2.0
+perform_method = "perform_walk_to_food"

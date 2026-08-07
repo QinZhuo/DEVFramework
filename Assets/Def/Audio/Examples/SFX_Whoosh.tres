@@ -1,0 +1,52 @@
+[gd_resource type="Resource" script_class="AudioSynthDef" format=3]
+
+[ext_resource type="Script" path="res://addons/DEVFramework/Def/Audio/AudioMusicDef.gd" id="1_s06us"]
+[ext_resource type="Script" path="res://addons/DEVFramework/Def/Audio/AudioPatternDef.gd" id="2_femlm"]
+[ext_resource type="Script" path="res://addons/DEVFramework/Def/Audio/AudioNoteDef.gd" id="3_nxc3l"]
+[ext_resource type="Script" path="res://addons/DEVFramework/Def/Audio/AudioSynthDef.gd" id="4_nvwvk"]
+[ext_resource type="Script" path="res://addons/DEVFramework/Def/Audio/AudioVoiceDef.gd" id="5_eac5m"]
+[ext_resource type="Script" path="res://addons/DEVFramework/Def/Audio/AudioEnvelopeDef.gd" id="6_xk2rn"]
+[ext_resource type="Script" path="res://addons/DEVFramework/Def/Audio/AudioFilterDef.gd" id="7_4kevy"]
+[ext_resource type="Script" path="res://addons/DEVFramework/Def/Audio/AudioOscillatorDef.gd" id="8_nsacs"]
+
+[sub_resource type="Resource" id="Resource_k1uvl"]
+script = ExtResource("3_nxc3l")
+midi = 0
+
+[sub_resource type="Resource" id="Resource_7jt4c"]
+script = ExtResource("2_femlm")
+notes = Array[ExtResource("3_nxc3l")]([SubResource("Resource_k1uvl")])
+
+[sub_resource type="Resource" id="Resource_d014a"]
+script = ExtResource("6_xk2rn")
+attack = 0.3
+decay = 0.3
+sustain = 0.0
+release = 0.35
+
+[sub_resource type="Resource" id="Resource_acxvl"]
+script = ExtResource("7_4kevy")
+enabled = true
+mode = 1
+cutoff = 1100.0
+resonance = 0.6
+cutoff_envelope_amount = 3400.0
+
+[sub_resource type="Resource" id="Resource_oye5a"]
+script = ExtResource("8_nsacs")
+waveform = 5
+level = 0.9
+
+[sub_resource type="Resource" id="Resource_7fp8x"]
+script = ExtResource("5_eac5m")
+oscillators = Array[ExtResource("8_nsacs")]([SubResource("Resource_oye5a")])
+envelope = SubResource("Resource_d014a")
+filter = SubResource("Resource_acxvl")
+volume = 0.9
+
+[resource]
+script = ExtResource("4_nvwvk")
+voices = Array[ExtResource("5_eac5m")]([SubResource("Resource_7fp8x")])
+patterns = Array[ExtResource("2_femlm")]([SubResource("Resource_7jt4c")])
+master_volume = 0.8
+bus = "SFX"

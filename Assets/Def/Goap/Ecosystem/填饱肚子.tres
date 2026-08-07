@@ -1,0 +1,10 @@
+[gd_resource type="Resource" load_steps=2 format=3 uid="uid://ecogfeat0001"]
+
+[ext_resource type="Script" path="res://addons/DEVFramework/AI/Def/GoapGoalDef.gd" id="1_script"]
+
+[resource]
+script = ExtResource("1_script")
+goal_state = {
+"hungry": false
+}
+priority = 20

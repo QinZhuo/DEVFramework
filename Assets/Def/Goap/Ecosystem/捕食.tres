@@ -1,0 +1,16 @@
+[gd_resource type="Resource" load_steps=2 format=3 uid="uid://ecogkillprey01"]
+
+[ext_resource type="Script" path="res://addons/DEVFramework/AI/Def/GoapActionDef.gd" id="1_script"]
+
+[resource]
+script = ExtResource("1_script")
+preconditions = {
+"near_prey": true
+}
+effects = {
+"hungry": false,
+"has_prey": false,
+"near_prey": false
+}
+cost = 2.0
+perform_method = "perform_hunt"

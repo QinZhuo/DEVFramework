@@ -1,0 +1,54 @@
+[gd_resource type="Resource" script_class="AudioSynthDef" format=3]
+
+[ext_resource type="Script" path="res://addons/DEVFramework/Def/Audio/AudioMusicDef.gd" id="1_0ca2q"]
+[ext_resource type="Script" path="res://addons/DEVFramework/Def/Audio/AudioPatternDef.gd" id="2_xfpfx"]
+[ext_resource type="Script" path="res://addons/DEVFramework/Def/Audio/AudioNoteDef.gd" id="3_awvh1"]
+[ext_resource type="Script" path="res://addons/DEVFramework/Def/Audio/AudioSynthDef.gd" id="4_1kcxq"]
+[ext_resource type="Script" path="res://addons/DEVFramework/Def/Audio/AudioVoiceDef.gd" id="5_6ldhe"]
+[ext_resource type="Script" path="res://addons/DEVFramework/Def/Audio/AudioEnvelopeDef.gd" id="6_as2gv"]
+[ext_resource type="Script" path="res://addons/DEVFramework/Def/Audio/AudioFilterDef.gd" id="7_xckua"]
+[ext_resource type="Script" path="res://addons/DEVFramework/Def/Audio/AudioOscillatorDef.gd" id="8_gd4o8"]
+
+[sub_resource type="Resource" id="Resource_n8lg5"]
+script = ExtResource("3_awvh1")
+midi = 79
+length_beats = 0.05
+
+[sub_resource type="Resource" id="Resource_fv8rl"]
+script = ExtResource("3_awvh1")
+midi = 81
+length_beats = 0.05
+
+[sub_resource type="Resource" id="Resource_mom8d"]
+script = ExtResource("2_xfpfx")
+bpm = 400.0
+notes = Array[ExtResource("3_awvh1")]([SubResource("Resource_n8lg5"), SubResource("Resource_fv8rl")])
+
+[sub_resource type="Resource" id="Resource_mveaj"]
+script = ExtResource("6_as2gv")
+attack = 0.001
+decay = 0.05
+sustain = 0.0
+release = 0.03
+
+[sub_resource type="Resource" id="Resource_5lmsp"]
+script = ExtResource("7_xckua")
+
+[sub_resource type="Resource" id="Resource_hctdh"]
+script = ExtResource("8_gd4o8")
+waveform = 1
+level = 0.7
+
+[sub_resource type="Resource" id="Resource_0lw4y"]
+script = ExtResource("5_6ldhe")
+oscillators = Array[ExtResource("8_gd4o8")]([SubResource("Resource_hctdh")])
+envelope = SubResource("Resource_mveaj")
+filter = SubResource("Resource_5lmsp")
+volume = 0.5
+
+[resource]
+script = ExtResource("4_1kcxq")
+voices = Array[ExtResource("5_6ldhe")]([SubResource("Resource_0lw4y")])
+patterns = Array[ExtResource("2_xfpfx")]([SubResource("Resource_mom8d")])
+master_volume = 0.8
+bus = "UI"

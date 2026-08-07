@@ -1,0 +1,14 @@
+[gd_resource type="Resource" load_steps=2 format=3 uid="uid://ecogchaseprey01"]
+
+[ext_resource type="Script" path="res://addons/DEVFramework/AI/Def/GoapActionDef.gd" id="1_script"]
+
+[resource]
+script = ExtResource("1_script")
+preconditions = {
+"has_prey": true
+}
+effects = {
+"near_prey": true
+}
+cost = 3.0
+perform_method = "perform_chase_prey"

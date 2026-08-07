@@ -1,0 +1,16 @@
+[gd_resource type="Resource" load_steps=2 format=3 uid="uid://ecogeatfood01"]
+
+[ext_resource type="Script" path="res://addons/DEVFramework/AI/Def/GoapActionDef.gd" id="1_script"]
+
+[resource]
+script = ExtResource("1_script")
+preconditions = {
+"near_food": true
+}
+effects = {
+"hungry": false,
+"has_food": false,
+"near_food": false
+}
+cost = 1.0
+perform_method = "perform_eat_food"
