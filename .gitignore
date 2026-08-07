@@ -1,3 +1,21 @@
 # Godot 4+ specific ignores
 .godot/
 /android/
+
+# GDExtension 开发目录（项目根 gdextension/：C++ 源码 + 构建缓存）
+# 源码（CMakeLists.txt / src/）会提交，构建产物由本地/CI 构建生成，不入库
+gdextension/build/
+
+# godot-cpp 第三方源码保留（可复现构建），但忽略其自带的旧版 API 定义大文件
+# （构建仅使用 extension_api.json，extension_api-4-*.json 为冗余）
+gdextension/godot-cpp/gdextension/extension_api-4-*.json
+
+# addons/DEVFramework/Entity/ECS/Native/ 是发布目录：
+# 带平台后缀的动态库（.macos.debug.arm64 等）必须提交，用户拿到即用
+# 无后缀的原始编译产物（libdevecs.dylib 等）忽略
+addons/DEVFramework/Entity/ECS/Native/libdevecs.dylib
+addons/DEVFramework/Entity/ECS/Native/libdevecs.so
+addons/DEVFramework/Entity/ECS/Native/libdevecs.dll
+
+# GDExtension uid 缓存不入库
+*.gdextension.uid

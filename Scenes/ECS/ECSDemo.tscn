@@ -1,0 +1,55 @@
+[gd_scene format=3 uid="uid://ecsdemoscene01"]
+
+[ext_resource type="Script" path="res://Scenes/ECS/ECSDemo.gd" id="1_demo"]
+[ext_resource type="Script" path="res://Scripts/Entity/ECS/ECSPointCloud.gd" id="2_cloud"]
+
+[node name="ECSDemo" type="Control"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("1_demo")
+
+[node name="WorldLeft" type="Node2D" parent="."]
+unique_name_in_owner = true
+script = ExtResource("2_cloud")
+
+[node name="WorldRight" type="Node2D" parent="."]
+unique_name_in_owner = true
+script = ExtResource("2_cloud")
+
+[node name="Divider" type="Line2D" parent="."]
+unique_name_in_owner = true
+points = PackedVector2Array(575, 0, 575, 720)
+width = 1.0
+default_color = Color(1, 1, 1, 0.15)
+
+[node name="LeftTitle" type="Label" parent="."]
+unique_name_in_owner = true
+offset_left = 16.0
+offset_top = 620.0
+offset_right = 300.0
+offset_bottom = 660.0
+theme_override_colors/font_color = Color(0.3, 1, 0.5, 1)
+text = "◀ Tier0 原生批量 (C++)"
+
+[node name="RightTitle" type="Label" parent="."]
+unique_name_in_owner = true
+offset_left = 590.0
+offset_top = 620.0
+offset_right = 900.0
+offset_bottom = 660.0
+theme_override_colors/font_color = Color(1, 0.6, 0.2, 1)
+text = "▶ Tier2 脚本系统 (GDScript)"
+
+[node name="StatsLabel" type="Label" parent="."]
+unique_name_in_owner = true
+offset_left = 16.0
+offset_top = 16.0
+offset_right = 500.0
+offset_bottom = 120.0
+theme_override_colors/font_color = Color(0.9, 0.95, 1, 1)
+theme_override_font_sizes/font_size = 18
+text = "ECS 对比 Demo"

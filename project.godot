@@ -19,6 +19,10 @@ config/icon="res://icon.svg"
 
 buses/default_bus_layout="uid://bt4jisu18swhx"
 
+[autoload]
+
+DevMCP="*res://addons/DEVFramework/MCP/MCPDevServer.gd"
+
 [debug]
 
 gdscript/warnings/untyped_declaration=1.0
@@ -29,7 +33,7 @@ mcp/port=8932
 
 [editor_plugins]
 
-enabled=PackedStringArray("res://addons/DEVFramework/plugin.cfg", "res://addons/TweenAnimation/plugin.cfg")
+enabled=PackedStringArray("res://addons/DEVFramework/plugin.cfg")
 
 [physics]
 
