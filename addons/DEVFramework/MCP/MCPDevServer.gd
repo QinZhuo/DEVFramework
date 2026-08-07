@@ -730,7 +730,6 @@ func _call_validate_script(args: Dictionary) -> Dictionary:
 	var code: String = str(args.get("code", ""))
 	if path.is_empty() and code.is_empty():
 		return _fail("必须提供 path 或 code 之一")
-	var script := GDScript.new()
 	if not path.is_empty():
 		if not ResourceLoader.exists(path):
 			return _fail("脚本文件不存在: %s" % path)
@@ -739,20 +738,12 @@ func _call_validate_script(args: Dictionary) -> Dictionary:
 			return _fail("无法读取脚本文件: %s" % path)
 		code = file.get_as_text()
 		file.close()
-	script.source_code = code
+	var script := _make_tmp_script(code)
 	var outcome := _compile_and_collect(script)
-	# 处理误报: GDScript.new() 临时脚本默认无路径, 引擎会因 class_name 已全局注册
-	# 且注册路径 != 本脚本路径而报 "hides a global script class"——但这正发生在"验证已注册类脚本的修改"时,
-	# 并非真实语法错误。根据 class_name 注册路径与本次被验证路径是否一致判定真伪冲突:
-	# 若冲突字段的注册路径就是被验证的文件本身(或 class_name 新定义), 则忽略该冲突。
-	if _contains_only_class_conflicts(outcome.real_errors):
-		var conflict_class := ""
-		for er in outcome.real_errors:
-			if str(er).contains("hides a global script class"):
-				conflict_class = _class_from_conflict(str(er))
-				break
-		if not _is_real_class_conflict(conflict_class, path, code):
-			outcome.real_errors.clear()
+	# 剔除误报: GDScript.new() 临时脚本默认无路径, 引擎会因 class_name 已全局注册
+	# 且注册路径 != 本脚本路径而报 "hides a global class"——当验证对象正是该 class_name
+	# 的注册文件本身(或其修改版本)时, 此冲突并非真实语法错误, 应剔除后再判定有效性。
+	outcome.real_errors = _filter_class_conflicts(outcome.real_errors, path, code)
 	if outcome.real_errors.is_empty():
 		return _ok_json({
 			"valid": true,
@@ -770,6 +761,13 @@ func _call_validate_script(args: Dictionary) -> Dictionary:
 		"errors": outcome.real_errors,
 		"warnings": outcome.warnings,
 	})
+
+
+## 构造一个用于预编译的临时 GDScript(无资源路径, 不触碰 Resource 缓存)。
+func _make_tmp_script(code: String) -> GDScript:
+	var script := GDScript.new()
+	script.source_code = code
+	return script
 
 
 ## 编译临时脚本并收集时的新增错误/警告。返回 {"real_errors", "warnings"}。
@@ -793,17 +791,21 @@ func _compile_and_collect(script: GDScript) -> Dictionary:
 	return {"real_errors": real, "warnings": warns}
 
 
-## 判断 real_errors 是否全部为 "class 名 hides a global script class" 类冲突(而非真实语法错误)。
-func _contains_only_class_conflicts(errors: Array) -> bool:
-	if errors.is_empty():
-		return false
+## 逐个过滤 class 冲突: 保留真实冲突, 剔除"验证该 class_name 注册文件本身"造成的误报。
+func _filter_class_conflicts(errors: Array, path: String, code: String) -> Array:
+	var kept: Array = []
 	for e in errors:
-		if not str(e).contains("hides a global script class"):
-			return false
-	return true
+		var msg := str(e)
+		if msg.contains("hides a global script class"):
+			var cls := _class_from_conflict(msg)
+			if not _is_class_conflict_false_positive(cls, path, code):
+				kept.append(e)
+		else:
+			kept.append(e)
+	return kept
 
 
-## 从冲突错误文本解析出冲突的 class_name(形如 "Class \"Foo\" hides a global script class.")。
+## 从冲突错误文本解析出冲突的 class_name(形如 "Class \"Foo\" hides a global class.")。
 func _class_from_conflict(msg: String) -> String:
 	var start := msg.find("\"")
 	if start < 0:
@@ -814,25 +816,22 @@ func _class_from_conflict(msg: String) -> String:
 	return msg.substr(start + 1, end - start - 1)
 
 
-## 判断是否为"真实"的全局类冲突: 即冲突 class_name 的注册路径是一个**不同**的脚本文件。
-## 当被验证的 path/code 本身就是该 class_name 的注册来源(或该 class_name 尚未注册)时, 属误报, 应忽略。
-func _is_real_class_conflict(conflict_class: String, path: String, code: String) -> bool:
-	if conflict_class.is_empty():
+## 判定一条 class 冲突是否为误报:
+## - 冲突的 class_name 尚未全局注册        → 缓存滞后, 误报
+## - 注册路径 == 本次被验证 path            → 验证注册文件自身, 误报
+## - 无 path 但 code 声明了同名 class_name  → 新定义源, 误报
+## - 解析不出 class_name                    → 无法判断, 保守不判误报(可能真是语法错误)
+func _is_class_conflict_false_positive(cls: String, path: String, code: String) -> bool:
+	if cls.is_empty():
 		return false
-	# 查该 class_name 的全局注册路径
-	var reg := _global_class_path(conflict_class)
+	var reg := _global_class_path(cls)
 	if reg.is_empty():
-		# 未注册: 不可能来自"已全局注册"冲突, 说明是编辑器类缓存滞后, 视为误报。
-		return false
-	# 冲突来自注册路径 != 本脚本路径。若其注册路径==本次被验证 path, 则是"验证自身当前版本" → 误报。
+		return true
 	if not path.is_empty() and _same_path(reg, path):
-		return false
-	# 若只给了 code(无 path), 且该 code 恰是定义此 class_name 的源, 视为误报。
-	# (无法精确判定文件归属时, 优先不误判, 交由 reload_project 刷新缓存。)
-	if path.is_empty() and not _extract_class_name(code).is_empty() \
-			and _extract_class_name(code) == conflict_class:
-		return false
-	return true
+		return true
+	if path.is_empty() and _extract_class_name(code) == cls:
+		return true
+	return false
 
 
 ## 查询一个 class_name 在全局类缓存中的注册路径(res://…); 未注册返回 ""。
