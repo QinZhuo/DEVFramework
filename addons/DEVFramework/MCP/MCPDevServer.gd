@@ -740,54 +740,126 @@ func _call_validate_script(args: Dictionary) -> Dictionary:
 		code = file.get_as_text()
 		file.close()
 	script.source_code = code
+	var outcome := _compile_and_collect(script)
+	# 处理误报: GDScript.new() 临时脚本默认无路径, 引擎会因 class_name 已全局注册
+	# 且注册路径 != 本脚本路径而报 "hides a global script class"——但这正发生在"验证已注册类脚本的修改"时,
+	# 并非真实语法错误。根据 class_name 注册路径与本次被验证路径是否一致判定真伪冲突:
+	# 若冲突字段的注册路径就是被验证的文件本身(或 class_name 新定义), 则忽略该冲突。
+	if _contains_only_class_conflicts(outcome.real_errors):
+		var conflict_class := ""
+		for er in outcome.real_errors:
+			if str(er).contains("hides a global script class"):
+				conflict_class = _class_from_conflict(str(er))
+				break
+		if not _is_real_class_conflict(conflict_class, path, code):
+			outcome.real_errors.clear()
+	if outcome.real_errors.is_empty():
+		return _ok_json({
+			"valid": true,
+			"message": "脚本语法有效" + ("(含 %d 条可忽略警告)" % outcome.warnings.size() if outcome.warnings.size() > 0 else ""),
+			"error_latin": 0,
+			"error_text": "",
+			"warnings": outcome.warnings,
+		})
+	var text := "; ".join(outcome.real_errors)
+	return _ok_json({
+		"valid": false,
+		"message": "解析失败: %s" % text,
+		"error_line": 0,
+		"error_text": text,
+		"errors": outcome.real_errors,
+		"warnings": outcome.warnings,
+	})
+
+
+## 编译临时脚本并收集时的新增错误/警告。返回 {"real_errors", "warnings"}。
+func _compile_and_collect(script: GDScript) -> Dictionary:
 	var n0: int = _logger.get_error_count() if _logger else 0
-	var reload_err := script.reload()
+	script.reload()
 	var new_errs: Array = []
 	if _logger:
 		var all_entries: Array = _logger.take_errors_since(0).entries
 		var added: int = all_entries.size() - n0
 		if added > 0:
 			new_errs = all_entries.slice(maxi(0, all_entries.size() - added))
-	var real_errors: Array = []
-	var warnings: Array = []
+	var real: Array = []
+	var warns: Array = []
 	for e in new_errs:
 		var msg: String = str(e.get("message", ""))
-		if msg.contains("Warning treated as error") or msg.contains("variable type is being inferred from a Variant value"):
-			warnings.append(msg)
+		if msg.contains("Warning treated as error") or msg.contains("inferred from a Variant"):
+			warns.append(msg)
 		else:
-			real_errors.append(msg)
-	if reload_err == OK and real_errors.is_empty():
-		return _ok_json({
-			"valid": true,
-			"message": "脚本语法有效" + ("(含 %d 条可忽略警告)" % warnings.size() if warnings.size() > 0 else ""),
-			"error_latin": 0,
-			"error_text": "",
-			"warnings": warnings,
-		})
-	if real_errors.is_empty():
-		return _ok_json({
-			"valid": true,
-			"message": "脚本语法有效(仅存在被当作错误的警告, 编辑器可正常加载)",
-			"error_latin": 0,
-			"error_text": "",
-			"warnings": warnings,
-		})
-	var text := "; ".join(real_errors)
-	var hint := ""
-	if text.contains("hides a global script class"):
-		hint = " (class_name 与全局类缓存冲突: 若是新脚本, 先调用 reload_project 刷新类缓存后再试; 若验证的是已被编辑器加载的类脚本(如 addons 内), 属正常冲突)"
-	elif text.contains("Warning treated as error") or text.contains("inferred from a Variant"):
-		hint = " (存在被当作错误的警告: 可在项目设置 GDScript 警告中放宽, 或为相关变量标注显式类型)"
-	var msg := "解析失败: %s%s" % [text, hint]
-	return _ok_json({
-		"valid": false,
-		"message": msg,
-		"error_line": 0,
-		"error_text": text,
-		"hint": hint.strip_edges().trim_prefix(" (").trim_suffix(")"),
-		"errors": real_errors,
-		"warnings": warnings,
-	})
+			real.append(msg)
+	return {"real_errors": real, "warnings": warns}
+
+
+## 判断 real_errors 是否全部为 "class 名 hides a global script class" 类冲突(而非真实语法错误)。
+func _contains_only_class_conflicts(errors: Array) -> bool:
+	if errors.is_empty():
+		return false
+	for e in errors:
+		if not str(e).contains("hides a global script class"):
+			return false
+	return true
+
+
+## 从冲突错误文本解析出冲突的 class_name(形如 "Class \"Foo\" hides a global script class.")。
+func _class_from_conflict(msg: String) -> String:
+	var start := msg.find("\"")
+	if start < 0:
+		return ""
+	var end := msg.find("\"", start + 1)
+	if end < 0:
+		return ""
+	return msg.substr(start + 1, end - start - 1)
+
+
+## 判断是否为"真实"的全局类冲突: 即冲突 class_name 的注册路径是一个**不同**的脚本文件。
+## 当被验证的 path/code 本身就是该 class_name 的注册来源(或该 class_name 尚未注册)时, 属误报, 应忽略。
+func _is_real_class_conflict(conflict_class: String, path: String, code: String) -> bool:
+	if conflict_class.is_empty():
+		return false
+	# 查该 class_name 的全局注册路径
+	var reg := _global_class_path(conflict_class)
+	if reg.is_empty():
+		# 未注册: 不可能来自"已全局注册"冲突, 说明是编辑器类缓存滞后, 视为误报。
+		return false
+	# 冲突来自注册路径 != 本脚本路径。若其注册路径==本次被验证 path, 则是"验证自身当前版本" → 误报。
+	if not path.is_empty() and _same_path(reg, path):
+		return false
+	# 若只给了 code(无 path), 且该 code 恰是定义此 class_name 的源, 视为误报。
+	# (无法精确判定文件归属时, 优先不误判, 交由 reload_project 刷新缓存。)
+	if path.is_empty() and not _extract_class_name(code).is_empty() \
+			and _extract_class_name(code) == conflict_class:
+		return false
+	return true
+
+
+## 查询一个 class_name 在全局类缓存中的注册路径(res://…); 未注册返回 ""。
+func _global_class_path(target_class: String) -> String:
+	var classes: Array = ProjectSettings.get_setting("_global_script_classes", [])
+	for c in classes:
+		if c is Dictionary and str(c.get("class", "")) == target_class:
+			return str(c.get("path", ""))
+	return ""
+
+
+## 简化路径比较(处理分隔符/大小写, 避免 Windows 盘符差异导致误判)。
+func _same_path(a: String, b: String) -> bool:
+	return a.replace("\\", "/").to_lower() == b.replace("\\", "/").to_lower()
+
+
+## 扫描脚本头部(class_name 仅允许在 extends 之前), 返回声明的类名; 未声明返回 ""。
+func _extract_class_name(code: String) -> String:
+	for line in code.split("\n"):
+		var t := line.strip_edges()
+		if t.is_empty() or t.begins_with("#") or t.begins_with("@"):
+			continue
+		if t.begins_with("class_name "):
+			return t.trim_prefix("class_name ").split(" ")[0].replace("\t", "").strip_edges()
+		if not t.begins_with("extends"):
+			break
+	return ""
 
 
 func _call_validate_resource(args: Dictionary) -> Dictionary:
