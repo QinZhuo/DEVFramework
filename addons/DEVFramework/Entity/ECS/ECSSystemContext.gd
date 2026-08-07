@@ -9,7 +9,7 @@ var world: ECSWorld
 func _init(p_world: ECSWorld) -> void:
 	world = p_world
 
-## 匹配实体 ID 列表(可直接索引任意组件列)
+## 匹配实体行号列表(可直接索引任意组件列)
 func rows(anchor, must: Array = [], without: Array = []) -> PackedInt32Array:
 	return world.query_rows(anchor, must, without)
 

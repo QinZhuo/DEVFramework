@@ -24,8 +24,8 @@
 namespace godot {
 
 // ---------------------------------------------------------------------------
-// 稀疏集: 实体 <-> 行号 双向映射 (EnTT 风格)
-//   dense[row]  = entity    行号连续, 遍历缓存友好
+// 稀疏集: 实体 <-> dense 行号 双向映射 (EnTT 风格)
+//   dense[row]  = entity    拥有该组件的实体, 行号连续
 //   sparse[e]   = row       O(1) 判断实体是否拥有该组件
 // ---------------------------------------------------------------------------
 struct ECSSparseSet {
@@ -42,17 +42,21 @@ struct ECSSparseSet {
 };
 
 // ---------------------------------------------------------------------------
-// SoA 列存储: 每组件每字段一块连续内存 (标量类型直存, 无对象无引用)
+// SoA 列存储: 每组件每字段一块连续内存。
+// 用 Godot Packed*Array 直接存储:
+//   - get_column 返回内部引用 (Variant 包装, 共享底层内存, 零拷贝)
+//   - set_column 引用赋值 (指针交换, 无逐元素拷贝)
+// 列下标 = 实体 ID (所有组件共享同一实体 ID 索引空间, 跨组件对齐)
 // ---------------------------------------------------------------------------
 struct ECSColumn {
 	Variant::Type type = Variant::NIL;
-	std::vector<int32_t> i32;   // INT
-	std::vector<float> f32;     // FLOAT
-	std::vector<uint8_t> b;     // BOOL
-	std::vector<Vector2> v2;    // VECTOR2
-	std::vector<Vector3> v3;    // VECTOR3
-	std::vector<Color> col;     // COLOR
-	std::vector<String> s;      // STRING
+	PackedInt32Array i32;   // INT
+	PackedFloat32Array f32; // FLOAT
+	PackedByteArray b;      // BOOL
+	PackedVector2Array v2;  // VECTOR2
+	PackedVector3Array v3;  // VECTOR3
+	PackedColorArray col;   // COLOR
+	PackedStringArray s;    // STRING
 
 	void resize(size_t n);
 	void push_default(const Variant &value);
@@ -76,6 +80,17 @@ struct ECSComponentData {
 	int field_index(const StringName &f) const;
 	inline ECSColumn &column(int fi) { return columns[fi]; }
 	inline const ECSColumn &column(int fi) const { return columns[fi]; }
+};
+
+// ---------------------------------------------------------------------------
+// 组件签名 (有序组件索引列表) -> 聚簇组
+// 用于: 同签名实体 ID 连续分配, 遍历时缓存友好
+// ---------------------------------------------------------------------------
+struct ECSSignature {
+	std::vector<int32_t> comps; // 升序组件索引
+	// 聚簇 ID 池: 本签名实体复用的 ID(保证同签名实体 ID 数值接近)
+	std::vector<int32_t> free_ids;
+	int32_t next_hint = 0; // 分配游标
 };
 
 // ---------------------------------------------------------------------------
@@ -105,8 +120,7 @@ public:
 	int32_t count_entities(const StringName &comp) const;
 
 	// ---- 查询 ----
-	// 返回 anchor 组件 dense 中同时拥有 must 且不拥有 without 的实体 ID 列表。
-	// 列按实体 ID 直接索引, 返回的 ID 可直接索引任意组件的列。
+	// 返回匹配实体的实体 ID 列表(可直接索引任意组件列)。
 	PackedInt32Array query_rows(const StringName &anchor, const PackedStringArray &must,
 			const PackedStringArray &without) const;
 	int32_t entity_of_row(const StringName &comp, int32_t row) const;
@@ -115,36 +129,40 @@ public:
 	Variant get_field(int32_t entity, const StringName &comp, const StringName &field) const;
 	void set_field(int32_t entity, const StringName &comp, const StringName &field, const Variant &value);
 
-	// ---- 批量列访问 (高频路径: 整列拷贝给 GDScript 本地循环, 再整列写回) ----
+	// ---- 批量列访问 (零拷贝: 返回内部 Packed*Array 引用) ----
 	Variant get_column(const StringName &comp, const StringName &field) const;
 	void set_column(const StringName &comp, const StringName &field, const Variant &values);
 
 	// ---- Tier 0: 原生批量运算 (纯 C++ 循环, 无 GDScript 解释开销) ----
-	// 对 anchor 组件 dense 中满足 must 的实体, 原地执行 op。
-	// op 用于 int/float 列: op_comp+op_field 为被修改字段, factor 为系数,
-	// addend 为加数。支持两种模式:
-	//   MODE_ADD     : col = col + addend            (如 hp += 5)
-	//   MODE_MUL_ADD : col = col * factor + addend   (如 hp = min(max, hp*0.9+2))
-	// 返回被处理的实体数。
 	enum BatchOp { BATCH_ADD = 0, BATCH_MUL_ADD = 1, BATCH_SET = 2, BATCH_CLAMP = 3 };
 	int64_t batch_apply(const StringName &anchor, const PackedStringArray &must,
 			const StringName &op_comp, const StringName &op_field, int64_t op,
 			double factor, double addend);
-	// 边界钳制: col = clamp(col, min_val, max_val), min/max 取自另一组件字段
 	int64_t batch_clamp(const StringName &anchor, const PackedStringArray &must,
 			const StringName &op_comp, const StringName &op_field,
 			const StringName &min_comp, const StringName &min_field,
 			const StringName &max_comp, const StringName &max_field);
-	// 向量批量: 对 Vector2/3 列按实体逐项加(速度/位置积分)
 	int64_t batch_vec_add(const StringName &anchor, const PackedStringArray &must,
 			const StringName &pos_comp, const StringName &pos_field,
 			const StringName &vel_comp, const StringName &vel_field, double delta);
 
+	// 内存统计(调试)
+	Dictionary debug_stats() const;
+
 private:
+	// ---- 内部 ----
 	ECSComponentData *find_comp(const StringName &name);
 	const ECSComponentData *find_comp(const StringName &name) const;
+	int32_t comp_index(const StringName &name) const;
 
+	// 签名聚簇: 实体 ID 分配
+	int32_t sig_index_for(const std::vector<int32_t> &comps);
+	int32_t allocate_entity_id();
+	void release_entity_id(int32_t index);
+
+	// ---- 存储 ----
 	std::vector<ECSComponentData> components_;
+	std::vector<ECSSignature> signatures_;
 	// 实体池: index | (version << 24), 复用防悬垂
 	std::vector<uint32_t> versions_;
 	std::vector<int32_t> free_list_;

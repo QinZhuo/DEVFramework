@@ -165,9 +165,10 @@ func set_field(entity: int, component, field: StringName, value) -> void:
 #  批量查询与列访问(高频: 系统内)
 # ============================================================
 
-## 查询匹配实体(返回实体 ID 列表)。
+## 查询匹配实体(返回全局行号列表)。
 ## anchor/must/without 传组件类名或 Script。
-## 实体 ID 可直接索引 get_column 返回的任意组件列 —— 跨组件对齐, 零转换。
+## 行号可直接索引 get_column 返回的任意组件列 —— 跨组件对齐, 零转换。
+## 需要实体 ID 时用 entity_of_row() 转换。
 func query_rows(anchor, must: Array = [], without: Array = []) -> PackedInt32Array:
 	if not _available:
 		return PackedInt32Array()

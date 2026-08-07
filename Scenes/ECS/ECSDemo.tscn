@@ -30,26 +30,26 @@ default_color = Color(1, 1, 1, 0.15)
 unique_name_in_owner = true
 offset_left = 16.0
 offset_top = 620.0
-offset_right = 300.0
+offset_right = 480.0
 offset_bottom = 660.0
 theme_override_colors/font_color = Color(0.3, 1, 0.5, 1)
-text = "◀ Tier0 原生批量 (C++)"
+text = "◀ 左: C++ 引擎直接算"
 
 [node name="RightTitle" type="Label" parent="."]
 unique_name_in_owner = true
 offset_left = 590.0
 offset_top = 620.0
-offset_right = 900.0
+offset_right = 1100.0
 offset_bottom = 660.0
 theme_override_colors/font_color = Color(1, 0.6, 0.2, 1)
-text = "▶ Tier2 脚本系统 (GDScript)"
+text = "▶ 右: GDScript 脚本算"
 
 [node name="StatsLabel" type="Label" parent="."]
 unique_name_in_owner = true
 offset_left = 16.0
 offset_top = 16.0
-offset_right = 500.0
-offset_bottom = 120.0
+offset_right = 640.0
+offset_bottom = 260.0
 theme_override_colors/font_color = Color(0.9, 0.95, 1, 1)
-theme_override_font_sizes/font_size = 18
+theme_override_font_sizes/font_size = 20
 text = "ECS 对比 Demo"

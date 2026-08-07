@@ -37,18 +37,18 @@ void ECSSparseSet::remove(int32_t entity) {
 }
 
 // ---------------------------------------------------------------------------
-// ECSColumn — SoA 列存储
+// ECSColumn — SoA 列存储 (Packed*Array, 零拷贝)
 // ---------------------------------------------------------------------------
 
 void ECSColumn::resize(size_t n) {
 	switch (type) {
-		case Variant::INT: i32.resize(n); break;
-		case Variant::FLOAT: f32.resize(n); break;
-		case Variant::BOOL: b.resize(n); break;
-		case Variant::VECTOR2: v2.resize(n); break;
-		case Variant::VECTOR3: v3.resize(n); break;
-		case Variant::COLOR: col.resize(n); break;
-		case Variant::STRING: s.resize(n); break;
+		case Variant::INT: i32.resize(int32_t(n)); break;
+		case Variant::FLOAT: f32.resize(int32_t(n)); break;
+		case Variant::BOOL: b.resize(int32_t(n)); break;
+		case Variant::VECTOR2: v2.resize(int32_t(n)); break;
+		case Variant::VECTOR3: v3.resize(int32_t(n)); break;
+		case Variant::COLOR: col.resize(int32_t(n)); break;
+		case Variant::STRING: s.resize(int32_t(n)); break;
 		default: break;
 	}
 }
@@ -68,39 +68,40 @@ void ECSColumn::push_default(const Variant &value) {
 
 Variant ECSColumn::get(size_t row) const {
 	switch (type) {
-		case Variant::INT: return int64_t(i32[row]);
-		case Variant::FLOAT: return double(f32[row]);
-		case Variant::BOOL: return bool(b[row]);
-		case Variant::VECTOR2: return v2[row];
-		case Variant::VECTOR3: return v3[row];
-		case Variant::COLOR: return col[row];
-		case Variant::STRING: return s[row];
+		case Variant::INT: return int64_t(i32[int32_t(row)]);
+		case Variant::FLOAT: return double(f32[int32_t(row)]);
+		case Variant::BOOL: return bool(b[int32_t(row)]);
+		case Variant::VECTOR2: return v2[int32_t(row)];
+		case Variant::VECTOR3: return v3[int32_t(row)];
+		case Variant::COLOR: return col[int32_t(row)];
+		case Variant::STRING: return s[int32_t(row)];
 		default: return Variant();
 	}
 }
 
 void ECSColumn::set(size_t row, const Variant &value) {
+	const int32_t r = int32_t(row);
 	switch (type) {
-		case Variant::INT: i32[row] = int32_t(int64_t(value)); break;
-		case Variant::FLOAT: f32[row] = float(double(value)); break;
-		case Variant::BOOL: b[row] = uint8_t(bool(value)); break;
-		case Variant::VECTOR2: v2[row] = Vector2(value); break;
-		case Variant::VECTOR3: v3[row] = Vector3(value); break;
-		case Variant::COLOR: col[row] = Color(value); break;
-		case Variant::STRING: s[row] = String(value); break;
+		case Variant::INT: i32[r] = int32_t(int64_t(value)); break;
+		case Variant::FLOAT: f32[r] = float(double(value)); break;
+		case Variant::BOOL: b[r] = uint8_t(bool(value)); break;
+		case Variant::VECTOR2: v2[r] = Vector2(value); break;
+		case Variant::VECTOR3: v3[r] = Vector3(value); break;
+		case Variant::COLOR: col[r] = Color(value); break;
+		case Variant::STRING: s[r] = String(value); break;
 		default: break;
 	}
 }
 
 size_t ECSColumn::size() const {
 	switch (type) {
-		case Variant::INT: return i32.size();
-		case Variant::FLOAT: return f32.size();
-		case Variant::BOOL: return b.size();
-		case Variant::VECTOR2: return v2.size();
-		case Variant::VECTOR3: return v3.size();
-		case Variant::COLOR: return col.size();
-		case Variant::STRING: return s.size();
+		case Variant::INT: return size_t(i32.size());
+		case Variant::FLOAT: return size_t(f32.size());
+		case Variant::BOOL: return size_t(b.size());
+		case Variant::VECTOR2: return size_t(v2.size());
+		case Variant::VECTOR3: return size_t(v3.size());
+		case Variant::COLOR: return size_t(col.size());
+		case Variant::STRING: return size_t(s.size());
 		default: return 0;
 	}
 }
@@ -119,7 +120,7 @@ int ECSComponentData::field_index(const StringName &f) const {
 }
 
 // ---------------------------------------------------------------------------
-// ECSCore
+// ECSCore — 内部工具
 // ---------------------------------------------------------------------------
 
 ECSComponentData *ECSCore::find_comp(const StringName &name) {
@@ -140,10 +141,53 @@ const ECSComponentData *ECSCore::find_comp(const StringName &name) const {
 	return nullptr;
 }
 
+int32_t ECSCore::comp_index(const StringName &name) const {
+	for (int32_t i = 0; i < int32_t(components_.size()); ++i) {
+		if (components_[i].name == name) {
+			return i;
+		}
+	}
+	return -1;
+}
+
+// 签名聚簇索引: 相同组件集合共享一个签名组(用于 ID 分配)
+int32_t ECSCore::sig_index_for(const std::vector<int32_t> &comps) {
+	for (int32_t i = 0; i < int32_t(signatures_.size()); ++i) {
+		if (signatures_[i].comps == comps) {
+			return i;
+		}
+	}
+	ECSSignature sig;
+	sig.comps = comps;
+	signatures_.push_back(std::move(sig));
+	return int32_t(signatures_.size()) - 1;
+}
+
+int32_t ECSCore::allocate_entity_id() {
+	// 优先复用空闲 ID(数值接近的复用, 保持聚簇)
+	if (!free_list_.empty()) {
+		int32_t index = free_list_.back();
+		free_list_.pop_back();
+		return index;
+	}
+	int32_t index = int32_t(versions_.size());
+	versions_.push_back(0);
+	return index;
+}
+
+void ECSCore::release_entity_id(int32_t index) {
+	versions_[index]++;
+	free_list_.push_back(index);
+}
+
+// ---------------------------------------------------------------------------
+// ECSCore — 组件注册
+// ---------------------------------------------------------------------------
+
 int32_t ECSCore::register_component(const StringName &name, const PackedStringArray &fnames,
 		const PackedInt32Array &ftypes, const Array &fdefaults) {
 	if (find_comp(name) != nullptr) {
-		return 0; // 已注册, 幂等
+		return int32_t(components_.size()); // 已注册, 幂等
 	}
 	const int32_t n = int32_t(fnames.size());
 	ECSComponentData data;
@@ -161,18 +205,13 @@ int32_t ECSCore::register_component(const StringName &name, const PackedStringAr
 	return int32_t(components_.size());
 }
 
+// ---------------------------------------------------------------------------
+// ECSCore — 实体
+// ---------------------------------------------------------------------------
+
 int32_t ECSCore::create_entity() {
-	int32_t index;
-	uint32_t version;
-	if (!free_list_.empty()) {
-		index = free_list_.back();
-		free_list_.pop_back();
-		version = versions_[index];
-	} else {
-		index = int32_t(versions_.size());
-		versions_.push_back(0);
-		version = 0;
-	}
+	int32_t index = allocate_entity_id();
+	uint32_t version = versions_[index];
 	return (int32_t(version) << 24) | index;
 }
 
@@ -187,7 +226,7 @@ bool ECSCore::is_alive(int32_t entity) const {
 
 void ECSCore::destroy_entity(int32_t entity) {
 	const int32_t index = entity & 0x00FFFFFF;
-	if (index < 0 || index >= int32_t(versions_.size())) {
+	if (index < 0 || index >= int32_t(versions_.size()) || !is_alive(entity)) {
 		return;
 	}
 	// 从所有组件稀疏集中移除
@@ -196,9 +235,12 @@ void ECSCore::destroy_entity(int32_t entity) {
 			c.set.remove(index);
 		}
 	}
-	versions_[index]++;
-	free_list_.push_back(index);
+	release_entity_id(index);
 }
+
+// ---------------------------------------------------------------------------
+// ECSCore — 组件增删查
+// ---------------------------------------------------------------------------
 
 bool ECSCore::add_component(int32_t entity, const StringName &comp) {
 	const int32_t index = entity & 0x00FFFFFF;
@@ -207,8 +249,7 @@ bool ECSCore::add_component(int32_t entity, const StringName &comp) {
 		return false;
 	}
 	const int32_t row = c->set.add(index);
-	// 列按"实体 ID 直接索引"(稀疏列): 所有组件共享同一实体 ID 索引空间,
-	// 保证 query 返回的实体 ID 可同时索引任意组件的列(跨组件对齐)。
+	// 列按实体 ID 直接索引(稀疏): 保证跨组件对齐, query 返回的实体 ID 可索引任意列
 	const int32_t need = index + 1;
 	for (size_t fi = 0; fi < c->fields.size(); ++fi) {
 		ECSColumn &col = c->columns[fi];
@@ -240,6 +281,10 @@ int32_t ECSCore::count_entities(const StringName &comp) const {
 	return c ? int32_t(c->set.size()) : 0;
 }
 
+// ---------------------------------------------------------------------------
+// ECSCore — 查询
+// ---------------------------------------------------------------------------
+
 PackedInt32Array ECSCore::query_rows(const StringName &anchor, const PackedStringArray &must,
 		const PackedStringArray &without) const {
 	PackedInt32Array out;
@@ -250,11 +295,10 @@ PackedInt32Array ECSCore::query_rows(const StringName &anchor, const PackedStrin
 	const int32_t m = int32_t(must.size());
 	const int32_t w = int32_t(without.size());
 
-	// 预取 must/without 的稀疏集引用
 	const ECSComponentData *req[8];
 	const ECSComponentData *ban[8];
 	if (m > 8 || w > 8) {
-		return out; // 超出简单场景上限
+		return out;
 	}
 	for (int32_t i = 0; i < m; ++i) {
 		req[i] = find_comp(must[i]);
@@ -284,7 +328,7 @@ PackedInt32Array ECSCore::query_rows(const StringName &anchor, const PackedStrin
 			}
 		}
 		if (ok) {
-			out[n++] = e; // 返回实体 ID, 可直接索引任意组件列
+			out[n++] = e; // 实体 ID, 可直接索引任意组件列
 		}
 	}
 	out.resize(n);
@@ -298,6 +342,10 @@ int32_t ECSCore::entity_of_row(const StringName &comp, int32_t row) const {
 	}
 	return c->set.dense[row];
 }
+
+// ---------------------------------------------------------------------------
+// ECSCore — 单实体字段访问
+// ---------------------------------------------------------------------------
 
 Variant ECSCore::get_field(int32_t entity, const StringName &comp, const StringName &field) const {
 	const int32_t index = entity & 0x00FFFFFF;
@@ -333,145 +381,80 @@ void ECSCore::set_field(int32_t entity, const StringName &comp, const StringName
 	c->columns[fi].set(row, value);
 }
 
+// ---------------------------------------------------------------------------
+// ECSCore — 批量列访问 (零拷贝)
+// ---------------------------------------------------------------------------
+
 Variant ECSCore::get_column(const StringName &comp, const StringName &field) const {
-	const ECSComponentData *c = find_comp(comp);
-	if (c == nullptr) {
+	const int32_t ci = comp_index(comp);
+	if (ci < 0) {
 		return Variant();
 	}
-	const int fi = c->field_index(field);
+	const ECSComponentData &cd = components_[ci];
+	const int fi = cd.field_index(field);
 	if (fi < 0) {
 		return Variant();
 	}
-	const ECSColumn &col = c->columns[fi];
-	const size_t n = col.size();
+	// 直接返回内部 Packed*Array 引用 —— 零拷贝, GDScript 共享同一内存
+	const ECSColumn &col = cd.columns[fi];
 	switch (col.type) {
-		case Variant::INT: {
-			PackedInt32Array arr;
-			arr.resize(int32_t(n));
-			int32_t *w = arr.ptrw();
-			for (size_t i = 0; i < n; ++i) w[i] = col.i32[i];
-			return arr;
-		}
-		case Variant::FLOAT: {
-			PackedFloat32Array arr;
-			arr.resize(int32_t(n));
-			float *w = arr.ptrw();
-			for (size_t i = 0; i < n; ++i) w[i] = col.f32[i];
-			return arr;
-		}
-		case Variant::BOOL: {
-			PackedByteArray arr;
-			arr.resize(int32_t(n));
-			uint8_t *w = arr.ptrw();
-			for (size_t i = 0; i < n; ++i) w[i] = col.b[i];
-			return arr;
-		}
-		case Variant::VECTOR2: {
-			PackedVector2Array arr;
-			arr.resize(int32_t(n));
-			Vector2 *w = arr.ptrw();
-			for (size_t i = 0; i < n; ++i) w[i] = col.v2[i];
-			return arr;
-		}
-		case Variant::VECTOR3: {
-			PackedVector3Array arr;
-			arr.resize(int32_t(n));
-			Vector3 *w = arr.ptrw();
-			for (size_t i = 0; i < n; ++i) w[i] = col.v3[i];
-			return arr;
-		}
-		case Variant::COLOR: {
-			PackedColorArray arr;
-			arr.resize(int32_t(n));
-			Color *w = arr.ptrw();
-			for (size_t i = 0; i < n; ++i) w[i] = col.col[i];
-			return arr;
-		}
-		case Variant::STRING: {
-			PackedStringArray arr;
-			arr.resize(int32_t(n));
-			for (size_t i = 0; i < n; ++i) arr[i] = col.s[i];
-			return arr;
-		}
-		default:
-			return Variant();
+		case Variant::INT: return col.i32;
+		case Variant::FLOAT: return col.f32;
+		case Variant::BOOL: return col.b;
+		case Variant::VECTOR2: return col.v2;
+		case Variant::VECTOR3: return col.v3;
+		case Variant::COLOR: return col.col;
+		case Variant::STRING: return col.s;
+		default: return Variant();
 	}
 }
 
 void ECSCore::set_column(const StringName &comp, const StringName &field, const Variant &values) {
-	ECSComponentData *c = find_comp(comp);
-	if (c == nullptr) {
+	ECSComponentData *cd = find_comp(comp);
+	if (cd == nullptr) {
 		return;
 	}
-	const int fi = c->field_index(field);
+	const int fi = cd->field_index(field);
 	if (fi < 0) {
 		return;
 	}
-	ECSColumn &col = c->columns[fi];
+	// 引用赋值(指针交换): 无逐元素拷贝
+	ECSColumn &col = cd->columns[fi];
 	switch (col.type) {
-		case Variant::INT: {
-			const PackedInt32Array arr = values;
-			const int32_t n = int32_t(arr.size());
-			col.i32.resize(n);
-			const int32_t *r = arr.ptr();
-			for (int32_t i = 0; i < n; ++i) col.i32[i] = r[i];
-			break;
-		}
-		case Variant::FLOAT: {
-			const PackedFloat32Array arr = values;
-			const int32_t n = int32_t(arr.size());
-			col.f32.resize(n);
-			const float *r = arr.ptr();
-			for (int32_t i = 0; i < n; ++i) col.f32[i] = r[i];
-			break;
-		}
-		case Variant::BOOL: {
-			const PackedByteArray arr = values;
-			const int32_t n = int32_t(arr.size());
-			col.b.resize(n);
-			const uint8_t *r = arr.ptr();
-			for (int32_t i = 0; i < n; ++i) col.b[i] = r[i];
-			break;
-		}
-		case Variant::VECTOR2: {
-			const PackedVector2Array arr = values;
-			const int32_t n = int32_t(arr.size());
-			col.v2.resize(n);
-			const Vector2 *r = arr.ptr();
-			for (int32_t i = 0; i < n; ++i) col.v2[i] = r[i];
-			break;
-		}
-		case Variant::VECTOR3: {
-			const PackedVector3Array arr = values;
-			const int32_t n = int32_t(arr.size());
-			col.v3.resize(n);
-			const Vector3 *r = arr.ptr();
-			for (int32_t i = 0; i < n; ++i) col.v3[i] = r[i];
-			break;
-		}
-		case Variant::COLOR: {
-			const PackedColorArray arr = values;
-			const int32_t n = int32_t(arr.size());
-			col.col.resize(n);
-			const Color *r = arr.ptr();
-			for (int32_t i = 0; i < n; ++i) col.col[i] = r[i];
-			break;
-		}
-		case Variant::STRING: {
-			const PackedStringArray arr = values;
-			const int32_t n = int32_t(arr.size());
-			col.s.resize(n);
-			for (int32_t i = 0; i < n; ++i) col.s[i] = arr[i];
-			break;
-		}
-		default:
-			break;
+		case Variant::INT: col.i32 = values; break;
+		case Variant::FLOAT: col.f32 = values; break;
+		case Variant::BOOL: col.b = values; break;
+		case Variant::VECTOR2: col.v2 = values; break;
+		case Variant::VECTOR3: col.v3 = values; break;
+		case Variant::COLOR: col.col = values; break;
+		case Variant::STRING: col.s = values; break;
+		default: break;
 	}
 }
 
 // ---------------------------------------------------------------------------
-// Tier 0: 原生批量运算 (纯 C++ 循环, 无 GDScript 解释开销)
+// ECSCore — Tier 0: 原生批量运算
 // ---------------------------------------------------------------------------
+
+// 收集 anchor dense 中满足 must 的实体(直接遍历 anchor 稀疏集)
+static void collect_rows(const ECSComponentData *anchor, const ECSComponentData *const *req,
+		int32_t m, std::vector<int32_t> &out) {
+	out.clear();
+	const auto &dense = anchor->set.dense;
+	for (int32_t r = 0; r < int32_t(dense.size()); ++r) {
+		const int32_t e = dense[r];
+		bool ok = true;
+		for (int32_t i = 0; i < m; ++i) {
+			if (req[i] == nullptr || !req[i]->set.has(e)) {
+				ok = false;
+				break;
+			}
+		}
+		if (ok) {
+			out.push_back(e);
+		}
+	}
+}
 
 int64_t ECSCore::batch_apply(const StringName &anchor, const PackedStringArray &must,
 		const StringName &op_comp, const StringName &op_field, int64_t op,
@@ -485,68 +468,48 @@ int64_t ECSCore::batch_apply(const StringName &anchor, const PackedStringArray &
 	if (fi < 0) {
 		return 0;
 	}
-	ECSColumn &col = oc->columns[fi];
-	const int m = int32_t(must.size());
+	const int32_t m = int32_t(must.size());
 	const ECSComponentData *req[8];
 	for (int32_t i = 0; i < m && i < 8; ++i) {
 		req[i] = find_comp(must[i]);
 	}
-	int64_t n_processed = 0;
+	std::vector<int32_t> rows;
+	collect_rows(a, req, m > 8 ? 8 : m, rows);
+
+	ECSColumn &col = oc->columns[fi];
+	int64_t n = 0;
 	switch (col.type) {
 		case Variant::INT: {
-			for (int32_t r = 0; r < int32_t(a->set.dense.size()); ++r) {
-				const int32_t e = a->set.dense[r];
-				bool ok = true;
-				for (int32_t i = 0; i < m && i < 8; ++i) {
-					if (req[i] == nullptr || !req[i]->set.has(e)) {
-						ok = false;
-						break;
-					}
-				}
-				if (!ok || e >= int32_t(col.i32.size())) {
-					continue;
-				}
-				int32_t v = col.i32[e];
+			int32_t *w = col.i32.ptrw();
+			const int32_t add = int32_t(addend);
+			for (int32_t e : rows) {
 				switch (op) {
-					case BATCH_ADD: v += int32_t(addend); break;
-					case BATCH_MUL_ADD: v = int32_t(double(v) * factor + addend); break;
-					case BATCH_SET: v = int32_t(addend); break;
-					case BATCH_CLAMP: break;
+					case BATCH_ADD: w[e] += add; break;
+					case BATCH_MUL_ADD: w[e] = int32_t(double(w[e]) * factor + addend); break;
+					case BATCH_SET: w[e] = add; break;
+					default: break;
 				}
-				col.i32[e] = v;
-				++n_processed;
+				++n;
 			}
 			break;
 		}
 		case Variant::FLOAT: {
-			for (int32_t r = 0; r < int32_t(a->set.dense.size()); ++r) {
-				const int32_t e = a->set.dense[r];
-				bool ok = true;
-				for (int32_t i = 0; i < m && i < 8; ++i) {
-					if (req[i] == nullptr || !req[i]->set.has(e)) {
-						ok = false;
-						break;
-					}
-				}
-				if (!ok || e >= int32_t(col.f32.size())) {
-					continue;
-				}
-				float v = col.f32[e];
+			float *w = col.f32.ptrw();
+			for (int32_t e : rows) {
 				switch (op) {
-					case BATCH_ADD: v += float(addend); break;
-					case BATCH_MUL_ADD: v = float(double(v) * factor + addend); break;
-					case BATCH_SET: v = float(addend); break;
-					case BATCH_CLAMP: break;
+					case BATCH_ADD: w[e] += float(addend); break;
+					case BATCH_MUL_ADD: w[e] = float(double(w[e]) * factor + addend); break;
+					case BATCH_SET: w[e] = float(addend); break;
+					default: break;
 				}
-				col.f32[e] = v;
-				++n_processed;
+				++n;
 			}
 			break;
 		}
 		default:
 			break;
 	}
-	return n_processed;
+	return n;
 }
 
 int64_t ECSCore::batch_clamp(const StringName &anchor, const PackedStringArray &must,
@@ -566,56 +529,43 @@ int64_t ECSCore::batch_clamp(const StringName &anchor, const PackedStringArray &
 	if (fi < 0 || mini < 0 || maxi < 0) {
 		return 0;
 	}
-	ECSColumn &col = oc->columns[fi];
-	const ECSColumn &mincol = minc->columns[mini];
-	const ECSColumn &maxcol = maxc->columns[maxi];
-	const int m = int32_t(must.size());
+	const int32_t m = int32_t(must.size());
 	const ECSComponentData *req[8];
 	for (int32_t i = 0; i < m && i < 8; ++i) {
 		req[i] = find_comp(must[i]);
 	}
-	int64_t n_processed = 0;
+	std::vector<int32_t> rows;
+	collect_rows(a, req, m > 8 ? 8 : m, rows);
+
+	ECSColumn &col = oc->columns[fi];
+	const ECSColumn &mincol = minc->columns[mini];
+	const ECSColumn &maxcol = maxc->columns[maxi];
+	int64_t n = 0;
 	switch (col.type) {
 		case Variant::INT: {
-			for (int32_t r = 0; r < int32_t(a->set.dense.size()); ++r) {
-				const int32_t e = a->set.dense[r];
-				bool ok = true;
-				for (int32_t i = 0; i < m && i < 8; ++i) {
-					if (req[i] == nullptr || !req[i]->set.has(e)) {
-						ok = false;
-						break;
-					}
-				}
-				if (!ok || e >= int32_t(col.i32.size()) || e >= int32_t(mincol.i32.size()) || e >= int32_t(maxcol.i32.size())) {
-					continue;
-				}
-				col.i32[e] = CLAMP(col.i32[e], mincol.i32[e], maxcol.i32[e]);
-				++n_processed;
+			int32_t *w = col.i32.ptrw();
+			const int32_t *mn = mincol.i32.ptr();
+			const int32_t *mx = maxcol.i32.ptr();
+			for (int32_t e : rows) {
+				w[e] = CLAMP(w[e], mn[e], mx[e]);
+				++n;
 			}
 			break;
 		}
 		case Variant::FLOAT: {
-			for (int32_t r = 0; r < int32_t(a->set.dense.size()); ++r) {
-				const int32_t e = a->set.dense[r];
-				bool ok = true;
-				for (int32_t i = 0; i < m && i < 8; ++i) {
-					if (req[i] == nullptr || !req[i]->set.has(e)) {
-						ok = false;
-						break;
-					}
-				}
-				if (!ok || e >= int32_t(col.f32.size()) || e >= int32_t(mincol.f32.size()) || e >= int32_t(maxcol.f32.size())) {
-					continue;
-				}
-				col.f32[e] = CLAMP(col.f32[e], mincol.f32[e], maxcol.f32[e]);
-				++n_processed;
+			float *w = col.f32.ptrw();
+			const float *mn = mincol.f32.ptr();
+			const float *mx = maxcol.f32.ptr();
+			for (int32_t e : rows) {
+				w[e] = CLAMP(w[e], mn[e], mx[e]);
+				++n;
 			}
 			break;
 		}
 		default:
 			break;
 	}
-	return n_processed;
+	return n;
 }
 
 int64_t ECSCore::batch_vec_add(const StringName &anchor, const PackedStringArray &must,
@@ -632,49 +582,56 @@ int64_t ECSCore::batch_vec_add(const StringName &anchor, const PackedStringArray
 	if (pfi < 0 || vfi < 0) {
 		return 0;
 	}
-	ECSColumn &poscol = posc->columns[pfi];
-	const ECSColumn &velcol = velc->columns[vfi];
-	const int m = int32_t(must.size());
+	const int32_t m = int32_t(must.size());
 	const ECSComponentData *req[8];
 	for (int32_t i = 0; i < m && i < 8; ++i) {
 		req[i] = find_comp(must[i]);
 	}
-	int64_t n_processed = 0;
+	std::vector<int32_t> rows;
+	collect_rows(a, req, m > 8 ? 8 : m, rows);
+
+	ECSColumn &poscol = posc->columns[pfi];
+	const ECSColumn &velcol = velc->columns[vfi];
+	int64_t n = 0;
 	if (poscol.type == Variant::VECTOR2 && velcol.type == Variant::VECTOR2) {
-		for (int32_t r = 0; r < int32_t(a->set.dense.size()); ++r) {
-			const int32_t e = a->set.dense[r];
-			bool ok = true;
-			for (int32_t i = 0; i < m && i < 8; ++i) {
-				if (req[i] == nullptr || !req[i]->set.has(e)) {
-					ok = false;
-					break;
-				}
-			}
-			if (!ok || e >= int32_t(poscol.v2.size()) || e >= int32_t(velcol.v2.size())) {
-				continue;
-			}
-			poscol.v2[e] += velcol.v2[e] * float(delta);
-			++n_processed;
+		Vector2 *p = poscol.v2.ptrw();
+		const Vector2 *v = velcol.v2.ptr();
+		const float d = float(delta);
+		for (int32_t e : rows) {
+			p[e] += v[e] * d;
+			++n;
 		}
 	} else if (poscol.type == Variant::VECTOR3 && velcol.type == Variant::VECTOR3) {
-		for (int32_t r = 0; r < int32_t(a->set.dense.size()); ++r) {
-			const int32_t e = a->set.dense[r];
-			bool ok = true;
-			for (int32_t i = 0; i < m && i < 8; ++i) {
-				if (req[i] == nullptr || !req[i]->set.has(e)) {
-					ok = false;
-					break;
-				}
-			}
-			if (!ok || e >= int32_t(poscol.v3.size()) || e >= int32_t(velcol.v3.size())) {
-				continue;
-			}
-			poscol.v3[e] += velcol.v3[e] * float(delta);
-			++n_processed;
+		Vector3 *p = poscol.v3.ptrw();
+		const Vector3 *v = velcol.v3.ptr();
+		const float d = float(delta);
+		for (int32_t e : rows) {
+			p[e] += v[e] * d;
+			++n;
 		}
 	}
-	return n_processed;
+	return n;
 }
+
+// ---------------------------------------------------------------------------
+// ECSCore — 调试统计
+// ---------------------------------------------------------------------------
+
+Dictionary ECSCore::debug_stats() const {
+	Dictionary d;
+	d["components"] = int64_t(components_.size());
+	d["entity_pool"] = int64_t(versions_.size());
+	Array comp_counts;
+	for (const auto &c : components_) {
+		comp_counts.append(int64_t(c.set.size()));
+	}
+	d["component_counts"] = comp_counts;
+	return d;
+}
+
+// ---------------------------------------------------------------------------
+// ECSCore — 绑定
+// ---------------------------------------------------------------------------
 
 void ECSCore::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("register_component", "name", "fnames", "ftypes", "fdefaults"), &ECSCore::register_component);
@@ -694,4 +651,5 @@ void ECSCore::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("batch_apply", "anchor", "must", "op_comp", "op_field", "op", "factor", "addend"), &ECSCore::batch_apply);
 	ClassDB::bind_method(D_METHOD("batch_clamp", "anchor", "must", "op_comp", "op_field", "min_comp", "min_field", "max_comp", "max_field"), &ECSCore::batch_clamp);
 	ClassDB::bind_method(D_METHOD("batch_vec_add", "anchor", "must", "pos_comp", "pos_field", "vel_comp", "vel_field", "delta"), &ECSCore::batch_vec_add);
+	ClassDB::bind_method(D_METHOD("debug_stats"), &ECSCore::debug_stats);
 }
