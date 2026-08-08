@@ -45,6 +45,15 @@ enum CondOp {
 	NOT_EQUAL = 5,        # !=  不等于
 }
 
+## —— 列间运算操作符(传给 batch_apply_col 的 op 参数) ——
+enum ColOp {
+	COL_ADD = 0,  # 目标列 += 源列(可缩放)
+	COL_SUB = 1,  # 目标列 -= 源列(可缩放)
+	COL_MUL = 2,  # 目标列 *= 源列(可缩放)
+	COL_DIV = 3,  # 目标列 /= 源列(可缩放, 除零跳过)
+	COL_SET = 4,  # 目标列 = 源列(可缩放)
+}
+
 # ---------------- 核心句柄 ----------------
 var _core: Object = null                 # ECSCore 原生实例
 
@@ -382,6 +391,59 @@ func query_aligned_where(anchor, must: Array = [], without: Array = [],
 		_record_access(_resolve_component_name(c.get("comp", &"")))
 	return _core.query_rows_aligned_where(anchor_name, must_names, without_names,
 		_normalize_conds(conditions), comps_names)
+
+## 一次写回多组件多列(与 get_columns 返回结构同构, 一次跨语言替代 N 次 set_column)。
+## values: {组件类名: {字段名: PackedArray}} —— 组件类名可用类名(StringName)或 Script。
+func set_columns(values: Dictionary) -> void:
+	var norm := {}
+	for comp in values:
+		var cn := _resolve_component_name(comp)
+		if cn == &"":
+			continue
+		_record_access(cn)
+		_mark_dirty(cn)
+		norm[cn] = values[comp]
+	_core.set_columns(norm)
+
+## 列间运算: 对满足条件的实体, 用 src 组件字段列对目标字段做运算。
+## op: ECSWorld.ColOp(ADD/SUB/MUL/DIV/SET); 目标列 = 目标列 OP (src列 * factor + addend)。
+## 支持 INT/FLOAT(含 addend) 与 VECTOR2/VECTOR3(factor 标量缩放, 忽略 addend)。
+func batch_apply_col(anchor, must: Array, op_comp, op_field: StringName,
+		src_comp, src_field: StringName, op: int, factor: float = 1.0,
+		addend: float = 0.0, conditions: Array = []) -> int:
+	var an := _resolve_component_name(anchor)
+	var ocn := _resolve_component_name(op_comp)
+	var scn := _resolve_component_name(src_comp)
+	_record_access(an)
+	_record_access(ocn)
+	_record_access(scn)
+	for mn in _names(must):
+		_record_access(mn)
+	for c in conditions:
+		_record_access(_resolve_component_name(c.get("comp", &"")))
+	_mark_dirty(ocn)
+	return _core.batch_apply_col(an, _names(must), ocn, op_field, scn, src_field,
+		op, factor, addend, _normalize_conds(conditions))
+
+## 带条件过滤的列钳制: 仅满足条件的实体 col = clamp(col, min, max)。
+func batch_clamp_where(anchor, must: Array, op_comp, op_field: StringName,
+		min_comp, min_field: StringName, max_comp, max_field: StringName,
+		conditions: Array = []) -> int:
+	var an := _resolve_component_name(anchor)
+	var ocn := _resolve_component_name(op_comp)
+	var mincn := _resolve_component_name(min_comp)
+	var maxcn := _resolve_component_name(max_comp)
+	_record_access(an)
+	_record_access(ocn)
+	_record_access(mincn)
+	_record_access(maxcn)
+	for mn in _names(must):
+		_record_access(mn)
+	for c in conditions:
+		_record_access(_resolve_component_name(c.get("comp", &"")))
+	_mark_dirty(ocn)
+	return _core.batch_clamp_where(an, _names(must), ocn, op_field,
+		mincn, min_field, maxcn, max_field, _normalize_conds(conditions))
 
 ## 缓存条目是否仍有效: 全局版本一致 且 所有依赖组件版本一致。
 func _entry_valid(entry: Dictionary) -> bool:
@@ -927,16 +989,12 @@ func _run_group(group: Array, ctx: ECSSystemContext, delta: float, max_par: int)
 		_run_parallel_slice(group.slice(start, end), ctx, delta)
 		start = end
 
-## 真正开线程并行执行一批系统: 主线程跑第一个, 其余各开一个 Thread。
+## 并行执行一批系统: 主线程跑第一个, 其余交给 C++ 持久 worker 池(免每帧临时建线程)。
 func _run_parallel_slice(slice: Array, ctx: ECSSystemContext, delta: float) -> void:
-	_run_system(slice[0], ctx, delta)
-	var threads: Array[Thread] = []
-	for i in range(1, slice.size()):
-		var t := Thread.new()
-		t.start(_parallel_worker.bind(slice[i], ctx, delta), Thread.PRIORITY_NORMAL)
-		threads.append(t)
-	for t in threads:
-		t.wait_to_finish()
+	var tasks := []
+	for s in slice:
+		tasks.append(_parallel_worker.bind(s, ctx, delta))
+	_core.run_systems_parallel(tasks)
 
 ## 有效并行线程数(单个并行批最多并行多少个系统)。0=自动。
 func _effective_threads() -> int:

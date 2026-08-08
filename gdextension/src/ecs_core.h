@@ -176,6 +176,9 @@ public:
 	// comps_fields: Array[{comp: name, fields: PackedStringArray}]
 	// 返回 {compName: {fieldName: PackedArray}}
 	Dictionary get_columns(const Array &comps_fields) const;
+	// 一次写回多组件多列: values = {compName: {fieldName: PackedArray}}
+	// (与 get_columns 返回结构一致), 一次跨语言替代 N 次 set_column。
+	void set_columns(const Dictionary &values);
 
 	// ---- Tier 0: 原生批量运算 (纯 C++ 循环, 无 GDScript 解释开销) ----
 	enum BatchOp { BATCH_ADD = 0, BATCH_MUL_ADD = 1, BATCH_SET = 2, BATCH_CLAMP = 3 };
@@ -199,6 +202,22 @@ public:
 	int64_t batch_vec_add(const StringName &anchor, const PackedStringArray &must,
 			const StringName &pos_comp, const StringName &pos_field,
 			const StringName &vel_comp, const StringName &vel_field, double delta);
+
+	// ---- Tier 0 扩展: 列间运算 (col = col OP (src * factor) + addend) ----
+	enum ColOp { COL_ADD = 0, COL_SUB = 1, COL_MUL = 2, COL_DIV = 3, COL_SET = 4 };
+	// 对满足条件的实体: 用 src 组件字段列对 op 组件字段列做运算。
+	// ADD/SUB/MUL/DIV: col OP= (src*factor+addend); SET: col = src*factor+addend。
+	// 支持 INT/FLOAT/VECTOR2/VECTOR3(Vector 忽略 addend, 用 factor 标量缩放)。
+	int64_t batch_apply_col(const StringName &anchor, const PackedStringArray &must,
+			const StringName &op_comp, const StringName &op_field,
+			const StringName &src_comp, const StringName &src_field,
+			int64_t op, double factor, double addend, const Array &conditions);
+	// 带条件过滤的列钳制: col = clamp(col, min, max)(仅满足 conditions 的实体)。
+	int64_t batch_clamp_where(const StringName &anchor, const PackedStringArray &must,
+			const StringName &op_comp, const StringName &op_field,
+			const StringName &min_comp, const StringName &min_field,
+			const StringName &max_comp, const StringName &max_field,
+			const Array &conditions);
 
 	// 内存统计(调试)
 	Dictionary debug_stats() const;
@@ -306,6 +325,9 @@ private:
 	// cost_per_item: 每项工作量权重(高成本操作更早并行), 默认 1.0。
 	template <typename F>
 	void parallel_for(size_t n, F &&fn, double cost_per_item = 1.0);
+	// 系统批并行执行(复用持久 worker 池, 免每帧临时建线程)。
+	// systems: Array[Callable](无参, 已 bind 系统+上下文)。主线程执行第一个, worker 池并行其余。
+	void run_systems_parallel(const Array &systems);
 
 public:
 	~ECSCore();

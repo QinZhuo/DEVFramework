@@ -105,6 +105,39 @@ ECSCore::~ECSCore() {
 	stop_workers();
 }
 
+// 系统批并行执行: 复用持久 worker 池, 免每帧临时建线程。
+// systems: Array[Callable](无参, 已 bind 系统+ctx+delta)。主线程执行第一个, 池执行其余。
+void ECSCore::run_systems_parallel(const Array &systems) {
+	ensure_workers();
+	const int32_t n = int32_t(systems.size());
+	if (n <= 0) {
+		return;
+	}
+	// 发布 n-1 个任务给 worker(任务执行完即释放 Callable 引用, 无持久循环)
+	{
+		std::lock_guard<std::mutex> lock(task_mutex_);
+		for (int32_t i = 1; i < n; ++i) {
+			++active_tasks_;
+			Variant sys = systems[i];
+			tasks_.emplace_back([sys]() {
+				Callable cb = sys;
+				cb.call();
+			});
+		}
+	}
+	task_cv_.notify_all();
+	// 主线程执行第一个系统
+	{
+		Callable cb0 = systems[0];
+		cb0.call();
+	}
+	// 等待 worker 全部完成
+	{
+		std::unique_lock<std::mutex> lock(task_mutex_);
+		task_cv_.wait(lock, [this]() { return active_tasks_ <= 0; });
+	}
+}
+
 // ---------------------------------------------------------------------------
 // ECSSparseSet
 // ---------------------------------------------------------------------------
@@ -755,6 +788,45 @@ Dictionary ECSCore::get_columns(const Array &comps_fields) const {
 	return out;
 }
 
+// 一次写回多组件多列: values = {compName: {fieldName: PackedArray}}(与 get_columns 同构)。
+void ECSCore::set_columns(const Dictionary &values) {
+	for (int32_t i = 0; i < values.size(); ++i) {
+		// 枚举 Dictionary key
+	}
+	// Godot Dictionary 无顺序索引, 用 keys()
+	Array keys = values.keys();
+	for (int32_t i = 0; i < keys.size(); ++i) {
+		const StringName comp = StringName(keys[i]);
+		ECSComponentData *c = find_comp(comp);
+		if (c == nullptr) {
+			continue;
+		}
+		Dictionary fields = values[comp];
+		Array fkeys = fields.keys();
+		for (int32_t j = 0; j < fkeys.size(); ++j) {
+			const StringName fname = StringName(fkeys[j]);
+			const int32_t fi = c->field_index(fname);
+			if (fi < 0) {
+				continue;
+			}
+			ECSColumn &col = c->columns[fi];
+			const Variant val = fields[fname];
+			// 引用赋值(指针交换): 无逐元素拷贝
+			switch (col.type) {
+				case Variant::INT: col.i32 = val; break;
+				case Variant::FLOAT: col.f32 = val; break;
+				case Variant::BOOL: col.b = val; break;
+				case Variant::VECTOR2: col.v2 = val; break;
+				case Variant::VECTOR3: col.v3 = val; break;
+				case Variant::VECTOR4: col.v4 = val; break;
+				case Variant::COLOR: col.col = val; break;
+				case Variant::STRING: col.s = val; break;
+				default: break;
+			}
+		}
+	}
+}
+
 void ECSCore::set_column(const StringName &comp, const StringName &field, const Variant &values) {
 	ECSComponentData *cd = find_comp(comp);
 	if (cd == nullptr) {
@@ -903,7 +975,210 @@ void collect_rows_where(const ECSCore *core, const ECSComponentData *anchor,
 }
 } // namespace
 
-// 带条件过滤的签名收集(基于签名视图, 只遍历匹配签名实体)。
+// 列间运算: col = col OP (src * factor + addend), 仅满足条件的实体。
+// 支持 INT/FLOAT(含 addend) 与 VECTOR2/VECTOR3(用 factor 标量缩放, 忽略 addend)。
+int64_t ECSCore::batch_apply_col(const StringName &anchor, const PackedStringArray &must,
+		const StringName &op_comp, const StringName &op_field,
+		const StringName &src_comp, const StringName &src_field,
+		int64_t op, double factor, double addend, const Array &conditions) {
+	ECSComponentData *a = find_comp(anchor);
+	ECSComponentData *oc = find_comp(op_comp);
+	ECSComponentData *sc = find_comp(src_comp);
+	if (a == nullptr || oc == nullptr || sc == nullptr) {
+		return 0;
+	}
+	const int ofi = oc->field_index(op_field);
+	const int sfi = sc->field_index(src_field);
+	if (ofi < 0 || sfi < 0) {
+		return 0;
+	}
+	const int32_t m = int32_t(must.size());
+	const ECSComponentData *req[8];
+	for (int32_t i = 0; i < m && i < 8; ++i) {
+		req[i] = find_comp(must[i]);
+	}
+	std::vector<ECSFilterCond> conds;
+	parse_conditions(this, conditions, conds, 8);
+	std::vector<int32_t> rows;
+	collect_rows_where(this, a, req, m > 8 ? 8 : m, conds, rows);
+
+	ECSColumn &ocol = oc->columns[ofi];
+	const ECSColumn &scol = sc->columns[sfi];
+	const bool same_comp = (op_comp == anchor);
+	const bool src_is_anchor = (src_comp == anchor);
+	const auto &a_dense = a->set.dense;
+	int64_t n = 0;
+	const int32_t cnt = int32_t(rows.size());
+	const double cost = 1.5;
+
+	if (ocol.type == Variant::FLOAT && scol.type == Variant::FLOAT) {
+		float *w = ocol.f32.ptrw();
+		const float *src = scol.f32.ptr();
+		parallel_for(size_t(cnt), [&](size_t b, size_t e) {
+			for (size_t i = b; i < e; ++i) {
+				const int32_t erow = rows[i];
+				const int32_t ee = a_dense[erow];
+				const int32_t orow = same_comp ? erow : oc->set.row_of(ee);
+				const int32_t srow = src_is_anchor ? erow : sc->set.row_of(ee);
+				if (orow < 0 || srow < 0) continue;
+				const float v = float(double(src[srow]) * factor + addend);
+				switch (op) {
+					case COL_ADD: w[orow] += v; break;
+					case COL_SUB: w[orow] -= v; break;
+					case COL_MUL: w[orow] *= v; break;
+					case COL_DIV: if (v != 0.0f) w[orow] /= v; break;
+					case COL_SET: w[orow] = v; break;
+					default: break;
+				}
+			}
+		}, cost);
+		n = cnt;
+	} else if (ocol.type == Variant::INT && scol.type == Variant::INT) {
+		int32_t *w = ocol.i32.ptrw();
+		const int32_t *src = scol.i32.ptr();
+		parallel_for(size_t(cnt), [&](size_t b, size_t e) {
+			for (size_t i = b; i < e; ++i) {
+				const int32_t erow = rows[i];
+				const int32_t ee = a_dense[erow];
+				const int32_t orow = same_comp ? erow : oc->set.row_of(ee);
+				const int32_t srow = src_is_anchor ? erow : sc->set.row_of(ee);
+				if (orow < 0 || srow < 0) continue;
+				const int32_t v = int32_t(double(src[srow]) * factor + addend);
+				switch (op) {
+					case COL_ADD: w[orow] += v; break;
+					case COL_SUB: w[orow] -= v; break;
+					case COL_MUL: w[orow] *= v; break;
+					case COL_DIV: if (v != 0) w[orow] /= v; break;
+					case COL_SET: w[orow] = v; break;
+					default: break;
+				}
+			}
+		}, cost);
+		n = cnt;
+	} else if (ocol.type == Variant::VECTOR2 && scol.type == Variant::VECTOR2) {
+		Vector2 *w = ocol.v2.ptrw();
+		const Vector2 *src = scol.v2.ptr();
+		const float f = float(factor);
+		parallel_for(size_t(cnt), [&](size_t b, size_t e) {
+			for (size_t i = b; i < e; ++i) {
+				const int32_t erow = rows[i];
+				const int32_t ee = a_dense[erow];
+				const int32_t orow = same_comp ? erow : oc->set.row_of(ee);
+				const int32_t srow = src_is_anchor ? erow : sc->set.row_of(ee);
+				if (orow < 0 || srow < 0) continue;
+				const Vector2 v = src[srow] * f;
+				switch (op) {
+					case COL_ADD: w[orow] += v; break;
+					case COL_SUB: w[orow] -= v; break;
+					case COL_MUL: w[orow] *= v; break;
+					case COL_DIV: if (v.x != 0.0f && v.y != 0.0f) w[orow] /= v; break;
+					case COL_SET: w[orow] = v; break;
+					default: break;
+				}
+			}
+		}, 3.0);
+		n = cnt;
+	} else if (ocol.type == Variant::VECTOR3 && scol.type == Variant::VECTOR3) {
+		Vector3 *w = ocol.v3.ptrw();
+		const Vector3 *src = scol.v3.ptr();
+		const float f = float(factor);
+		parallel_for(size_t(cnt), [&](size_t b, size_t e) {
+			for (size_t i = b; i < e; ++i) {
+				const int32_t erow = rows[i];
+				const int32_t ee = a_dense[erow];
+				const int32_t orow = same_comp ? erow : oc->set.row_of(ee);
+				const int32_t srow = src_is_anchor ? erow : sc->set.row_of(ee);
+				if (orow < 0 || srow < 0) continue;
+				const Vector3 v = src[srow] * f;
+				switch (op) {
+					case COL_ADD: w[orow] += v; break;
+					case COL_SUB: w[orow] -= v; break;
+					case COL_MUL: w[orow] *= v; break;
+					case COL_DIV: if (v.x != 0.0f && v.y != 0.0f && v.z != 0.0f) w[orow] /= v; break;
+					case COL_SET: w[orow] = v; break;
+					default: break;
+				}
+			}
+		}, 3.0);
+		n = cnt;
+	}
+	return n;
+}
+
+// 带条件过滤的列钳制: col = clamp(col, min, max)(仅满足 conditions 的实体)。
+int64_t ECSCore::batch_clamp_where(const StringName &anchor, const PackedStringArray &must,
+		const StringName &op_comp, const StringName &op_field,
+		const StringName &min_comp, const StringName &min_field,
+		const StringName &max_comp, const StringName &max_field,
+		const Array &conditions) {
+	ECSComponentData *a = find_comp(anchor);
+	ECSComponentData *oc = find_comp(op_comp);
+	ECSComponentData *minc = find_comp(min_comp);
+	ECSComponentData *maxc = find_comp(max_comp);
+	if (a == nullptr || oc == nullptr || minc == nullptr || maxc == nullptr) {
+		return 0;
+	}
+	const int ofi = oc->field_index(op_field);
+	const int minfi = minc->field_index(min_field);
+	const int maxfi = maxc->field_index(max_field);
+	if (ofi < 0 || minfi < 0 || maxfi < 0) {
+		return 0;
+	}
+	const int32_t m = int32_t(must.size());
+	const ECSComponentData *req[8];
+	for (int32_t i = 0; i < m && i < 8; ++i) {
+		req[i] = find_comp(must[i]);
+	}
+	std::vector<ECSFilterCond> conds;
+	parse_conditions(this, conditions, conds, 8);
+	std::vector<int32_t> rows;
+	collect_rows_where(this, a, req, m > 8 ? 8 : m, conds, rows);
+
+	ECSColumn &ocol = oc->columns[ofi];
+	const ECSColumn &mincol = minc->columns[minfi];
+	const ECSColumn &maxcol = maxc->columns[maxfi];
+	const bool same_comp = (op_comp == anchor);
+	const bool min_is_anchor = (min_comp == anchor);
+	const bool max_is_anchor = (max_comp == anchor);
+	const auto &a_dense = a->set.dense;
+	const int32_t cnt = int32_t(rows.size());
+	// 边界列支持 INT 或 FLOAT, 目标支持 INT 或 FLOAT(混合类型用 double 统一钳制)
+	const bool min_ok = (mincol.type == Variant::INT || mincol.type == Variant::FLOAT);
+	const bool max_ok = (maxcol.type == Variant::INT || maxcol.type == Variant::FLOAT);
+	auto bound_val = [](const ECSColumn &c, int32_t row) -> double {
+		return (c.type == Variant::FLOAT) ? double(c.f32[row]) : double(c.i32[row]);
+	};
+	if (ocol.type == Variant::FLOAT && min_ok && max_ok) {
+		float *w = ocol.f32.ptrw();
+		parallel_for(size_t(cnt), [&](size_t b, size_t e) {
+			for (size_t i = b; i < e; ++i) {
+				const int32_t erow = rows[i];
+				const int32_t ee = a_dense[erow];
+				const int32_t orow = same_comp ? erow : oc->set.row_of(ee);
+				const int32_t nrow = min_is_anchor ? erow : minc->set.row_of(ee);
+				const int32_t xrow = max_is_anchor ? erow : maxc->set.row_of(ee);
+				if (orow < 0 || nrow < 0 || xrow < 0) continue;
+				w[orow] = float(std::clamp(double(w[orow]), bound_val(mincol, nrow), bound_val(maxcol, xrow)));
+			}
+		}, 1.5);
+		return cnt;
+	} else if (ocol.type == Variant::INT && min_ok && max_ok) {
+		int32_t *w = ocol.i32.ptrw();
+		parallel_for(size_t(cnt), [&](size_t b, size_t e) {
+			for (size_t i = b; i < e; ++i) {
+				const int32_t erow = rows[i];
+				const int32_t ee = a_dense[erow];
+				const int32_t orow = same_comp ? erow : oc->set.row_of(ee);
+				const int32_t nrow = min_is_anchor ? erow : minc->set.row_of(ee);
+				const int32_t xrow = max_is_anchor ? erow : maxc->set.row_of(ee);
+				if (orow < 0 || nrow < 0 || xrow < 0) continue;
+				w[orow] = int32_t(std::clamp(double(w[orow]), bound_val(mincol, nrow), bound_val(maxcol, xrow)));
+			}
+		}, 1.0);
+		return cnt;
+	}
+	return 0;
+}
 void ECSCore::collect_sig_rows_where(int32_t ai, const int32_t *mi, int32_t m,
 		const int32_t *wi, int32_t w, const Array &conditions, PackedInt32Array &out) const {
 	if (ai < 0) {
@@ -1143,17 +1418,39 @@ int64_t ECSCore::batch_apply(const StringName &anchor, const PackedStringArray &
 			int32_t *w = col.i32.ptrw();
 			const int32_t add = int32_t(addend);
 			if (same_comp) {
-				parallel_for(rows.size(), [&](size_t b, size_t e) {
-					for (size_t i = b; i < e; ++i) {
-						const int32_t row = rows[i];
-						switch (op) {
-							case BATCH_ADD: w[row] += add; break;
-							case BATCH_MUL_ADD: w[row] = int32_t(double(w[row]) * factor + addend); break;
-							case BATCH_SET: w[row] = add; break;
-							default: break;
+				// 无 must + 无 prefab → 行号连续, INT 的 ADD/SET 可 SIMD
+				const bool contiguous = (m == 0) && prefab_indices_.empty()
+						&& (op == BATCH_ADD || op == BATCH_SET);
+				if (contiguous) {
+					parallel_for(rows.size(), [&](size_t b, size_t e) {
+						const __m128i addv = _mm_set1_epi32(add);
+						size_t i = b;
+						if (op == BATCH_ADD) {
+							for (; i + 4 <= e; i += 4) {
+								_mm_storeu_si128(reinterpret_cast<__m128i *>(w + i),
+										_mm_add_epi32(_mm_loadu_si128(reinterpret_cast<const __m128i *>(w + i)), addv));
+							}
+							for (; i < e; ++i) w[i] += add;
+						} else {
+							for (; i + 4 <= e; i += 4) {
+								_mm_storeu_si128(reinterpret_cast<__m128i *>(w + i), addv);
+							}
+							for (; i < e; ++i) w[i] = add;
 						}
-					}
-				});
+					});
+				} else {
+					parallel_for(rows.size(), [&](size_t b, size_t e) {
+						for (size_t i = b; i < e; ++i) {
+							const int32_t row = rows[i];
+							switch (op) {
+								case BATCH_ADD: w[row] += add; break;
+								case BATCH_MUL_ADD: w[row] = int32_t(double(w[row]) * factor + addend); break;
+								case BATCH_SET: w[row] = add; break;
+								default: break;
+							}
+						}
+					});
+				}
 			} else {
 				parallel_for(rows.size(), [&](size_t b, size_t e) {
 					for (size_t i = b; i < e; ++i) {
@@ -1782,6 +2079,9 @@ void ECSCore::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_column", "comp", "field"), &ECSCore::get_column);
 	ClassDB::bind_method(D_METHOD("set_column", "comp", "field", "values"), &ECSCore::set_column);
 	ClassDB::bind_method(D_METHOD("get_columns", "comps_fields"), &ECSCore::get_columns);
+	ClassDB::bind_method(D_METHOD("set_columns", "values"), &ECSCore::set_columns);
+	ClassDB::bind_method(D_METHOD("batch_apply_col", "anchor", "must", "op_comp", "op_field", "src_comp", "src_field", "op", "factor", "addend", "conditions"), &ECSCore::batch_apply_col);
+	ClassDB::bind_method(D_METHOD("batch_clamp_where", "anchor", "must", "op_comp", "op_field", "min_comp", "min_field", "max_comp", "max_field", "conditions"), &ECSCore::batch_clamp_where);
 	ClassDB::bind_method(D_METHOD("batch_apply", "anchor", "must", "op_comp", "op_field", "op", "factor", "addend"), &ECSCore::batch_apply);
 	ClassDB::bind_method(D_METHOD("batch_apply_where", "anchor", "must", "op_comp", "op_field", "op", "factor", "addend", "conditions"), &ECSCore::batch_apply_where);
 	ClassDB::bind_method(D_METHOD("batch_count", "anchor", "must", "conditions"), &ECSCore::batch_count);
@@ -1789,6 +2089,7 @@ void ECSCore::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("batch_vec_add", "anchor", "must", "pos_comp", "pos_field", "vel_comp", "vel_field", "delta"), &ECSCore::batch_vec_add);
 	ClassDB::bind_method(D_METHOD("debug_stats"), &ECSCore::debug_stats);
 	ClassDB::bind_method(D_METHOD("set_thread_count", "count"), &ECSCore::set_thread_count);
+	ClassDB::bind_method(D_METHOD("run_systems_parallel", "systems"), &ECSCore::run_systems_parallel);
 	ClassDB::bind_method(D_METHOD("serialize"), &ECSCore::serialize);
 	ClassDB::bind_method(D_METHOD("deserialize", "data"), &ECSCore::deserialize);
 	ClassDB::bind_method(D_METHOD("create_prefab"), &ECSCore::create_prefab);

@@ -1,19 +1,11 @@
 class_name BattleSizeSystem
 extends ECSSystem
 
-## 手写脚本层: 大小更新 —— 与 ECSRule 统一查询链 + Callback 执行。
-## size = base + hp * size_per_hp (列间依赖, 用 Callback)
+## 大小更新 —— 直接用规则层列间运算(C++ batch 执行, 无 GDScript 循环)。
+## size = 8 + hp * 0.08 → set_from(目标=size, 源=hp, factor=0.08, addend=8)
 
 func required_components() -> Array[Script]:
 	return [BattleCell]
 
 func _run(ctx: ECSSystemContext, _delta: float) -> void:
-	ctx.for_each(BattleCell).each(_size_cb, [BattleCell]).execute()
-
-
-func _size_cb(rows: PackedInt32Array, _comp_rows: Dictionary, w: ECSWorld) -> void:
-	var size_col: PackedFloat32Array = w.get_column(BattleCell, &"size")
-	var hp_col: PackedFloat32Array = w.get_column(BattleCell, &"hp")
-	for r in rows:
-		size_col[r] = 8.0 + hp_col[r] * 0.08
-	w.set_column(BattleCell, &"size", size_col)
+	ctx.for_each(BattleCell).set_from(&"size", BattleCell, &"hp", 0.08, 8.0).execute()
