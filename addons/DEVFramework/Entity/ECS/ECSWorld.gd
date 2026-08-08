@@ -405,6 +405,29 @@ func set_columns(values: Dictionary) -> void:
 		norm[cn] = values[comp]
 	_core.set_columns(norm)
 
+## 借出列(写路径消除 COW): 把内部列移出返回独占引用, 回调内写列 O(1) 无深拷贝。
+## 返回 {组件类名: {字段名: PackedArray}}(与 get_columns 同构)。
+## 借出期间内部该列为空, 不得被其他路径读取; 必须配 return_columns() 归还。
+func borrow_columns(comps_fields: Array) -> Dictionary:
+	var norm := []
+	for cf in comps_fields:
+		var cn := _resolve_component_name(cf.get("comp", &""))
+		if cn == &"":
+			continue
+		_record_access(cn)
+		norm.append({"comp": cn, "fields": cf.get("fields", [])})
+	return _core.borrow_columns(norm)
+
+## 归还借出列(内部列 = 返回数组, 指针交换 O(1))。
+func return_columns(borrowed: Dictionary) -> void:
+	_core.return_columns(borrowed)
+	for comp in borrowed:
+		_mark_dirty(_resolve_component_name(comp))
+
+## 是否有未归还的借出列(调试/防御)。
+func is_column_borrowed() -> bool:
+	return _core.is_column_borrowed()
+
 ## 列间运算: 对满足条件的实体, 用 src 组件字段列对目标字段做运算。
 ## op: ECSWorld.ColOp(ADD/SUB/MUL/DIV/SET); 目标列 = 目标列 OP (src列 * factor + addend)。
 ## 支持 INT/FLOAT(含 addend) 与 VECTOR2/VECTOR3(factor 标量缩放, 忽略 addend)。

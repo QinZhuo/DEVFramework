@@ -179,6 +179,14 @@ public:
 	// 一次写回多组件多列: values = {compName: {fieldName: PackedArray}}
 	// (与 get_columns 返回结构一致), 一次跨语言替代 N 次 set_column。
 	void set_columns(const Dictionary &values);
+	// 借出列(写路径消除 COW): 把内部列移出(内部置空), 返回 {compName: {field: PackedArray}}
+	// 独占引用 —— 回调内写列 O(1) 无深拷贝。借出期间内部该列为空, 不得被其他路径读取,
+	// 且必须 return_columns() 归还(否则内部列永久为空)。借出期间不得改结构。
+	Dictionary borrow_columns(const Array &comps_fields);
+	// 归还列: 内部列 = 返回数组(指针交换 O(1))。
+	void return_columns(const Dictionary &borrowed);
+	// 是否有未归还的借出列(调试/防御)。
+	bool is_column_borrowed() const;
 
 	// ---- Tier 0: 原生批量运算 (纯 C++ 循环, 无 GDScript 解释开销) ----
 	enum BatchOp { BATCH_ADD = 0, BATCH_MUL_ADD = 1, BATCH_SET = 2, BATCH_CLAMP = 3 };
@@ -300,6 +308,8 @@ private:
 	std::vector<int32_t> entity_sig_;
 	// prefab 模板实体 index 集合
 	std::vector<int32_t> prefab_indices_;
+	// 列借出状态(borrow_columns 未归还时为 true)
+	bool _borrowed_active_ = false;
 
 	// ---- 并行线程池 (batch 分片并行) ----
 	mutable std::vector<std::thread> workers_;

@@ -788,11 +788,84 @@ Dictionary ECSCore::get_columns(const Array &comps_fields) const {
 	return out;
 }
 
-// 一次写回多组件多列: values = {compName: {fieldName: PackedArray}}(与 get_columns 同构)。
-void ECSCore::set_columns(const Dictionary &values) {
-	for (int32_t i = 0; i < values.size(); ++i) {
-		// 枚举 Dictionary key
+// 借出列: 把内部列移出(内部置空), 返回独占引用 —— 回调内写列无 COW 深拷贝。
+Dictionary ECSCore::borrow_columns(const Array &comps_fields) {
+	if (_borrowed_active_) {
+		UtilityFunctions::push_error("ECSCore::borrow_columns: 存在未归还的借出列! 必须 return_columns 归还后再借出。");
 	}
+	_borrowed_active_ = true;
+	Dictionary out;
+	for (int32_t i = 0; i < comps_fields.size(); ++i) {
+		Dictionary cf = comps_fields[i];
+		ECSComponentData *c = find_comp(StringName(cf["comp"]));
+		if (c == nullptr) {
+			continue;
+		}
+		Dictionary fields_dict;
+		Array fields = cf["fields"];
+		for (int32_t j = 0; j < fields.size(); ++j) {
+			const StringName fname = StringName(fields[j]);
+			const int32_t fi = c->field_index(fname);
+			if (fi < 0) {
+				continue;
+			}
+			ECSColumn &col = c->columns[fi];
+			switch (col.type) {
+				case Variant::INT: { PackedInt32Array a = col.i32; col.i32 = PackedInt32Array(); fields_dict[fname] = a; break; }
+				case Variant::FLOAT: { PackedFloat32Array a = col.f32; col.f32 = PackedFloat32Array(); fields_dict[fname] = a; break; }
+				case Variant::BOOL: { PackedByteArray a = col.b; col.b = PackedByteArray(); fields_dict[fname] = a; break; }
+				case Variant::VECTOR2: { PackedVector2Array a = col.v2; col.v2 = PackedVector2Array(); fields_dict[fname] = a; break; }
+				case Variant::VECTOR3: { PackedVector3Array a = col.v3; col.v3 = PackedVector3Array(); fields_dict[fname] = a; break; }
+				case Variant::VECTOR4: { PackedVector4Array a = col.v4; col.v4 = PackedVector4Array(); fields_dict[fname] = a; break; }
+				case Variant::COLOR: { PackedColorArray a = col.col; col.col = PackedColorArray(); fields_dict[fname] = a; break; }
+				case Variant::STRING: { PackedStringArray a = col.s; col.s = PackedStringArray(); fields_dict[fname] = a; break; }
+				default: break;
+			}
+		}
+		out[c->name] = fields_dict;
+	}
+	return out;
+}
+
+// 归还列: 内部列 = 返回数组(指针交换 O(1))。
+void ECSCore::return_columns(const Dictionary &borrowed) {
+	_borrowed_active_ = false;
+	Array keys = borrowed.keys();
+	for (int32_t i = 0; i < keys.size(); ++i) {
+		const StringName comp = StringName(keys[i]);
+		ECSComponentData *c = find_comp(comp);
+		if (c == nullptr) {
+			continue;
+		}
+		Dictionary fields = borrowed[comp];
+		Array fkeys = fields.keys();
+		for (int32_t j = 0; j < fkeys.size(); ++j) {
+			const StringName fname = StringName(fkeys[j]);
+			const int32_t fi = c->field_index(fname);
+			if (fi < 0) {
+				continue;
+			}
+			ECSColumn &col = c->columns[fi];
+			const Variant val = fields[fname];
+			switch (col.type) {
+				case Variant::INT: col.i32 = val; break;
+				case Variant::FLOAT: col.f32 = val; break;
+				case Variant::BOOL: col.b = val; break;
+				case Variant::VECTOR2: col.v2 = val; break;
+				case Variant::VECTOR3: col.v3 = val; break;
+				case Variant::VECTOR4: col.v4 = val; break;
+				case Variant::COLOR: col.col = val; break;
+				case Variant::STRING: col.s = val; break;
+				default: break;
+			}
+		}
+	}
+}
+
+bool ECSCore::is_column_borrowed() const {
+	return _borrowed_active_;
+}
+void ECSCore::set_columns(const Dictionary &values) {
 	// Godot Dictionary 无顺序索引, 用 keys()
 	Array keys = values.keys();
 	for (int32_t i = 0; i < keys.size(); ++i) {
@@ -2080,6 +2153,9 @@ void ECSCore::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_column", "comp", "field", "values"), &ECSCore::set_column);
 	ClassDB::bind_method(D_METHOD("get_columns", "comps_fields"), &ECSCore::get_columns);
 	ClassDB::bind_method(D_METHOD("set_columns", "values"), &ECSCore::set_columns);
+	ClassDB::bind_method(D_METHOD("borrow_columns", "comps_fields"), &ECSCore::borrow_columns);
+	ClassDB::bind_method(D_METHOD("return_columns", "borrowed"), &ECSCore::return_columns);
+	ClassDB::bind_method(D_METHOD("is_column_borrowed"), &ECSCore::is_column_borrowed);
 	ClassDB::bind_method(D_METHOD("batch_apply_col", "anchor", "must", "op_comp", "op_field", "src_comp", "src_field", "op", "factor", "addend", "conditions"), &ECSCore::batch_apply_col);
 	ClassDB::bind_method(D_METHOD("batch_clamp_where", "anchor", "must", "op_comp", "op_field", "min_comp", "min_field", "max_comp", "max_field", "conditions"), &ECSCore::batch_clamp_where);
 	ClassDB::bind_method(D_METHOD("batch_apply", "anchor", "must", "op_comp", "op_field", "op", "factor", "addend"), &ECSCore::batch_apply);

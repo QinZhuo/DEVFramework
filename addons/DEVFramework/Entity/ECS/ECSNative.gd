@@ -15,7 +15,7 @@ static var _required_methods := [
 	&"register_component", &"create_entity", &"is_alive", &"destroy_entity",
 	&"add_component", &"has_component", &"remove_component", &"count_entities",
 	&"query_rows", &"query_rows_aligned", &"query_rows_aligned_where", &"entity_of_row", &"get_field", &"set_field",
-	&"get_column", &"set_column", &"get_columns", &"set_columns", &"get_entity_components",
+	&"get_column", &"set_column", &"get_columns", &"set_columns", &"borrow_columns", &"return_columns", &"get_entity_components",
 	&"batch_apply_where", &"batch_count", &"batch_apply_col", &"batch_clamp_where",
 	&"run_systems_parallel",
 	&"create_prefab", &"is_prefab", &"prefab_add", &"instantiate", &"prefab_get_field",

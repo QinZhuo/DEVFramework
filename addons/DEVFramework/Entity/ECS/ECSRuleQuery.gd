@@ -216,14 +216,9 @@ func _run() -> int:
 				var norm := []
 				for c in act.fields:
 					norm.append({"comp": _comp_name(c), "fields": act.fields[c]})
-				var data: Dictionary = world.get_columns(norm)
+				# 借出列(独占引用, 回调内写列无 COW 深拷贝) → 回调 → 归还
+				var data: Dictionary = world.borrow_columns(norm)
 				total += frows.size()
 				act.callable.call(frows, data)
-				# 自动写回: 框架保证回调内对 data 的改动生效
-				var write_back := {}
-				for c in act.fields:
-					var cn := _comp_name(c)
-					if data.has(cn):
-						write_back[cn] = data[cn]
-				world.set_columns(write_back)
+				world.return_columns(data)
 	return total
