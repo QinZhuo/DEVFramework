@@ -7,6 +7,8 @@ extends Node2D
 var points: PackedVector2Array = []
 var point_color: Color = Color.WHITE
 var point_size: float = 2.0
+var sizes: PackedFloat32Array = []   # 每点大小(可选, 空则用 point_size)
+var colors: PackedColorArray = []    # 每点颜色(可选, 空则用 point_color)
 var sample_step: int = 1  # 每 N 个点取 1 个(抽样, 1=全画)
 var _dirty := true
 
@@ -17,6 +19,18 @@ var bounds: Rect2 = Rect2()
 
 func set_points(new_points: PackedVector2Array) -> void:
 	points = new_points
+	_dirty = true
+
+
+## 设置每点大小(与 points 等长, 空数组则用固定 point_size)
+func set_sizes(new_sizes: PackedFloat32Array) -> void:
+	sizes = new_sizes
+	_dirty = true
+
+
+## 设置每点颜色(与 points 等长, 空数组则用固定 point_color)
+func set_colors(new_colors: PackedColorArray) -> void:
+	colors = new_colors
 	_dirty = true
 
 
@@ -47,25 +61,23 @@ func _process(_delta: float) -> void:
 func _draw() -> void:
 	if points.is_empty():
 		return
+	var use_sizes := sizes.size() == points.size()
+	var use_colors := colors.size() == points.size()
+	var i := 0
 	var r := Rect2(Vector2.ZERO, Vector2(point_size, point_size))
-	if bounds.size == Vector2.ZERO:
-		# 无边界: 全屏绘制
-		if sample_step <= 1:
-			for p in points:
-				r.position = p
-				draw_rect(r, point_color)
-		else:
-			var i := 0
-			while i < points.size():
-				r.position = points[i]
-				draw_rect(r, point_color)
-				i += sample_step
-	else:
-		# 有边界: 只画区域内的点
-		var i := 0
-		while i < points.size():
-			var p := points[i]
-			if bounds.has_point(p):
-				r.position = p
-				draw_rect(r, point_color)
+	while i < points.size():
+		var p := points[i]
+		if bounds.size != Vector2.ZERO and not bounds.has_point(p):
 			i += sample_step
+			continue
+		if use_sizes:
+			r.size = Vector2(sizes[i], sizes[i])
+		else:
+			r.size = Vector2(point_size, point_size)
+		if use_colors:
+			r.position = p - r.size * 0.5
+			draw_rect(r, colors[i])
+		else:
+			r.position = p - r.size * 0.5
+			draw_rect(r, point_color)
+		i += sample_step

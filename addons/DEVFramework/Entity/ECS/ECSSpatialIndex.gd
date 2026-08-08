@@ -79,6 +79,29 @@ func query_nearest(pos: Vector2, radius: float) -> int:
 			best = e
 	return best
 
+## 快速最近实体: 只查所在格及相邻 8 格(比 query_nearest 的半径扫描快,
+## 适合"找同区域敌人"场景)。radius 用于二次距离过滤。
+## exclude: 排除的实体 ID(通常是自身, 避免找到自己)。
+func query_cell_nearest(pos: Vector2, max_dist: float, exclude: int = -1) -> int:
+	var pos_col: PackedVector2Array = world.get_column(comp, field)
+	var best := -1
+	var best_d := max_dist * max_dist
+	var cx := int(floor(pos.x / cell_size))
+	var cy := int(floor(pos.y / cell_size))
+	for dx in range(-1, 2):
+		for dy in range(-1, 2):
+			var key := "%d,%d" % [cx + dx, cy + dy]
+			if not _cells.has(key):
+				continue
+			for e in _cells[key]:
+				if e == exclude or e >= pos_col.size():
+					continue
+				var d := pos_col[e].distance_squared_to(pos)
+				if d < best_d:
+					best_d = d
+					best = e
+	return best
+
 ## 网格 key
 func _cell_key(p: Vector2) -> String:
 	var gx := int(floor(p.x / cell_size))
