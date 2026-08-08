@@ -42,7 +42,28 @@ cmake --build gdextension/build --config Release
 # 按上表手动重命名为带平台后缀的文件名后即可使用
 ```
 
-构建缓存目录 `gdextension/build/` 已在 `.gitignore` 中忽略，不入库。
+构建缓存目录 `gdextension/build*/` 已在 `.gitignore` 中忽略，不入库。
+
+### 本地构建示例 (Windows + MinGW)
+
+```bash
+# 准备工具链 (以 w64devkit 便携版为例: https://github.com/skeeto/w64devkit)
+export PATH="/path/to/w64devkit/bin:$PATH"
+
+# 配置 + 编译 (Ninja 生成器, 输出到 addons/DEVFramework/Entity/ECS/Native/)
+cmake -S gdextension -B gdextension/build-win -G Ninja \
+      -DGODOTCPP_API_VERSION=4.7 -DCMAKE_BUILD_TYPE=Release
+cmake --build gdextension/build-win
+
+# 产物为无后缀 libdevecs.dll, 需复制为平台带后缀文件名供 .gdextension 加载
+cd addons/DEVFramework/Entity/ECS/Native
+cp libdevecs.dll devecs.windows.debug.x86_64.dll
+cp libdevecs.dll devecs.windows.release.x86_64.dll
+```
+
+> 构建出的 MinGW DLL 仅依赖 `KERNEL32.dll` / `msvcrt.dll`，无额外运行时依赖，可直接分发。
+> 已实测：本地构建 Windows 版后运行 `Scenes/ECS/ECSNodeDemo.tscn` 正常，原生 ECS 核心
+> （`ECSCore`）加载成功，20000 海量实体 + 10 关键实体全部由 C++ 核心驱动。
 
 ## CI 自动构建 (GitHub Actions)
 

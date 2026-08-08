@@ -4,7 +4,7 @@
 
 # GDExtension 开发目录（项目根 gdextension/：C++ 源码 + 构建缓存）
 # 源码（CMakeLists.txt / src/）会提交，构建产物由本地/CI 构建生成，不入库
-gdextension/build/
+gdextension/build*/
 
 # godot-cpp 以 git submodule 引入（gdextension/godot-cpp/），
 # 固定 commit 于官方仓库，内部文件不直接纳入本仓库管理
