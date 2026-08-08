@@ -279,7 +279,17 @@ void ECSCore::remove_component(int32_t entity, const StringName &comp) {
 
 int32_t ECSCore::count_entities(const StringName &comp) const {
 	const ECSComponentData *c = find_comp(comp);
-	return c ? int32_t(c->set.size()) : 0;
+	if (c == nullptr) {
+		return 0;
+	}
+	// 排除 prefab 模板
+	int32_t n = 0;
+	for (int32_t r = 0; r < int32_t(c->set.dense.size()); ++r) {
+		if (!is_prefab_index(c->set.dense[r])) {
+			++n;
+		}
+	}
+	return n;
 }
 
 // ---------------------------------------------------------------------------
@@ -313,6 +323,9 @@ PackedInt32Array ECSCore::query_rows(const StringName &anchor, const PackedStrin
 	int32_t n = 0;
 	for (int32_t r = 0; r < int32_t(dense.size()); ++r) {
 		const int32_t e = dense[r];
+		if (is_prefab_index(e)) {
+			continue; // 跳过 prefab 模板
+		}
 		bool ok = true;
 		for (int32_t i = 0; i < m; ++i) {
 			if (req[i] == nullptr || !req[i]->set.has(e)) {
@@ -438,11 +451,21 @@ void ECSCore::set_column(const StringName &comp, const StringName &field, const 
 
 // 收集 anchor dense 中满足 must 的实体(直接遍历 anchor 稀疏集)
 static void collect_rows(const ECSComponentData *anchor, const ECSComponentData *const *req,
-		int32_t m, std::vector<int32_t> &out) {
+		int32_t m, std::vector<int32_t> &out,
+		const std::vector<int32_t> *prefabs = nullptr) {
 	out.clear();
 	const auto &dense = anchor->set.dense;
 	for (int32_t r = 0; r < int32_t(dense.size()); ++r) {
 		const int32_t e = dense[r];
+		if (prefabs) {
+			bool is_pref = false;
+			for (int32_t p : *prefabs) {
+				if (p == e) { is_pref = true; break; }
+			}
+			if (is_pref) {
+				continue;
+			}
+		}
 		bool ok = true;
 		for (int32_t i = 0; i < m; ++i) {
 			if (req[i] == nullptr || !req[i]->set.has(e)) {
@@ -525,6 +548,9 @@ void collect_rows_where(const ECSCore *core, const ECSComponentData *anchor,
 	const auto &dense = anchor->set.dense;
 	for (int32_t r = 0; r < int32_t(dense.size()); ++r) {
 		const int32_t e = dense[r];
+		if (core->is_prefab(e)) {
+			continue; // 跳过 prefab 模板
+		}
 		bool ok = true;
 		for (int32_t i = 0; i < m; ++i) {
 			if (req[i] == nullptr || !req[i]->set.has(e)) {
@@ -634,7 +660,7 @@ int64_t ECSCore::batch_apply(const StringName &anchor, const PackedStringArray &
 		req[i] = find_comp(must[i]);
 	}
 	std::vector<int32_t> rows;
-	collect_rows(a, req, m > 8 ? 8 : m, rows);
+	collect_rows(a, req, m > 8 ? 8 : m, rows, &prefab_indices_);
 
 	ECSColumn &col = oc->columns[fi];
 	int64_t n = 0;
@@ -695,7 +721,7 @@ int64_t ECSCore::batch_clamp(const StringName &anchor, const PackedStringArray &
 		req[i] = find_comp(must[i]);
 	}
 	std::vector<int32_t> rows;
-	collect_rows(a, req, m > 8 ? 8 : m, rows);
+	collect_rows(a, req, m > 8 ? 8 : m, rows, &prefab_indices_);
 
 	ECSColumn &col = oc->columns[fi];
 	const ECSColumn &mincol = minc->columns[mini];
@@ -748,7 +774,7 @@ int64_t ECSCore::batch_vec_add(const StringName &anchor, const PackedStringArray
 		req[i] = find_comp(must[i]);
 	}
 	std::vector<int32_t> rows;
-	collect_rows(a, req, m > 8 ? 8 : m, rows);
+	collect_rows(a, req, m > 8 ? 8 : m, rows, &prefab_indices_);
 
 	ECSColumn &poscol = posc->columns[pfi];
 	const ECSColumn &velcol = velc->columns[vfi];
@@ -819,6 +845,9 @@ Dictionary ECSCore::serialize() const {
 		const auto &dense = c.set.dense;
 		for (int32_t r = 0; r < int32_t(dense.size()); ++r) {
 			const int32_t e = dense[r];
+			if (is_prefab_index(e)) {
+				continue; // 不序列化 prefab 模板
+			}
 			Dictionary ed;
 			ed["entity"] = e;
 			Array vals;
@@ -914,6 +943,104 @@ Array ECSCore::deserialize(const Dictionary &data) {
 }
 
 // ---------------------------------------------------------------------------
+// ECSCore — Prefab 预制体
+// ---------------------------------------------------------------------------
+
+inline bool ECSCore::is_prefab_index(int32_t index) const {
+	for (int32_t p : prefab_indices_) {
+		if (p == index) {
+			return true;
+		}
+	}
+	return false;
+}
+
+int32_t ECSCore::create_prefab() {
+	const int32_t e = create_entity();
+	const int32_t index = e & 0x00FFFFFF;
+	prefab_indices_.push_back(index);
+	return e;
+}
+
+bool ECSCore::is_prefab(int32_t entity) const {
+	if (!is_alive(entity)) {
+		return false;
+	}
+	return is_prefab_index(entity & 0x00FFFFFF);
+}
+
+bool ECSCore::prefab_add(int32_t prefab, const StringName &comp, const Dictionary &values) {
+	if (!is_prefab(prefab)) {
+		return false;
+	}
+	// 给模板挂组件
+	if (!add_component(prefab, comp)) {
+		return false;
+	}
+	// 设置初始字段值
+	Array keys = values.keys();
+	for (int i = 0; i < keys.size(); ++i) {
+		const StringName field = StringName(keys[i]);
+		set_field(prefab, comp, field, values[keys[i]]);
+	}
+	return true;
+}
+
+Array ECSCore::instantiate(int32_t prefab, int32_t count, const Dictionary &overrides) {
+	Array result;
+	if (!is_prefab(prefab) || count <= 0) {
+		return result;
+	}
+	const int32_t pindex = prefab & 0x00FFFFFF;
+
+	// 收集 prefab 拥有的组件索引
+	std::vector<int32_t> comps;
+	for (int32_t ci = 0; ci < int32_t(components_.size()); ++ci) {
+		if (components_[ci].set.has(pindex)) {
+			comps.push_back(ci);
+		}
+	}
+
+	for (int32_t n = 0; n < count; ++n) {
+		const int32_t e = create_entity();
+		const int32_t eindex = e & 0x00FFFFFF;
+		result.append(e);
+		for (int32_t ci : comps) {
+			ECSComponentData &c = components_[ci];
+			// 挂组件
+			c.set.add(eindex);
+			const int32_t need = eindex + 1;
+			for (size_t fi = 0; fi < c.columns.size(); ++fi) {
+				ECSColumn &col = c.columns[fi];
+				if (col.size() < size_t(need)) {
+					col.resize(size_t(need));
+				}
+			}
+			// 复制每字段值(带 overrides 覆盖)
+			for (size_t fi = 0; fi < c.columns.size(); ++fi) {
+				Variant v = c.columns[fi].get(pindex);
+				// 检查 overrides: {comp_name: {field_name: value}}
+				if (overrides.has(c.name)) {
+					Dictionary od = overrides[c.name];
+					if (od.has(c.fields[fi].name)) {
+						v = od[c.fields[fi].name];
+					}
+				}
+				c.columns[fi].set(eindex, v);
+			}
+		}
+	}
+	return result;
+}
+
+Variant ECSCore::prefab_get_field(int32_t prefab, const StringName &comp, const StringName &field) const {
+	if (!is_prefab(prefab)) {
+		return Variant();
+	}
+	return get_field(prefab, comp, field);
+}
+
+// ---------------------------------------------------------------------------
 // ECSCore — 绑定
 // ---------------------------------------------------------------------------
 
@@ -940,4 +1067,9 @@ void ECSCore::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("debug_stats"), &ECSCore::debug_stats);
 	ClassDB::bind_method(D_METHOD("serialize"), &ECSCore::serialize);
 	ClassDB::bind_method(D_METHOD("deserialize", "data"), &ECSCore::deserialize);
+	ClassDB::bind_method(D_METHOD("create_prefab"), &ECSCore::create_prefab);
+	ClassDB::bind_method(D_METHOD("is_prefab", "entity"), &ECSCore::is_prefab);
+	ClassDB::bind_method(D_METHOD("prefab_add", "prefab", "comp", "values"), &ECSCore::prefab_add);
+	ClassDB::bind_method(D_METHOD("instantiate", "prefab", "count", "overrides"), &ECSCore::instantiate);
+	ClassDB::bind_method(D_METHOD("prefab_get_field", "prefab", "comp", "field"), &ECSCore::prefab_get_field);
 }

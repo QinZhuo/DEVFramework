@@ -18,6 +18,7 @@ static var _required_methods := [
 	&"query_rows", &"entity_of_row", &"get_field", &"set_field",
 	&"get_column", &"set_column",
 	&"batch_apply_where", &"batch_count",
+	&"create_prefab", &"is_prefab", &"prefab_add", &"instantiate", &"prefab_get_field",
 ]
 
 ## 获取原生实例(懒初始化 + 自动重试)。返回 null 表示不可用。

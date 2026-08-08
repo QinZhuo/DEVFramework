@@ -1,0 +1,14 @@
+[gd_resource type="Resource" format=3 uid="uid://ecsprefabcrowd01"]
+
+[ext_resource type="Script" path="res://addons/DEVFramework/Entity/ECS/ECSPrefabDef.gd" id="1_def"]
+[ext_resource type="Script" path="res://Scripts/Entity/ECS/ECSDemoMoveComponent.gd" id="2_comp"]
+
+[resource]
+script = ExtResource("1_def")
+components = [{
+"comp": ExtResource("2_comp"),
+"fields": {
+"pos": Vector2(0, 0),
+"vel": Vector2(0, 0)
+}
+}]

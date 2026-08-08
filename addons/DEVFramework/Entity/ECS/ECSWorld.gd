@@ -473,3 +473,59 @@ func _normalize_conds(conditions: Array) -> Array:
 		d["value"] = c.get("value", 0.0)
 		out.append(d)
 	return out
+
+# ============================================================
+#  Prefab 预制体 (模板实体 + 批量实例化)
+# ============================================================
+
+## 创建 prefab 模板实体(带模板标记, 不参与普通查询/序列化)。
+func create_prefab() -> int:
+	return _core.create_prefab() if _available else -1
+
+## 该实体是否为 prefab 模板
+func is_prefab(entity: int) -> bool:
+	return _available and _core.is_prefab(entity)
+
+## 给 prefab 模板添加组件并设置初始字段值。
+## values: Dictionary {字段名: 初始值}
+func prefab_add(prefab: int, component, values: Dictionary) -> bool:
+	if not _available:
+		return false
+	register_component(component) if component is Script else null
+	return _core.prefab_add(prefab, _resolve_component_name(component), values)
+
+## 批量实例化: 复制 prefab 的组件结构与字段值到 count 个新实体。
+## overrides: Dictionary {组件类名: {字段名: 覆盖值}}(可选)
+## 返回新实体 ID 数组(Array[int])。
+func instantiate(prefab: int, count: int, overrides: Dictionary = {}) -> Array:
+	if not _available:
+		return []
+	# overrides 的 key 可能是 Script, 归一化为类名
+	var norm_overrides := {}
+	for k in overrides:
+		norm_overrides[_resolve_component_name(k)] = overrides[k]
+	return _core.instantiate(prefab, count, norm_overrides)
+
+## 便捷: 从 ECSPrefabDef 配置构建 prefab 模板, 返回 prefab 实体 ID。
+## 之后可 world.instantiate(prefab, n) 批量生成。
+func build_prefab(def: ECSPrefabDef) -> int:
+	if def == null:
+		return -1
+	var prefab := create_prefab()
+	if prefab < 0:
+		return -1
+	for cd in def.components:
+		var comp: Script = cd.get("comp", null)
+		if comp == null:
+			continue
+		var fields: Dictionary = cd.get("fields", {})
+		prefab_add(prefab, comp, fields)
+	return prefab
+
+## 便捷: 从配置直接批量生成实体(构建 prefab + 实例化)。
+## 返回新实体 ID 数组。
+func spawn_from_def(def: ECSPrefabDef, count: int = 1, overrides: Dictionary = {}) -> Array:
+	var prefab := build_prefab(def)
+	if prefab < 0:
+		return []
+	return instantiate(prefab, count, overrides)

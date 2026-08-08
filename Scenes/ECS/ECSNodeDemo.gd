@@ -2,16 +2,19 @@ extends Control
 
 ## 三层架构 Demo —— ECS 与 Godot 配合的完整方案
 ##
-##  ① 海量实体(长期方案): 2 万点阵, ECS 数据直读渲染, 不建 Node
+##  ① 海量实体(长期方案): 2 万点阵, Prefab 配置生成, ECS 数据直读渲染
 ##  ② 关键实体(中期方案): 10 个小兵, ECSNode + NodeLink + ECSSyncSystem
 ##  ③ 交互(配合逻辑): 拖拽小兵 → 位置写回 ECS
 ##
+## 全部实体由 ECSPrefabDef 配置(.tres)驱动 —— 改配置不改代码
 ## 运行: F5 运行 Scenes/ECS/ECSNodeDemo.tscn
 
-## —— ① 海量实体参数 ——
+## —— ① 海量实体配置 ——
+@export var crowd_def: ECSPrefabDef = preload("res://Assets/Def/ECS/CrowdUnit.tres")
 @export var crowd_count: int = 20000
 
-## —— ② 关键实体参数 ——
+## —— ② 关键实体配置 ——
+@export var squad_def: ECSPrefabDef = preload("res://Assets/Def/ECS/SquadUnit.tres")
 @export var squad_count: int = 10
 
 @onready var stats_label: Label = %StatsLabel
@@ -50,36 +53,41 @@ func _setup_world() -> void:
 	world.register_system(ECSMoveSystem.new(), 20)
 
 
-## ① 海量实体: 点阵渲染直读(长期方案, 不建 Node)
+## ① 海量实体: 从 ECSPrefabDef 配置批量生成(配置驱动 + C++ 高性能实例化)
 func _spawn_crowd() -> void:
-	var n := crowd_count
-	for i in n:
-		var e := world.create_entity()
-		world.add_component(e, ECSDemoMoveComponent)
+	# 配置 → prefab → 批量实例化(一次调用生成全部)
+	var ids = world.spawn_from_def(crowd_def, crowd_count)
+	# 给每个实体随机位置/速度(生成本身已由配置完成, 这里只做散布)
+	for i in ids.size():
 		var angle := randf() * TAU
 		var speed := 20.0 + randf() * 50.0
-		world.set_field(e, ECSDemoMoveComponent, &"pos",
+		world.set_field(ids[i], ECSDemoMoveComponent, &"pos",
 				Vector2(randf_range(20.0, 1130.0), randf_range(20.0, 700.0)))
-		world.set_field(e, ECSDemoMoveComponent, &"vel", Vector2(cos(angle), sin(angle)) * speed)
+		world.set_field(ids[i], ECSDemoMoveComponent, &"vel", Vector2(cos(angle), sin(angle)) * speed)
 	# 点阵抽样显示
 	var step := ceili(crowd_count / 4000.0)
 	crowd_cloud.set_sample_step(step)
 	crowd_cloud.set_color(Color(0.35, 0.45, 0.9, 0.8))
 
 
-## ② 关键实体: ECSNode + NodeLink + SyncSystem
+## ② 关键实体: 从配置生成实体 + ECSNode 桥接 + NodeLink + SyncSystem
 func _spawn_squad() -> void:
-	for i in squad_count:
-		var view := ECSNode.spawn(world, null, Vector2.ZERO, world_root)
+	# 配置 → 批量生成关键实体(含 Health + Move 组件, 值来自 .tres)
+	var ids = world.spawn_from_def(squad_def, squad_count)
+	for i in ids.size():
+		var view := ECSNode.new()
+		view.world = world
+		view.entity_id = ids[i]
 		view.name = "Unit_%d" % i
-		view.add_component(ECSDemoMoveComponent)
-		view.add_component(HealthComponent)
 		view.bind_pos(ECSDemoMoveComponent, &"pos")
+		# 给关键实体挂 NodeLink(标记为"关键实体", 供读档识别 + SyncSystem 同步)
+		world.add_component(ids[i], NodeLink)
+		world.set_field(ids[i], NodeLink, &"node_path", "")  # 节点路径由 ECSNode 持有, 存档主要靠实体 ID
+		# 位置/颜色来自配置或运行时初始化
 		view.set_field(ECSDemoMoveComponent, &"pos",
 				Vector2(randf_range(80.0, 1070.0), randf_range(80.0, 640.0)))
 		var color := Color.from_hsv(randf(), 0.7, 0.9)
 		view.set_field(ECSDemoMoveComponent, &"color", color)
-		view.set_field(HealthComponent, &"hp", 100)
 		# 表现节点: 大号方块
 		var block := ColorRect.new()
 		block.size = Vector2(26, 26)
@@ -214,5 +222,5 @@ func _update_stats() -> void:
 	for v in views:
 		if world.is_alive(v.entity_id):
 			alive += 1
-	stats_label.text = "ECS 三层架构 Demo\n\n① 海量实体(点阵): %d\n② 关键实体(节点): %d (存活 %d)\n\n🖱 拖拽小兵 → 写回 ECS(双向同步)\n💾 存档 / 📂 读档\n\n[用法] 海量用渲染直读, 关键用 ECSNode+SyncSystem" % [
+	stats_label.text = "ECS 三层架构 Demo\n\n① 海量实体(Prefab 批量生成): %d\n② 关键实体(节点): %d (存活 %d)\n\n🖱 拖拽小兵 → 写回 ECS(双向同步)\n💾 存档 / 📂 读档\n\n[用法] 配置→Prefab→instantiate 批量生成\n       海量用渲染直读, 关键用 ECSNode+SyncSystem" % [
 		crowd_count, views.size(), alive]

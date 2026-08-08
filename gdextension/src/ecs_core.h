@@ -169,6 +169,21 @@ public:
 	// 注意: 需先 register_component 同名的组件(名称一致), 否则忽略该组件数据。
 	Array deserialize(const Dictionary &data);
 
+	// ---- Prefab 预制体 (模板实体 + 批量实例化) ----
+	// 创建 prefab 模板实体(普通实体 + 内部模板标记, 不参与普通查询/序列化)
+	int32_t create_prefab();
+	// 该实体是否为 prefab 模板
+	bool is_prefab(int32_t entity) const;
+	// 给 prefab 模板添加组件并设置初始字段值。
+	// values: Dictionary {field_name: value}
+	bool prefab_add(int32_t prefab, const StringName &comp, const Dictionary &values);
+	// 批量实例化: 复制 prefab 的组件结构与字段值到 count 个新实体。
+	// overrides: Dictionary {comp_name: {field_name: value}} 字段覆盖(可选)
+	// 返回新实体 ID 数组。
+	Array instantiate(int32_t prefab, int32_t count, const Dictionary &overrides);
+	// 便捷: 直接从 prefab 实体取组件字段值(供校验/调试)
+	Variant prefab_get_field(int32_t prefab, const StringName &comp, const StringName &field) const;
+
 	// 供条件过滤解析内部使用
 	const ECSComponentData *find_comp(const StringName &name) const;
 
@@ -176,6 +191,7 @@ private:
 	// ---- 内部 ----
 	ECSComponentData *find_comp(const StringName &name);
 	int32_t comp_index(const StringName &name) const;
+	inline bool is_prefab_index(int32_t index) const;
 
 	// 签名聚簇: 实体 ID 分配
 	int32_t sig_index_for(const std::vector<int32_t> &comps);
@@ -188,6 +204,8 @@ private:
 	// 实体池: index | (version << 24), 复用防悬垂
 	std::vector<uint32_t> versions_;
 	std::vector<int32_t> free_list_;
+	// prefab 模板实体 index 集合
+	std::vector<int32_t> prefab_indices_;
 };
 
 } // namespace godot
