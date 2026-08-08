@@ -114,7 +114,7 @@ func required_components() -> Array[Script]:
 	return [HealthComponent]
 
 func _run(ctx: ECSSystemContext, delta: float) -> void:
-	# 与声明规则完全相同的查询链（C++ batch 执行），链尾必须 .execute()
+	# 与声明规则完全相同的查询链（C++ batch 执行），链尾无需 execute(系统 _run 结束自动执行); 需要立即结果时可显式 .execute()
 	ctx.for_each(HealthComponent).where(&"hp").less_than(50).add(&"hp", 5.0 * delta * 60.0).execute()
 ```
 

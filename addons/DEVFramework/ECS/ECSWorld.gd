@@ -746,18 +746,17 @@ func remove_system(system: ECSSystem) -> void:
 func tick(delta: float) -> void:
 	_frame_count += 1
 	_resort()
-	var ctx := ECSSystemContext.new(self)
 	var parallel_now := _should_parallel()
 	_tracking = parallel_enabled and _enabled_system_count() >= parallel_min_systems
 	if parallel_now:
 		_parallel_batch_active = true
-		_parallel_tick(ctx, delta)
+		_parallel_tick(delta)
 		_parallel_batch_active = false
 	else:
 		for system in _sorted:
 			if not system.enabled:
 				continue
-			_run_system(system, ctx, delta)
+			_run_system(system, delta)
 	if _tracking:
 		_finalize_access()
 	_preheated = true
@@ -905,18 +904,24 @@ func _end_access() -> void:
 	_access_mutex.unlock()
 
 ## 串行执行单个系统(记录访问上下文)。
-func _run_system(system: ECSSystem, ctx: ECSSystemContext, delta: float) -> void:
+## 每系统独立 ctx; _run 结束后自动执行该系统未显式 execute 的查询。
+func _run_system(system: ECSSystem, delta: float) -> void:
+	var ctx := ECSSystemContext.new(self)
 	if not _tracking:
 		system._run(ctx, delta)
+		ctx._auto_execute()
 		return
 	_begin_access(system)
 	system._run(ctx, delta)
+	ctx._auto_execute()
 	_end_access()
 
 ## 并行 worker 入口(在线程中执行系统)。
-func _parallel_worker(system: ECSSystem, ctx: ECSSystemContext, delta: float) -> void:
+func _parallel_worker(system: ECSSystem, delta: float) -> void:
+	var ctx := ECSSystemContext.new(self)
 	_begin_access(system)
 	system._run(ctx, delta)
+	ctx._auto_execute()
 	_end_access()
 
 ## 系统 a(索引)是否依赖 b(索引): b 必须先于 a 执行。
@@ -994,29 +999,29 @@ func _build_parallel_groups() -> Array:
 	return groups
 
 ## 并行 tick: 按组串行、组内并行执行全部系统。
-func _parallel_tick(ctx: ECSSystemContext, delta: float) -> void:
+func _parallel_tick(delta: float) -> void:
 	_pending_access.clear()
 	var groups: Array = _build_parallel_groups()
 	var max_par := _effective_threads()
 	for group in groups:
-		_run_group(group, ctx, delta, max_par)
+		_run_group(group, delta, max_par)
 
 ## 执行一组系统。组内并行(线程数受 max_par 限制), 超量部分拆成串行子批。
-func _run_group(group: Array, ctx: ECSSystemContext, delta: float, max_par: int) -> void:
+func _run_group(group: Array, delta: float, max_par: int) -> void:
 	if group.size() == 1:
-		_run_system(group[0], ctx, delta)
+		_run_system(group[0], delta)
 		return
 	var start := 0
 	while start < group.size():
 		var end := mini(start + max_par, group.size())
-		_run_parallel_slice(group.slice(start, end), ctx, delta)
+		_run_parallel_slice(group.slice(start, end), delta)
 		start = end
 
 ## 并行执行一批系统: 主线程跑第一个, 其余交给 C++ 持久 worker 池(免每帧临时建线程)。
-func _run_parallel_slice(slice: Array, ctx: ECSSystemContext, delta: float) -> void:
+func _run_parallel_slice(slice: Array, delta: float) -> void:
 	var tasks := []
 	for s in slice:
-		tasks.append(_parallel_worker.bind(s, ctx, delta))
+		tasks.append(_parallel_worker.bind(s, delta))
 	_core.run_systems_parallel(tasks)
 
 ## 有效并行线程数(单个并行批最多并行多少个系统)。0=自动。

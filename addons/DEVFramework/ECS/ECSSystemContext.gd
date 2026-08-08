@@ -5,6 +5,8 @@ extends RefCounted
 ## 推荐统一走 for_each 查询链(C++ batch 执行); 底层列直连见 ECSWorld.get_column/set_column。
 
 var world: ECSWorld
+var _pending: Array = []   # 本系统创建的查询(系统 _run 结束后自动执行未显式 execute 的)
+
 
 func _init(p_world: ECSWorld) -> void:
 	world = p_world
@@ -20,14 +22,20 @@ func set_field(entity: int, component, field: StringName, value) -> void:
 func emit_event(type: StringName, payload = null) -> void:
 	world.emit_event(type, payload)
 
-## 统一查询链入口(与 查询链 同一套遍历→条件→动作构建器)。
-## 手写系统也可用: for_each(Comp).where(...).add(...) 走 C++ batch(最快),
-## 或 .process(callback) 用 GDScript 自定义逻辑(最灵活)。
-## 注意: 与 查询链(由 _execute_all 自动执行)不同, 系统内构建的查询必须链尾 .execute():
-##   ctx.for_each(Comp).where(...).add(...).execute()
-##   ctx.for_each(Comp).process(cb, [Comp]).execute()
-## 见 ECSQuery 文档。
+## 统一查询链入口(与 ECSQuery 同一套遍历→条件→动作构建器)。
+## 声明式写法: 链尾无需 .execute() —— 系统 _run 结束后框架自动执行未执行的查询。
+## 需要立即结果时仍可显式 .execute()(返回处理实体数)。
 func for_each(anchor, must: Array = [], without: Array = []) -> ECSQuery:
 	var q = load("res://addons/DEVFramework/ECS/ECSQuery.gd").new()
 	q._init_rule(world, anchor, must, without)
+	_pending.append(q)
 	return q
+
+## 系统 _run 结束后由 ECSWorld 调用: 自动执行本系统未显式 execute 的查询。
+func _auto_execute() -> void:
+	if _pending.is_empty():
+		return
+	for q in _pending:
+		if q != null and not q._executed:
+			q.execute()
+	_pending.clear()

@@ -10,7 +10,8 @@ func required_components() -> Array[Script]:
 	return [ECSDemoBall]
 
 func _run(ctx: ECSSystemContext, delta: float) -> void:
-	ctx.for_each(ECSDemoBall).with([&"x", &"y", &"vx", &"vy", &"hp", &"dir", &"size"]).process(_cb.bind(delta)).execute()
+	# 声明式写法: 无需 .execute(), 系统 _run 结束后框架自动执行
+	ctx.for_each(ECSDemoBall).with([&"x", &"y", &"vx", &"vy", &"hp", &"dir", &"size"]).process(_cb.bind(delta))
 
 
 func _cb(indices: PackedInt32Array, x: PackedFloat32Array, y: PackedFloat32Array,

@@ -154,7 +154,8 @@ func process(cb: Callable, fields = {}) -> ECSQuery:
 	return self
 
 
-## 执行规则(返回处理实体数)。未显式调用时链尾自动执行。
+## 执行查询(返回处理实体数)。通常无需手动调用 —— 系统 _run 结束后框架自动执行本系统未 execute 的查询;
+## 仅当需要立即拿到结果(处理实体数)时才显式调用。已执行过的查询再次调用返回缓存结果。
 func execute() -> int:
 	if _executed:
 		return _last_count
