@@ -84,6 +84,22 @@ var _event_mutex := Mutex.new()           # 事件队列
 var _cmd_mutex := Mutex.new()             # 命令缓冲
 var _struct_mutex := Mutex.new()          # 立即结构变更(create/destroy/add/remove)
 
+# ---------------- 组件生命周期钩子 ----------------
+## 组件钩子表: compName(StringName) -> {add: Array[Callable], remove: Array[Callable]}
+## 触发时机:
+##   - add 钩子: 实体获得组件后(立即版 add_component 或命令缓冲 flush 后)
+##   - remove 钩子: 实体失去组件后(立即版 remove_component、destroy 或 flush 后)
+## 回调签名: func(entity: int)
+var _component_hooks := {}
+var _entity_destroyed_hooks: Array = []   # Array[Callable], func(entity: int)
+var _has_any_component_hooks := false     # 快速判断: 是否需要枚举实体组件
+
+# ---------------- 变化检测 ----------------
+## 写路径(通过框架写 API 的字段修改)会标记对应组件"本帧被写"。
+## 注意: get_column 返回共享引用后原地修改不经过写 API, 不会被标记。
+var _frame_count := 0                     # 本世界已 tick 帧数
+var _dirty_comps := {}                    # compName -> 帧号(该帧被写)
+
 # ---------------- 事件队列 ----------------
 var _event_queues := {}                  # type(StringName) -> Array[Variant]
 var _event_subscribers := {}             # type(StringName) -> Array[Callable]
@@ -174,15 +190,25 @@ func is_alive(entity: int) -> bool:
 
 ## 销毁实体(从所有组件移除, 复用 id 防悬垂)
 ## 销毁会移除实体的全部组件(组件未知) → 全局版本失效。
+## 若注册了组件 remove 钩子, 会在实体真正销毁前枚举组件并触发 remove;
+## 随后触发 on_entity_destroyed 钩子。
 func destroy_entity(entity: int) -> void:
-	if _available:
-		_struct_mutex.lock()
-		_core.destroy_entity(entity)
-		_world_version += 1
-		_struct_mutex.unlock()
+	if not _available:
+		return
+	var pending_comps: Array = []
+	if _has_any_component_hooks or not _entity_destroyed_hooks.is_empty():
+		pending_comps = _core.get_entity_components(entity)
+	_struct_mutex.lock()
+	_core.destroy_entity(entity)
+	_world_version += 1
+	_struct_mutex.unlock()
+	for c in pending_comps:
+		_fire_component_remove(c, entity)
+	_fire_entity_destroyed(entity)
 
 ## 给实体附加组件。component 传 ECSComponent 子类或已注册类名。
 ## 只失效该组件相关的查询缓存。
+## 成功后触发该组件的 on_component_added 钩子(若有注册)。
 func add_component(entity: int, component, def_data: Dictionary = {}) -> bool:
 	if not _available:
 		return false
@@ -197,6 +223,8 @@ func add_component(entity: int, component, def_data: Dictionary = {}) -> bool:
 		for k in def_data:
 			_core.set_field(entity, name, StringName(k), def_data[k])
 	_struct_mutex.unlock()
+	if ok:
+		_fire_component_add(name, entity)
 	return ok
 
 func has_component(entity: int, component) -> bool:
@@ -214,6 +242,7 @@ func remove_component(entity: int, component) -> void:
 		_core.remove_component(entity, name)
 		_bump_comp(name)
 		_struct_mutex.unlock()
+		_fire_component_remove(name, entity)
 
 func _resolve_component_name(component) -> StringName:
 	if component is Script:
@@ -242,6 +271,7 @@ func set_field(entity: int, component, field: StringName, value) -> void:
 	var cn := _resolve_component_name(component)
 	_record_access(cn)
 	_core.set_field(entity, cn, field, value)
+	_mark_dirty(cn)
 
 # ============================================================
 #  批量查询与列访问(高频: 系统内)
@@ -380,6 +410,7 @@ func set_column(component, field: StringName, values) -> void:
 		var cn := _resolve_component_name(component)
 		_record_access(cn)
 		_core.set_column(cn, field, values)
+		_mark_dirty(cn)
 
 ## 行号 -> 实体 id(anchor 组件的 dense 行号转实体)。
 func entity_of_row(component, row: int) -> int:
@@ -402,6 +433,7 @@ func batch_apply(anchor, must: Array, op_comp, op_field: StringName, op: int, fa
 	_record_access(ocn)
 	for mn in _names(must):
 		_record_access(mn)
+	_mark_dirty(ocn)
 	return _core.batch_apply(an, _names(must), ocn, op_field, op, factor, addend)
 
 ## 批量边界钳制: col = clamp(col, min, max), min/max 取自其他组件字段
@@ -418,6 +450,7 @@ func batch_clamp(anchor, must: Array, op_comp, op_field: StringName, min_comp, m
 	_record_access(maxcn)
 	for mn in _names(must):
 		_record_access(mn)
+	_mark_dirty(ocn)
 	return _core.batch_clamp(an, _names(must), ocn, op_field,
 		mincn, min_field, maxcn, max_field)
 
@@ -433,6 +466,7 @@ func batch_vec_add(anchor, must: Array, pos_comp, pos_field: StringName, vel_com
 	_record_access(vcn)
 	for mn in _names(must):
 		_record_access(mn)
+	_mark_dirty(pcn)
 	return _core.batch_vec_add(an, _names(must), pcn, pos_field, vcn, vel_field, delta)
 
 func _names(arr: Array) -> PackedStringArray:
@@ -462,6 +496,7 @@ func cmd_create() -> int:
 	_cmd_mutex.lock()
 	_core.cmd_create()
 	_cmd_create_count += 1
+	_cmd_ops.append(["create"])
 	_cmd_mutex.unlock()
 	return -_cmd_create_count  # -(序号+1) 负句柄
 
@@ -470,7 +505,7 @@ func cmd_destroy(entity: int) -> void:
 	if _available and entity >= 0:
 		_cmd_mutex.lock()
 		_core.cmd_destroy(entity)
-		_cmd_ops.append(["destroy"])
+		_cmd_ops.append(["destroy", entity])
 		_cmd_mutex.unlock()
 
 ## 排队: 给实体加组件(flush 时执行)。
@@ -481,7 +516,7 @@ func cmd_add_component(entity: int, component) -> void:
 	if name != &"":
 		_cmd_mutex.lock()
 		_core.cmd_add_component(entity, name)
-		_cmd_ops.append(["add", name])
+		_cmd_ops.append(["add", entity, name])
 		_cmd_mutex.unlock()
 
 ## 排队: 给实体移除组件(flush 时执行)。
@@ -492,7 +527,7 @@ func cmd_remove_component(entity: int, component) -> void:
 	if name != &"":
 		_cmd_mutex.lock()
 		_core.cmd_remove_component(entity, name)
-		_cmd_ops.append(["remove", name])
+		_cmd_ops.append(["remove", entity, name])
 		_cmd_mutex.unlock()
 
 ## 待执行命令数。
@@ -504,22 +539,62 @@ func cmd_pending_count() -> int:
 
 ## 立即执行全部排队命令(通常由 tick() 帧末自动调用)。
 ## 按命令类型精确失效查询缓存: add/remove 组件只失效该组件, destroy 全局失效。
+## flush 后在主线程触发对应组件钩子(占位实体经 created_entity_at 解析为真实实体)。
 func flush_commands() -> void:
 	if _available:
+		# flush 前收集 destroy 目标的组件(destroy 后无法枚举)
+		var destroy_comps := {}
+		var need_enum := _has_any_component_hooks or not _entity_destroyed_hooks.is_empty()
+		if need_enum:
+			for op in _cmd_ops:
+				if op[0] == "destroy" and op[1] >= 0:
+					destroy_comps[op[1]] = _core.get_entity_components(op[1])
 		_cmd_mutex.lock()
 		_core.flush_commands()
 		_cmd_mutex.unlock()
+		# 解析 cmd_create 占位句柄 -> 真实实体(实体在 flush 时才生成, 须 flush 后查)
+		var created_map := {}
+		var create_idx := 0
+		for op in _cmd_ops:
+			if op[0] == "create":
+				created_map[-(create_idx + 1)] = _core.created_entity_at(create_idx)
+				create_idx += 1
+		# 精确失效缓存
 		var has_destroy := false
 		for op in _cmd_ops:
 			match op[0]:
 				"destroy":
 					has_destroy = true
 				"add":
-					_bump_comp(op[1])
+					_bump_comp(op[2])
 				"remove":
-					_bump_comp(op[1])
+					_bump_comp(op[2])
 		if has_destroy:
 			_world_version += 1
+		# 触发钩子(flush 后, 主线程)
+		for op in _cmd_ops:
+			match op[0]:
+				"add":
+					var ae: int = op[1]
+					if ae < 0:
+						ae = created_map.get(ae, -1)
+					if ae >= 0:
+						_fire_component_add(op[2], ae)
+				"remove":
+					var re: int = op[1]
+					if re < 0:
+						re = created_map.get(re, -1)
+					if re >= 0:
+						_fire_component_remove(op[2], re)
+				"destroy":
+					var ee: int = op[1]
+					if ee < 0:
+						ee = created_map.get(ee, -1)
+					if ee >= 0:
+						var comps: Array = destroy_comps.get(ee, [])
+						for c in comps:
+							_fire_component_remove(c, ee)
+						_fire_entity_destroyed(ee)
 		_cmd_ops.clear()
 	_cmd_create_count = 0  # 句柄仅在当帧内有效
 
@@ -574,6 +649,7 @@ func remove_system(system: ECSSystem) -> void:
 func tick(delta: float) -> void:
 	if not _available:
 		return
+	_frame_count += 1
 	_resort()
 	var ctx := ECSSystemContext.new(self)
 	var parallel_now := _should_parallel()
@@ -855,6 +931,103 @@ func debug_parallel_stats() -> Dictionary:
 	}
 
 # ============================================================
+#  组件生命周期钩子 (on_add / on_remove / on_destroy)
+#  触发时机: 立即版 add_component/remove_component 成功时; destroy_entity 时;
+#            命令缓冲 flush 后(主线程, 并行系统内 cmd_* 的钩子安全在此触发)。
+#  回调签名: func(entity: int)
+# ============================================================
+
+## 注册组件 add 钩子: 实体获得该组件后触发。
+func on_component_added(comp, callable: Callable) -> void:
+	var cn := _resolve_component_name(comp)
+	if cn == &"":
+		return
+	if not _component_hooks.has(cn):
+		_component_hooks[cn] = {"add": [], "remove": []}
+	var arr: Array = _component_hooks[cn]["add"]
+	if not arr.has(callable):
+		arr.append(callable)
+	_has_any_component_hooks = true
+
+func off_component_added(comp, callable: Callable) -> void:
+	var cn := _resolve_component_name(comp)
+	if _component_hooks.has(cn):
+		(_component_hooks[cn]["add"] as Array).erase(callable)
+
+## 注册组件 remove 钩子: 实体失去该组件后触发(显式移除或实体销毁时)。
+func on_component_removed(comp, callable: Callable) -> void:
+	var cn := _resolve_component_name(comp)
+	if cn == &"":
+		return
+	if not _component_hooks.has(cn):
+		_component_hooks[cn] = {"add": [], "remove": []}
+	var arr: Array = _component_hooks[cn]["remove"]
+	if not arr.has(callable):
+		arr.append(callable)
+	_has_any_component_hooks = true
+
+func off_component_removed(comp, callable: Callable) -> void:
+	var cn := _resolve_component_name(comp)
+	if _component_hooks.has(cn):
+		(_component_hooks[cn]["remove"] as Array).erase(callable)
+
+## 注册实体销毁钩子: 任意实体被 destroy 后触发。
+func on_entity_destroyed(callable: Callable) -> void:
+	if not _entity_destroyed_hooks.has(callable):
+		_entity_destroyed_hooks.append(callable)
+
+func off_entity_destroyed(callable: Callable) -> void:
+	_entity_destroyed_hooks.erase(callable)
+
+func _fire_component_add(comp: StringName, entity: int) -> void:
+	if not _component_hooks.has(comp):
+		return
+	var h: Dictionary = _component_hooks[comp]
+	for cb in h["add"]:
+		cb.call(entity)
+
+func _fire_component_remove(comp: StringName, entity: int) -> void:
+	if not _component_hooks.has(comp):
+		return
+	var h: Dictionary = _component_hooks[comp]
+	for cb in h["remove"]:
+		cb.call(entity)
+
+func _fire_entity_destroyed(entity: int) -> void:
+	for cb in _entity_destroyed_hooks:
+		cb.call(entity)
+
+# ============================================================
+#  变化检测 (组件级脏标记)
+#  通过框架写 API 的字段修改会标记组件"本帧被写":
+#    set_field / set_column / batch_apply / batch_apply_if / batch_clamp / batch_vec_add
+#  注意: get_column 返回共享引用后原地修改不经过写 API, 不会被标记。
+# ============================================================
+
+## 标记组件本帧被写(写路径内部调用)。
+func _mark_dirty(comp: StringName) -> void:
+	if comp == &"":
+		return
+	_access_mutex.lock()
+	_dirty_comps[comp] = _frame_count
+	_access_mutex.unlock()
+
+## 本帧内该组件是否被任何写 API 修改过(组件级, 非实体级)。
+func is_component_dirty(comp) -> bool:
+	var cn := _resolve_component_name(comp)
+	if cn == &"":
+		return false
+	return _dirty_comps.get(cn, -1) == _frame_count
+
+## 本帧被写过的组件名列表(Array[StringName])。
+func dirty_components() -> Array:
+	var out := []
+	for c in _dirty_comps:
+		if _dirty_comps[c] == _frame_count:
+			out.append(c)
+	return out
+
+# ============================================================
 #  批量事件(替代信号风暴: 帧内累积, 帧末一次性派发)
 # ============================================================
 
@@ -1034,6 +1207,7 @@ func batch_apply_if(anchor, must: Array, op_comp, op_field: StringName,
 		_record_access(mn)
 	for c in conditions:
 		_record_access(_resolve_component_name(c.get("comp", &"")))
+	_mark_dirty(ocn)
 	return _core.batch_apply_where(an, _names(must),
 		ocn, op_field, op, factor, addend, _normalize_conds(conditions))
 

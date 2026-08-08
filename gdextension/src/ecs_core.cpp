@@ -434,6 +434,18 @@ int32_t ECSCore::count_entities(const StringName &comp) const {
 	return n;
 }
 
+// 枚举实体的全部组件名(按注册顺序)。低频路径: destroy 前收集钩子信息用。
+PackedStringArray ECSCore::get_entity_components(int32_t entity) const {
+	PackedStringArray out;
+	const int32_t index = entity & 0x00FFFFFF;
+	for (const auto &cd : components_) {
+		if (cd.set.has(index)) {
+			out.append(cd.name);
+		}
+	}
+	return out;
+}
+
 // ---------------------------------------------------------------------------
 // ECSCore — 查询
 // ---------------------------------------------------------------------------
@@ -1410,6 +1422,10 @@ Variant ECSCore::prefab_get_field(int32_t prefab, const StringName &comp, const 
 
 void ECSCore::cmd_create() {
 	cmd_types_.push_back(CMD_CREATE);
+	// 新一批命令开始时重置占位索引(保证占位 = -(create序号+1) 从 1 开始)
+	if (cmd_types_.size() == 1) {
+		cmd_created_.clear();
+	}
 	// 负句柄 = -(create序号+1), 便于后续 add_component 引用
 	const int32_t idx = int32_t(cmd_created_.size());
 	cmd_entities_.push_back(-(idx + 1));
@@ -1504,7 +1520,7 @@ void ECSCore::flush_commands() {
 	cmd_types_.clear();
 	cmd_entities_.clear();
 	cmd_comps_.clear();
-	cmd_created_.clear();
+	// cmd_created_ 保留: 供 created_entity_at 查询本次生成的实体, 下次 cmd_create 时重置
 }
 
 // ---------------------------------------------------------------------------
@@ -1520,6 +1536,7 @@ void ECSCore::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("has_component", "entity", "comp"), &ECSCore::has_component);
 	ClassDB::bind_method(D_METHOD("remove_component", "entity", "comp"), &ECSCore::remove_component);
 	ClassDB::bind_method(D_METHOD("count_entities", "comp"), &ECSCore::count_entities);
+	ClassDB::bind_method(D_METHOD("get_entity_components", "entity"), &ECSCore::get_entity_components);
 	ClassDB::bind_method(D_METHOD("query_rows", "anchor", "must", "without"), &ECSCore::query_rows);
 	ClassDB::bind_method(D_METHOD("query_rows_aligned", "anchor", "must", "without"), &ECSCore::query_rows_aligned);
 	ClassDB::bind_method(D_METHOD("entity_of_row", "comp", "row"), &ECSCore::entity_of_row);

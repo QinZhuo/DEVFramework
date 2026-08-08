@@ -143,6 +143,8 @@ public:
 	bool has_component(int32_t entity, const StringName &comp) const;
 	void remove_component(int32_t entity, const StringName &comp);
 	int32_t count_entities(const StringName &comp) const;
+	// 枚举实体的全部组件名(低频: destroy 前收集钩子信息用)
+	PackedStringArray get_entity_components(int32_t entity) const;
 
 	// ---- 查询 ----
 	// 返回匹配实体的实体 ID 列表(可直接索引任意组件列)。
