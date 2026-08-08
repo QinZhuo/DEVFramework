@@ -6,7 +6,7 @@ extends ECSSystem
 ## 用 Vector2 字段做位置积分:
 ##   pos += vel * delta   (batch_vec_add, 单次调用处理全部实体)
 ##
-## 对应组件(定义见 Scenes/ECS/ECSDemo.gd 或项目内):
+## 对应组件: ECSDemoMoveComponent(定义见 Scripts/Entity/ECS/):
 ##   ECSDemoMoveComponent: pos: Vector2, vel: Vector2
 
 func required_components() -> Array[Script]:

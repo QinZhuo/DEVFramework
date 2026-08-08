@@ -1,19 +1,17 @@
-[gd_resource type="Resource" format=3 uid="uid://ecsprefabsquad01"]
+[gd_resource type="Resource" script_class="ECSPrefabDef" format=3 uid="uid://era6a3buymv5"]
 
-[ext_resource type="Script" path="res://addons/DEVFramework/Entity/ECS/ECSPrefabDef.gd" id="1_def"]
-[ext_resource type="Script" path="res://Scripts/Entity/ECS/ECSDemoMoveComponent.gd" id="2_comp"]
-[ext_resource type="Script" path="res://Scripts/Entity/ECS/HealthComponent.gd" id="3_hp"]
+[ext_resource type="Script" uid="uid://o4vdxf5mjsgx" path="res://addons/DEVFramework/Entity/ECS/ECSPrefabDef.gd" id="1_def"]
+[ext_resource type="Script" uid="uid://0cbxmj1wdrws" path="res://addons/DEVFramework/Entity/ECS/ECSComponent.gd" id="1_guxi5"]
+[ext_resource type="Script" uid="uid://c3p8pp2xtswuo" path="res://Scripts/Entity/ECS/ECSDemoMoveComponent.gd" id="2_comp"]
+[ext_resource type="Script" uid="uid://cn4eg0ycocb6n" path="res://Scripts/Entity/ECS/HealthComponent.gd" id="3_hp"]
 
 [sub_resource type="Resource" id="Resource_move"]
 script = ExtResource("2_comp")
-pos = Vector2(0, 0)
-vel = Vector2(0, 0)
 
 [sub_resource type="Resource" id="Resource_hp"]
 script = ExtResource("3_hp")
-hp = 100
 max_hp = 120
 
 [resource]
 script = ExtResource("1_def")
-component_instances = [SubResource("Resource_move"), SubResource("Resource_hp")]
+component_instances = Array[ExtResource("1_guxi5")]([SubResource("Resource_move"), SubResource("Resource_hp")])

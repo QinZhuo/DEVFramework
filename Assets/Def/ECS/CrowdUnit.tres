@@ -1,13 +1,12 @@
-[gd_resource type="Resource" format=3 uid="uid://ecsprefabcrowd01"]
+[gd_resource type="Resource" script_class="ECSPrefabDef" format=3 uid="uid://era6amcpmmv5"]
 
-[ext_resource type="Script" path="res://addons/DEVFramework/Entity/ECS/ECSPrefabDef.gd" id="1_def"]
-[ext_resource type="Script" path="res://Scripts/Entity/ECS/ECSDemoMoveComponent.gd" id="2_comp"]
+[ext_resource type="Script" uid="uid://0cbxmj1wdrws" path="res://addons/DEVFramework/Entity/ECS/ECSComponent.gd" id="1_cch31"]
+[ext_resource type="Script" uid="uid://o4vdxf5mjsgx" path="res://addons/DEVFramework/Entity/ECS/ECSPrefabDef.gd" id="1_def"]
+[ext_resource type="Script" uid="uid://c3p8pp2xtswuo" path="res://Scripts/Entity/ECS/ECSDemoMoveComponent.gd" id="2_comp"]
 
 [sub_resource type="Resource" id="Resource_move"]
 script = ExtResource("2_comp")
-pos = Vector2(0, 0)
-vel = Vector2(0, 0)
 
 [resource]
 script = ExtResource("1_def")
-component_instances = [SubResource("Resource_move")]
+component_instances = Array[ExtResource("1_cch31")]([SubResource("Resource_move")])

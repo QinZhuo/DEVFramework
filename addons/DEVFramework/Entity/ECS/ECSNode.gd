@@ -4,7 +4,7 @@ extends Node
 ## ECSNode —— ECS 实体与 Godot 场景节点的高层便利封装。
 ##
 ## 架构定位(三层中的"关键实体"层):
-##   - 海量实体(10万+): 渲染直读, 不建 Node(ECSDemo 点阵)
+##   - 海量实体(10万+): 渲染直读, 不建 Node(ECSPerfLab 点阵)
 ##   - 关键实体(玩家/NPC/Boss): ECSNode 桥接 ← 本类
 ##
 ## 本类内部基于 NodeLink 组件:

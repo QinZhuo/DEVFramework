@@ -548,3 +548,14 @@ func register_rule(rule: ECSRule, priority: int = 0) -> ECSRuleSystem:
 	system.add_rule(rule)
 	register_system(system, priority)
 	return system
+
+# ============================================================
+#  暂停/恢复(对比时暂停未选中的世界)
+# ============================================================
+
+## 暂停或恢复世界(暂停 = 不执行任何系统, 用于多世界对比)。
+func set_paused(paused: bool) -> void:
+	if not _available:
+		return
+	for s in _systems:
+		s.enabled = not paused
