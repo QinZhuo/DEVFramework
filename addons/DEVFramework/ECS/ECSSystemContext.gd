@@ -40,6 +40,6 @@ func emit(type: StringName, payload = null) -> void:
 ##   ctx.for_each(Comp).each(cb, [Comp]).execute()
 ## 见 ECSRuleQuery 文档。
 func for_each(anchor, must: Array = [], without: Array = []) -> ECSRuleQuery:
-	var q = load("res://addons/DEVFramework/Entity/ECS/ECSRuleQuery.gd").new()
+	var q = load("res://addons/DEVFramework/ECS/ECSRuleQuery.gd").new()
 	q._init_rule(world, anchor, must, without)
 	return q

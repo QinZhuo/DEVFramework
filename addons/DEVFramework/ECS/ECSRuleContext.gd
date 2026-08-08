@@ -20,7 +20,7 @@ func _init(p_world: ECSWorld = null) -> void:
 ## must: 必须同时拥有的组件; without: 不得拥有的组件(可省略)。
 func for_each(anchor, must: Array = [], without: Array = []) -> ECSRuleQuery:
 	# 用 load 实例化查询构建器(规避全局类 .new() 的解析问题)
-	var q = load("res://addons/DEVFramework/Entity/ECS/ECSRuleQuery.gd").new()
+	var q = load("res://addons/DEVFramework/ECS/ECSRuleQuery.gd").new()
 	q._init_rule(world, anchor, must, without)
 	_queries.append(q)
 	return q

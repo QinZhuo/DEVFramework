@@ -1,6 +1,6 @@
 # DEVFramework ECS 使用说明
 
-本文档说明 `addons/DEVFramework/Entity/ECS/` 高性能 ECS 框架的完整使用方法。
+本文档说明 `addons/DEVFramework/ECS/` 高性能 ECS 框架的完整使用方法。
 
 **架构**：C++ GDExtension（`ECSCore`，SoA 列存储 / 稀疏集 / 签名视图 / 批量运算 / SIMD / 持久线程池）+ GDScript 封装层（`ECSWorld` / `ECSSystem` / 规则 DSL）。**框架强依赖原生库**（`devecs.gdextension`），缺失会明确报错，无回退。
 

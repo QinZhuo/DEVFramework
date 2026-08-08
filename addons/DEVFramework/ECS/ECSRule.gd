@@ -33,7 +33,7 @@ func _execute(world: ECSWorld) -> void:
 	if not enabled or world == null:
 		return
 	# 用 load 实例化上下文(规避全局类 .new() 的解析问题)
-	var ctx = load("res://addons/DEVFramework/Entity/ECS/ECSRuleContext.gd").new()
+	var ctx = load("res://addons/DEVFramework/ECS/ECSRuleContext.gd").new()
 	ctx.world = world
 	_define(ctx)
 	# 定义完自动执行所有查询(遍历→条件→动作)

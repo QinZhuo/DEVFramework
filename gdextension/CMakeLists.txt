@@ -36,9 +36,9 @@ if(APPLE)
     set_target_properties(devecs PROPERTIES MACOSX_RPATH ON)
 endif()
 
-# 编译产物直接输出到插件分发目录 addons/DEVFramework/Entity/ECS/Native/
+# 编译产物直接输出到插件分发目录 addons/DEVFramework/ECS/Native/
 set_target_properties(devecs PROPERTIES
-    LIBRARY_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/../addons/DEVFramework/Entity/ECS/Native
-    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/../addons/DEVFramework/Entity/ECS/Native
-    ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/../addons/DEVFramework/Entity/ECS/Native
+    LIBRARY_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/../addons/DEVFramework/ECS/Native
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/../addons/DEVFramework/ECS/Native
+    ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/../addons/DEVFramework/ECS/Native
 )

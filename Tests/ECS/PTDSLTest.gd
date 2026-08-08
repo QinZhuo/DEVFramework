@@ -4,7 +4,7 @@ extends RefCounted
 ## 规则层 DSL 扩展自检: 列间运算(add_col/set_from/clamp_if) + each 预拉列自动写回
 
 static func _q(w: ECSWorld) -> ECSRuleQuery:
-	return load("res://addons/DEVFramework/Entity/ECS/ECSRuleQuery.gd").new()._init_rule(w, PTCompA)
+	return load("res://addons/DEVFramework/ECS/ECSRuleQuery.gd").new()._init_rule(w, PTCompA)
 
 static func run() -> void:
 	var w := ECSWorld.new(false)

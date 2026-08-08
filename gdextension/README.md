@@ -15,7 +15,7 @@ gdextension/
 
 ## 产物分发目录
 
-构建产物统一输出到 `res://addons/DEVFramework/Entity/ECS/Native/`，
+构建产物统一输出到 `res://addons/DEVFramework/ECS/Native/`，
 文件名需与 `devecs.gdextension` 中的 8 个平台条目严格对应：
 
 | 平台 | Debug | Release |
@@ -38,7 +38,7 @@ git submodule update --init --recursive
 cmake -S gdextension -B gdextension/build -DGODOTCPP_API_VERSION=4.7 -DCMAKE_BUILD_TYPE=Release
 cmake --build gdextension/build --config Release
 
-# 产物位于 addons/DEVFramework/Entity/ECS/Native/ 下 (无后缀名)
+# 产物位于 addons/DEVFramework/ECS/Native/ 下 (无后缀名)
 # 按上表手动重命名为带平台后缀的文件名后即可使用
 ```
 
@@ -50,13 +50,13 @@ cmake --build gdextension/build --config Release
 # 准备工具链 (以 w64devkit 便携版为例: https://github.com/skeeto/w64devkit)
 export PATH="/path/to/w64devkit/bin:$PATH"
 
-# 配置 + 编译 (Ninja 生成器, 输出到 addons/DEVFramework/Entity/ECS/Native/)
+# 配置 + 编译 (Ninja 生成器, 输出到 addons/DEVFramework/ECS/Native/)
 cmake -S gdextension -B gdextension/build-win -G Ninja \
       -DGODOTCPP_API_VERSION=4.7 -DCMAKE_BUILD_TYPE=Release
 cmake --build gdextension/build-win
 
 # 产物为无后缀 libdevecs.dll, 需复制为平台带后缀文件名供 .gdextension 加载
-cd addons/DEVFramework/Entity/ECS/Native
+cd addons/DEVFramework/ECS/Native
 cp libdevecs.dll devecs.windows.debug.x86_64.dll
 cp libdevecs.dll devecs.windows.release.x86_64.dll
 ```
@@ -82,10 +82,10 @@ cp libdevecs.dll devecs.windows.release.x86_64.dll
    - macOS arm64 (`macos-14`) / macOS x86_64 (`macos-13`)
    - 每个任务：checkout（含 submodule）→ cmake 配置 → 编译 → 按上表重命名 → 上传 artifact
 2. **commit 作业**（汇总回写）：
-   - 下载全部 8 个产物 → 复制到 `addons/DEVFramework/Entity/ECS/Native/` → 由 `github-actions[bot]` 自动 commit + push
+   - 下载全部 8 个产物 → 复制到 `addons/DEVFramework/ECS/Native/` → 由 `github-actions[bot]` 自动 commit + push
 
 **防死循环设计**：
-- 自动回写只修改 `addons/DEVFramework/Entity/ECS/Native/`，不在触发路径白名单内，不会重新触发构建；
+- 自动回写只修改 `addons/DEVFramework/ECS/Native/`，不在触发路径白名单内，不会重新触发构建；
 - `GITHUB_TOKEN` 的 push 默认不触发新 workflow 运行，双重保障。
 
 **手动触发**：可在仓库 Actions 页对 `Build DevECS Native` 点击 `Run workflow`。
