@@ -50,16 +50,19 @@ func _run(ctx: ECSSystemContext, delta: float) -> void:
 		var node := scene_root.get_node_or_null(paths[e])
 		if node == null:
 			continue
-		# 读 ECS 位置
+		# 读 ECS 位置(NodeLink 行号 -> 实体ID, 再跨组件访问)
+		var eid := w.entity_of_row(NodeLink, e)
+		if eid < 0:
+			continue
 		var pos: Vector2
 		var comp_name: String = pos_comps[e]
 		if comp_name.is_empty():
 			continue
 		if use_xy[e]:
-			pos = Vector2(w.get_field(e, StringName(comp_name), &"x"),
-					w.get_field(e, StringName(comp_name), &"y"))
+			pos = Vector2(w.get_field(eid, StringName(comp_name), &"x"),
+					w.get_field(eid, StringName(comp_name), &"y"))
 		else:
-			var v = w.get_field(e, StringName(comp_name), StringName(pos_fields[e]))
+			var v = w.get_field(eid, StringName(comp_name), StringName(pos_fields[e]))
 			pos = v if v is Vector2 else (Vector2(v.x, v.y) if v is Vector3 else Vector2.ZERO)
 		# 写节点位置
 		if node is Node2D:

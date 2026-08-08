@@ -54,7 +54,8 @@ struct ECSSparseSet {
 // 用 Godot Packed*Array 直接存储:
 //   - get_column 返回内部引用 (Variant 包装, 共享底层内存, 零拷贝)
 //   - set_column 引用赋值 (指针交换, 无逐元素拷贝)
-// 列下标 = 实体 ID (所有组件共享同一实体 ID 索引空间, 跨组件对齐)
+// 列下标 = dense 行号 (0..拥有该组件的实体数-1, 紧凑连续, 缓存友好)。
+// 实体 ID 需经 sparse[entity] 映射为行号 (O(1)), 由 ECSCore 内部处理。
 // ---------------------------------------------------------------------------
 struct ECSColumn {
 	Variant::Type type = Variant::NIL;
@@ -69,6 +70,7 @@ struct ECSColumn {
 
 	void resize(size_t n);
 	void push_default(const Variant &value);
+	void pop();                 // 移除末尾行(swap-remove 时同步)
 	Variant get(size_t row) const;
 	void set(size_t row, const Variant &value);
 	size_t size() const;
@@ -89,6 +91,20 @@ struct ECSComponentData {
 	int field_index(const StringName &f) const;
 	inline ECSColumn &column(int fi) { return columns[fi]; }
 	inline const ECSColumn &column(int fi) const { return columns[fi]; }
+	// 给实体追加一行(列按 dense 行号紧凑存储, 行号 = dense 下标)
+	inline void push_row(int32_t entity) {
+		const int32_t row = set.add(entity);
+		for (size_t fi = 0; fi < columns.size(); ++fi) {
+			columns[fi].push_default(defaults[fi]);
+		}
+		(void)row; // 行号恒为 old size, 列 push 已对齐
+	}
+	// 移除实体所在行(swap-remove: 末行补位, 列同步)
+	void remove_row(int32_t entity);
+	// 行号 -> 实体 (dense[row])
+	inline int32_t entity_at(int32_t row) const {
+		return (row >= 0 && row < int32_t(set.dense.size())) ? set.dense[row] : -1;
+	}
 };
 
 // ---------------------------------------------------------------------------
@@ -196,6 +212,21 @@ public:
 	// 供条件过滤解析内部使用
 	const ECSComponentData *find_comp(const StringName &name) const;
 
+	// ---- Command Buffer 延迟结构变更 ----
+	// 系统内排队 create/destroy/add/remove, flush_commands() 时统一执行。
+	// 好处: 系统遍历中不直接改结构(无重入/迭代失效), 为系统并行执行铺路。
+	enum CmdType { CMD_CREATE = 0, CMD_DESTROY = 1, CMD_ADD_COMP = 2, CMD_REMOVE_COMP = 3 };
+	void cmd_create();                             // 排队创建(返回实体在 flush 时生成, 这里返回占位 -2)
+	void cmd_destroy(int32_t entity);
+	void cmd_add_component(int32_t entity, const StringName &comp);
+	void cmd_remove_component(int32_t entity, const StringName &comp);
+	void flush_commands();                        // 执行全部排队命令(帧末调用)
+	int32_t pending_command_count() const;
+	int32_t created_entity_at(int32_t index) const; // 查询第 index 个 create 生成的实体
+
+	// 行号 -> 实体 / 实体 -> 行号 (dense 紧凑存储的转换)
+	int32_t row_of_entity(const StringName &comp, int32_t entity) const;
+
 private:
 	// ---- 内部 ----
 	ECSComponentData *find_comp(const StringName &name);
@@ -225,6 +256,12 @@ private:
 	mutable int active_tasks_ = 0;
 	mutable bool workers_started_ = false;
 	int thread_count_ = 0;
+
+	// ---- Command Buffer 队列 ----
+	std::vector<int32_t> cmd_types_;         // CmdType
+	std::vector<int32_t> cmd_entities_;      // 实体ID(占位或真实)
+	std::vector<StringName> cmd_comps_;      // 组件名(add/remove 用)
+	std::vector<int32_t> cmd_created_;       // flush 时生成的新实体 ID
 
 	void ensure_workers();
 	void stop_workers();

@@ -193,9 +193,11 @@ func set_field(entity: int, component, field: StringName, value) -> void:
 #  批量查询与列访问(高频: 系统内)
 # ============================================================
 
-## 查询匹配实体(返回全局行号列表)。
+## 查询匹配实体(返回 anchor 组件的 dense 行号列表)。
 ## anchor/must/without 传组件类名或 Script。
-## 行号可直接索引 get_column 返回的任意组件列 —— 跨组件对齐, 零转换。
+## 行号可直接索引 get_column 返回的列 —— 列按行号紧凑存储(缓存友好, 内存紧凑)。
+## 注意: 行号属于 anchor 组件; 跨组件访问时, 先 entity_of_row(anchor, row) 取实体ID,
+##       再 row_of_entity(other_comp, entity) 得其他组件的行号。
 ## 需要实体 ID 时用 entity_of_row() 转换。
 ## 带缓存: 相同签名查询复用结果, 实体/组件结构变化时自动失效。
 func query_rows(anchor, must: Array = [], without: Array = []) -> PackedInt32Array:
@@ -220,16 +222,24 @@ func query_rows(anchor, must: Array = [], without: Array = []) -> PackedInt32Arr
 	_query_cache_version = _cache_version
 	return result
 
-## 取整列数据(返回 Packed 数组拷贝, 按行号索引)。
+## 取整列数据(返回 Packed 数组拷贝, 按 anchor 组件的 dense 行号索引)。
 func get_column(component, field: StringName):
 	if not _available:
 		return null
 	return _core.get_column(_resolve_component_name(component), field)
 
-## 整列写回。
+## 整列写回(按行号)。
 func set_column(component, field: StringName, values) -> void:
 	if _available:
 		_core.set_column(_resolve_component_name(component), field, values)
+
+## 行号 -> 实体 id(anchor 组件的 dense 行号转实体)。
+func entity_of_row(component, row: int) -> int:
+	return _core.entity_of_row(_resolve_component_name(component), row) if _available else -1
+
+## 实体 id -> 行号(某组件的 dense 行号, 用于跨组件列访问)。
+func row_of_entity(component, entity: int) -> int:
+	return _core.row_of_entity(_resolve_component_name(component), entity) if _available else -1
 
 # ---- 原生API层: 批量运算(纯 C++ 循环, 无 GDScript 解释开销) ----
 
@@ -264,15 +274,61 @@ func _names(arr: Array) -> PackedStringArray:
 		out.append(_resolve_component_name(a))
 	return out
 
-## 行号 -> 实体 id。
-func entity_of_row(component, row: int) -> int:
-	return _core.entity_of_row(_resolve_component_name(component), row) if _available else -1
-
 ## 拥有某组件的实体总数。
 func count(component) -> int:
 	if not _available:
 		return 0
 	return _core.count_entities(_resolve_component_name(component))
+
+# ============================================================
+#  Command Buffer (延迟结构变更)
+#  系统内排队 create/destroy/add_component/remove_component,
+#  帧末 tick() 末尾统一 flush —— 遍历中不直接改结构(无重入/迭代失效),
+#  为系统并行执行铺路。
+# ============================================================
+
+## 排队: 创建实体。返回负值占位句柄(-(创建序号+1)),
+## 可用于 cmd_add_component/cmd_remove_component 引用, flush 后解析为真实实体。
+func cmd_create() -> int:
+	if not _available:
+		return -1
+	_core.cmd_create()
+	_cmd_create_count += 1
+	return -_cmd_create_count  # -(序号+1) 负句柄
+
+## 排队: 销毁实体(flush 时执行, 若已死亡则忽略)。
+func cmd_destroy(entity: int) -> void:
+	if _available and entity >= 0:
+		_core.cmd_destroy(entity)
+
+## 排队: 给实体加组件(flush 时执行)。
+func cmd_add_component(entity: int, component) -> void:
+	if not _available:
+		return
+	var name := _resolve_component_name(component)
+	if name != &"":
+		_core.cmd_add_component(entity, name)
+
+## 排队: 给实体移除组件(flush 时执行)。
+func cmd_remove_component(entity: int, component) -> void:
+	if not _available:
+		return
+	var name := _resolve_component_name(component)
+	if name != &"":
+		_core.cmd_remove_component(entity, name)
+
+## 待执行命令数。
+func cmd_pending_count() -> int:
+	return _core.pending_command_count() if _available else 0
+
+## 立即执行全部排队命令(通常由 tick() 帧末自动调用)。
+func flush_commands() -> void:
+	if _available:
+		_core.flush_commands()
+		_cache_version += 1
+	_cmd_create_count = 0  # 句柄仅在当帧内有效
+
+var _cmd_create_count: int = 0
 
 # ============================================================
 #  系统
@@ -302,6 +358,7 @@ func remove_system(system: ECSSystem) -> void:
 		_dirty_schedule = true
 
 ## 每帧驱动全部系统。内部先按依赖图拓扑排序(优先级仅作同层平级次序)。
+## 帧末自动 flush Command Buffer(延迟结构变更)。
 func tick(delta: float) -> void:
 	if not _available:
 		return
@@ -312,6 +369,7 @@ func tick(delta: float) -> void:
 			continue
 		system._run(ctx, delta)
 	_dispatch_events()
+	flush_commands()
 
 ## 依赖图拓扑排序: 满足 before/after 约束, 同层按优先级降序。
 ## 依赖冲突(环)时优先保留 priority 更高者, 弱化为无约束。

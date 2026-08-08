@@ -165,6 +165,48 @@ void ECSColumn::push_default(const Variant &value) {
 	}
 }
 
+void ECSColumn::pop() {
+	switch (type) {
+		case Variant::INT: i32.resize(i32.size() - 1); break;
+		case Variant::FLOAT: f32.resize(f32.size() - 1); break;
+		case Variant::BOOL: b.resize(b.size() - 1); break;
+		case Variant::VECTOR2: v2.resize(v2.size() - 1); break;
+		case Variant::VECTOR3: v3.resize(v3.size() - 1); break;
+		case Variant::VECTOR4: v4.resize(v4.size() - 1); break;
+		case Variant::COLOR: col.resize(col.size() - 1); break;
+		case Variant::STRING: s.resize(s.size() - 1); break;
+		default: break;
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ECSComponentData — 行级操作 (列按 dense 行号紧凑存储)
+// ---------------------------------------------------------------------------
+
+// swap-remove 一行: 末行数据补到被删行, 列同步删除末行。
+// 前提: entity 已拥有本组件 (sparse[entity] >= 0)。
+void ECSComponentData::remove_row(int32_t entity) {
+	const int32_t row = set.row_of(entity);
+	if (row < 0) {
+		return;
+	}
+	const int32_t last_row = int32_t(set.size()) - 1;
+	// 稀疏集内部 swap: dense[row] = dense[last]; sparse[dense[last]] = row
+	set.remove(entity);
+	// 列同步: 若被删行不是末行, 用末行数据覆盖被删行, 再弹掉末行
+	if (row != last_row) {
+		for (size_t fi = 0; fi < columns.size(); ++fi) {
+			ECSColumn &c = columns[fi];
+			// 列按行号索引, 末行数据在 last_row 位置
+			Variant v = c.get(last_row);
+			c.set(row, v);
+		}
+	}
+	for (size_t fi = 0; fi < columns.size(); ++fi) {
+		columns[fi].pop();
+	}
+}
+
 Variant ECSColumn::get(size_t row) const {
 	switch (type) {
 		case Variant::INT: return int64_t(i32[int32_t(row)]);
@@ -331,10 +373,10 @@ void ECSCore::destroy_entity(int32_t entity) {
 	if (index < 0 || index >= int32_t(versions_.size()) || !is_alive(entity)) {
 		return;
 	}
-	// 从所有组件稀疏集中移除
+	// 从所有组件稀疏集中移除(列按行号 swap-remove 同步)
 	for (auto &c : components_) {
 		if (c.set.has(index)) {
-			c.set.remove(index);
+			c.remove_row(index);
 		}
 	}
 	release_entity_id(index);
@@ -350,16 +392,11 @@ bool ECSCore::add_component(int32_t entity, const StringName &comp) {
 	if (c == nullptr || !is_alive(entity)) {
 		return false;
 	}
-	const int32_t row = c->set.add(index);
-	// 列按实体 ID 直接索引(稀疏): 保证跨组件对齐, query 返回的实体 ID 可索引任意列
-	const int32_t need = index + 1;
-	for (size_t fi = 0; fi < c->fields.size(); ++fi) {
-		ECSColumn &col = c->columns[fi];
-		if (col.size() < size_t(need)) {
-			col.resize(size_t(need));
-			col.set(index, c->defaults[fi]);
-		}
+	if (c->set.has(index)) {
+		return true; // 幂等
 	}
+	// 列按 dense 行号紧凑存储: push 一行默认值 (行号 = old dense size)
+	c->push_row(index);
 	return true;
 }
 
@@ -375,7 +412,11 @@ void ECSCore::remove_component(int32_t entity, const StringName &comp) {
 	if (c == nullptr) {
 		return;
 	}
-	c->set.remove(index);
+	if (!c->set.has(index)) {
+		return;
+	}
+	// swap-remove: 列按行号同步
+	c->remove_row(index);
 }
 
 int32_t ECSCore::count_entities(const StringName &comp) const {
@@ -443,19 +484,29 @@ PackedInt32Array ECSCore::query_rows(const StringName &anchor, const PackedStrin
 			}
 		}
 		if (ok) {
-			out[n++] = e; // 实体 ID, 可直接索引任意组件列
+			out[n++] = r; // 返回 dense 行号! 可直接索引紧凑列 get_column
 		}
 	}
 	out.resize(n);
 	return out;
 }
 
+// 行号(anchor dense 下标) -> 实体 ID
 int32_t ECSCore::entity_of_row(const StringName &comp, int32_t row) const {
 	const ECSComponentData *c = find_comp(comp);
 	if (c == nullptr || row < 0 || row >= int32_t(c->set.dense.size())) {
 		return -1;
 	}
 	return c->set.dense[row];
+}
+
+// 实体 ID -> 行号 (dense 下标)
+int32_t ECSCore::row_of_entity(const StringName &comp, int32_t entity) const {
+	const ECSComponentData *c = find_comp(comp);
+	if (c == nullptr) {
+		return -1;
+	}
+	return c->set.row_of(entity & 0x00FFFFFF);
 }
 
 // ---------------------------------------------------------------------------
@@ -468,15 +519,16 @@ Variant ECSCore::get_field(int32_t entity, const StringName &comp, const StringN
 	if (c == nullptr) {
 		return Variant();
 	}
-	// 稀疏集只用于"该实体是否拥有此组件", 列按实体 ID 直接索引(稀疏)
-	if (!c->set.has(index)) {
+	// 稀疏集: 实体 -> 行号, 列按行号索引(紧凑)
+	const int32_t row = c->set.row_of(index);
+	if (row < 0) {
 		return Variant();
 	}
 	const int fi = c->field_index(field);
 	if (fi < 0) {
 		return Variant();
 	}
-	return c->columns[fi].get(index);
+	return c->columns[fi].get(row);
 }
 
 void ECSCore::set_field(int32_t entity, const StringName &comp, const StringName &field, const Variant &value) {
@@ -485,14 +537,15 @@ void ECSCore::set_field(int32_t entity, const StringName &comp, const StringName
 	if (c == nullptr) {
 		return;
 	}
-	if (!c->set.has(index)) {
+	const int32_t row = c->set.row_of(index);
+	if (row < 0) {
 		return;
 	}
 	const int fi = c->field_index(field);
 	if (fi < 0) {
 		return;
 	}
-	c->columns[fi].set(index, value);
+	c->columns[fi].set(row, value);
 }
 
 // ---------------------------------------------------------------------------
@@ -552,7 +605,7 @@ void ECSCore::set_column(const StringName &comp, const StringName &field, const 
 // ECSCore — Tier 0: 原生批量运算
 // ---------------------------------------------------------------------------
 
-// 收集 anchor dense 中满足 must 的实体(直接遍历 anchor 稀疏集)
+// 收集 anchor dense 中满足 must 的实体行号(直接遍历 anchor 稀疏集)
 static void collect_rows(const ECSComponentData *anchor, const ECSComponentData *const *req,
 		int32_t m, std::vector<int32_t> &out,
 		const std::vector<int32_t> *prefabs = nullptr) {
@@ -577,7 +630,7 @@ static void collect_rows(const ECSComponentData *anchor, const ECSComponentData 
 			}
 		}
 		if (ok) {
-			out.push_back(e);
+			out.push_back(r); // 行号! 列按行号索引
 		}
 	}
 }
@@ -620,14 +673,18 @@ int parse_conditions(const ECSCore *core, const Array &conds,
 	return int(out.size());
 }
 
-// 单实体是否满足所有条件(按列值比较)
-inline bool cond_matches(const ECSCore *core, int32_t e, const std::vector<ECSFilterCond> &conds) {
+// 单实体是否满足所有条件(按列值比较)。entity 为真实实体ID(条件组件列按各自行号访问)
+inline bool cond_matches(const ECSCore *core, int32_t entity, const std::vector<ECSFilterCond> &conds) {
 	for (const auto &c : conds) {
 		const ECSColumn &col = c.comp->columns[c.field_idx];
+		const int32_t row = c.comp->set.row_of(entity & 0x00FFFFFF);
+		if (row < 0) {
+			return false; // 条件组件该实体未拥有 -> 不满足
+		}
 		double v = 0.0;
 		switch (col.type) {
-			case Variant::INT: v = double(col.i32[e]); break;
-			case Variant::FLOAT: v = double(col.f32[e]); break;
+			case Variant::INT: v = double(col.i32[row]); break;
+			case Variant::FLOAT: v = double(col.f32[row]); break;
 			default: return false; // 条件仅支持数值字段
 		}
 		switch (c.op) {
@@ -643,7 +700,7 @@ inline bool cond_matches(const ECSCore *core, int32_t e, const std::vector<ECSFi
 	return true;
 }
 
-// 收集 anchor+must+条件 都满足的实体
+// 收集 anchor+must+条件 都满足的实体行号
 void collect_rows_where(const ECSCore *core, const ECSComponentData *anchor,
 		const ECSComponentData *const *req, int32_t m,
 		const std::vector<ECSFilterCond> &conds, std::vector<int32_t> &out) {
@@ -662,11 +719,10 @@ void collect_rows_where(const ECSCore *core, const ECSComponentData *anchor,
 			}
 		}
 		if (ok && cond_matches(core, e, conds)) {
-			out.push_back(e);
+			out.push_back(r); // 行号
 		}
 	}
 }
-
 } // namespace
 
 int64_t ECSCore::batch_count(const StringName &anchor, const PackedStringArray &must,
@@ -711,37 +767,71 @@ int64_t ECSCore::batch_apply_where(const StringName &anchor, const PackedStringA
 
 	ECSColumn &col = oc->columns[fi];
 	int64_t n = 0;
+	// 目标列行号: anchor 行号 -> 实体ID -> op_comp 行号
+	// 若 op_comp == anchor, 行号可直接复用(快路径, 无转换)
+	const bool same_comp = (op_comp == anchor);
+	const auto &a_dense = a->set.dense;
 	switch (col.type) {
 		case Variant::INT: {
 			int32_t *w = col.i32.ptrw();
 			const int32_t add = int32_t(addend);
-			parallel_for(rows.size(), [&](size_t b, size_t e) {
-				for (size_t i = b; i < e; ++i) {
-					const int32_t entity = rows[i];
-					switch (op) {
-						case BATCH_ADD: w[entity] += add; break;
-						case BATCH_MUL_ADD: w[entity] = int32_t(double(w[entity]) * factor + addend); break;
-						case BATCH_SET: w[entity] = add; break;
-						default: break;
+			if (same_comp) {
+				parallel_for(rows.size(), [&](size_t b, size_t e) {
+					for (size_t i = b; i < e; ++i) {
+						const int32_t row = rows[i];
+						switch (op) {
+							case BATCH_ADD: w[row] += add; break;
+							case BATCH_MUL_ADD: w[row] = int32_t(double(w[row]) * factor + addend); break;
+							case BATCH_SET: w[row] = add; break;
+							default: break;
+						}
 					}
-				}
-			});
+				});
+			} else {
+				parallel_for(rows.size(), [&](size_t b, size_t e) {
+					for (size_t i = b; i < e; ++i) {
+						const int32_t orow = oc->set.row_of(a_dense[rows[i]]);
+						if (orow < 0) continue;
+						switch (op) {
+							case BATCH_ADD: w[orow] += add; break;
+							case BATCH_MUL_ADD: w[orow] = int32_t(double(w[orow]) * factor + addend); break;
+							case BATCH_SET: w[orow] = add; break;
+							default: break;
+						}
+					}
+				});
+			}
 			n = int64_t(rows.size());
 			break;
 		}
 		case Variant::FLOAT: {
 			float *w = col.f32.ptrw();
-			parallel_for(rows.size(), [&](size_t b, size_t e) {
-				for (size_t i = b; i < e; ++i) {
-					const int32_t entity = rows[i];
-					switch (op) {
-						case BATCH_ADD: w[entity] += float(addend); break;
-						case BATCH_MUL_ADD: w[entity] = float(double(w[entity]) * factor + addend); break;
-						case BATCH_SET: w[entity] = float(addend); break;
-						default: break;
+			if (same_comp) {
+				parallel_for(rows.size(), [&](size_t b, size_t e) {
+					for (size_t i = b; i < e; ++i) {
+						const int32_t row = rows[i];
+						switch (op) {
+							case BATCH_ADD: w[row] += float(addend); break;
+							case BATCH_MUL_ADD: w[row] = float(double(w[row]) * factor + addend); break;
+							case BATCH_SET: w[row] = float(addend); break;
+							default: break;
+						}
 					}
-				}
-			});
+				});
+			} else {
+				parallel_for(rows.size(), [&](size_t b, size_t e) {
+					for (size_t i = b; i < e; ++i) {
+						const int32_t orow = oc->set.row_of(a_dense[rows[i]]);
+						if (orow < 0) continue;
+						switch (op) {
+							case BATCH_ADD: w[orow] += float(addend); break;
+							case BATCH_MUL_ADD: w[orow] = float(double(w[orow]) * factor + addend); break;
+							case BATCH_SET: w[orow] = float(addend); break;
+							default: break;
+						}
+					}
+				});
+			}
 			n = int64_t(rows.size());
 			break;
 		}
@@ -773,37 +863,70 @@ int64_t ECSCore::batch_apply(const StringName &anchor, const PackedStringArray &
 
 	ECSColumn &col = oc->columns[fi];
 	int64_t n = 0;
+	// 目标列行号: anchor 行号 -> 实体ID -> op_comp 行号
+	const bool same_comp = (op_comp == anchor);
+	const auto &a_dense = a->set.dense;
 	switch (col.type) {
 		case Variant::INT: {
 			int32_t *w = col.i32.ptrw();
 			const int32_t add = int32_t(addend);
-			parallel_for(rows.size(), [&](size_t b, size_t e) {
-				for (size_t i = b; i < e; ++i) {
-					const int32_t entity = rows[i];
-					switch (op) {
-						case BATCH_ADD: w[entity] += add; break;
-						case BATCH_MUL_ADD: w[entity] = int32_t(double(w[entity]) * factor + addend); break;
-						case BATCH_SET: w[entity] = add; break;
-						default: break;
+			if (same_comp) {
+				parallel_for(rows.size(), [&](size_t b, size_t e) {
+					for (size_t i = b; i < e; ++i) {
+						const int32_t row = rows[i];
+						switch (op) {
+							case BATCH_ADD: w[row] += add; break;
+							case BATCH_MUL_ADD: w[row] = int32_t(double(w[row]) * factor + addend); break;
+							case BATCH_SET: w[row] = add; break;
+							default: break;
+						}
 					}
-				}
-			});
+				});
+			} else {
+				parallel_for(rows.size(), [&](size_t b, size_t e) {
+					for (size_t i = b; i < e; ++i) {
+						const int32_t orow = oc->set.row_of(a_dense[rows[i]]);
+						if (orow < 0) continue;
+						switch (op) {
+							case BATCH_ADD: w[orow] += add; break;
+							case BATCH_MUL_ADD: w[orow] = int32_t(double(w[orow]) * factor + addend); break;
+							case BATCH_SET: w[orow] = add; break;
+							default: break;
+						}
+					}
+				});
+			}
 			n = int64_t(rows.size());
 			break;
 		}
 		case Variant::FLOAT: {
 			float *w = col.f32.ptrw();
-			parallel_for(rows.size(), [&](size_t b, size_t e) {
-				for (size_t i = b; i < e; ++i) {
-					const int32_t entity = rows[i];
-					switch (op) {
-						case BATCH_ADD: w[entity] += float(addend); break;
-						case BATCH_MUL_ADD: w[entity] = float(double(w[entity]) * factor + addend); break;
-						case BATCH_SET: w[entity] = float(addend); break;
-						default: break;
+			if (same_comp) {
+				parallel_for(rows.size(), [&](size_t b, size_t e) {
+					for (size_t i = b; i < e; ++i) {
+						const int32_t row = rows[i];
+						switch (op) {
+							case BATCH_ADD: w[row] += float(addend); break;
+							case BATCH_MUL_ADD: w[row] = float(double(w[row]) * factor + addend); break;
+							case BATCH_SET: w[row] = float(addend); break;
+							default: break;
+						}
 					}
-				}
-			});
+				});
+			} else {
+				parallel_for(rows.size(), [&](size_t b, size_t e) {
+					for (size_t i = b; i < e; ++i) {
+						const int32_t orow = oc->set.row_of(a_dense[rows[i]]);
+						if (orow < 0) continue;
+						switch (op) {
+							case BATCH_ADD: w[orow] += float(addend); break;
+							case BATCH_MUL_ADD: w[orow] = float(double(w[orow]) * factor + addend); break;
+							case BATCH_SET: w[orow] = float(addend); break;
+							default: break;
+						}
+					}
+				});
+			}
 			n = int64_t(rows.size());
 			break;
 		}
@@ -842,17 +965,29 @@ int64_t ECSCore::batch_clamp(const StringName &anchor, const PackedStringArray &
 	const ECSColumn &mincol = minc->columns[mini];
 	const ECSColumn &maxcol = maxc->columns[maxi];
 	int64_t n = 0;
+	const bool same_comp = (op_comp == anchor);
+	const auto &a_dense = a->set.dense;
 	switch (col.type) {
 		case Variant::INT: {
 			int32_t *w = col.i32.ptrw();
 			const int32_t *mn = mincol.i32.ptr();
 			const int32_t *mx = maxcol.i32.ptr();
-			parallel_for(rows.size(), [&](size_t b, size_t e) {
-				for (size_t i = b; i < e; ++i) {
-					const int32_t entity = rows[i];
-					w[entity] = CLAMP(w[entity], mn[entity], mx[entity]);
-				}
-			});
+			if (same_comp) {
+				parallel_for(rows.size(), [&](size_t b, size_t e) {
+					for (size_t i = b; i < e; ++i) {
+						const int32_t row = rows[i];
+						w[row] = CLAMP(w[row], mn[row], mx[row]);
+					}
+				});
+			} else {
+				parallel_for(rows.size(), [&](size_t b, size_t e) {
+					for (size_t i = b; i < e; ++i) {
+						const int32_t orow = oc->set.row_of(a_dense[rows[i]]);
+						if (orow < 0) continue;
+						w[orow] = CLAMP(w[orow], mn[orow], mx[orow]);
+					}
+				});
+			}
 			n = int64_t(rows.size());
 			break;
 		}
@@ -860,12 +995,22 @@ int64_t ECSCore::batch_clamp(const StringName &anchor, const PackedStringArray &
 			float *w = col.f32.ptrw();
 			const float *mn = mincol.f32.ptr();
 			const float *mx = maxcol.f32.ptr();
-			parallel_for(rows.size(), [&](size_t b, size_t e) {
-				for (size_t i = b; i < e; ++i) {
-					const int32_t entity = rows[i];
-					w[entity] = CLAMP(w[entity], mn[entity], mx[entity]);
-				}
-			});
+			if (same_comp) {
+				parallel_for(rows.size(), [&](size_t b, size_t e) {
+					for (size_t i = b; i < e; ++i) {
+						const int32_t row = rows[i];
+						w[row] = CLAMP(w[row], mn[row], mx[row]);
+					}
+				});
+			} else {
+				parallel_for(rows.size(), [&](size_t b, size_t e) {
+					for (size_t i = b; i < e; ++i) {
+						const int32_t orow = oc->set.row_of(a_dense[rows[i]]);
+						if (orow < 0) continue;
+						w[orow] = CLAMP(w[orow], mn[orow], mx[orow]);
+					}
+				});
+			}
 			n = int64_t(rows.size());
 			break;
 		}
@@ -900,27 +1045,56 @@ int64_t ECSCore::batch_vec_add(const StringName &anchor, const PackedStringArray
 	ECSColumn &poscol = posc->columns[pfi];
 	const ECSColumn &velcol = velc->columns[vfi];
 	int64_t n = 0;
+	const bool pos_is_anchor = (pos_comp == anchor);
+	const bool vel_is_anchor = (vel_comp == anchor);
+	const auto &a_dense = a->set.dense;
 	if (poscol.type == Variant::VECTOR2 && velcol.type == Variant::VECTOR2) {
 		Vector2 *p = poscol.v2.ptrw();
 		const Vector2 *v = velcol.v2.ptr();
 		const float d = float(delta);
-		parallel_for(rows.size(), [&](size_t b, size_t e) {
-			for (size_t i = b; i < e; ++i) {
-				const int32_t entity = rows[i];
-				p[entity] += v[entity] * d;
-			}
-		});
+		if (pos_is_anchor && vel_is_anchor) {
+			parallel_for(rows.size(), [&](size_t b, size_t e) {
+				for (size_t i = b; i < e; ++i) {
+					const int32_t row = rows[i];
+					p[row] += v[row] * d;
+				}
+			});
+		} else {
+			parallel_for(rows.size(), [&](size_t b, size_t e) {
+				for (size_t i = b; i < e; ++i) {
+					const int32_t erow = rows[i];
+					const int32_t e = a_dense[erow];
+					const int32_t prow = pos_is_anchor ? erow : posc->set.row_of(e);
+					const int32_t vrow = vel_is_anchor ? erow : velc->set.row_of(e);
+					if (prow < 0 || vrow < 0) continue;
+					p[prow] += v[vrow] * d;
+				}
+			});
+		}
 		n = int64_t(rows.size());
 	} else if (poscol.type == Variant::VECTOR3 && velcol.type == Variant::VECTOR3) {
 		Vector3 *p = poscol.v3.ptrw();
 		const Vector3 *v = velcol.v3.ptr();
 		const float d = float(delta);
-		parallel_for(rows.size(), [&](size_t b, size_t e) {
-			for (size_t i = b; i < e; ++i) {
-				const int32_t entity = rows[i];
-				p[entity] += v[entity] * d;
-			}
-		});
+		if (pos_is_anchor && vel_is_anchor) {
+			parallel_for(rows.size(), [&](size_t b, size_t e) {
+				for (size_t i = b; i < e; ++i) {
+					const int32_t row = rows[i];
+					p[row] += v[row] * d;
+				}
+			});
+		} else {
+			parallel_for(rows.size(), [&](size_t b, size_t e) {
+				for (size_t i = b; i < e; ++i) {
+					const int32_t erow = rows[i];
+					const int32_t e = a_dense[erow];
+					const int32_t prow = pos_is_anchor ? erow : posc->set.row_of(e);
+					const int32_t vrow = vel_is_anchor ? erow : velc->set.row_of(e);
+					if (prow < 0 || vrow < 0) continue;
+					p[prow] += v[vrow] * d;
+				}
+			});
+		}
 		n = int64_t(rows.size());
 	}
 	return n;
@@ -969,7 +1143,7 @@ Dictionary ECSCore::serialize() const {
 		cd["field_types"] = ftypes_arr;
 		cd["defaults"] = fdefaults_arr;
 		// 实体数据: 稀疏集 dense 里的实体 + 各字段值
-		// 注意: 列按"实体 ID"索引(稀疏), 必须用实体 ID e 取值, 而非行号 r!
+		// 注意: 列按"dense 行号"索引(紧凑), 用行号 r 取值!
 		Array entities;
 		const auto &dense = c.set.dense;
 		for (int32_t r = 0; r < int32_t(dense.size()); ++r) {
@@ -981,7 +1155,7 @@ Dictionary ECSCore::serialize() const {
 			ed["entity"] = e;
 			Array vals;
 			for (size_t fi = 0; fi < c.columns.size(); ++fi) {
-				vals.append(c.columns[fi].get(e));
+				vals.append(c.columns[fi].get(r));
 			}
 			ed["values"] = vals;
 			entities.append(ed);
@@ -1049,21 +1223,15 @@ Array ECSCore::deserialize(const Dictionary &data) {
 				continue;
 			}
 			const int32_t index = it->second & 0x00FFFFFF;
-			c->set.add(index);
-			const int32_t need = index + 1;
-			for (size_t fi = 0; fi < c->columns.size(); ++fi) {
-				ECSColumn &col = c->columns[fi];
-				if (col.size() < size_t(need)) {
-					col.resize(size_t(need));
-				}
-			}
+			c->push_row(index); // 列按行号紧凑: 追加一行
 			Array vals = ed["values"];
 			const int32_t nv = int32_t(vals.size());
+			const int32_t row = c->set.row_of(index);
 			for (int32_t fi = 0; fi < int32_t(c->columns.size()); ++fi) {
 				if (fi < nv) {
-					c->columns[fi].set(index, vals[fi]);
+					c->columns[fi].set(row, vals[fi]);
 				} else {
-					c->columns[fi].set(index, c->defaults[fi]);
+					c->columns[fi].set(row, c->defaults[fi]);
 				}
 			}
 		}
@@ -1136,18 +1304,13 @@ Array ECSCore::instantiate(int32_t prefab, int32_t count, const Dictionary &over
 		result.append(e);
 		for (int32_t ci : comps) {
 			ECSComponentData &c = components_[ci];
-			// 挂组件
-			c.set.add(eindex);
-			const int32_t need = eindex + 1;
-			for (size_t fi = 0; fi < c.columns.size(); ++fi) {
-				ECSColumn &col = c.columns[fi];
-				if (col.size() < size_t(need)) {
-					col.resize(size_t(need));
-				}
-			}
+			const int32_t prow = c.set.row_of(pindex); // prefab 行号
+			// 挂组件: 列按行号紧凑追加
+			c.push_row(eindex);
+			const int32_t row = c.set.row_of(eindex);
 			// 复制每字段值(带 overrides 覆盖)
 			for (size_t fi = 0; fi < c.columns.size(); ++fi) {
-				Variant v = c.columns[fi].get(pindex);
+				Variant v = c.columns[fi].get(prow); // 从 prefab 行取
 				// 检查 overrides: {comp_name: {field_name: value}}
 				if (overrides.has(c.name)) {
 					Dictionary od = overrides[c.name];
@@ -1155,7 +1318,7 @@ Array ECSCore::instantiate(int32_t prefab, int32_t count, const Dictionary &over
 						v = od[c.fields[fi].name];
 					}
 				}
-				c.columns[fi].set(eindex, v);
+				c.columns[fi].set(row, v);
 			}
 		}
 	}
@@ -1167,6 +1330,110 @@ Variant ECSCore::prefab_get_field(int32_t prefab, const StringName &comp, const 
 		return Variant();
 	}
 	return get_field(prefab, comp, field);
+}
+
+// ---------------------------------------------------------------------------
+// ECSCore — Command Buffer (延迟结构变更)
+// 系统内排队, flush_commands() 帧末统一执行, 避免遍历中改结构。
+// ---------------------------------------------------------------------------
+
+void ECSCore::cmd_create() {
+	cmd_types_.push_back(CMD_CREATE);
+	// 负句柄 = -(create序号+1), 便于后续 add_component 引用
+	const int32_t idx = int32_t(cmd_created_.size());
+	cmd_entities_.push_back(-(idx + 1));
+	cmd_created_.push_back(-1);
+	cmd_comps_.push_back(StringName());
+}
+
+void ECSCore::cmd_destroy(int32_t entity) {
+	cmd_types_.push_back(CMD_DESTROY);
+	cmd_entities_.push_back(entity);
+	cmd_comps_.push_back(StringName());
+}
+
+void ECSCore::cmd_add_component(int32_t entity, const StringName &comp) {
+	cmd_types_.push_back(CMD_ADD_COMP);
+	cmd_entities_.push_back(entity);
+	cmd_comps_.push_back(comp);
+}
+
+void ECSCore::cmd_remove_component(int32_t entity, const StringName &comp) {
+	cmd_types_.push_back(CMD_REMOVE_COMP);
+	cmd_entities_.push_back(entity);
+	cmd_comps_.push_back(comp);
+}
+
+int32_t ECSCore::pending_command_count() const {
+	return int32_t(cmd_types_.size());
+}
+
+// 供 GDScript 查询: 第 index 个 create 命令 flush 后生成的实体 ID(未 flush 返回 -1)
+int32_t ECSCore::created_entity_at(int32_t index) const {
+	if (index < 0 || index >= int32_t(cmd_created_.size())) {
+		return -1;
+	}
+	return cmd_created_[index];
+}
+
+void ECSCore::flush_commands() {
+	if (cmd_types_.empty()) {
+		return;
+	}
+	// 第一遍: 执行 create, 把占位句柄替换为真实实体 ID, 并记录映射
+	// create 占位句柄 = -(create序号+1)
+	{
+		size_t create_idx = 0;
+		for (size_t i = 0; i < cmd_types_.size(); ++i) {
+			if (cmd_types_[i] == CMD_CREATE) {
+				const int32_t e = create_entity();
+				cmd_entities_[i] = e;
+				if (create_idx < cmd_created_.size()) {
+					cmd_created_[create_idx] = e;
+				}
+				++create_idx;
+			}
+		}
+	}
+	// 第二遍: 解析占位句柄, 执行其他命令
+	for (size_t i = 0; i < cmd_types_.size(); ++i) {
+		if (cmd_types_[i] == CMD_CREATE) {
+			continue; // 已处理
+		}
+		int32_t e = cmd_entities_[i];
+		if (e < 0) {
+			// 负句柄: 引用之前第 (|e|-1) 个 create 生成的实体
+			const int32_t ci = -e - 1;
+			if (ci >= 0 && ci < int32_t(cmd_created_.size())) {
+				e = cmd_created_[ci];
+			} else {
+				continue; // 无效句柄
+			}
+		}
+		switch (cmd_types_[i]) {
+			case CMD_DESTROY:
+				if (e >= 0 && is_alive(e)) {
+					destroy_entity(e);
+				}
+				break;
+			case CMD_ADD_COMP:
+				if (e >= 0 && is_alive(e)) {
+					add_component(e, cmd_comps_[i]);
+				}
+				break;
+			case CMD_REMOVE_COMP:
+				if (e >= 0 && is_alive(e)) {
+					remove_component(e, cmd_comps_[i]);
+				}
+				break;
+			default:
+				break;
+		}
+	}
+	cmd_types_.clear();
+	cmd_entities_.clear();
+	cmd_comps_.clear();
+	cmd_created_.clear();
 }
 
 // ---------------------------------------------------------------------------
@@ -1202,4 +1469,12 @@ void ECSCore::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("prefab_add", "prefab", "comp", "values"), &ECSCore::prefab_add);
 	ClassDB::bind_method(D_METHOD("instantiate", "prefab", "count", "overrides"), &ECSCore::instantiate);
 	ClassDB::bind_method(D_METHOD("prefab_get_field", "prefab", "comp", "field"), &ECSCore::prefab_get_field);
+	ClassDB::bind_method(D_METHOD("cmd_create"), &ECSCore::cmd_create);
+	ClassDB::bind_method(D_METHOD("cmd_destroy", "entity"), &ECSCore::cmd_destroy);
+	ClassDB::bind_method(D_METHOD("cmd_add_component", "entity", "comp"), &ECSCore::cmd_add_component);
+	ClassDB::bind_method(D_METHOD("cmd_remove_component", "entity", "comp"), &ECSCore::cmd_remove_component);
+	ClassDB::bind_method(D_METHOD("flush_commands"), &ECSCore::flush_commands);
+	ClassDB::bind_method(D_METHOD("pending_command_count"), &ECSCore::pending_command_count);
+	ClassDB::bind_method(D_METHOD("created_entity_at", "index"), &ECSCore::created_entity_at);
+	ClassDB::bind_method(D_METHOD("row_of_entity", "comp", "entity"), &ECSCore::row_of_entity);
 }

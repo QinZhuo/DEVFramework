@@ -82,7 +82,10 @@ func _run(ctx: ECSSystemContext, delta: float) -> void:
 	w.set_column(BattleCell, &"pos", pos_col)
 	w.set_column(BattleCell, &"vel", vel_col)
 	w.set_column(BattleCell, &"hp", hp_col)
+	# 击杀销毁: 用 Command Buffer 排队(行号 -> 实体ID), 帧末统一删除,
+	# 避免在系统遍历中直接改结构(迭代失效/重入问题)
 	for e in _dead:
-		if w.is_alive(e):
-			w.destroy_entity(e)
+		var eid := w.entity_of_row(BattleCell, e)
+		if eid >= 0:
+			w.cmd_destroy(eid)
 	_dead.clear()

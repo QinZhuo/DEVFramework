@@ -9,11 +9,11 @@ var world: ECSWorld
 func _init(p_world: ECSWorld) -> void:
 	world = p_world
 
-## 匹配实体行号列表(可直接索引任意组件列)
+## 匹配实体行号列表(anchor 组件的 dense 行号, 可直接索引该组件列)
 func rows(anchor, must: Array = [], without: Array = []) -> PackedInt32Array:
 	return world.query_rows(anchor, must, without)
 
-## 取某组件某字段的整列(按行号索引, 本地只读/修改)
+## 取某组件某字段的整列(按 anchor 组件的行号索引, 本地只读/修改)
 func column(component, field: StringName):
 	return world.get_column(component, field)
 
