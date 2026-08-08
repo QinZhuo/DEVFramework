@@ -8,17 +8,25 @@
 #include <godot_cpp/variant/packed_byte_array.hpp>
 #include <godot_cpp/variant/packed_color_array.hpp>
 #include <godot_cpp/variant/packed_float32_array.hpp>
+#include <godot_cpp/variant/packed_float64_array.hpp>
 #include <godot_cpp/variant/packed_int32_array.hpp>
 #include <godot_cpp/variant/packed_string_array.hpp>
 #include <godot_cpp/variant/packed_vector2_array.hpp>
 #include <godot_cpp/variant/packed_vector3_array.hpp>
+#include <godot_cpp/variant/packed_vector4_array.hpp>
+#include <godot_cpp/variant/rect2.hpp>
 #include <godot_cpp/variant/string.hpp>
 #include <godot_cpp/variant/string_name.hpp>
+#include <godot_cpp/variant/transform3d.hpp>
 #include <godot_cpp/variant/vector2.hpp>
 #include <godot_cpp/variant/vector3.hpp>
+#include <godot_cpp/variant/vector4.hpp>
 #include <godot_cpp/variant/variant.hpp>
-
 #include <cstdint>
+#include <condition_variable>
+#include <functional>
+#include <mutex>
+#include <thread>
 #include <vector>
 
 namespace godot {
@@ -50,13 +58,14 @@ struct ECSSparseSet {
 // ---------------------------------------------------------------------------
 struct ECSColumn {
 	Variant::Type type = Variant::NIL;
-	PackedInt32Array i32;   // INT
-	PackedFloat32Array f32; // FLOAT
-	PackedByteArray b;      // BOOL
-	PackedVector2Array v2;  // VECTOR2
-	PackedVector3Array v3;  // VECTOR3
-	PackedColorArray col;   // COLOR
-	PackedStringArray s;    // STRING
+	PackedInt32Array i32;    // INT
+	PackedFloat32Array f32;  // FLOAT
+	PackedByteArray b;       // BOOL
+	PackedVector2Array v2;   // VECTOR2
+	PackedVector3Array v3;   // VECTOR3
+	PackedVector4Array v4;   // VECTOR4
+	PackedColorArray col;    // COLOR
+	PackedStringArray s;     // STRING
 
 	void resize(size_t n);
 	void push_default(const Variant &value);
@@ -206,6 +215,27 @@ private:
 	std::vector<int32_t> free_list_;
 	// prefab 模板实体 index 集合
 	std::vector<int32_t> prefab_indices_;
+
+	// ---- 并行线程池 (batch 分片并行) ----
+	mutable std::vector<std::thread> workers_;
+	mutable std::mutex task_mutex_;
+	mutable std::condition_variable task_cv_;
+	mutable std::vector<std::function<void()>> tasks_;
+	mutable bool workers_stop_ = false;
+	mutable int active_tasks_ = 0;
+	mutable bool workers_started_ = false;
+	int thread_count_ = 0;
+
+	void ensure_workers();
+	void stop_workers();
+	// 设置线程数(0=自动按硬件, 1=单线程/串行, 用于调试对比)
+	void set_thread_count(int count);
+	// 并行执行: 把 [0, n) 切成 slices 片, 每片一个线程执行 fn(work_begin, work_end)
+	template <typename F>
+	void parallel_for(size_t n, F &&fn);
+
+public:
+	~ECSCore();
 };
 
 } // namespace godot

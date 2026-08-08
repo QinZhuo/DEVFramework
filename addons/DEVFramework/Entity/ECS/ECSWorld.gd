@@ -53,6 +53,11 @@ var _dirty_schedule := true
 var _event_queues := {}                  # type(StringName) -> Array[Variant]
 var _event_subscribers := {}             # type(StringName) -> Array[Callable]
 
+# ---------------- 查询缓存 ----------------
+var _query_cache := {}                   # 查询签名 -> PackedInt32Array
+var _cache_version := 0                  # 结构版本(实体/组件变化时 +1)
+var _query_cache_version := -1           # 缓存对应的版本
+
 func _init(use_shared_core: bool = true) -> void:
 	# 默认使用全局共享核心(游戏通常只有一个世界);
 	# 需要多个隔离世界(如性能对比/沙盒)时传 false 创建独立核心。
@@ -117,7 +122,10 @@ func registered_components() -> Array[Script]:
 
 ## 创建实体, 返回实体 id(int32: index|version<<24)
 func create_entity() -> int:
-	return _core.create_entity() if _available else -1
+	var e: int = _core.create_entity() if _available else -1
+	if e >= 0:
+		_cache_version += 1
+	return e
 
 func is_alive(entity: int) -> bool:
 	return _available and _core.is_alive(entity)
@@ -126,6 +134,7 @@ func is_alive(entity: int) -> bool:
 func destroy_entity(entity: int) -> void:
 	if _available:
 		_core.destroy_entity(entity)
+		_cache_version += 1
 
 ## 给实体附加组件。component 传 ECSComponent 子类或已注册类名。
 func add_component(entity: int, component, def_data: Dictionary = {}) -> bool:
@@ -136,6 +145,7 @@ func add_component(entity: int, component, def_data: Dictionary = {}) -> bool:
 		return false
 	if not _core.add_component(entity, name):
 		return false
+	_cache_version += 1
 	# 附加后用 def_data 覆盖默认值(可选, 数据驱动兼容)
 	for k in def_data:
 		_core.set_field(entity, name, StringName(k), def_data[k])
@@ -153,6 +163,7 @@ func remove_component(entity: int, component) -> void:
 	var name := _resolve_component_name(component)
 	if name != &"":
 		_core.remove_component(entity, name)
+		_cache_version += 1
 
 func _resolve_component_name(component) -> StringName:
 	if component is Script:
@@ -186,6 +197,7 @@ func set_field(entity: int, component, field: StringName, value) -> void:
 ## anchor/must/without 传组件类名或 Script。
 ## 行号可直接索引 get_column 返回的任意组件列 —— 跨组件对齐, 零转换。
 ## 需要实体 ID 时用 entity_of_row() 转换。
+## 带缓存: 相同签名查询复用结果, 实体/组件结构变化时自动失效。
 func query_rows(anchor, must: Array = [], without: Array = []) -> PackedInt32Array:
 	if not _available:
 		return PackedInt32Array()
@@ -198,7 +210,15 @@ func query_rows(anchor, must: Array = [], without: Array = []) -> PackedInt32Arr
 	var without_names := PackedStringArray()
 	for w in without:
 		without_names.append(_resolve_component_name(w))
-	return _core.query_rows(anchor_name, must_names, without_names)
+	var key := str(anchor_name) + "|" + str(must_names) + "|" + str(without_names)
+	if _query_cache.has(key) and _query_cache_version == _cache_version:
+		return _query_cache[key]
+	var result: PackedInt32Array = _core.query_rows(anchor_name, must_names, without_names)
+	if _query_cache.size() > 64:
+		_query_cache.clear()  # 缓存过大时清空(防内存膨胀)
+	_query_cache[key] = result
+	_query_cache_version = _cache_version
+	return result
 
 ## 取整列数据(返回 Packed 数组拷贝, 按行号索引)。
 func get_column(component, field: StringName):
@@ -307,6 +327,22 @@ func _resort() -> void:
 	var n := _systems.size()
 	var prerequisites: Array = []  # 每项: Array[ECSSystem] 必须在其之前
 	prerequisites.resize(n)
+	# 预计算各系统的读写组件集合(用于自动推断)
+	var sys_writes: Array = []   # 每项: Array[StringName] 写入组件
+	var sys_reads: Array = []    # 每项: Array[StringName] 读取组件
+	for i in n:
+		var w: Array[StringName] = []
+		for c in _systems[i].write_components():
+			var cn: StringName = _resolve_component_name(c)
+			if cn != &"":
+				w.append(cn)
+		sys_writes.append(w)
+		var r: Array[StringName] = []
+		for c in _systems[i].read_components():
+			var cn: StringName = _resolve_component_name(c)
+			if cn != &"":
+				r.append(cn)
+		sys_reads.append(r)
 	for i in n:
 		var pre: Array = []
 		for other in _system_after[i]:
@@ -316,6 +352,20 @@ func _resort() -> void:
 		for j in n:
 			if _system_before[j].has(_systems[i]):
 				pre.append(_systems[j])
+		# 自动推断: 若该系统的 after/before 声明为空, 则按读写组件推断
+		# 规则: 写某组件的系统, 必须在"读或写同一组件"的系统之前
+		if _system_after[i].is_empty() and _system_before[i].is_empty():
+			for j in n:
+				if j == i:
+					continue
+				# 若 j 读/写了 i 写入的组件, 则 i 必须先于 j
+				var conflict := false
+				for ci in sys_writes[i]:
+					if sys_reads[j].has(ci) or sys_writes[j].has(ci):
+						conflict = true
+						break
+				if conflict and not pre.has(_systems[j]):
+					pre.append(_systems[j])
 		prerequisites[i] = pre
 
 	# 2) Kahn 拓扑排序(每次取"前置全满足且优先级最高"者)

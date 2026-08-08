@@ -26,6 +26,17 @@ var enabled: bool = true
 func required_components() -> Array[Script]:
 	return []
 
+## 本系统"只读"的组件类。用于依赖图自动推断。
+## 默认 = required_components()(假设全部只读), 可覆写以精确声明。
+func read_components() -> Array[Script]:
+	return required_components()
+
+## 本系统"会写入"的组件类。用于依赖图自动推断。
+## 默认 = 空(假设只读), 写入系统请覆写。
+## 例: func write_components() -> Array[Script]: return [HealthComponent]
+func write_components() -> Array[Script]:
+	return []
+
 ## 用户实现: 每帧业务逻辑
 func _run(_ctx: ECSSystemContext, _delta: float) -> void:
 	pass

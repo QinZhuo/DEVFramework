@@ -8,6 +8,102 @@
 using namespace godot;
 
 // ---------------------------------------------------------------------------
+// ECSCore 并行线程池 (batch 分片并行)
+// ---------------------------------------------------------------------------
+
+void ECSCore::ensure_workers() {
+	if (workers_started_) {
+		return;
+	}
+	if (thread_count_ <= 0) {
+		unsigned hw = std::thread::hardware_concurrency();
+		thread_count_ = std::clamp(int(hw > 1 ? hw - 1 : 1), 1, 8);
+	}
+	workers_started_ = true;
+	for (int i = 0; i < thread_count_; ++i) {
+		workers_.emplace_back([this]() {
+			while (true) {
+				std::function<void()> task;
+				{
+					std::unique_lock<std::mutex> lock(task_mutex_);
+					task_cv_.wait(lock, [this]() { return workers_stop_ || !tasks_.empty(); });
+					if (workers_stop_ && tasks_.empty()) {
+						return;
+					}
+					task = std::move(tasks_.back());
+					tasks_.pop_back();
+				}
+				task();
+				{
+					std::lock_guard<std::mutex> lock(task_mutex_);
+					--active_tasks_;
+				}
+				task_cv_.notify_all();
+			}
+		});
+	}
+}
+
+void ECSCore::stop_workers() {
+	{
+		std::lock_guard<std::mutex> lock(task_mutex_);
+		workers_stop_ = true;
+	}
+	task_cv_.notify_all();
+	for (auto &t : workers_) {
+		if (t.joinable()) {
+			t.join();
+		}
+	}
+	workers_.clear();
+	workers_started_ = false;
+	workers_stop_ = false;
+}
+
+void ECSCore::set_thread_count(int count) {
+	stop_workers();
+	if (count <= 0) {
+		unsigned hw = std::thread::hardware_concurrency();
+		thread_count_ = std::clamp(int(hw > 1 ? hw - 1 : 1), 1, 8);
+	} else {
+		thread_count_ = std::clamp(count, 1, 8);
+	}
+	ensure_workers();
+}
+
+template <typename F>
+void ECSCore::parallel_for(size_t n, F &&fn) {
+	ensure_workers();  // 确保线程池启动 + thread_count_ 就绪
+	if (n < 10000 || thread_count_ <= 1) {
+		fn(0, n);
+		return;
+	}
+	const size_t slices = size_t(thread_count_);
+	const size_t chunk = (n + slices - 1) / slices;
+	{
+		std::lock_guard<std::mutex> lock(task_mutex_);
+		for (size_t s = 0; s < slices; ++s) {
+			const size_t begin = s * chunk;
+			const size_t end = std::min(begin + chunk, n);
+			if (begin >= end) {
+				break;
+			}
+			++active_tasks_;
+			tasks_.emplace_back([begin, end, &fn]() { fn(begin, end); });
+		}
+	}
+	task_cv_.notify_all();
+	{
+		std::unique_lock<std::mutex> lock(task_mutex_);
+		task_cv_.wait(lock, [this]() { return active_tasks_ <= 0; });
+	}
+}
+
+ECSCore::~ECSCore() {
+	stop_workers();
+}
+
+// ---------------------------------------------------------------------------
 // ECSSparseSet
 // ---------------------------------------------------------------------------
 
@@ -48,6 +144,7 @@ void ECSColumn::resize(size_t n) {
 		case Variant::BOOL: b.resize(int32_t(n)); break;
 		case Variant::VECTOR2: v2.resize(int32_t(n)); break;
 		case Variant::VECTOR3: v3.resize(int32_t(n)); break;
+		case Variant::VECTOR4: v4.resize(int32_t(n)); break;
 		case Variant::COLOR: col.resize(int32_t(n)); break;
 		case Variant::STRING: s.resize(int32_t(n)); break;
 		default: break;
@@ -61,6 +158,7 @@ void ECSColumn::push_default(const Variant &value) {
 		case Variant::BOOL: b.push_back(bool(value)); break;
 		case Variant::VECTOR2: v2.push_back(Vector2(value)); break;
 		case Variant::VECTOR3: v3.push_back(Vector3(value)); break;
+		case Variant::VECTOR4: v4.push_back(Vector4(value)); break;
 		case Variant::COLOR: col.push_back(Color(value)); break;
 		case Variant::STRING: s.push_back(String(value)); break;
 		default: break;
@@ -74,6 +172,7 @@ Variant ECSColumn::get(size_t row) const {
 		case Variant::BOOL: return bool(b[int32_t(row)]);
 		case Variant::VECTOR2: return v2[int32_t(row)];
 		case Variant::VECTOR3: return v3[int32_t(row)];
+		case Variant::VECTOR4: return v4[int32_t(row)];
 		case Variant::COLOR: return col[int32_t(row)];
 		case Variant::STRING: return s[int32_t(row)];
 		default: return Variant();
@@ -88,6 +187,7 @@ void ECSColumn::set(size_t row, const Variant &value) {
 		case Variant::BOOL: b[r] = uint8_t(bool(value)); break;
 		case Variant::VECTOR2: v2[r] = Vector2(value); break;
 		case Variant::VECTOR3: v3[r] = Vector3(value); break;
+		case Variant::VECTOR4: v4[r] = Vector4(value); break;
 		case Variant::COLOR: col[r] = Color(value); break;
 		case Variant::STRING: s[r] = String(value); break;
 		default: break;
@@ -101,6 +201,7 @@ size_t ECSColumn::size() const {
 		case Variant::BOOL: return size_t(b.size());
 		case Variant::VECTOR2: return size_t(v2.size());
 		case Variant::VECTOR3: return size_t(v3.size());
+		case Variant::VECTOR4: return size_t(v4.size());
 		case Variant::COLOR: return size_t(col.size());
 		case Variant::STRING: return size_t(s.size());
 		default: return 0;
@@ -416,6 +517,7 @@ Variant ECSCore::get_column(const StringName &comp, const StringName &field) con
 		case Variant::BOOL: return col.b;
 		case Variant::VECTOR2: return col.v2;
 		case Variant::VECTOR3: return col.v3;
+		case Variant::VECTOR4: return col.v4;
 		case Variant::COLOR: return col.col;
 		case Variant::STRING: return col.s;
 		default: return Variant();
@@ -439,6 +541,7 @@ void ECSCore::set_column(const StringName &comp, const StringName &field, const 
 		case Variant::BOOL: col.b = values; break;
 		case Variant::VECTOR2: col.v2 = values; break;
 		case Variant::VECTOR3: col.v3 = values; break;
+		case Variant::VECTOR4: col.v4 = values; break;
 		case Variant::COLOR: col.col = values; break;
 		case Variant::STRING: col.s = values; break;
 		default: break;
@@ -612,28 +715,34 @@ int64_t ECSCore::batch_apply_where(const StringName &anchor, const PackedStringA
 		case Variant::INT: {
 			int32_t *w = col.i32.ptrw();
 			const int32_t add = int32_t(addend);
-			for (int32_t e : rows) {
-				switch (op) {
-					case BATCH_ADD: w[e] += add; break;
-					case BATCH_MUL_ADD: w[e] = int32_t(double(w[e]) * factor + addend); break;
-					case BATCH_SET: w[e] = add; break;
-					default: break;
+			parallel_for(rows.size(), [&](size_t b, size_t e) {
+				for (size_t i = b; i < e; ++i) {
+					const int32_t entity = rows[i];
+					switch (op) {
+						case BATCH_ADD: w[entity] += add; break;
+						case BATCH_MUL_ADD: w[entity] = int32_t(double(w[entity]) * factor + addend); break;
+						case BATCH_SET: w[entity] = add; break;
+						default: break;
+					}
 				}
-				++n;
-			}
+			});
+			n = int64_t(rows.size());
 			break;
 		}
 		case Variant::FLOAT: {
 			float *w = col.f32.ptrw();
-			for (int32_t e : rows) {
-				switch (op) {
-					case BATCH_ADD: w[e] += float(addend); break;
-					case BATCH_MUL_ADD: w[e] = float(double(w[e]) * factor + addend); break;
-					case BATCH_SET: w[e] = float(addend); break;
-					default: break;
+			parallel_for(rows.size(), [&](size_t b, size_t e) {
+				for (size_t i = b; i < e; ++i) {
+					const int32_t entity = rows[i];
+					switch (op) {
+						case BATCH_ADD: w[entity] += float(addend); break;
+						case BATCH_MUL_ADD: w[entity] = float(double(w[entity]) * factor + addend); break;
+						case BATCH_SET: w[entity] = float(addend); break;
+						default: break;
+					}
 				}
-				++n;
-			}
+			});
+			n = int64_t(rows.size());
 			break;
 		}
 		default:
@@ -668,28 +777,34 @@ int64_t ECSCore::batch_apply(const StringName &anchor, const PackedStringArray &
 		case Variant::INT: {
 			int32_t *w = col.i32.ptrw();
 			const int32_t add = int32_t(addend);
-			for (int32_t e : rows) {
-				switch (op) {
-					case BATCH_ADD: w[e] += add; break;
-					case BATCH_MUL_ADD: w[e] = int32_t(double(w[e]) * factor + addend); break;
-					case BATCH_SET: w[e] = add; break;
-					default: break;
+			parallel_for(rows.size(), [&](size_t b, size_t e) {
+				for (size_t i = b; i < e; ++i) {
+					const int32_t entity = rows[i];
+					switch (op) {
+						case BATCH_ADD: w[entity] += add; break;
+						case BATCH_MUL_ADD: w[entity] = int32_t(double(w[entity]) * factor + addend); break;
+						case BATCH_SET: w[entity] = add; break;
+						default: break;
+					}
 				}
-				++n;
-			}
+			});
+			n = int64_t(rows.size());
 			break;
 		}
 		case Variant::FLOAT: {
 			float *w = col.f32.ptrw();
-			for (int32_t e : rows) {
-				switch (op) {
-					case BATCH_ADD: w[e] += float(addend); break;
-					case BATCH_MUL_ADD: w[e] = float(double(w[e]) * factor + addend); break;
-					case BATCH_SET: w[e] = float(addend); break;
-					default: break;
+			parallel_for(rows.size(), [&](size_t b, size_t e) {
+				for (size_t i = b; i < e; ++i) {
+					const int32_t entity = rows[i];
+					switch (op) {
+						case BATCH_ADD: w[entity] += float(addend); break;
+						case BATCH_MUL_ADD: w[entity] = float(double(w[entity]) * factor + addend); break;
+						case BATCH_SET: w[entity] = float(addend); break;
+						default: break;
+					}
 				}
-				++n;
-			}
+			});
+			n = int64_t(rows.size());
 			break;
 		}
 		default:
@@ -732,20 +847,26 @@ int64_t ECSCore::batch_clamp(const StringName &anchor, const PackedStringArray &
 			int32_t *w = col.i32.ptrw();
 			const int32_t *mn = mincol.i32.ptr();
 			const int32_t *mx = maxcol.i32.ptr();
-			for (int32_t e : rows) {
-				w[e] = CLAMP(w[e], mn[e], mx[e]);
-				++n;
-			}
+			parallel_for(rows.size(), [&](size_t b, size_t e) {
+				for (size_t i = b; i < e; ++i) {
+					const int32_t entity = rows[i];
+					w[entity] = CLAMP(w[entity], mn[entity], mx[entity]);
+				}
+			});
+			n = int64_t(rows.size());
 			break;
 		}
 		case Variant::FLOAT: {
 			float *w = col.f32.ptrw();
 			const float *mn = mincol.f32.ptr();
 			const float *mx = maxcol.f32.ptr();
-			for (int32_t e : rows) {
-				w[e] = CLAMP(w[e], mn[e], mx[e]);
-				++n;
-			}
+			parallel_for(rows.size(), [&](size_t b, size_t e) {
+				for (size_t i = b; i < e; ++i) {
+					const int32_t entity = rows[i];
+					w[entity] = CLAMP(w[entity], mn[entity], mx[entity]);
+				}
+			});
+			n = int64_t(rows.size());
 			break;
 		}
 		default:
@@ -783,18 +904,24 @@ int64_t ECSCore::batch_vec_add(const StringName &anchor, const PackedStringArray
 		Vector2 *p = poscol.v2.ptrw();
 		const Vector2 *v = velcol.v2.ptr();
 		const float d = float(delta);
-		for (int32_t e : rows) {
-			p[e] += v[e] * d;
-			++n;
-		}
+		parallel_for(rows.size(), [&](size_t b, size_t e) {
+			for (size_t i = b; i < e; ++i) {
+				const int32_t entity = rows[i];
+				p[entity] += v[entity] * d;
+			}
+		});
+		n = int64_t(rows.size());
 	} else if (poscol.type == Variant::VECTOR3 && velcol.type == Variant::VECTOR3) {
 		Vector3 *p = poscol.v3.ptrw();
 		const Vector3 *v = velcol.v3.ptr();
 		const float d = float(delta);
-		for (int32_t e : rows) {
-			p[e] += v[e] * d;
-			++n;
-		}
+		parallel_for(rows.size(), [&](size_t b, size_t e) {
+			for (size_t i = b; i < e; ++i) {
+				const int32_t entity = rows[i];
+				p[entity] += v[entity] * d;
+			}
+		});
+		n = int64_t(rows.size());
 	}
 	return n;
 }
@@ -807,6 +934,8 @@ Dictionary ECSCore::debug_stats() const {
 	Dictionary d;
 	d["components"] = int64_t(components_.size());
 	d["entity_pool"] = int64_t(versions_.size());
+	d["threads"] = int64_t(thread_count_);
+	d["workers_started"] = workers_started_;
 	Array comp_counts;
 	for (const auto &c : components_) {
 		comp_counts.append(int64_t(c.set.size()));
@@ -1065,6 +1194,7 @@ void ECSCore::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("batch_clamp", "anchor", "must", "op_comp", "op_field", "min_comp", "min_field", "max_comp", "max_field"), &ECSCore::batch_clamp);
 	ClassDB::bind_method(D_METHOD("batch_vec_add", "anchor", "must", "pos_comp", "pos_field", "vel_comp", "vel_field", "delta"), &ECSCore::batch_vec_add);
 	ClassDB::bind_method(D_METHOD("debug_stats"), &ECSCore::debug_stats);
+	ClassDB::bind_method(D_METHOD("set_thread_count", "count"), &ECSCore::set_thread_count);
 	ClassDB::bind_method(D_METHOD("serialize"), &ECSCore::serialize);
 	ClassDB::bind_method(D_METHOD("deserialize", "data"), &ECSCore::deserialize);
 	ClassDB::bind_method(D_METHOD("create_prefab"), &ECSCore::create_prefab);
