@@ -3,6 +3,7 @@
 #include <godot_cpp/variant/utility_functions.hpp>
 
 #include <algorithm>
+#include <unordered_map>
 
 using namespace godot;
 
@@ -353,15 +354,15 @@ Variant ECSCore::get_field(int32_t entity, const StringName &comp, const StringN
 	if (c == nullptr) {
 		return Variant();
 	}
-	const int32_t row = c->set.row_of(index);
-	if (row < 0) {
+	// 稀疏集只用于"该实体是否拥有此组件", 列按实体 ID 直接索引(稀疏)
+	if (!c->set.has(index)) {
 		return Variant();
 	}
 	const int fi = c->field_index(field);
 	if (fi < 0) {
 		return Variant();
 	}
-	return c->columns[fi].get(row);
+	return c->columns[fi].get(index);
 }
 
 void ECSCore::set_field(int32_t entity, const StringName &comp, const StringName &field, const Variant &value) {
@@ -370,15 +371,14 @@ void ECSCore::set_field(int32_t entity, const StringName &comp, const StringName
 	if (c == nullptr) {
 		return;
 	}
-	const int32_t row = c->set.row_of(index);
-	if (row < 0) {
+	if (!c->set.has(index)) {
 		return;
 	}
 	const int fi = c->field_index(field);
 	if (fi < 0) {
 		return;
 	}
-	c->columns[fi].set(row, value);
+	c->columns[fi].set(index, value);
 }
 
 // ---------------------------------------------------------------------------
@@ -630,6 +630,130 @@ Dictionary ECSCore::debug_stats() const {
 }
 
 // ---------------------------------------------------------------------------
+// ECSCore — 序列化/反序列化
+// ---------------------------------------------------------------------------
+
+Dictionary ECSCore::serialize() const {
+	Dictionary root;
+	root["version"] = int64_t(1);
+	Array comps;
+	for (const auto &c : components_) {
+		Dictionary cd;
+		cd["name"] = c.name;
+		// 字段描述
+		Array farr;
+		Array fnames_arr;
+		Array ftypes_arr;
+		Array fdefaults_arr;
+		for (size_t fi = 0; fi < c.fields.size(); ++fi) {
+			fnames_arr.append(c.fields[fi].name);
+			ftypes_arr.append(int64_t(c.fields[fi].type));
+			fdefaults_arr.append(c.defaults[fi]);
+		}
+		cd["field_names"] = fnames_arr;
+		cd["field_types"] = ftypes_arr;
+		cd["defaults"] = fdefaults_arr;
+		// 实体数据: 稀疏集 dense 里的实体 + 各字段值
+		// 注意: 列按"实体 ID"索引(稀疏), 必须用实体 ID e 取值, 而非行号 r!
+		Array entities;
+		const auto &dense = c.set.dense;
+		for (int32_t r = 0; r < int32_t(dense.size()); ++r) {
+			const int32_t e = dense[r];
+			Dictionary ed;
+			ed["entity"] = e;
+			Array vals;
+			for (size_t fi = 0; fi < c.columns.size(); ++fi) {
+				vals.append(c.columns[fi].get(e));
+			}
+			ed["values"] = vals;
+			entities.append(ed);
+		}
+		cd["entities"] = entities;
+		comps.append(cd);
+	}
+	root["components"] = comps;
+	root["pool_size"] = int64_t(versions_.size());
+	return root;
+}
+
+Array ECSCore::deserialize(const Dictionary &data) {
+	Array result; // 新建实体的实体 ID 列表
+	if (!data.has("components")) {
+		return result;
+	}
+	// 第一遍: 收集所有需要创建的实体 ID 集合(按出现顺序)
+	std::vector<int32_t> entity_ids;
+	{
+		Array comps = data["components"];
+		for (int32_t i = 0; i < comps.size(); ++i) {
+			Dictionary cd = comps[i];
+			Array entities = cd["entities"];
+			for (int32_t j = 0; j < entities.size(); ++j) {
+				Dictionary ed = entities[j];
+				const int32_t saved_id = int32_t(int64_t(ed["entity"]));
+				bool seen = false;
+				for (int32_t e : entity_ids) {
+					if (e == saved_id) {
+						seen = true;
+						break;
+					}
+				}
+				if (!seen) {
+					entity_ids.push_back(saved_id);
+				}
+			}
+		}
+	}
+	// 建立 存档ID -> 新实体ID 映射, 并创建实体
+	std::unordered_map<int32_t, int32_t> id_map;
+	id_map.reserve(entity_ids.size());
+	for (int32_t saved_id : entity_ids) {
+		const int32_t new_id = create_entity();
+		id_map[saved_id] = new_id;
+		result.append(new_id); // 返回真实实体 ID
+	}
+
+	// 第二遍: 填充组件数据
+	Array comps = data["components"];
+	for (int32_t i = 0; i < comps.size(); ++i) {
+		Dictionary cd = comps[i];
+		const StringName name = cd["name"];
+		ECSComponentData *c = find_comp(name);
+		if (c == nullptr) {
+			continue;
+		}
+		Array entities = cd["entities"];
+		for (int32_t j = 0; j < entities.size(); ++j) {
+			Dictionary ed = entities[j];
+			const int32_t saved_id = int32_t(int64_t(ed["entity"]));
+			auto it = id_map.find(saved_id);
+			if (it == id_map.end()) {
+				continue;
+			}
+			const int32_t index = it->second & 0x00FFFFFF;
+			c->set.add(index);
+			const int32_t need = index + 1;
+			for (size_t fi = 0; fi < c->columns.size(); ++fi) {
+				ECSColumn &col = c->columns[fi];
+				if (col.size() < size_t(need)) {
+					col.resize(size_t(need));
+				}
+			}
+			Array vals = ed["values"];
+			const int32_t nv = int32_t(vals.size());
+			for (int32_t fi = 0; fi < int32_t(c->columns.size()); ++fi) {
+				if (fi < nv) {
+					c->columns[fi].set(index, vals[fi]);
+				} else {
+					c->columns[fi].set(index, c->defaults[fi]);
+				}
+			}
+		}
+	}
+	return result;
+}
+
+// ---------------------------------------------------------------------------
 // ECSCore — 绑定
 // ---------------------------------------------------------------------------
 
@@ -652,4 +776,6 @@ void ECSCore::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("batch_clamp", "anchor", "must", "op_comp", "op_field", "min_comp", "min_field", "max_comp", "max_field"), &ECSCore::batch_clamp);
 	ClassDB::bind_method(D_METHOD("batch_vec_add", "anchor", "must", "pos_comp", "pos_field", "vel_comp", "vel_field", "delta"), &ECSCore::batch_vec_add);
 	ClassDB::bind_method(D_METHOD("debug_stats"), &ECSCore::debug_stats);
+	ClassDB::bind_method(D_METHOD("serialize"), &ECSCore::serialize);
+	ClassDB::bind_method(D_METHOD("deserialize", "data"), &ECSCore::deserialize);
 }

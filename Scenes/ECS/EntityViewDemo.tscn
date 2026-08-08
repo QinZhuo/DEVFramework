@@ -1,0 +1,57 @@
+[gd_scene format=3 uid="uid://rdfjaoednchw"]
+
+[ext_resource type="Script" path="res://Scenes/ECS/EntityViewDemo.gd" id="1_demo"]
+
+[node name="EntityViewDemo" type="Control"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("1_demo")
+
+[node name="WorldRoot" type="Node2D" parent="."]
+unique_name_in_owner = true
+
+[node name="StatsLabel" type="Label" parent="."]
+unique_name_in_owner = true
+offset_left = 16.0
+offset_top = 16.0
+offset_right = 560.0
+offset_bottom = 160.0
+theme_override_colors/font_color = Color(0.9, 0.95, 1, 1)
+theme_override_font_sizes/font_size = 18
+text = "EntityView 桥接 Demo"
+
+[node name="SaveButton" type="Button" parent="."]
+unique_name_in_owner = true
+offset_left = 16.0
+offset_top = 620.0
+offset_right = 130.0
+offset_bottom = 660.0
+text = "💾 存档"
+
+[node name="LoadButton" type="Button" parent="."]
+unique_name_in_owner = true
+offset_left = 140.0
+offset_top = 620.0
+offset_right = 254.0
+offset_bottom = 660.0
+text = "📂 读档"
+
+[node name="DestroyButton" type="Button" parent="."]
+unique_name_in_owner = true
+offset_left = 264.0
+offset_top = 620.0
+offset_right = 390.0
+offset_bottom = 660.0
+text = "💥 摧毁全部"
+
+[node name="RespawnButton" type="Button" parent="."]
+unique_name_in_owner = true
+offset_left = 400.0
+offset_top = 620.0
+offset_right = 526.0
+offset_bottom = 660.0
+text = "🔄 重生"

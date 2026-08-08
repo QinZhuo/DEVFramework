@@ -112,45 +112,61 @@ func bind_pos_xy(component: Script, x_field: StringName = &"x", y_field: StringN
 func _process(delta: float) -> void:
 	if not _active or world == null or node == null:
 		return
-	_sync_ecs_to_node()
+	# 单向模式(one_way=true): 每帧 ECS→节点
+	# 双向模式(one_way=false): 停止自动同步, 由外部 sync_node_to_ecs() 手动写回
+	if one_way:
+		_sync_ecs_to_node()
 
 
-## ECS 位置 → 节点位置
+## 取 ECS 位置 → Vector2
+func _ecs_pos2() -> Vector2:
+	if pos_use_xy:
+		return Vector2(world.get_field(entity_id, pos_comp, _x_field),
+				world.get_field(entity_id, pos_comp, _y_field))
+	var v = world.get_field(entity_id, pos_comp, pos_field)
+	if v is Vector2:
+		return v
+	if v is Vector3:
+		return Vector2(v.x, v.y)
+	return Vector2.ZERO
+
+
+## ECS 位置 → 节点位置(支持 Node2D/Node3D/Control)
 func _sync_ecs_to_node() -> void:
 	if pos_comp == null:
 		return
+	var p := _ecs_pos2()
 	if node is Node2D:
-		if pos_use_xy:
-			node.position = Vector2(world.get_field(entity_id, pos_comp, _x_field),
-					world.get_field(entity_id, pos_comp, _y_field))
-		else:
-			var v = world.get_field(entity_id, pos_comp, pos_field)
-			node.position = v if v is Vector2 else (Vector3(v) if v is Vector3 else Vector2.ZERO)
+		node.position = p
+	elif node is Control:
+		node.position = p
 	elif node is Node3D:
-		if pos_use_xy:
-			node.position = Vector3(world.get_field(entity_id, pos_comp, _x_field),
-					world.get_field(entity_id, pos_comp, _y_field), 0)
-		else:
-			var v = world.get_field(entity_id, pos_comp, pos_field)
-			node.position = v if v is Vector3 else (Vector3(v.x, v.y, 0) if v is Vector2 else Vector3.ZERO)
+		node.position = Vector3(p.x, p.y, 0)
 
 
 ## 手动触发节点 → ECS 同步(双向模式用)
 func sync_node_to_ecs() -> void:
 	if pos_comp == null or node == null:
 		return
-	if node is Node2D:
-		if pos_use_xy:
+	if pos_use_xy:
+		if node is Node2D:
 			world.set_field(entity_id, pos_comp, _x_field, node.position.x)
 			world.set_field(entity_id, pos_comp, _y_field, node.position.y)
-		else:
-			world.set_field(entity_id, pos_comp, pos_field, node.position)
-	elif node is Node3D:
-		if pos_use_xy:
+		elif node is Control:
+			world.set_field(entity_id, pos_comp, _x_field, node.position.x)
+			world.set_field(entity_id, pos_comp, _y_field, node.position.y)
+		elif node is Node3D:
 			world.set_field(entity_id, pos_comp, _x_field, node.position.x)
 			world.set_field(entity_id, pos_comp, _y_field, node.position.z)
-		else:
-			world.set_field(entity_id, pos_comp, pos_field, node.position)
+	else:
+		var p: Vector2
+		if node is Node2D:
+			p = node.position
+		elif node is Control:
+			p = node.position
+		elif node is Node3D:
+			p = Vector2(node.position.x, node.position.z)
+		world.set_field(entity_id, pos_comp, pos_field, p)
 
 
 ## 停用同步(不销毁)

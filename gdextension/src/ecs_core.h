@@ -149,6 +149,16 @@ public:
 	// 内存统计(调试)
 	Dictionary debug_stats() const;
 
+	// ---- 序列化/反序列化 (对接 SaveTool 存档) ----
+	// 序列化整个世界: 返回 {components: [{name, fields:[{name,type}], defaults:[...],
+	//   entities: [{entity, values:[...]}]}], pool_size}
+	// 字段值按注册顺序排列; 无组件实体不参与(仅组件数据)。
+	Dictionary serialize() const;
+	// 反序列化: 重建组件注册 + 实体 + 数据。
+	// 返回 Array[int]: 新建实体的真实实体 ID 列表(调用方用它绑定 EntityView 等)。
+	// 注意: 需先 register_component 同名的组件(名称一致), 否则忽略该组件数据。
+	Array deserialize(const Dictionary &data);
+
 private:
 	// ---- 内部 ----
 	ECSComponentData *find_comp(const StringName &name);

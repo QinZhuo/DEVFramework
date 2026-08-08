@@ -375,3 +375,21 @@ func _dispatch_events() -> void:
 			for h in handlers:
 				h.call(payload)
 		queue.clear()
+
+# ============================================================
+#  序列化/存档 (对接 SaveTool)
+# ============================================================
+
+## 序列化整个世界的组件数据 → Dictionary, 可交给 SaveTool.save_data 存档。
+func serialize() -> Dictionary:
+	return _core.serialize() if _available else {}
+
+## 反序列化: 重建实体与数据。
+## 返回 Array[int]: 新建实体的真实实体 ID 列表(用它绑定 EntityView 等)。
+## 注意: 组件需先 register_component(名称一致)再调用。
+func deserialize(data: Dictionary) -> Array:
+	return _core.deserialize(data) if _available else []
+
+## 内存统计(调试)
+func debug_stats() -> Dictionary:
+	return _core.debug_stats() if _available else {}
