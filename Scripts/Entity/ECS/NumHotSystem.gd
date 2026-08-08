@@ -1,7 +1,7 @@
 class_name NumHotSystem
 extends ECSSystem
 
-## 纯数值热点(手写脚本层) —— 与 ECSRule 统一查询链 + Callback 执行。
+## 纯数值热点(手写脚本层) —— 与 查询链 统一查询链 + Callback 执行。
 ##
 ## 模拟真实战斗数值结算: 每个实体做多次数值操作。
 ##   - 回血: hp = min(max_hp, hp + regen)

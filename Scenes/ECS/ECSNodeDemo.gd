@@ -52,7 +52,7 @@ func _setup_world() -> void:
 	# 可选: 移动系统(展示 ECS 驱动)
 	world.register_system(ECSMoveSystem.new(), 20)
 	# 声明规则层: 给 hp<50 的关键实体回血(遍历→条件→动作, C++ 批量执行)
-	world.register_rule(HealRule.new(), 5)
+	world.register_system(HealRule.new(), 5)
 
 
 ## ① 海量实体: 从 ECSPrefabDef 配置批量生成(配置驱动 + C++ 高性能实例化)

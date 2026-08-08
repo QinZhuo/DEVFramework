@@ -10,5 +10,5 @@ func required_components() -> Array[Script]:
 func _run(ctx: ECSSystemContext, _delta: float) -> void:
 	var w := ctx.world
 	# 每秒回 2 点: hp < 100 的 +2 (batch 原生批量)
-	w.batch_add_value_if(BattleCell, [], BattleCell, &"hp", 2.0,
+	w.batch_apply_where(BattleCell, [], BattleCell, &"hp", ECSWorld.BatchOp.ADD_VALUE, 0.0, 2.0,
 		[{"comp": BattleCell, "field": &"hp", "op": ECSWorld.CondOp.LESS_THAN, "value": 100.0}])

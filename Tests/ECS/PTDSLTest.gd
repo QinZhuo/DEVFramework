@@ -1,7 +1,7 @@
 class_name PTDSLTest
 extends RefCounted
 
-## 规则层 DSL 扩展自检: 列间运算(add_col/set_from/clamp_if) + each 预拉列自动写回
+## 规则层 DSL 扩展自检: 列间运算(add_from/set_from/clamp_where) + each 预拉列自动写回
 
 static func _q(w: ECSWorld) -> ECSRuleQuery:
 	return load("res://addons/DEVFramework/ECS/ECSRuleQuery.gd").new()._init_rule(w, PTCompA)
@@ -22,20 +22,20 @@ static func run() -> void:
 		w.set_field(e, PTCompB, &"x", i * 2)
 		ids.append(e)
 
-	# ---- clamp_if: x > 4 的实体 clamp x 到 [0, 8] ----
+	# ---- clamp_where: x > 4 的实体 clamp x 到 [0, 8] ----
 	var q := _q(w)
 	q.where(&"x").greater_than(4)
-	q.clamp_if(&"x", PTCompA, &"min_v", PTCompA, &"max_v")
+	q.clamp_where(&"x", PTCompA, &"min_v", PTCompA, &"max_v")
 	q.execute()
 	print("[DSL] clamp_x9=", int(w.get_field(ids[9], PTCompA, &"x")),   # 9 → 8
 			" clamp_x5=", int(w.get_field(ids[5], PTCompA, &"x")),       # 5 → 5
 			" clamp_x3=", int(w.get_field(ids[3], PTCompA, &"x")))       # 3(条件外) → 3
 
-	# ---- add_col: a.x += b.x (INT 列间) ----
+	# ---- add_from: a.x += b.x (INT 列间) ----
 	var q2 := _q(w)
-	q2.add_col(&"x", PTCompB, &"x")
+	q2.add_from(&"x", PTCompB, &"x")
 	q2.execute()
-	print("[DSL] add_col=", int(w.get_field(ids[1], PTCompA, &"x")))    # 1+2=3
+	print("[DSL] add_from=", int(w.get_field(ids[1], PTCompA, &"x")))    # 1+2=3
 
 	# ---- set_from: a.y = a.z * 2 (FLOAT, factor) ----
 	var q3 := _q(w)

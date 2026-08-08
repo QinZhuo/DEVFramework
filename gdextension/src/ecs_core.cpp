@@ -789,11 +789,9 @@ Dictionary ECSCore::get_columns(const Array &comps_fields) const {
 }
 
 // 借出列: 把内部列移出(内部置空), 返回独占引用 —— 回调内写列无 COW 深拷贝。
+// 支持并行: 多个系统同时借出不同组件列时计数累加, 互不干扰。
 Dictionary ECSCore::borrow_columns(const Array &comps_fields) {
-	if (_borrowed_active_) {
-		UtilityFunctions::push_error("ECSCore::borrow_columns: 存在未归还的借出列! 必须 return_columns 归还后再借出。");
-	}
-	_borrowed_active_ = true;
+	_borrow_count_.fetch_add(1);
 	Dictionary out;
 	for (int32_t i = 0; i < comps_fields.size(); ++i) {
 		Dictionary cf = comps_fields[i];
@@ -829,7 +827,7 @@ Dictionary ECSCore::borrow_columns(const Array &comps_fields) {
 
 // 归还列: 内部列 = 返回数组(指针交换 O(1))。
 void ECSCore::return_columns(const Dictionary &borrowed) {
-	_borrowed_active_ = false;
+	_borrow_count_.fetch_sub(1);
 	Array keys = borrowed.keys();
 	for (int32_t i = 0; i < keys.size(); ++i) {
 		const StringName comp = StringName(keys[i]);
@@ -863,7 +861,7 @@ void ECSCore::return_columns(const Dictionary &borrowed) {
 }
 
 bool ECSCore::is_column_borrowed() const {
-	return _borrowed_active_;
+	return _borrow_count_.load() > 0;
 }
 void ECSCore::set_columns(const Dictionary &values) {
 	// Godot Dictionary 无顺序索引, 用 keys()

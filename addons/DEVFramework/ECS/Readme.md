@@ -117,16 +117,16 @@ func _run(ctx: ECSSystemContext, delta: float) -> void:
 
 **三种动作模式**（同一查询链）：
 - **标量动作**：`.add()/.sub()/.mul()/.div()/.set_value()` → C++ batch
-- **列间动作**：`.add_col()/.set_from()/.clamp_if()` → C++ batch
+- **列间动作**：`.add_from()/.set_from()/.clamp_where()` → C++ batch
 - **回调动作**：`.each(cb)` → GDScript 灵活逻辑
 
-`ECSSystemContext` 也保留底层直连（`rows`/`column`/`write`/`get_field`/`set_field`/`emit`）供高级用法。
+`ECSSystemContext` 提供查询链入口 `for_each` 与低频 `get_field`/`set_field`/`emit`（底层列直连用 `ECSWorld.get_column`/`set_column`）。
 
 ---
 
 ## 五、规则层 DSL（C++ batch 执行）
 
-`ECSRuleQuery`（由 `ctx.for_each(Comp, must=[], without=[])` 创建）链式构建，**链尾必须 `.execute()`**（`ECSRule` 由 `_execute_all` 自动执行，手写系统内需显式）。
+`ECSRuleQuery`（由 `ctx.for_each(Comp, must=[], without=[])` 创建）链式构建，**链尾必须 `.execute()`**（`查询链` 由 `_execute_all` 自动执行，手写系统内需显式）。
 
 ### 标量动作
 
@@ -150,18 +150,18 @@ ctx.for_each(HealthComponent)
 ctx.for_each(BattleCell).set_from(&"size", BattleCell, &"hp", 0.08, 8.0).execute()
 
 # dmg += atk
-ctx.for_each(BattleCell).add_col(&"dmg", BattleCell, &"atk").execute()
+ctx.for_each(BattleCell).add_from(&"dmg", BattleCell, &"atk").execute()
 
 # 仅 hp>0 的实体 hp = clamp(hp, min_hp, max_hp)（混合类型边界支持）
-ctx.for_each(BattleCell).where(&"hp").greater_than(0).clamp_if(&"hp", BattleCell, &"min_hp", BattleCell, &"max_hp").execute()
+ctx.for_each(BattleCell).where(&"hp").greater_than(0).clamp_where(&"hp", BattleCell, &"min_hp", BattleCell, &"max_hp").execute()
 ```
 
 | 动作 | 语义 |
 |---|---|
-| `add_col/sub_col` | 目标列 `+= / -=` 源列 |
-| `mul_col/div_col` | 目标列 `*= / /=` 源列（可乘 factor，除零跳过） |
+| `add_from/sub_from` | 目标列 `+= / -=` 源列 |
+| `mul_from/div_from` | 目标列 `*= / /=` 源列（可乘 factor，除零跳过） |
 | `set_from(field, src, src_field, factor, addend)` | 目标列 `= 源列*factor + addend` |
-| `clamp_if(field, min_comp, min_field, max_comp, max_field)` | 满足条件时列钳制 |
+| `clamp_where(field, min_comp, min_field, max_comp, max_field)` | 满足条件时列钳制 |
 
 `must`/`without` 过滤（组件匹配）：
 
@@ -372,7 +372,7 @@ world.register_system(ECSSyncSystem.new(), 10)
 | 编译 | `-march=native`（本机全部 SIMD 指令集） |
 
 **性能实践建议**：
-- 数值热点用规则 DSL（`add/sub/mul/div/add_col/set_from/clamp_if`）→ C++ batch。
+- 数值热点用规则 DSL（`add/sub/mul/div/add_from/set_from/clamp_where`）→ C++ batch。
 - 高频写路径用 `borrow/return` 避免 COW；复杂逻辑用 `each(fields)` 预拉列 + 自动写回。
 - 海量实体渲染直读列（参考 `ECSPointCloud`），关键实体用 `ECSNode`。
 - 并行系统声明好 `read/write_components()`，结构变更走 `cmd_*`。

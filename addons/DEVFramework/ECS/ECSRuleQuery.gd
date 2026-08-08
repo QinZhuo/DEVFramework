@@ -1,16 +1,16 @@
 class_name ECSRuleQuery
 extends RefCounted
 
-## 统一查询链 —— ECSRule(声明规则)与手写脚本系统共用的"遍历→条件→动作"构建器。
+## 统一查询链 —— 查询链(声明规则)与手写脚本系统共用的"遍历→条件→动作"构建器。
 ##
 ## 三种动作模式:
 ##   1. 标量声明动作(规则层, C++ batch 执行, 最快):
 ##        for_each(Comp).where(&"x").less_than(50).add(&"x", 10)   # 加
 ##        ...sub(...) / mul(...) / div(...) / set_value(...)       # 减/乘/除/赋值
 ##   2. 列间声明动作(规则层, C++ batch 执行, 列与列联动):
-##        for_each(Comp).add_col(&"size", Comp, &"hp")             # size += hp
-##        ...mul_col(...) / sub_col(...) / div_col(...) / set_from(...)
-##        for_each(Comp).clamp_if(&"hp", Comp, &"min_hp", Comp, &"max_hp")
+##        for_each(Comp).add_from(&"size", Comp, &"hp")             # size += hp
+##        ...mul_from(...) / sub_from(...) / div_from(...) / set_from(...)
+##        for_each(Comp).clamp_where(&"hp", Comp, &"min_hp", Comp, &"max_hp")
 ##   3. Callback 动作(手写层, GDScript 执行, 最灵活):
 ##        for_each(Comp).each(func(rows, data): ...)   # data 预拉列, 自动写回
 ## 手写层与规则层共享同一查询链: 组件匹配(must/without) + 条件(where) 完全一致。
@@ -81,25 +81,25 @@ func set_value(field: StringName, value) -> ECSRuleQuery:
 # ---------- 列间声明动作(规则层, C++ batch 执行, 列与列联动) ----------
 
 ## 动作: 目标字段 += 源字段列(src 组件某字段, 可传 Script 或类名)
-func add_col(field: StringName, src, src_field: StringName) -> ECSRuleQuery:
+func add_from(field: StringName, src, src_field: StringName) -> ECSRuleQuery:
 	actions.append({"type": "col", "field": field, "src": src, "src_field": src_field,
 			"op": ECSWorld.ColOp.COL_ADD, "factor": 1.0, "addend": 0.0})
 	return self
 
 ## 动作: 目标字段 -= 源字段列
-func sub_col(field: StringName, src, src_field: StringName) -> ECSRuleQuery:
+func sub_from(field: StringName, src, src_field: StringName) -> ECSRuleQuery:
 	actions.append({"type": "col", "field": field, "src": src, "src_field": src_field,
 			"op": ECSWorld.ColOp.COL_SUB, "factor": 1.0, "addend": 0.0})
 	return self
 
 ## 动作: 目标字段 *= 源字段列(可标量缩放 factor)
-func mul_col(field: StringName, src, src_field: StringName, factor: float = 1.0) -> ECSRuleQuery:
+func mul_from(field: StringName, src, src_field: StringName, factor: float = 1.0) -> ECSRuleQuery:
 	actions.append({"type": "col", "field": field, "src": src, "src_field": src_field,
 			"op": ECSWorld.ColOp.COL_MUL, "factor": factor, "addend": 0.0})
 	return self
 
 ## 动作: 目标字段 /= 源字段列(除零跳过)
-func div_col(field: StringName, src, src_field: StringName, factor: float = 1.0) -> ECSRuleQuery:
+func div_from(field: StringName, src, src_field: StringName, factor: float = 1.0) -> ECSRuleQuery:
 	actions.append({"type": "col", "field": field, "src": src, "src_field": src_field,
 			"op": ECSWorld.ColOp.COL_DIV, "factor": factor, "addend": 0.0})
 	return self
@@ -111,7 +111,7 @@ func set_from(field: StringName, src, src_field: StringName, factor: float = 1.0
 	return self
 
 ## 动作: 仅满足条件的实体 目标字段 = clamp(目标字段, min, max)(列间边界)
-func clamp_if(field: StringName, min_comp, min_field: StringName,
+func clamp_where(field: StringName, min_comp, min_field: StringName,
 		max_comp, max_field: StringName) -> ECSRuleQuery:
 	actions.append({"type": "clamp", "field": field,
 			"min_comp": min_comp, "min_field": min_field,
@@ -169,20 +169,20 @@ func _run() -> int:
 	for act in actions:
 		match act.type:
 			"add":
-				total += world.batch_add_value_if(anchor, must, anchor, act.field,
-						act.amount, conditions)
+				total += world.batch_apply_where(anchor, must, anchor, act.field,
+						ECSWorld.BatchOp.ADD_VALUE, 0.0, float(act.amount), conditions)
 			"sub":
-				total += world.batch_apply_if(anchor, must, anchor, act.field,
+				total += world.batch_apply_where(anchor, must, anchor, act.field,
 						ECSWorld.BatchOp.ADD_VALUE, 0.0, -float(act.amount), conditions)
 			"mul":
-				total += world.batch_apply_if(anchor, must, anchor, act.field,
+				total += world.batch_apply_where(anchor, must, anchor, act.field,
 						ECSWorld.BatchOp.MULTIPLY_ADD, float(act.factor), 0.0, conditions)
 			"div":
-				total += world.batch_apply_if(anchor, must, anchor, act.field,
+				total += world.batch_apply_where(anchor, must, anchor, act.field,
 						ECSWorld.BatchOp.MULTIPLY_ADD, 1.0 / float(act.divisor), 0.0, conditions)
 			"set":
-				total += world.batch_set_value_if(anchor, must, anchor, act.field,
-						act.value, conditions)
+				total += world.batch_apply_where(anchor, must, anchor, act.field,
+						ECSWorld.BatchOp.SET_VALUE, 0.0, float(act.value), conditions)
 			"col":
 				total += world.batch_apply_col(anchor, must, anchor, act.field,
 						act.src, act.src_field, act.op, act.factor, act.addend, conditions)

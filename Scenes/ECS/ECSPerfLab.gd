@@ -7,7 +7,7 @@ extends Control
 ##
 ## 四路实现:
 ##   A. 手写脚本层 : ECS + GDScript 循环
-##   B. 声明规则层 : ECS + 声明规则(ECSRule)
+##   B. 声明规则层 : ECS + 声明规则(查询链)
 ##   C. 原生API层  : ECS + batch 批量运算
 ##   D. 普通Node实现: 传统 OOP
 
@@ -137,7 +137,7 @@ func _build_battle_worlds() -> void:
 			"声明规则层":
 				w.register_system(BattleSystem.new(), 20)
 				w.register_system(BattleSizeSystem.new(), 10)
-				w.register_rule(BattleRecoverRule.new(), 5)
+				w.register_system(BattleRecoverRule.new(), 5)
 			"原生API层":
 				w.register_system(BattleSystem.new(), 20)
 				w.register_system(BattleSizeSystem.new(), 10)
@@ -196,7 +196,7 @@ func _build_numhot_worlds() -> void:
 			"手写脚本层":
 				w.register_system(NumHotSystem.new(), 10)
 			"声明规则层":
-				w.register_rule(NumHotRule.new(), 10)
+				w.register_system(NumHotRule.new(), 10)
 			"原生API层":
 				w.register_system(NumHotNativeSystem.new(), 10)
 		_ecs_worlds[mode] = w

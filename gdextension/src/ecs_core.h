@@ -22,6 +22,7 @@
 #include <godot_cpp/variant/vector3.hpp>
 #include <godot_cpp/variant/vector4.hpp>
 #include <godot_cpp/variant/variant.hpp>
+#include <atomic>
 #include <cstdint>
 #include <condition_variable>
 #include <functional>
@@ -308,8 +309,8 @@ private:
 	std::vector<int32_t> entity_sig_;
 	// prefab 模板实体 index 集合
 	std::vector<int32_t> prefab_indices_;
-	// 列借出状态(borrow_columns 未归还时为 true)
-	bool _borrowed_active_ = false;
+	// 列借出计数(borrow_columns 增加、return_columns 减少; 并行多个借出时原子累加)
+	std::atomic<int> _borrow_count_{0};
 
 	// ---- 并行线程池 (batch 分片并行) ----
 	mutable std::vector<std::thread> workers_;

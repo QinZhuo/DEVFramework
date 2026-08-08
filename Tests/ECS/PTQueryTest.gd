@@ -1,7 +1,7 @@
 class_name PTQueryTest
 extends RefCounted
 
-## ECSRule 统一查询链自检: each Callback / sub·mul·div 动作 / must·without / query_aligned_where
+## 查询链 统一查询链自检: each Callback / sub·mul·div 动作 / must·without / query_aligned_where
 
 static var seen: Array = []
 

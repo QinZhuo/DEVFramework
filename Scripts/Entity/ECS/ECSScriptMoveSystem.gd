@@ -1,7 +1,7 @@
 class_name ECSScriptMoveSystem
 extends ECSSystem
 
-## 手写脚本层: 移动系统 —— 与 ECSRule 统一查询链 + Callback 执行。
+## 手写脚本层: 移动系统 —— 与 查询链 统一查询链 + Callback 执行。
 ## 与 ECSMoveSystem(原生API层)逻辑完全对称: pos += vel * delta。
 ## 区别: 用 ctx.for_each(...).each(...) 查询链, 回调内逐实体在 GDScript 循环访问列。
 

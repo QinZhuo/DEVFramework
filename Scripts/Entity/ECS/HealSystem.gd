@@ -14,13 +14,11 @@ func write_components() -> Array[Script]:
 
 func _run(ctx: ECSSystemContext, delta: float) -> void:
 	exec_order.append("Heal")
-	var rows: PackedInt32Array = ctx.rows(HealthComponent)
-	if rows.is_empty():
-		return
-	var hp: PackedInt32Array = ctx.column(HealthComponent, &"hp")
-	var max_hp: PackedInt32Array = ctx.column(HealthComponent, &"max_hp")
-	var heal := int(5.0 * delta * 60.0)
-	for r in rows:
-		if hp[r] < max_hp[r]:
-			hp[r] = mini(hp[r] + heal, max_hp[r])
-	ctx.write(HealthComponent, &"hp", hp)
+	ctx.for_each(HealthComponent).each(func(rows: PackedInt32Array, data: Dictionary):
+		var hp: PackedInt32Array = data["HealthComponent"]["hp"]
+		var max_hp: PackedInt32Array = data["HealthComponent"]["max_hp"]
+		var heal := int(5.0 * delta * 60.0)
+		for r in rows:
+			if hp[r] < max_hp[r]:
+				hp[r] = mini(hp[r] + heal, max_hp[r])
+	, {HealthComponent: [&"hp", &"max_hp"]}).execute()

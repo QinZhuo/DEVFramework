@@ -1,13 +1,13 @@
 class_name BattleSystem
 extends ECSSystem
 
-## 吞并战斗系统 —— 核心逻辑(各层共用)。与 ECSRule 统一查询链 + Callback 执行。
+## 吞并战斗系统 —— 核心逻辑(各层共用)。与 查询链 统一查询链 + Callback 执行。
 ##
 ## 负责: 找敌 + 移动 + 攻击判定 + 扣血 + 击杀吞并。
 ## 每个细胞各自为战: 无阵营, 找最近的任何活细胞攻击, 击杀后由最近活细胞吞并。
 ## 大小(size)更新由各层的"数值系统"负责(体现实现差异):
 ##   - 手写脚本层: BattleSizeSystem (统一查询链 Callback)
-##   - 声明规则层: BattleSizeRule (ECSRule)
+##   - 声明规则层: BattleSizeRule (查询链)
 ##   - 原生API层:  BattleSizeNativeSystem (batch)
 ##
 ## 注: 本系统是逻辑主体, 各层相同; 数值层体现性能差异。

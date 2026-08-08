@@ -28,14 +28,14 @@ extends RefCounted
 ##   - 线程数: world.parallel_threads = N(0=自动); 最小并行系统数:
 ##     world.parallel_min_systems = N
 
-## —— 批量运算操作符(传给 batch_apply / batch_apply_if 的 op 参数) ——
+## —— 批量运算操作符(传给 batch_apply / batch_apply_where 的 op 参数) ——
 enum BatchOp {
 	ADD_VALUE = 0,       # 加值:   col += addend
 	MULTIPLY_ADD = 1,    # 乘加:   col = col * factor + addend
 	SET_VALUE = 2,       # 赋值:   col = addend
 }
 
-## —— 条件比较符(传给 batch_apply_if / batch_count_if 的 conditions.op) ——
+## —— 条件比较符(传给 batch_apply_where / batch_count_where 的 conditions.op) ——
 enum CondOp {
 	LESS_THAN = 0,        # <   小于
 	LESS_OR_EQUAL = 1,    # <=  小于等于
@@ -356,10 +356,10 @@ func query_aligned(anchor, must: Array = [], without: Array = []) -> Array:
 	_cache_mutex.unlock()
 	return result
 
-## 对齐行号 + 条件过滤查询(供 ECSRule.call 等高级遍历)。
+## 对齐行号 + 条件过滤查询(供 查询链.call 等高级遍历)。
 ## 只返回满足 conditions 的实体; 对齐输出的组件由 comps 显式指定。
 ## 返回 Array: [0] = anchor 行号(已过滤), [1..] = comps[i] 的对齐行号。
-## 不缓存(条件变化无稳定签名)。conditions 格式同 batch_apply_if。
+## 不缓存(条件变化无稳定签名)。conditions 格式同 batch_apply_where。
 func query_aligned_where(anchor, must: Array = [], without: Array = [],
 		conditions: Array = [], comps: Array = []) -> Array:
 	var anchor_name := _resolve_component_name(anchor)
@@ -1110,7 +1110,7 @@ func _fire_entity_destroyed(entity: int) -> void:
 # ============================================================
 #  变化检测 (组件级脏标记)
 #  通过框架写 API 的字段修改会标记组件"本帧被写":
-#    set_field / set_column / batch_apply / batch_apply_if / batch_clamp / batch_vec_add
+#    set_field / set_column / batch_apply / batch_apply_where / batch_clamp / batch_vec_add
 #  注意: get_column 返回共享引用后原地修改不经过写 API, 不会被标记。
 # ============================================================
 
@@ -1177,7 +1177,7 @@ func on_entity_event(type: StringName, filter: Array, handler: Callable) -> void
 	on_event(type, wrapped)
 
 ## 订阅"实体事件"并按组件过滤(带 where 条件)。
-## conditions: Array[Dictionary] 同 batch_apply_if 条件格式。
+## conditions: Array[Dictionary] 同 batch_apply_where 条件格式。
 ## handler(entity_id, data)。
 func on_entity_event_where(type: StringName, filter: Array, conditions: Array, handler: Callable) -> void:
 	var wrapped := func(payload):
@@ -1300,10 +1300,10 @@ func debug_stats() -> Dictionary:
 ## 返回处理的实体数。
 ##
 ## 示例(给 hp<50 的实体 +10):
-##   world.batch_apply_if(HealthComponent, [], HealthComponent, &"hp",
+##   world.batch_apply_where(HealthComponent, [], HealthComponent, &"hp",
 ##       ECSWorld.BatchOp.ADD_VALUE, 0.0, 10.0,
 ##       [{comp: HealthComponent, field: &"hp", op: ECSWorld.CondOp.LESS_THAN, value: 50}])
-func batch_apply_if(anchor, must: Array, op_comp, op_field: StringName,
+func batch_apply_where(anchor, must: Array, op_comp, op_field: StringName,
 		op: int, factor: float, addend: float, conditions: Array) -> int:
 	var an := _resolve_component_name(anchor)
 	var ocn := _resolve_component_name(op_comp)
@@ -1317,27 +1317,12 @@ func batch_apply_if(anchor, must: Array, op_comp, op_field: StringName,
 	return _core.batch_apply_where(an, _names(must),
 		ocn, op_field, op, factor, addend, _normalize_conds(conditions))
 
-## 便捷: 给满足条件的实体的目标字段增加值 amount。
-## 等价于 batch_apply_if(..., BatchOp.ADD_VALUE, 0.0, amount, conditions)。
-## 示例(给 hp<50 的实体回血 10):
-##   world.batch_add_value_if(HealthComponent, [], HealthComponent, &"hp", 10.0,
-##       [{comp: HealthComponent, field: &"hp", op: ECSWorld.CondOp.LESS_THAN, value: 50}])
-func batch_add_value_if(anchor, must: Array, op_comp, op_field: StringName,
-		amount: float, conditions: Array) -> int:
-	return batch_apply_if(anchor, must, op_comp, op_field, BatchOp.ADD_VALUE, 0.0, amount, conditions)
-
-## 便捷: 给满足条件的实体的目标字段设置为 value。
-## 等价于 batch_apply_if(..., BatchOp.SET_VALUE, 0.0, value, conditions)。
-func batch_set_value_if(anchor, must: Array, op_comp, op_field: StringName,
-		value: float, conditions: Array) -> int:
-	return batch_apply_if(anchor, must, op_comp, op_field, BatchOp.SET_VALUE, 0.0, value, conditions)
-
 ## 统计满足指定条件的实体数量(纯查询, 不修改任何数据)。
-## conditions 格式同 batch_apply_if。
+## conditions 格式同 batch_apply_where。
 ## 示例(统计血量不满的敌人数量):
-##   world.batch_count_if(HealthComponent, [],
+##   world.batch_count_where(HealthComponent, [],
 ##       [{comp: HealthComponent, field: &"hp", op: ECSWorld.CondOp.LESS_THAN, value: 100}])
-func batch_count_if(anchor, must: Array, conditions: Array) -> int:
+func batch_count_where(anchor, must: Array, conditions: Array) -> int:
 	var an := _resolve_component_name(anchor)
 	_record_access(an)
 	for mn in _names(must):
@@ -1420,18 +1405,6 @@ func spawn_from_def(def: ECSPrefabDef, count: int = 1, overrides: Dictionary = {
 	if prefab < 0:
 		return []
 	return instantiate(prefab, count, overrides)
-
-# ============================================================
-#  声明规则层 (ECSRule: 遍历→条件→动作, C++ 批量执行)
-# ============================================================
-
-## 注册声明规则(自动包成 ECSRuleSystem 加入世界, 每帧执行)。
-## priority 与 register_system 一致(越大越先执行)。
-func register_rule(rule: ECSRule, priority: int = 0) -> ECSRuleSystem:
-	var system := ECSRuleSystem.new()
-	system.add_rule(rule)
-	register_system(system, priority)
-	return system
 
 # ============================================================
 #  暂停/恢复(对比时暂停未选中的世界)

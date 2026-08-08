@@ -1,5 +1,5 @@
 class_name CombatRule
-extends ECSRule
+extends ECSSystem
 
 ## 战斗规则测试: 多条件 + 多动作
 ##   - hp > 80 的实体: 扣 30 血(攻击)
@@ -8,8 +8,8 @@ extends ECSRule
 func required_components() -> Array[Script]:
 	return [HealthComponent]
 
-func _define(ctx: ECSRuleContext) -> void:
+func _run(ctx: ECSSystemContext, _delta: float) -> void:
 	# 高血量被打: hp > 80 的 -30
-	ctx.for_each(HealthComponent).where(&"hp").greater_than(80).add(&"hp", -30)
+	ctx.for_each(HealthComponent).where(&"hp").greater_than(80).add(&"hp", -30).execute()
 	# 保底: hp <= 0 的设为 1
-	ctx.for_each(HealthComponent).where(&"hp").less_or_equal(0).set_value(&"hp", 1)
+	ctx.for_each(HealthComponent).where(&"hp").less_or_equal(0).set_value(&"hp", 1).execute()
