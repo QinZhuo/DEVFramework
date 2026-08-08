@@ -10,12 +10,14 @@ gdextension/build*/
 # 固定 commit 于官方仓库，内部文件不直接纳入本仓库管理
 # （克隆后执行: git submodule update --init）
 
-# addons/DEVFramework/Entity/ECS/Native/ 是发布目录：
+# addons/DEVFramework/ECS/Native/ 是发布目录：
 # 带平台后缀的动态库（.macos.debug.arm64 等）必须提交，用户拿到即用
 # 无后缀的原始编译产物（libdevecs.dylib 等）忽略
-addons/DEVFramework/Entity/ECS/Native/libdevecs.dylib
-addons/DEVFramework/Entity/ECS/Native/libdevecs.so
-addons/DEVFramework/Entity/ECS/Native/libdevecs.dll
+addons/DEVFramework/ECS/Native/libdevecs.dylib
+addons/DEVFramework/ECS/Native/libdevecs.so
+addons/DEVFramework/ECS/Native/libdevecs.dll
+# Godot 加载 GDExtension 时生成的 ~ 前缀临时副本，不入库
+addons/DEVFramework/ECS/Native/~*
 addons/VoxelSupport/Native/~*
 
 # GDExtension uid 缓存不入库
