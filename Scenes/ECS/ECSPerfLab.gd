@@ -94,10 +94,12 @@ func _setup_all() -> void:
 		%WorldRoot.add_child(unit)
 		_plain_nodes.append(unit)
 
-	# 点阵抽样
+	# 点阵抽样 + 分屏边界(左路只画左半屏, 右路只画右半屏)
 	var step := ceili(entity_count / 3000.0)
 	cloud_l.set_sample_step(step)
 	cloud_r.set_sample_step(step)
+	cloud_l.set_bounds(Rect2(0, 0, 575, 720))      # 左半屏
+	cloud_r.set_bounds(Rect2(575, 0, 575, 720))    # 右半屏
 
 
 func _apply_comparison() -> void:
