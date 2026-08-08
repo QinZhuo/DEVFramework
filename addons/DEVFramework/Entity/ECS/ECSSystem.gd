@@ -40,3 +40,14 @@ func write_components() -> Array[Script]:
 ## 用户实现: 每帧业务逻辑
 func _run(_ctx: ECSSystemContext, _delta: float) -> void:
 	pass
+
+## 本系统是否允许与其他系统并行执行(同一帧)。
+## 并行前提(必须全部满足, 否则请覆写返回 false):
+##   - 不访问场景树/节点/渲染/UI 等主线程独占资源
+##   - 不依赖帧内其他系统产生的瞬时状态
+##   - read_components()/write_components() 已准确声明全部读写组件
+## 框架会按"组件访问集合"自动做冲突检测: 访问同一组件的系统自动串行,
+## 互不访问的系统才真正并行 —— 无需在此手动指定谁与谁并行。
+## 访问场景树/节点的系统(如 ECSSyncSystem)必须覆写返回 false。
+func can_run_parallel() -> bool:
+	return true

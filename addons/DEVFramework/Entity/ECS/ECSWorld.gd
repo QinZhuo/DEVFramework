@@ -4,6 +4,7 @@ extends RefCounted
 ## ECS 世界 —— 用户主入口。持有 C++ 核心(ECSCore), 提供:
 ##   - 组件注册 / 实体创建与销毁
 ##   - 系统注册与按优先级调度(tick)
+##   - 系统级并行执行(冲突检测分批, 多线程并行)
 ##   - 批量查询与列访问(高频路径)
 ##   - 批量事件队列(替代信号风暴)
 ##
@@ -14,6 +15,18 @@ extends RefCounted
 ##   world.add_component(e, HealthComponent)
 ##   world.register_system(HealSystem.new())        # ECSSystem 子类
 ##   world.tick(delta)                              # 每帧调用(或挂 ECSTick Node)
+##
+## 系统级并行(默认开启, 无需任何配置即可自动生效):
+##   - 首帧自动串行预热, 采集各系统实际访问的组件集合
+##   - 之后每帧按"组件访问冲突"贪心分批: 访问同一组件或有 before/after
+##     依赖的系统自动串行, 互不干扰的系统在多个线程上并行执行
+##   - 不可并行的系统(如访问场景树/节点)需覆写 ECSSystem.can_run_parallel()
+##     返回 false(参考 ECSSyncSystem)
+##   - 并行系统内请用 Command Buffer 排队结构变更(cmd_*),
+##     且 read_components()/write_components() 声明尽量准确
+##   - 关闭并行: world.parallel_enabled = false(回退纯串行, 与旧版行为一致)
+##   - 线程数: world.parallel_threads = N(0=自动); 最小并行系统数:
+##     world.parallel_min_systems = N
 
 ## —— 批量运算操作符(传给 batch_apply / batch_apply_if 的 op 参数) ——
 enum BatchOp {
@@ -48,6 +61,28 @@ var _system_before: Array = []   # 每系统: 必须在其后执行的系统引�
 var _system_after: Array = []    # 每系统: 必须在其前执行的系统引用数组
 var _sorted: Array[ECSSystem] = []
 var _dirty_schedule := true
+
+# ---------------- 系统级并行调度 ----------------
+## 全局开关: 是否启用系统级并行执行。关闭后回退纯串行(行为与旧版完全一致)。
+var parallel_enabled: bool = true
+## 并行线程数。0=自动(硬件核数-1, 上限8)。同一并行批内最多并行这么多系统。
+var parallel_threads: int = 0
+## 至少多少个启用系统才考虑并行(系统太少时线程开销 > 收益)。
+var parallel_min_systems: int = 2
+
+var _tracking := false                    # 本帧是否追踪组件访问(并行打开且系统数达标)
+var _preheated := false                   # 是否已完成首帧串行预热(此后才允许并行)
+var _parallel_batch_active := false       # 本帧正处于并行批(禁用查询缓存, 防陈旧结果)
+var _access_sets := {}                    # ECSSystem -> {compName:true} 上一帧累积的访问记录
+var _pending_access := {}                 # ECSSystem -> {compName:true} 本帧访问缓冲
+var _access_target: Dictionary = {}       # 当前任务的访问目标集(跨线程, 用锁保护)
+var _access_target_active := false        # 当前是否有活动任务在记录访问
+var _system_access_declared := {}         # ECSSystem -> {compName:true} 声明的读写组件(静态缓存)
+var _access_mutex := Mutex.new()
+var _cache_mutex := Mutex.new()           # 查询缓存
+var _event_mutex := Mutex.new()           # 事件队列
+var _cmd_mutex := Mutex.new()             # 命令缓冲
+var _struct_mutex := Mutex.new()          # 立即结构变更(create/destroy/add/remove)
 
 # ---------------- 事件队列 ----------------
 var _event_queues := {}                  # type(StringName) -> Array[Variant]
@@ -122,9 +157,14 @@ func registered_components() -> Array[Script]:
 
 ## 创建实体, 返回实体 id(int32: index|version<<24)
 func create_entity() -> int:
-	var e: int = _core.create_entity() if _available else -1
+	if not _available:
+		return -1
+	var e: int = -1
+	_struct_mutex.lock()
+	e = _core.create_entity()
 	if e >= 0:
 		_cache_version += 1
+	_struct_mutex.unlock()
 	return e
 
 func is_alive(entity: int) -> bool:
@@ -133,8 +173,10 @@ func is_alive(entity: int) -> bool:
 ## 销毁实体(从所有组件移除, 复用 id 防悬垂)
 func destroy_entity(entity: int) -> void:
 	if _available:
+		_struct_mutex.lock()
 		_core.destroy_entity(entity)
 		_cache_version += 1
+		_struct_mutex.unlock()
 
 ## 给实体附加组件。component 传 ECSComponent 子类或已注册类名。
 func add_component(entity: int, component, def_data: Dictionary = {}) -> bool:
@@ -143,13 +185,15 @@ func add_component(entity: int, component, def_data: Dictionary = {}) -> bool:
 	var name := _resolve_component_name(component)
 	if name == &"":
 		return false
-	if not _core.add_component(entity, name):
-		return false
-	_cache_version += 1
-	# 附加后用 def_data 覆盖默认值(可选, 数据驱动兼容)
-	for k in def_data:
-		_core.set_field(entity, name, StringName(k), def_data[k])
-	return true
+	_struct_mutex.lock()
+	var ok: bool = _core.add_component(entity, name)
+	if ok:
+		_cache_version += 1
+		# 附加后用 def_data 覆盖默认值(可选, 数据驱动兼容)
+		for k in def_data:
+			_core.set_field(entity, name, StringName(k), def_data[k])
+	_struct_mutex.unlock()
+	return ok
 
 func has_component(entity: int, component) -> bool:
 	if not _available:
@@ -162,8 +206,10 @@ func remove_component(entity: int, component) -> void:
 		return
 	var name := _resolve_component_name(component)
 	if name != &"":
+		_struct_mutex.lock()
 		_core.remove_component(entity, name)
 		_cache_version += 1
+		_struct_mutex.unlock()
 
 func _resolve_component_name(component) -> StringName:
 	if component is Script:
@@ -184,10 +230,14 @@ func _resolve_component_name(component) -> StringName:
 # ============================================================
 
 func get_field(entity: int, component, field: StringName):
-	return _core.get_field(entity, _resolve_component_name(component), field)
+	var cn := _resolve_component_name(component)
+	_record_access(cn)
+	return _core.get_field(entity, cn, field)
 
 func set_field(entity: int, component, field: StringName, value) -> void:
-	_core.set_field(entity, _resolve_component_name(component), field, value)
+	var cn := _resolve_component_name(component)
+	_record_access(cn)
+	_core.set_field(entity, cn, field, value)
 
 # ============================================================
 #  批量查询与列访问(高频: 系统内)
@@ -206,32 +256,52 @@ func query_rows(anchor, must: Array = [], without: Array = []) -> PackedInt32Arr
 	var anchor_name := _resolve_component_name(anchor)
 	if anchor_name == &"":
 		return PackedInt32Array()
+	_record_access(anchor_name)
 	var must_names := PackedStringArray()
 	for m in must:
-		must_names.append(_resolve_component_name(m))
+		var mn := _resolve_component_name(m)
+		if mn == &"":
+			continue
+		must_names.append(mn)
+		_record_access(mn)
 	var without_names := PackedStringArray()
 	for w in without:
-		without_names.append(_resolve_component_name(w))
+		var wn := _resolve_component_name(w)
+		if wn == &"":
+			continue
+		without_names.append(wn)
+		_record_access(wn)
+	# 并行批内跳过查询缓存: 主线程系统可能正在改结构, 用缓存会读到陈旧结果
+	if _parallel_batch_active:
+		return _core.query_rows(anchor_name, must_names, without_names)
 	var key := str(anchor_name) + "|" + str(must_names) + "|" + str(without_names)
+	_cache_mutex.lock()
 	if _query_cache.has(key) and _query_cache_version == _cache_version:
-		return _query_cache[key]
+		var cached: PackedInt32Array = _query_cache[key]
+		_cache_mutex.unlock()
+		return cached
 	var result: PackedInt32Array = _core.query_rows(anchor_name, must_names, without_names)
 	if _query_cache.size() > 64:
 		_query_cache.clear()  # 缓存过大时清空(防内存膨胀)
 	_query_cache[key] = result
 	_query_cache_version = _cache_version
+	_cache_mutex.unlock()
 	return result
 
 ## 取整列数据(返回 Packed 数组拷贝, 按 anchor 组件的 dense 行号索引)。
 func get_column(component, field: StringName):
 	if not _available:
 		return null
-	return _core.get_column(_resolve_component_name(component), field)
+	var cn := _resolve_component_name(component)
+	_record_access(cn)
+	return _core.get_column(cn, field)
 
 ## 整列写回(按行号)。
 func set_column(component, field: StringName, values) -> void:
 	if _available:
-		_core.set_column(_resolve_component_name(component), field, values)
+		var cn := _resolve_component_name(component)
+		_record_access(cn)
+		_core.set_column(cn, field, values)
 
 ## 行号 -> 实体 id(anchor 组件的 dense 行号转实体)。
 func entity_of_row(component, row: int) -> int:
@@ -248,25 +318,44 @@ func row_of_entity(component, entity: int) -> int:
 func batch_apply(anchor, must: Array, op_comp, op_field: StringName, op: int, factor: float, addend: float) -> int:
 	if not _available:
 		return 0
-	return _core.batch_apply(_resolve_component_name(anchor), _names(must),
-		_resolve_component_name(op_comp), op_field, op, factor, addend)
+	var an := _resolve_component_name(anchor)
+	var ocn := _resolve_component_name(op_comp)
+	_record_access(an)
+	_record_access(ocn)
+	for mn in _names(must):
+		_record_access(mn)
+	return _core.batch_apply(an, _names(must), ocn, op_field, op, factor, addend)
 
 ## 批量边界钳制: col = clamp(col, min, max), min/max 取自其他组件字段
 func batch_clamp(anchor, must: Array, op_comp, op_field: StringName, min_comp, min_field: StringName, max_comp, max_field: StringName) -> int:
 	if not _available:
 		return 0
-	return _core.batch_clamp(_resolve_component_name(anchor), _names(must),
-		_resolve_component_name(op_comp), op_field,
-		_resolve_component_name(min_comp), min_field,
-		_resolve_component_name(max_comp), max_field)
+	var an := _resolve_component_name(anchor)
+	var ocn := _resolve_component_name(op_comp)
+	var mincn := _resolve_component_name(min_comp)
+	var maxcn := _resolve_component_name(max_comp)
+	_record_access(an)
+	_record_access(ocn)
+	_record_access(mincn)
+	_record_access(maxcn)
+	for mn in _names(must):
+		_record_access(mn)
+	return _core.batch_clamp(an, _names(must), ocn, op_field,
+		mincn, min_field, maxcn, max_field)
 
 ## 批量向量积分: pos += vel * delta (Vector2/3)
 func batch_vec_add(anchor, must: Array, pos_comp, pos_field: StringName, vel_comp, vel_field: StringName, delta: float) -> int:
 	if not _available:
 		return 0
-	return _core.batch_vec_add(_resolve_component_name(anchor), _names(must),
-		_resolve_component_name(pos_comp), pos_field,
-		_resolve_component_name(vel_comp), vel_field, delta)
+	var an := _resolve_component_name(anchor)
+	var pcn := _resolve_component_name(pos_comp)
+	var vcn := _resolve_component_name(vel_comp)
+	_record_access(an)
+	_record_access(pcn)
+	_record_access(vcn)
+	for mn in _names(must):
+		_record_access(mn)
+	return _core.batch_vec_add(an, _names(must), pcn, pos_field, vcn, vel_field, delta)
 
 func _names(arr: Array) -> PackedStringArray:
 	var out := PackedStringArray()
@@ -292,14 +381,18 @@ func count(component) -> int:
 func cmd_create() -> int:
 	if not _available:
 		return -1
+	_cmd_mutex.lock()
 	_core.cmd_create()
 	_cmd_create_count += 1
+	_cmd_mutex.unlock()
 	return -_cmd_create_count  # -(序号+1) 负句柄
 
 ## 排队: 销毁实体(flush 时执行, 若已死亡则忽略)。
 func cmd_destroy(entity: int) -> void:
 	if _available and entity >= 0:
+		_cmd_mutex.lock()
 		_core.cmd_destroy(entity)
+		_cmd_mutex.unlock()
 
 ## 排队: 给实体加组件(flush 时执行)。
 func cmd_add_component(entity: int, component) -> void:
@@ -307,7 +400,9 @@ func cmd_add_component(entity: int, component) -> void:
 		return
 	var name := _resolve_component_name(component)
 	if name != &"":
+		_cmd_mutex.lock()
 		_core.cmd_add_component(entity, name)
+		_cmd_mutex.unlock()
 
 ## 排队: 给实体移除组件(flush 时执行)。
 func cmd_remove_component(entity: int, component) -> void:
@@ -315,16 +410,23 @@ func cmd_remove_component(entity: int, component) -> void:
 		return
 	var name := _resolve_component_name(component)
 	if name != &"":
+		_cmd_mutex.lock()
 		_core.cmd_remove_component(entity, name)
+		_cmd_mutex.unlock()
 
 ## 待执行命令数。
 func cmd_pending_count() -> int:
-	return _core.pending_command_count() if _available else 0
+	_cmd_mutex.lock()
+	var n: int = _core.pending_command_count() if _available else 0
+	_cmd_mutex.unlock()
+	return n
 
 ## 立即执行全部排队命令(通常由 tick() 帧末自动调用)。
 func flush_commands() -> void:
 	if _available:
+		_cmd_mutex.lock()
 		_core.flush_commands()
+		_cmd_mutex.unlock()
 		_cache_version += 1
 	_cmd_create_count = 0  # 句柄仅在当帧内有效
 
@@ -346,6 +448,17 @@ func register_system(system: ECSSystem, priority: int = 0, before: Array = [], a
 	_system_priorities.append(priority)
 	_system_before.append(before)
 	_system_after.append(after)
+	# 预解析声明组件(静态, 供并行冲突检测)
+	var declared := {}
+	for c in system.read_components():
+		var cn := _resolve_component_name(c)
+		if cn != &"":
+			declared[cn] = true
+	for c in system.write_components():
+		var cn := _resolve_component_name(c)
+		if cn != &"":
+			declared[cn] = true
+	_system_access_declared[system] = declared
 	_dirty_schedule = true
 
 func remove_system(system: ECSSystem) -> void:
@@ -355,19 +468,34 @@ func remove_system(system: ECSSystem) -> void:
 		_system_priorities.remove_at(i)
 		_system_before.remove_at(i)
 		_system_after.remove_at(i)
+		_system_access_declared.erase(system)
+		_access_sets.erase(system)
+		_pending_access.erase(system)
 		_dirty_schedule = true
 
 ## 每帧驱动全部系统。内部先按依赖图拓扑排序(优先级仅作同层平级次序)。
 ## 帧末自动 flush Command Buffer(延迟结构变更)。
+## 系统级并行: 满足条件时, 按"组件访问冲突检测"把互不冲突的系统分批并行执行;
+## 否则回退纯串行(行为与旧版一致)。并行开启时第一帧自动串行预热以采集访问记录。
 func tick(delta: float) -> void:
 	if not _available:
 		return
 	_resort()
 	var ctx := ECSSystemContext.new(self)
-	for system in _sorted:
-		if not system.enabled:
-			continue
-		system._run(ctx, delta)
+	var parallel_now := _should_parallel()
+	_tracking = parallel_enabled and _enabled_system_count() >= parallel_min_systems
+	if parallel_now:
+		_parallel_batch_active = true
+		_parallel_tick(ctx, delta)
+		_parallel_batch_active = false
+	else:
+		for system in _sorted:
+			if not system.enabled:
+				continue
+			_run_system(system, ctx, delta)
+	if _tracking:
+		_finalize_access()
+	_preheated = true
 	_dispatch_events()
 	flush_commands()
 
@@ -404,7 +532,7 @@ func _resort() -> void:
 	for i in n:
 		var pre: Array = []
 		for other in _system_after[i]:
-			if other != null and _systems.has(other):
+			if other is ECSSystem and _systems.has(other):
 				pre.append(other)
 		# before[b] = x 表示 x 必须在 b 之前 => 对 x 而言 b 是其 after
 		for j in n:
@@ -457,15 +585,193 @@ func _resort() -> void:
 		_sorted.append(s)
 
 # ============================================================
+#  系统级并行执行
+# ============================================================
+
+## 启用系统的数量(过滤 disabled)。
+func _enabled_system_count() -> int:
+	var n := 0
+	for s in _sorted:
+		if s.enabled:
+			n += 1
+	return n
+
+## 是否进入并行执行。
+## 条件: 开关打开 + 已过首帧串行预热(采集访问记录) + 系统数达标。
+func _should_parallel() -> bool:
+	if not parallel_enabled:
+		return false
+	if not _preheated:
+		return false
+	return _enabled_system_count() >= parallel_min_systems
+
+## 记录"当前任务"对某组件的访问(供下一帧冲突检测)。
+## 每个系统任务持有独立的访问目标集: 并行批内先结束的系统清空自己的标记,
+## 不影响其他仍在运行任务的记录。
+func _record_access(comp: StringName) -> void:
+	if not _tracking or comp == &"":
+		return
+	_access_mutex.lock()
+	var active := _access_target_active
+	var target := _access_target
+	_access_mutex.unlock()
+	if active:
+		target[comp] = true
+
+## 帧末把本帧访问并入累积集(供下一帧分批)。
+func _finalize_access() -> void:
+	for s in _pending_access:
+		_access_sets[s] = _pending_access[s]
+	_pending_access.clear()
+
+## 开启/关闭某系统的访问记录任务(锁内切换目标集)。
+func _begin_access(system: ECSSystem) -> void:
+	_access_mutex.lock()
+	if not _pending_access.has(system):
+		_pending_access[system] = {}
+	_access_target = _pending_access[system]
+	_access_target_active = true
+	_access_mutex.unlock()
+
+func _end_access() -> void:
+	_access_mutex.lock()
+	_access_target_active = false
+	_access_target = {}
+	_access_mutex.unlock()
+
+## 串行执行单个系统(记录访问上下文)。
+func _run_system(system: ECSSystem, ctx: ECSSystemContext, delta: float) -> void:
+	if not _tracking:
+		system._run(ctx, delta)
+		return
+	_begin_access(system)
+	system._run(ctx, delta)
+	_end_access()
+
+## 并行 worker 入口(在线程中执行系统)。
+func _parallel_worker(system: ECSSystem, ctx: ECSSystemContext, delta: float) -> void:
+	_begin_access(system)
+	system._run(ctx, delta)
+	_end_access()
+
+## 系统 a(索引)是否依赖 b(索引): b 必须先于 a 执行。
+func _system_depends(a: int, b: int) -> bool:
+	return _system_after[a].has(_systems[b]) or _system_before[b].has(_systems[a])
+
+## 基于上一帧访问记录 + 声明组件, 把系统贪心分批:
+## 批内任意两系统组件访问集合无交集 且 无 before/after 依赖(可安全并行);
+## 批间保持原拓扑顺序(串行)。
+func _build_parallel_groups() -> Array:
+	var groups := []
+	var cur: Array = []
+	var cur_comps := {}
+	for s in _sorted:
+		if not s.enabled:
+			continue
+		if not s.can_run_parallel():
+			if not cur.is_empty():
+				groups.append(cur)
+				cur = []
+				cur_comps = {}
+			groups.append([s])
+			continue
+		var acc: Dictionary = _access_sets.get(s, {})
+		# 合并静态声明(弥补动态记录未覆盖的部分)
+		var declared: Dictionary = _system_access_declared.get(s, {})
+		var conflict := false
+		for c in acc:
+			if cur_comps.has(c):
+				conflict = true
+				break
+		if not conflict:
+			for c in declared:
+				if cur_comps.has(c):
+					conflict = true
+					break
+		# 依赖约束: 与批内任意系统存在 before/after 依赖则不可并行
+		if not conflict:
+			var si := _systems.find(s)
+			for cs in cur:
+				var ci := _systems.find(cs)
+				if _system_depends(si, ci) or _system_depends(ci, si):
+					conflict = true
+					break
+		if conflict:
+			groups.append(cur)
+			cur = []
+			cur_comps = {}
+		cur.append(s)
+		for c in acc:
+			cur_comps[c] = true
+		for c in declared:
+			cur_comps[c] = true
+	if not cur.is_empty():
+		groups.append(cur)
+	return groups
+
+## 并行 tick: 按组串行、组内并行执行全部系统。
+func _parallel_tick(ctx: ECSSystemContext, delta: float) -> void:
+	_pending_access.clear()
+	var groups: Array = _build_parallel_groups()
+	var max_par := _effective_threads()
+	for group in groups:
+		_run_group(group, ctx, delta, max_par)
+
+## 执行一组系统。组内并行(线程数受 max_par 限制), 超量部分拆成串行子批。
+func _run_group(group: Array, ctx: ECSSystemContext, delta: float, max_par: int) -> void:
+	if group.size() == 1:
+		_run_system(group[0], ctx, delta)
+		return
+	var start := 0
+	while start < group.size():
+		var end := mini(start + max_par, group.size())
+		_run_parallel_slice(group.slice(start, end), ctx, delta)
+		start = end
+
+## 真正开线程并行执行一批系统: 主线程跑第一个, 其余各开一个 Thread。
+func _run_parallel_slice(slice: Array, ctx: ECSSystemContext, delta: float) -> void:
+	_run_system(slice[0], ctx, delta)
+	var threads: Array[Thread] = []
+	for i in range(1, slice.size()):
+		var t := Thread.new()
+		t.start(_parallel_worker.bind(slice[i], ctx, delta), Thread.PRIORITY_NORMAL)
+		threads.append(t)
+	for t in threads:
+		t.wait_to_finish()
+
+## 有效并行线程数(单个并行批最多并行多少个系统)。0=自动。
+func _effective_threads() -> int:
+	var n := parallel_threads
+	if n <= 0:
+		var cores := OS.get_processor_count()
+		n = maxi(1, cores - 1)
+		n = clampi(n, 1, 8)
+	return n
+
+## 是否正在使用并行执行(调试/UI 展示用)。
+func is_parallel_active() -> bool:
+	return _parallel_batch_active
+
+## 上一帧并行组统计(调试/UI 展示用): {batches: int, max_group: int, parallel_groups: int}
+func debug_parallel_stats() -> Dictionary:
+	return {
+		"parallel_enabled": parallel_enabled,
+		"effective_threads": _effective_threads(),
+		"tracked_systems": _access_sets.size(),
+	}
+
+# ============================================================
 #  批量事件(替代信号风暴: 帧内累积, 帧末一次性派发)
 # ============================================================
 
 ## 投递事件(帧末统一派发给订阅者)。
 ## payload 可为任意值; 也支持带实体信息的字典 {entity: id, data: ...}。
 func emit_event(type: StringName, payload = null) -> void:
+	_event_mutex.lock()
 	if not _event_queues.has(type):
 		_event_queues[type] = []
 	_event_queues[type].append(payload)
+	_event_mutex.unlock()
 
 ## 投递"实体事件": 指定事件的来源/目标实体。
 ## 订阅者可用 on_entity_event(带组件过滤)只收到相关实体的事件。
@@ -514,18 +820,26 @@ func off_event(type: StringName, handler: Callable) -> void:
 	arr.erase(handler)
 
 func has_pending_events(type: StringName) -> bool:
-	return _event_queues.has(type) and not _event_queues[type].is_empty()
+	_event_mutex.lock()
+	var b: bool = _event_queues.has(type) and not (_event_queues[type] as Array).is_empty()
+	_event_mutex.unlock()
+	return b
 
 ## 待派发事件总数(帧末统计用)
 func pending_event_count() -> int:
+	_event_mutex.lock()
 	var total := 0
 	for type in _event_queues:
 		total += (_event_queues[type] as Array).size()
+	_event_mutex.unlock()
 	return total
 
 ## 订阅某事件的处理器数量
 func subscriber_count(type: StringName) -> int:
-	return (_event_subscribers.get(type, []) as Array).size()
+	_event_mutex.lock()
+	var n := (_event_subscribers.get(type, []) as Array).size()
+	_event_mutex.unlock()
+	return n
 
 ## 判断实体是否满足条件(复用 batch_count 的过滤逻辑)
 func _entity_matches_conds(eid: int, conditions: Array) -> bool:
@@ -557,15 +871,21 @@ func _entity_matches_conds(eid: int, conditions: Array) -> bool:
 	return true
 
 func _dispatch_events() -> void:
+	# 快照拷贝(并行系统可能仍在投递), 主线程统一派发
+	_event_mutex.lock()
+	var snapshot := {}
 	for type in _event_queues:
 		var queue: Array = _event_queues[type]
 		if queue.is_empty():
 			continue
+		snapshot[type] = queue.duplicate()
+		queue.clear()
+	_event_mutex.unlock()
+	for type in snapshot:
 		var handlers: Array = _event_subscribers.get(type, [])
-		for payload in queue:
+		for payload in snapshot[type]:
 			for h in handlers:
 				h.call(payload)
-		queue.clear()
 
 # ============================================================
 #  序列化/存档 (对接 SaveTool)
@@ -608,8 +928,16 @@ func batch_apply_if(anchor, must: Array, op_comp, op_field: StringName,
 		op: int, factor: float, addend: float, conditions: Array) -> int:
 	if not _available:
 		return 0
-	return _core.batch_apply_where(_resolve_component_name(anchor), _names(must),
-		_resolve_component_name(op_comp), op_field, op, factor, addend, _normalize_conds(conditions))
+	var an := _resolve_component_name(anchor)
+	var ocn := _resolve_component_name(op_comp)
+	_record_access(an)
+	_record_access(ocn)
+	for mn in _names(must):
+		_record_access(mn)
+	for c in conditions:
+		_record_access(_resolve_component_name(c.get("comp", &"")))
+	return _core.batch_apply_where(an, _names(must),
+		ocn, op_field, op, factor, addend, _normalize_conds(conditions))
 
 ## 便捷: 给满足条件的实体的目标字段增加值 amount。
 ## 等价于 batch_apply_if(..., BatchOp.ADD_VALUE, 0.0, amount, conditions)。
@@ -634,7 +962,13 @@ func batch_set_value_if(anchor, must: Array, op_comp, op_field: StringName,
 func batch_count_if(anchor, must: Array, conditions: Array) -> int:
 	if not _available:
 		return 0
-	return _core.batch_count(_resolve_component_name(anchor), _names(must), _normalize_conds(conditions))
+	var an := _resolve_component_name(anchor)
+	_record_access(an)
+	for mn in _names(must):
+		_record_access(mn)
+	for c in conditions:
+		_record_access(_resolve_component_name(c.get("comp", &"")))
+	return _core.batch_count(an, _names(must), _normalize_conds(conditions))
 
 ## 规范化条件列表: 把 comp(Script/String) → 类名 String, 便于 C++ 解析
 func _normalize_conds(conditions: Array) -> Array:

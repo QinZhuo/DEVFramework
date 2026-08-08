@@ -22,6 +22,10 @@ var scene_root: Node = null
 func required_components() -> Array[Script]:
 	return [NodeLink]
 
+## 访问场景树/节点 → 必须主线程串行, 不可并行。
+func can_run_parallel() -> bool:
+	return false
+
 func _run(ctx: ECSSystemContext, delta: float) -> void:
 	var w := ctx.world
 	if w == null:
