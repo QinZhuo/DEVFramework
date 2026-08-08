@@ -47,7 +47,6 @@ enum CondOp {
 
 # ---------------- 核心句柄 ----------------
 var _core: Object = null                 # ECSCore 原生实例
-var _available: bool = false
 
 # ---------------- 组件注册表 ----------------
 var _component_registered := {}          # Script -> bool (避免重复注册)
@@ -119,11 +118,8 @@ func _init(use_shared_core: bool = true) -> void:
 		_core = ECSNative.get_instance()
 	else:
 		_core = ClassDB.instantiate(&"ECSCore")
-	_available = _core != null
-
-## 原生层是否可用(不可用时所有操作静默失败)
-func is_native_available() -> bool:
-	return _available
+	if _core == null:
+		push_error("ECSWorld: ECSCore 原生库不可用! 请确认 devecs.gdextension 已加载(框架强依赖 C++, 无回退)。")
 
 ## 原生实例(高级用法直接调用)
 func native() -> Object:
@@ -136,8 +132,6 @@ func native() -> Object:
 ## 注册组件类(ECSComponent 子类)。重复注册幂等。
 ## 通过当前世界自己的 _core 注册(不依赖全局单例)。
 func register_component(component_class: Script) -> bool:
-	if not _available:
-		return false
 	if _component_registered.get(component_class, false):
 		return true
 	var probe: Variant = ECSNative.instantiate_script(component_class)
@@ -177,8 +171,6 @@ func registered_components() -> Array[Script]:
 ## 创建实体, 返回实体 id(int32: index|version<<24)
 ## 注意: 新实体无组件, 不影响任何查询结果 → 不失效查询缓存。
 func create_entity() -> int:
-	if not _available:
-		return -1
 	var e: int = -1
 	_struct_mutex.lock()
 	e = _core.create_entity()
@@ -186,15 +178,13 @@ func create_entity() -> int:
 	return e
 
 func is_alive(entity: int) -> bool:
-	return _available and _core.is_alive(entity)
+	return _core.is_alive(entity)
 
 ## 销毁实体(从所有组件移除, 复用 id 防悬垂)
 ## 销毁会移除实体的全部组件(组件未知) → 全局版本失效。
 ## 若注册了组件 remove 钩子, 会在实体真正销毁前枚举组件并触发 remove;
 ## 随后触发 on_entity_destroyed 钩子。
 func destroy_entity(entity: int) -> void:
-	if not _available:
-		return
 	var pending_comps: Array = []
 	if _has_any_component_hooks or not _entity_destroyed_hooks.is_empty():
 		pending_comps = _core.get_entity_components(entity)
@@ -210,8 +200,6 @@ func destroy_entity(entity: int) -> void:
 ## 只失效该组件相关的查询缓存。
 ## 成功后触发该组件的 on_component_added 钩子(若有注册)。
 func add_component(entity: int, component, def_data: Dictionary = {}) -> bool:
-	if not _available:
-		return false
 	var name := _resolve_component_name(component)
 	if name == &"":
 		return false
@@ -228,14 +216,10 @@ func add_component(entity: int, component, def_data: Dictionary = {}) -> bool:
 	return ok
 
 func has_component(entity: int, component) -> bool:
-	if not _available:
-		return false
 	var name := _resolve_component_name(component)
 	return name != &"" and _core.has_component(entity, name)
 
 func remove_component(entity: int, component) -> void:
-	if not _available:
-		return
 	var name := _resolve_component_name(component)
 	if name != &"":
 		_struct_mutex.lock()
@@ -286,8 +270,6 @@ func set_field(entity: int, component, field: StringName, value) -> void:
 ## 需要"一次拿多组件对齐行号"时改用 query_aligned()(免逐实体转换)。
 ## 带缓存(增量失效): 相同签名查询复用结果, 仅当涉及组件结构变化时才失效。
 func query_rows(anchor, must: Array = [], without: Array = []) -> PackedInt32Array:
-	if not _available:
-		return PackedInt32Array()
 	var anchor_name := _resolve_component_name(anchor)
 	if anchor_name == &"":
 		return PackedInt32Array()
@@ -333,8 +315,6 @@ func query_rows(anchor, must: Array = [], without: Array = []) -> PackedInt32Arr
 ##       pos[aligned[0][i]].x += ...      # 移动组件行
 ##       hp[aligned[1][i]] -= 5           # 血量组件行(同一实体)
 func query_aligned(anchor, must: Array = [], without: Array = []) -> Array:
-	if not _available:
-		return []
 	var anchor_name := _resolve_component_name(anchor)
 	if anchor_name == &"":
 		return []
@@ -373,8 +353,6 @@ func query_aligned(anchor, must: Array = [], without: Array = []) -> Array:
 ## 不缓存(条件变化无稳定签名)。conditions 格式同 batch_apply_if。
 func query_aligned_where(anchor, must: Array = [], without: Array = [],
 		conditions: Array = [], comps: Array = []) -> Array:
-	if not _available:
-		return []
 	var anchor_name := _resolve_component_name(anchor)
 	if anchor_name == &"":
 		return []
@@ -436,27 +414,22 @@ func _bump_comp(comp: StringName) -> void:
 
 ## 取整列数据(返回 Packed 数组拷贝, 按 anchor 组件的 dense 行号索引)。
 func get_column(component, field: StringName):
-	if not _available:
-		return null
 	var cn := _resolve_component_name(component)
 	_record_access(cn)
 	return _core.get_column(cn, field)
 
 ## 整列写回(按行号)。
 func set_column(component, field: StringName, values) -> void:
-	if _available:
-		var cn := _resolve_component_name(component)
-		_record_access(cn)
-		_core.set_column(cn, field, values)
-		_mark_dirty(cn)
+	var cn := _resolve_component_name(component)
+	_record_access(cn)
+	_core.set_column(cn, field, values)
+	_mark_dirty(cn)
 
 ## 一次取多组件多列(一次跨语言调用替代 N 次 get_column)。
 ## comps_fields: Array[{comp: 组件类/类名, fields: [字段名...]}]
 ## 返回 {组件类名: {字段名: PackedArray}} —— 列按该组件 dense 行号索引。
 ## 例: world.get_columns([{comp: HealthComponent, fields: [&"hp", &"max_hp"]}])
 func get_columns(comps_fields: Array) -> Dictionary:
-	if not _available:
-		return {}
 	var norm := []
 	for cf in comps_fields:
 		var cn := _resolve_component_name(cf.get("comp", &""))
@@ -468,19 +441,17 @@ func get_columns(comps_fields: Array) -> Dictionary:
 
 ## 行号 -> 实体 id(anchor 组件的 dense 行号转实体)。
 func entity_of_row(component, row: int) -> int:
-	return _core.entity_of_row(_resolve_component_name(component), row) if _available else -1
+	return _core.entity_of_row(_resolve_component_name(component), row)
 
 ## 实体 id -> 行号(某组件的 dense 行号, 用于跨组件列访问)。
 func row_of_entity(component, entity: int) -> int:
-	return _core.row_of_entity(_resolve_component_name(component), entity) if _available else -1
+	return _core.row_of_entity(_resolve_component_name(component), entity)
 
 # ---- 原生API层: 批量运算(纯 C++ 循环, 无 GDScript 解释开销) ----
 
 ## 批量数值变换(anchor 组件中同时拥有 must 的实体, 对 op 字段原地运算)。
 ## op: ECSWorld.BatchOp(ADD=0 加法, MUL_ADD=1 乘加, SET=2 赋值)
 func batch_apply(anchor, must: Array, op_comp, op_field: StringName, op: int, factor: float, addend: float) -> int:
-	if not _available:
-		return 0
 	var an := _resolve_component_name(anchor)
 	var ocn := _resolve_component_name(op_comp)
 	_record_access(an)
@@ -492,8 +463,6 @@ func batch_apply(anchor, must: Array, op_comp, op_field: StringName, op: int, fa
 
 ## 批量边界钳制: col = clamp(col, min, max), min/max 取自其他组件字段
 func batch_clamp(anchor, must: Array, op_comp, op_field: StringName, min_comp, min_field: StringName, max_comp, max_field: StringName) -> int:
-	if not _available:
-		return 0
 	var an := _resolve_component_name(anchor)
 	var ocn := _resolve_component_name(op_comp)
 	var mincn := _resolve_component_name(min_comp)
@@ -510,8 +479,6 @@ func batch_clamp(anchor, must: Array, op_comp, op_field: StringName, min_comp, m
 
 ## 批量向量积分: pos += vel * delta (Vector2/3)
 func batch_vec_add(anchor, must: Array, pos_comp, pos_field: StringName, vel_comp, vel_field: StringName, delta: float) -> int:
-	if not _available:
-		return 0
 	var an := _resolve_component_name(anchor)
 	var pcn := _resolve_component_name(pos_comp)
 	var vcn := _resolve_component_name(vel_comp)
@@ -531,8 +498,6 @@ func _names(arr: Array) -> PackedStringArray:
 
 ## 拥有某组件的实体总数。
 func count(component) -> int:
-	if not _available:
-		return 0
 	return _core.count_entities(_resolve_component_name(component))
 
 # ============================================================
@@ -545,8 +510,6 @@ func count(component) -> int:
 ## 排队: 创建实体。返回负值占位句柄(-(创建序号+1)),
 ## 可用于 cmd_add_component/cmd_remove_component 引用, flush 后解析为真实实体。
 func cmd_create() -> int:
-	if not _available:
-		return -1
 	_cmd_mutex.lock()
 	_core.cmd_create()
 	_cmd_create_count += 1
@@ -556,7 +519,7 @@ func cmd_create() -> int:
 
 ## 排队: 销毁实体(flush 时执行, 若已死亡则忽略)。
 func cmd_destroy(entity: int) -> void:
-	if _available and entity >= 0:
+	if entity >= 0:
 		_cmd_mutex.lock()
 		_core.cmd_destroy(entity)
 		_cmd_ops.append(["destroy", entity])
@@ -564,8 +527,6 @@ func cmd_destroy(entity: int) -> void:
 
 ## 排队: 给实体加组件(flush 时执行)。
 func cmd_add_component(entity: int, component) -> void:
-	if not _available:
-		return
 	var name := _resolve_component_name(component)
 	if name != &"":
 		_cmd_mutex.lock()
@@ -575,8 +536,6 @@ func cmd_add_component(entity: int, component) -> void:
 
 ## 排队: 给实体移除组件(flush 时执行)。
 func cmd_remove_component(entity: int, component) -> void:
-	if not _available:
-		return
 	var name := _resolve_component_name(component)
 	if name != &"":
 		_cmd_mutex.lock()
@@ -587,7 +546,7 @@ func cmd_remove_component(entity: int, component) -> void:
 ## 待执行命令数。
 func cmd_pending_count() -> int:
 	_cmd_mutex.lock()
-	var n: int = _core.pending_command_count() if _available else 0
+	var n: int = _core.pending_command_count()
 	_cmd_mutex.unlock()
 	return n
 
@@ -595,61 +554,60 @@ func cmd_pending_count() -> int:
 ## 按命令类型精确失效查询缓存: add/remove 组件只失效该组件, destroy 全局失效。
 ## flush 后在主线程触发对应组件钩子(占位实体经 created_entity_at 解析为真实实体)。
 func flush_commands() -> void:
-	if _available:
-		# flush 前收集 destroy 目标的组件(destroy 后无法枚举)
-		var destroy_comps := {}
-		var need_enum := _has_any_component_hooks or not _entity_destroyed_hooks.is_empty()
-		if need_enum:
-			for op in _cmd_ops:
-				if op[0] == "destroy" and op[1] >= 0:
-					destroy_comps[op[1]] = _core.get_entity_components(op[1])
-		_cmd_mutex.lock()
-		_core.flush_commands()
-		_cmd_mutex.unlock()
-		# 解析 cmd_create 占位句柄 -> 真实实体(实体在 flush 时才生成, 须 flush 后查)
-		var created_map := {}
-		var create_idx := 0
+	# flush 前收集 destroy 目标的组件(destroy 后无法枚举)
+	var destroy_comps := {}
+	var need_enum := _has_any_component_hooks or not _entity_destroyed_hooks.is_empty()
+	if need_enum:
 		for op in _cmd_ops:
-			if op[0] == "create":
-				created_map[-(create_idx + 1)] = _core.created_entity_at(create_idx)
-				create_idx += 1
-		# 精确失效缓存
-		var has_destroy := false
-		for op in _cmd_ops:
-			match op[0]:
-				"destroy":
-					has_destroy = true
-				"add":
-					_bump_comp(op[2])
-				"remove":
-					_bump_comp(op[2])
-		if has_destroy:
-			_world_version += 1
-		# 触发钩子(flush 后, 主线程)
-		for op in _cmd_ops:
-			match op[0]:
-				"add":
-					var ae: int = op[1]
-					if ae < 0:
-						ae = created_map.get(ae, -1)
-					if ae >= 0:
-						_fire_component_add(op[2], ae)
-				"remove":
-					var re: int = op[1]
-					if re < 0:
-						re = created_map.get(re, -1)
-					if re >= 0:
-						_fire_component_remove(op[2], re)
-				"destroy":
-					var ee: int = op[1]
-					if ee < 0:
-						ee = created_map.get(ee, -1)
-					if ee >= 0:
-						var comps: Array = destroy_comps.get(ee, [])
-						for c in comps:
-							_fire_component_remove(c, ee)
-						_fire_entity_destroyed(ee)
-		_cmd_ops.clear()
+			if op[0] == "destroy" and op[1] >= 0:
+				destroy_comps[op[1]] = _core.get_entity_components(op[1])
+	_cmd_mutex.lock()
+	_core.flush_commands()
+	_cmd_mutex.unlock()
+	# 解析 cmd_create 占位句柄 -> 真实实体(实体在 flush 时才生成, 须 flush 后查)
+	var created_map := {}
+	var create_idx := 0
+	for op in _cmd_ops:
+		if op[0] == "create":
+			created_map[-(create_idx + 1)] = _core.created_entity_at(create_idx)
+			create_idx += 1
+	# 精确失效缓存
+	var has_destroy := false
+	for op in _cmd_ops:
+		match op[0]:
+			"destroy":
+				has_destroy = true
+			"add":
+				_bump_comp(op[2])
+			"remove":
+				_bump_comp(op[2])
+	if has_destroy:
+		_world_version += 1
+	# 触发钩子(flush 后, 主线程)
+	for op in _cmd_ops:
+		match op[0]:
+			"add":
+				var ae: int = op[1]
+				if ae < 0:
+					ae = created_map.get(ae, -1)
+				if ae >= 0:
+					_fire_component_add(op[2], ae)
+			"remove":
+				var re: int = op[1]
+				if re < 0:
+					re = created_map.get(re, -1)
+				if re >= 0:
+					_fire_component_remove(op[2], re)
+			"destroy":
+				var ee: int = op[1]
+				if ee < 0:
+					ee = created_map.get(ee, -1)
+				if ee >= 0:
+					var comps: Array = destroy_comps.get(ee, [])
+					for c in comps:
+						_fire_component_remove(c, ee)
+					_fire_entity_destroyed(ee)
+	_cmd_ops.clear()
 	_cmd_create_count = 0  # 句柄仅在当帧内有效
 
 var _cmd_create_count: int = 0
@@ -701,8 +659,6 @@ func remove_system(system: ECSSystem) -> void:
 ## 系统级并行: 满足条件时, 按"组件访问冲突检测"把互不冲突的系统分批并行执行;
 ## 否则回退纯串行(行为与旧版一致)。并行开启时第一帧自动串行预热以采集访问记录。
 func tick(delta: float) -> void:
-	if not _available:
-		return
 	_frame_count += 1
 	_resort()
 	var ctx := ECSSystemContext.new(self)
@@ -1233,21 +1189,19 @@ func _dispatch_events() -> void:
 
 ## 序列化整个世界的组件数据 → Dictionary, 可交给 SaveTool.save_data 存档。
 func serialize() -> Dictionary:
-	return _core.serialize() if _available else {}
+	return _core.serialize()
 
 ## 反序列化: 重建实体与数据。
 ## 返回 Array[int]: 新建实体的真实实体 ID 列表(用它绑定 ECSNode 等)。
 ## 注意: 组件需先 register_component(名称一致)再调用。
 func deserialize(data: Dictionary) -> Array:
-	if not _available:
-		return []
 	var ids: Array = _core.deserialize(data)
 	_world_version += 1  # 批量重建, 无法精确追踪 → 全局失效
 	return ids
 
 ## 内存统计(调试)
 func debug_stats() -> Dictionary:
-	return _core.debug_stats() if _available else {}
+	return _core.debug_stats()
 
 # ============================================================
 #  原生API层: 条件过滤批量(只处理满足条件的实体)
@@ -1270,8 +1224,6 @@ func debug_stats() -> Dictionary:
 ##       [{comp: HealthComponent, field: &"hp", op: ECSWorld.CondOp.LESS_THAN, value: 50}])
 func batch_apply_if(anchor, must: Array, op_comp, op_field: StringName,
 		op: int, factor: float, addend: float, conditions: Array) -> int:
-	if not _available:
-		return 0
 	var an := _resolve_component_name(anchor)
 	var ocn := _resolve_component_name(op_comp)
 	_record_access(an)
@@ -1305,8 +1257,6 @@ func batch_set_value_if(anchor, must: Array, op_comp, op_field: StringName,
 ##   world.batch_count_if(HealthComponent, [],
 ##       [{comp: HealthComponent, field: &"hp", op: ECSWorld.CondOp.LESS_THAN, value: 100}])
 func batch_count_if(anchor, must: Array, conditions: Array) -> int:
-	if not _available:
-		return 0
 	var an := _resolve_component_name(anchor)
 	_record_access(an)
 	for mn in _names(must):
@@ -1333,17 +1283,15 @@ func _normalize_conds(conditions: Array) -> Array:
 
 ## 创建 prefab 模板实体(带模板标记, 不参与普通查询/序列化)。
 func create_prefab() -> int:
-	return _core.create_prefab() if _available else -1
+	return _core.create_prefab()
 
 ## 该实体是否为 prefab 模板
 func is_prefab(entity: int) -> bool:
-	return _available and _core.is_prefab(entity)
+	return _core.is_prefab(entity)
 
 ## 给 prefab 模板添加组件并设置初始字段值。
 ## values: Dictionary {字段名: 初始值}
 func prefab_add(prefab: int, component, values: Dictionary) -> bool:
-	if not _available:
-		return false
 	register_component(component) if component is Script else null
 	var name := _resolve_component_name(component)
 	if name != &"":
@@ -1354,8 +1302,6 @@ func prefab_add(prefab: int, component, values: Dictionary) -> bool:
 ## overrides: Dictionary {组件类名: {字段名: 覆盖值}}(可选)
 ## 返回新实体 ID 数组(Array[int])。
 func instantiate(prefab: int, count: int, overrides: Dictionary = {}) -> Array:
-	if not _available:
-		return []
 	# overrides 的 key 可能是 Script, 归一化为类名
 	var norm_overrides := {}
 	for k in overrides:
@@ -1412,7 +1358,5 @@ func register_rule(rule: ECSRule, priority: int = 0) -> ECSRuleSystem:
 
 ## 暂停或恢复世界(暂停 = 不执行任何系统, 用于多世界对比)。
 func set_paused(paused: bool) -> void:
-	if not _available:
-		return
 	for s in _systems:
 		s.enabled = not paused
