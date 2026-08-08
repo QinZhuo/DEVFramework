@@ -450,6 +450,22 @@ func set_column(component, field: StringName, values) -> void:
 		_core.set_column(cn, field, values)
 		_mark_dirty(cn)
 
+## 一次取多组件多列(一次跨语言调用替代 N 次 get_column)。
+## comps_fields: Array[{comp: 组件类/类名, fields: [字段名...]}]
+## 返回 {组件类名: {字段名: PackedArray}} —— 列按该组件 dense 行号索引。
+## 例: world.get_columns([{comp: HealthComponent, fields: [&"hp", &"max_hp"]}])
+func get_columns(comps_fields: Array) -> Dictionary:
+	if not _available:
+		return {}
+	var norm := []
+	for cf in comps_fields:
+		var cn := _resolve_component_name(cf.get("comp", &""))
+		if cn == &"":
+			continue
+		_record_access(cn)
+		norm.append({"comp": cn, "fields": cf.get("fields", [])})
+	return _core.get_columns(norm)
+
 ## 行号 -> 实体 id(anchor 组件的 dense 行号转实体)。
 func entity_of_row(component, row: int) -> int:
 	return _core.entity_of_row(_resolve_component_name(component), row) if _available else -1
@@ -866,37 +882,50 @@ func _parallel_worker(system: ECSSystem, ctx: ECSSystemContext, delta: float) ->
 func _system_depends(a: int, b: int) -> bool:
 	return _system_after[a].has(_systems[b]) or _system_before[b].has(_systems[a])
 
-## 基于上一帧访问记录 + 声明组件, 把系统贪心分批:
-## 批内任意两系统组件访问集合无交集 且 无 before/after 依赖(可安全并行);
+## 系统访问集合与批内已占用组件是否有交集。
+func _sig_conflicts(acc: Dictionary, declared: Dictionary, cur_comps: Dictionary) -> bool:
+	for c in acc:
+		if cur_comps.has(c):
+			return true
+	for c in declared:
+		if cur_comps.has(c):
+			return true
+	return false
+
+## 输出 cur(合成一批) 与 barrier(各自单批), 按每组首系统在拓扑序中的位置排序,
+## 保持相对顺序的同时让互无依赖的可并行系统聚成一批(顺序无关重排)。
+func _flush_parallel(groups: Array, cur: Array, barrier: Array) -> void:
+	if cur.is_empty() and barrier.is_empty():
+		return
+	var blocks := []  # Array[Array], 每组一个系统列表
+	if not cur.is_empty():
+		blocks.append(cur)
+	for bs in barrier:
+		blocks.append([bs])
+	blocks.sort_custom(func(a, b): return _sorted.find(a[0]) < _sorted.find(b[0]))
+	for blk in blocks:
+		groups.append(blk)
+
+## 基于上一帧访问记录 + 声明组件, 把系统分批:
+## 批内任意两系统组件访问集合无交集 且 无 before/after 依赖(可安全并行)。
 ## 批间保持原拓扑顺序(串行)。
+## 顺序无关重排: 不可并行系统(屏障)不打断当前批, 而是挂起——两侧无依赖的
+## 可并行系统仍可同批(如 Move/Heal 被 Sync 隔开时也能并行), 屏障随后单独串行。
 func _build_parallel_groups() -> Array:
 	var groups := []
-	var cur: Array = []
-	var cur_comps := {}
+	var cur: Array = []       # 当前可并行批
+	var cur_comps := {}       # cur 的组件占用
+	var barrier: Array = []   # 挂起的不可并行系统(屏障, 按 _sorted 序)
 	for s in _sorted:
 		if not s.enabled:
 			continue
 		if not s.can_run_parallel():
-			if not cur.is_empty():
-				groups.append(cur)
-				cur = []
-				cur_comps = {}
-			groups.append([s])
+			# 屏障: 不打断当前批, 挂起; 后续加入 cur 的系统须与屏障无依赖
+			barrier.append(s)
 			continue
 		var acc: Dictionary = _access_sets.get(s, {})
-		# 合并静态声明(弥补动态记录未覆盖的部分)
 		var declared: Dictionary = _system_access_declared.get(s, {})
-		var conflict := false
-		for c in acc:
-			if cur_comps.has(c):
-				conflict = true
-				break
-		if not conflict:
-			for c in declared:
-				if cur_comps.has(c):
-					conflict = true
-					break
-		# 依赖约束: 与批内任意系统存在 before/after 依赖则不可并行
+		var conflict := _sig_conflicts(acc, declared, cur_comps)
 		if not conflict:
 			var si := _systems.find(s)
 			for cs in cur:
@@ -904,17 +933,23 @@ func _build_parallel_groups() -> Array:
 				if _system_depends(si, ci) or _system_depends(ci, si):
 					conflict = true
 					break
+			if not conflict:
+				for bs in barrier:
+					var bi := _systems.find(bs)
+					if _system_depends(si, bi) or _system_depends(bi, si):
+						conflict = true
+						break
 		if conflict:
-			groups.append(cur)
+			_flush_parallel(groups, cur, barrier)
 			cur = []
 			cur_comps = {}
+			barrier = []
 		cur.append(s)
 		for c in acc:
 			cur_comps[c] = true
 		for c in declared:
 			cur_comps[c] = true
-	if not cur.is_empty():
-		groups.append(cur)
+	_flush_parallel(groups, cur, barrier)
 	return groups
 
 ## 并行 tick: 按组串行、组内并行执行全部系统。

@@ -110,12 +110,13 @@ struct ECSComponentData {
 // ---------------------------------------------------------------------------
 // 组件签名 (有序组件索引列表) -> 聚簇组
 // 用于: 同签名实体 ID 连续分配, 遍历时缓存友好
+//       + 增量视图: entities 维护"拥有该签名全部组件的实体", 查询 O(结果数)
 // ---------------------------------------------------------------------------
 struct ECSSignature {
 	std::vector<int32_t> comps; // 升序组件索引
-	// 聚簇 ID 池: 本签名实体复用的 ID(保证同签名实体 ID 数值接近)
 	std::vector<int32_t> free_ids;
-	int32_t next_hint = 0; // 分配游标
+	int32_t next_hint = 0;      // 分配游标
+	std::vector<int32_t> entities; // 拥有此签名全部组件的实体 index(结构变更时增量维护)
 };
 
 // ---------------------------------------------------------------------------
@@ -171,6 +172,10 @@ public:
 	// ---- 批量列访问 (零拷贝: 返回内部 Packed*Array 引用) ----
 	Variant get_column(const StringName &comp, const StringName &field) const;
 	void set_column(const StringName &comp, const StringName &field, const Variant &values);
+	// 一次取多组件多列, 减少跨语言调用次数。
+	// comps_fields: Array[{comp: name, fields: PackedStringArray}]
+	// 返回 {compName: {fieldName: PackedArray}}
+	Dictionary get_columns(const Array &comps_fields) const;
 
 	// ---- Tier 0: 原生批量运算 (纯 C++ 循环, 无 GDScript 解释开销) ----
 	enum BatchOp { BATCH_ADD = 0, BATCH_MUL_ADD = 1, BATCH_SET = 2, BATCH_CLAMP = 3 };
@@ -252,12 +257,28 @@ private:
 	int32_t allocate_entity_id();
 	void release_entity_id(int32_t index);
 
+	// ---- 签名增量视图(查询加速) ----
+	// 依据实体当前组件集合, 重新归属到正确签名(结构变更后调用)。
+	void recompute_entity_sig(int32_t index);
+	// 重建全部签名实体列表(批量结构变更如 deserialize/instantiate 末尾调用)。
+	void rebuild_signatures();
+	// 收集匹配签名(含 anchor+must, 不含 without)的 anchor 行号。
+	// 签名遍历 → 查询从 O(N) 全扫降为 O(结果数)。
+	void collect_sig_rows(int32_t ai, const int32_t *mi, int32_t m,
+			const int32_t *wi, int32_t w, PackedInt32Array &out) const;
+	// 带条件过滤的签名收集(conditions 为 GDScript Array, 由 parse_conditions 解析)。
+	void collect_sig_rows_where(int32_t ai, const int32_t *mi, int32_t m,
+			const int32_t *wi, int32_t w, const Array &conditions,
+			PackedInt32Array &out) const;
+
 	// ---- 存储 ----
 	std::vector<ECSComponentData> components_;
 	std::vector<ECSSignature> signatures_;
 	// 实体池: index | (version << 24), 复用防悬垂
 	std::vector<uint32_t> versions_;
 	std::vector<int32_t> free_list_;
+	// 实体 index -> 所属签名索引(-1 = 无组件/未分配), 签名增量视图用
+	std::vector<int32_t> entity_sig_;
 	// prefab 模板实体 index 集合
 	std::vector<int32_t> prefab_indices_;
 
@@ -282,8 +303,9 @@ private:
 	// 设置线程数(0=自动按硬件, 1=单线程/串行, 用于调试对比)
 	void set_thread_count(int count);
 	// 并行执行: 把 [0, n) 切成 slices 片, 每片一个线程执行 fn(work_begin, work_end)
+	// cost_per_item: 每项工作量权重(高成本操作更早并行), 默认 1.0。
 	template <typename F>
-	void parallel_for(size_t n, F &&fn);
+	void parallel_for(size_t n, F &&fn, double cost_per_item = 1.0);
 
 public:
 	~ECSCore();

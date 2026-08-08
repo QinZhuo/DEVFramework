@@ -3,6 +3,7 @@
 #include <godot_cpp/variant/utility_functions.hpp>
 
 #include <algorithm>
+#include <emmintrin.h> // SSE2 (SIMD 加速 batch 运算)
 #include <unordered_map>
 
 using namespace godot;
@@ -72,9 +73,10 @@ void ECSCore::set_thread_count(int count) {
 }
 
 template <typename F>
-void ECSCore::parallel_for(size_t n, F &&fn) {
+void ECSCore::parallel_for(size_t n, F &&fn, double cost_per_item) {
 	ensure_workers();  // 确保线程池启动 + thread_count_ 就绪
-	if (n < 10000 || thread_count_ <= 1) {
+	// 按工作量估算是否值得并行(而非固定条数): 高成本项(向量/SIMD)更早并行
+	if (double(n) * cost_per_item < 10000.0 || thread_count_ <= 1) {
 		fn(0, n);
 		return;
 	}
@@ -356,6 +358,10 @@ int32_t ECSCore::register_component(const StringName &name, const PackedStringAr
 int32_t ECSCore::create_entity() {
 	int32_t index = allocate_entity_id();
 	uint32_t version = versions_[index];
+	if (int32_t(entity_sig_.size()) <= index) {
+		entity_sig_.resize(index + 1, -1);
+	}
+	entity_sig_[index] = -1; // 新实体无组件, 不属于任何签名
 	return (int32_t(version) << 24) | index;
 }
 
@@ -379,7 +385,112 @@ void ECSCore::destroy_entity(int32_t entity) {
 			c.remove_row(index);
 		}
 	}
+	// 组件已清空 → 从签名列表移除
+	if (int32_t(entity_sig_.size()) > index && entity_sig_[index] >= 0) {
+		auto &list = signatures_[entity_sig_[index]].entities;
+		auto it = std::find(list.begin(), list.end(), index);
+		if (it != list.end()) {
+			list.erase(it);
+		}
+		entity_sig_[index] = -1;
+	}
 	release_entity_id(index);
+}
+
+// ---------------------------------------------------------------------------
+// ECSCore — 签名增量视图辅助
+// 签名实体列表 = "拥有该签名全部组件的实体", 结构变更时增量维护。
+// 查询按签名匹配直接返回实体集合, 从 O(anchor.dense) 全扫降为 O(结果数)。
+// ---------------------------------------------------------------------------
+
+void ECSCore::recompute_entity_sig(int32_t index) {
+	if (index < 0) {
+		return;
+	}
+	// 收集实体当前组件索引(升序)
+	std::vector<int32_t> comps;
+	for (int32_t ci = 0; ci < int32_t(components_.size()); ++ci) {
+		if (components_[ci].set.has(index)) {
+			comps.push_back(ci);
+		}
+	}
+	const int32_t new_sig = comps.empty() ? -1 : sig_index_for(comps);
+	const int32_t old_sig = (index < int32_t(entity_sig_.size())) ? entity_sig_[index] : -1;
+	if (old_sig == new_sig) {
+		return;
+	}
+	if (old_sig >= 0) {
+		auto &list = signatures_[old_sig].entities;
+		auto it = std::find(list.begin(), list.end(), index);
+		if (it != list.end()) {
+			list.erase(it);
+		}
+	}
+	if (new_sig >= 0) {
+		signatures_[new_sig].entities.push_back(index);
+	}
+	if (int32_t(entity_sig_.size()) <= index) {
+		entity_sig_.resize(index + 1, -1);
+	}
+	entity_sig_[index] = new_sig;
+}
+
+// 重建全部签名实体列表(批量结构变更如 deserialize/instantiate 末尾调用)。
+void ECSCore::rebuild_signatures() {
+	for (auto &sig : signatures_) {
+		sig.entities.clear();
+	}
+	if (int32_t(entity_sig_.size()) < int32_t(versions_.size())) {
+		entity_sig_.resize(versions_.size(), -1);
+	}
+	std::fill(entity_sig_.begin(), entity_sig_.end(), -1);
+	for (int32_t index = 0; index < int32_t(versions_.size()); ++index) {
+		if (std::find(free_list_.begin(), free_list_.end(), index) != free_list_.end()) {
+			continue; // 已释放
+		}
+		recompute_entity_sig(index);
+	}
+}
+
+// 收集匹配签名(含 anchor+must, 不含 without)的 anchor 行号。
+void ECSCore::collect_sig_rows(int32_t ai, const int32_t *mi, int32_t m,
+		const int32_t *wi, int32_t w, PackedInt32Array &out) const {
+	if (ai < 0) {
+		return;
+	}
+	const auto &a_col = components_[ai].set;
+	for (const auto &sig : signatures_) {
+		if (!std::binary_search(sig.comps.begin(), sig.comps.end(), ai)) {
+			continue;
+		}
+		bool ok = true;
+		for (int32_t i = 0; i < m; ++i) {
+			if (!std::binary_search(sig.comps.begin(), sig.comps.end(), mi[i])) {
+				ok = false;
+				break;
+			}
+		}
+		if (ok) {
+			for (int32_t i = 0; i < w; ++i) {
+				if (std::binary_search(sig.comps.begin(), sig.comps.end(), wi[i])) {
+					ok = false;
+					break;
+				}
+			}
+		}
+		if (!ok) {
+			continue;
+		}
+		for (int32_t e : sig.entities) {
+			if (is_prefab_index(e)) {
+				continue;
+			}
+			const int32_t row = a_col.row_of(e);
+			if (row >= 0) {
+				out.append(row);
+			}
+		}
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -397,6 +508,7 @@ bool ECSCore::add_component(int32_t entity, const StringName &comp) {
 	}
 	// 列按 dense 行号紧凑存储: push 一行默认值 (行号 = old dense size)
 	c->push_row(index);
+	recompute_entity_sig(index);
 	return true;
 }
 
@@ -417,6 +529,7 @@ void ECSCore::remove_component(int32_t entity, const StringName &comp) {
 	}
 	// swap-remove: 列按行号同步
 	c->remove_row(index);
+	recompute_entity_sig(index);
 }
 
 int32_t ECSCore::count_entities(const StringName &comp) const {
@@ -453,121 +566,68 @@ PackedStringArray ECSCore::get_entity_components(int32_t entity) const {
 PackedInt32Array ECSCore::query_rows(const StringName &anchor, const PackedStringArray &must,
 		const PackedStringArray &without) const {
 	PackedInt32Array out;
-	const ECSComponentData *a = find_comp(anchor);
-	if (a == nullptr || a->set.dense.empty()) {
+	if (must.size() > 8 || without.size() > 8) {
 		return out;
 	}
+	const int32_t ai = comp_index(anchor);
+	if (ai < 0) {
+		return out;
+	}
+	int32_t mi[8];
+	int32_t wi[8];
 	const int32_t m = int32_t(must.size());
 	const int32_t w = int32_t(without.size());
-
-	const ECSComponentData *req[8];
-	const ECSComponentData *ban[8];
-	if (m > 8 || w > 8) {
-		return out;
-	}
 	for (int32_t i = 0; i < m; ++i) {
-		req[i] = find_comp(must[i]);
+		mi[i] = comp_index(must[i]);
 	}
 	for (int32_t i = 0; i < w; ++i) {
-		ban[i] = find_comp(without[i]);
+		wi[i] = comp_index(without[i]);
 	}
-
-	const auto &dense = a->set.dense;
-	out.resize(int32_t(dense.size()));
-	int32_t n = 0;
-	for (int32_t r = 0; r < int32_t(dense.size()); ++r) {
-		const int32_t e = dense[r];
-		if (is_prefab_index(e)) {
-			continue; // 跳过 prefab 模板
-		}
-		bool ok = true;
-		for (int32_t i = 0; i < m; ++i) {
-			if (req[i] == nullptr || !req[i]->set.has(e)) {
-				ok = false;
-				break;
-			}
-		}
-		if (ok) {
-			for (int32_t i = 0; i < w; ++i) {
-				if (ban[i] != nullptr && ban[i]->set.has(e)) {
-					ok = false;
-					break;
-				}
-			}
-		}
-		if (ok) {
-			out[n++] = r; // 返回 dense 行号! 可直接索引紧凑列 get_column
-		}
-	}
-	out.resize(n);
+	// 签名增量视图: 遍历匹配签名收集实体(无需全扫 anchor dense)
+	collect_sig_rows(ai, mi, m, wi, w, out);
 	return out;
 }
 
-// 对齐行号查询: 一次遍历收集匹配实体, 同步填充 anchor 与各 must 组件的行号。
+// 对齐行号查询: 基于签名视图收集匹配实体, 同步填充 anchor 与各 must 组件的行号。
 Array ECSCore::query_rows_aligned(const StringName &anchor, const PackedStringArray &must,
 		const PackedStringArray &without) const {
 	Array out;
-	const ECSComponentData *a = find_comp(anchor);
-	if (a == nullptr || a->set.dense.empty()) {
+	if (must.size() > 8 || without.size() > 8) {
+		return out;
+	}
+	const int32_t ai = comp_index(anchor);
+	if (ai < 0) {
 		return out;
 	}
 	const int32_t m = int32_t(must.size());
 	const int32_t w = int32_t(without.size());
-
-	const ECSComponentData *req[8];
-	const ECSComponentData *ban[8];
-	if (m > 8 || w > 8) {
-		return out;
-	}
+	int32_t mi[8];
+	int32_t wi[8];
 	for (int32_t i = 0; i < m; ++i) {
-		req[i] = find_comp(must[i]);
+		mi[i] = comp_index(must[i]);
 	}
 	for (int32_t i = 0; i < w; ++i) {
-		ban[i] = find_comp(without[i]);
+		wi[i] = comp_index(without[i]);
 	}
 
-	const auto &dense = a->set.dense;
 	PackedInt32Array anchor_rows;
-	anchor_rows.resize(int32_t(dense.size()));
-	int32_t n = 0;
-	for (int32_t r = 0; r < int32_t(dense.size()); ++r) {
-		const int32_t e = dense[r];
-		if (is_prefab_index(e)) {
-			continue;
-		}
-		bool ok = true;
-		for (int32_t i = 0; i < m; ++i) {
-			if (req[i] == nullptr || !req[i]->set.has(e)) {
-				ok = false;
-				break;
-			}
-		}
-		if (ok) {
-			for (int32_t i = 0; i < w; ++i) {
-				if (ban[i] != nullptr && ban[i]->set.has(e)) {
-					ok = false;
-					break;
-				}
-			}
-		}
-		if (ok) {
-			anchor_rows[n++] = r;
-		}
-	}
-	anchor_rows.resize(n);
+	collect_sig_rows(ai, mi, m, wi, w, anchor_rows);
+	const int32_t n = int32_t(anchor_rows.size());
 	out.push_back(anchor_rows);
 
 	// 每个 must 组件: 对齐行号(同一实体集合, 顺序与 anchor_rows 一致)
+	const auto &a_dense = components_[ai].set.dense;
 	for (int32_t i = 0; i < m; ++i) {
 		PackedInt32Array comp_rows;
-		if (req[i] == nullptr) {
+		if (mi[i] < 0) {
 			out.push_back(comp_rows);
 			continue;
 		}
+		const auto &c_set = components_[mi[i]].set;
 		comp_rows.resize(n);
 		for (int32_t k = 0; k < n; ++k) {
-			const int32_t e = dense[anchor_rows[k]];
-			comp_rows[k] = req[i]->set.row_of(e);
+			const int32_t e = a_dense[anchor_rows[k]];
+			comp_rows[k] = c_set.row_of(e);
 		}
 		out.push_back(comp_rows);
 	}
@@ -658,6 +718,41 @@ Variant ECSCore::get_column(const StringName &comp, const StringName &field) con
 		case Variant::STRING: return col.s;
 		default: return Variant();
 	}
+}
+
+// 一次取多组件多列: 返回 {compName: {fieldName: PackedArray}}, 一次跨语言替代 N 次 get_column。
+Dictionary ECSCore::get_columns(const Array &comps_fields) const {
+	Dictionary out;
+	for (int32_t i = 0; i < comps_fields.size(); ++i) {
+		Dictionary cf = comps_fields[i];
+		const ECSComponentData *c = find_comp(StringName(cf["comp"]));
+		if (c == nullptr) {
+			continue;
+		}
+		Dictionary fields_dict;
+		Array fields = cf["fields"];
+		for (int32_t j = 0; j < fields.size(); ++j) {
+			const StringName fname = StringName(fields[j]);
+			const int32_t fi = c->field_index(fname);
+			if (fi < 0) {
+				continue;
+			}
+			const ECSColumn &col = c->columns[fi];
+			switch (col.type) {
+				case Variant::INT: fields_dict[fname] = col.i32; break;
+				case Variant::FLOAT: fields_dict[fname] = col.f32; break;
+				case Variant::BOOL: fields_dict[fname] = col.b; break;
+				case Variant::VECTOR2: fields_dict[fname] = col.v2; break;
+				case Variant::VECTOR3: fields_dict[fname] = col.v3; break;
+				case Variant::VECTOR4: fields_dict[fname] = col.v4; break;
+				case Variant::COLOR: fields_dict[fname] = col.col; break;
+				case Variant::STRING: fields_dict[fname] = col.s; break;
+				default: break;
+			}
+		}
+		out[c->name] = fields_dict;
+	}
+	return out;
 }
 
 void ECSCore::set_column(const StringName &comp, const StringName &field, const Variant &values) {
@@ -808,64 +903,83 @@ void collect_rows_where(const ECSCore *core, const ECSComponentData *anchor,
 }
 } // namespace
 
-// 对齐行号 + 条件过滤: 只返回满足 anchor+must+without+conditions 的实体,
-// 并对 comps 指定的组件输出对齐行号。
-Array ECSCore::query_rows_aligned_where(const StringName &anchor, const PackedStringArray &must,
-		const PackedStringArray &without, const Array &conditions,
-		const PackedStringArray &comps) const {
-	Array out;
-	const ECSComponentData *a = find_comp(anchor);
-	if (a == nullptr || a->set.dense.empty()) {
-		return out;
-	}
-	const int32_t m = int32_t(must.size());
-	const int32_t w = int32_t(without.size());
-	const ECSComponentData *req[8];
-	const ECSComponentData *ban[8];
-	if (m > 8 || w > 8) {
-		return out;
-	}
-	for (int32_t i = 0; i < m; ++i) {
-		req[i] = find_comp(must[i]);
-	}
-	for (int32_t i = 0; i < w; ++i) {
-		ban[i] = find_comp(without[i]);
+// 带条件过滤的签名收集(基于签名视图, 只遍历匹配签名实体)。
+void ECSCore::collect_sig_rows_where(int32_t ai, const int32_t *mi, int32_t m,
+		const int32_t *wi, int32_t w, const Array &conditions, PackedInt32Array &out) const {
+	if (ai < 0) {
+		return;
 	}
 	std::vector<ECSFilterCond> conds;
 	parse_conditions(this, conditions, conds, 8);
-
-	const auto &dense = a->set.dense;
-	PackedInt32Array anchor_rows;
-	anchor_rows.resize(int32_t(dense.size()));
-	int32_t n = 0;
-	for (int32_t r = 0; r < int32_t(dense.size()); ++r) {
-		const int32_t e = dense[r];
-		if (is_prefab_index(e)) {
+	const auto &a_col = components_[ai].set;
+	for (const auto &sig : signatures_) {
+		if (!std::binary_search(sig.comps.begin(), sig.comps.end(), ai)) {
 			continue;
 		}
 		bool ok = true;
 		for (int32_t i = 0; i < m; ++i) {
-			if (req[i] == nullptr || !req[i]->set.has(e)) {
+			if (!std::binary_search(sig.comps.begin(), sig.comps.end(), mi[i])) {
 				ok = false;
 				break;
 			}
 		}
 		if (ok) {
 			for (int32_t i = 0; i < w; ++i) {
-				if (ban[i] != nullptr && ban[i]->set.has(e)) {
+				if (std::binary_search(sig.comps.begin(), sig.comps.end(), wi[i])) {
 					ok = false;
 					break;
 				}
 			}
 		}
-		if (ok && cond_matches(this, e, conds)) {
-			anchor_rows[n++] = r;
+		if (!ok) {
+			continue;
+		}
+		for (int32_t e : sig.entities) {
+			if (is_prefab_index(e)) {
+				continue;
+			}
+			if (!cond_matches(this, e, conds)) {
+				continue;
+			}
+			const int32_t row = a_col.row_of(e);
+			if (row >= 0) {
+				out.append(row);
+			}
 		}
 	}
-	anchor_rows.resize(n);
+}
+
+// 对齐行号 + 条件过滤: 只返回满足 anchor+must+without+conditions 的实体,
+// 并对 comps 指定的组件输出对齐行号(基于签名视图)。
+Array ECSCore::query_rows_aligned_where(const StringName &anchor, const PackedStringArray &must,
+		const PackedStringArray &without, const Array &conditions,
+		const PackedStringArray &comps) const {
+	Array out;
+	if (must.size() > 8 || without.size() > 8) {
+		return out;
+	}
+	const int32_t ai = comp_index(anchor);
+	if (ai < 0) {
+		return out;
+	}
+	const int32_t m = int32_t(must.size());
+	const int32_t w = int32_t(without.size());
+	int32_t mi[8];
+	int32_t wi[8];
+	for (int32_t i = 0; i < m; ++i) {
+		mi[i] = comp_index(must[i]);
+	}
+	for (int32_t i = 0; i < w; ++i) {
+		wi[i] = comp_index(without[i]);
+	}
+
+	PackedInt32Array anchor_rows;
+	collect_sig_rows_where(ai, mi, m, wi, w, conditions, anchor_rows);
+	const int32_t n = int32_t(anchor_rows.size());
 	out.push_back(anchor_rows);
 
 	// comps 对齐行号(与 anchor_rows 顺序一一对应)
+	const auto &a_dense = components_[ai].set.dense;
 	for (int32_t i = 0; i < int32_t(comps.size()) && i < 8; ++i) {
 		const ECSComponentData *c = find_comp(comps[i]);
 		PackedInt32Array cr;
@@ -875,7 +989,7 @@ Array ECSCore::query_rows_aligned_where(const StringName &anchor, const PackedSt
 		}
 		cr.resize(n);
 		for (int32_t k = 0; k < n; ++k) {
-			const int32_t e = dense[anchor_rows[k]];
+			const int32_t e = a_dense[anchor_rows[k]];
 			cr[k] = c->set.row_of(e);
 		}
 		out.push_back(cr);
@@ -1060,17 +1174,43 @@ int64_t ECSCore::batch_apply(const StringName &anchor, const PackedStringArray &
 		case Variant::FLOAT: {
 			float *w = col.f32.ptrw();
 			if (same_comp) {
-				parallel_for(rows.size(), [&](size_t b, size_t e) {
-					for (size_t i = b; i < e; ++i) {
-						const int32_t row = rows[i];
-						switch (op) {
-							case BATCH_ADD: w[row] += float(addend); break;
-							case BATCH_MUL_ADD: w[row] = float(double(w[row]) * factor + addend); break;
-							case BATCH_SET: w[row] = float(addend); break;
-							default: break;
+				// 无 must + 无 prefab → 行号连续 0..n-1, 可 SIMD 连续遍历
+				const bool contiguous = (m == 0) && prefab_indices_.empty();
+				if (contiguous) {
+					parallel_for(rows.size(), [&](size_t b, size_t e) {
+						const __m128 addv = _mm_set1_ps(float(addend));
+						const __m128 mulv = _mm_set1_ps(float(factor));
+						size_t i = b;
+						if (op == BATCH_ADD) {
+							for (; i + 4 <= e; i += 4) {
+								_mm_storeu_ps(w + i, _mm_add_ps(_mm_loadu_ps(w + i), addv));
+							}
+							for (; i < e; ++i) w[i] += float(addend);
+						} else if (op == BATCH_MUL_ADD) {
+							for (; i + 4 <= e; i += 4) {
+								_mm_storeu_ps(w + i, _mm_add_ps(_mm_mul_ps(_mm_loadu_ps(w + i), mulv), addv));
+							}
+							for (; i < e; ++i) w[i] = float(double(w[i]) * factor + addend);
+						} else if (op == BATCH_SET) {
+							for (; i + 4 <= e; i += 4) {
+								_mm_storeu_ps(w + i, addv);
+							}
+							for (; i < e; ++i) w[i] = float(addend);
 						}
-					}
-				});
+					}, 2.0); // float 运算成本 ~2x int, 更早并行
+				} else {
+					parallel_for(rows.size(), [&](size_t b, size_t e) {
+						for (size_t i = b; i < e; ++i) {
+							const int32_t row = rows[i];
+							switch (op) {
+								case BATCH_ADD: w[row] += float(addend); break;
+								case BATCH_MUL_ADD: w[row] = float(double(w[row]) * factor + addend); break;
+								case BATCH_SET: w[row] = float(addend); break;
+								default: break;
+							}
+						}
+					});
+				}
 			} else {
 				parallel_for(rows.size(), [&](size_t b, size_t e) {
 					for (size_t i = b; i < e; ++i) {
@@ -1211,12 +1351,29 @@ int64_t ECSCore::batch_vec_add(const StringName &anchor, const PackedStringArray
 		const Vector2 *v = velcol.v2.ptr();
 		const float d = float(delta);
 		if (pos_is_anchor && vel_is_anchor) {
-			parallel_for(rows.size(), [&](size_t b, size_t e) {
-				for (size_t i = b; i < e; ++i) {
-					const int32_t row = rows[i];
-					p[row] += v[row] * d;
-				}
-			});
+			// 无 must + 无 prefab → 行号连续, SIMD 一次处理 2 个 Vector2(4 float)
+			const bool contiguous = (m == 0) && prefab_indices_.empty();
+			if (contiguous) {
+				parallel_for(rows.size(), [&](size_t b, size_t e) {
+					float *pf = reinterpret_cast<float *>(p);
+					const float *vf = reinterpret_cast<const float *>(v);
+					const __m128 dv = _mm_set1_ps(d);
+					size_t i = b;
+					for (; i + 2 <= e; i += 2) {
+						__m128 posv = _mm_loadu_ps(pf + i * 2);
+						__m128 velv = _mm_loadu_ps(vf + i * 2);
+						_mm_storeu_ps(pf + i * 2, _mm_add_ps(posv, _mm_mul_ps(velv, dv)));
+					}
+					for (; i < e; ++i) p[i] += v[i] * d;
+				}, 3.0);
+			} else {
+				parallel_for(rows.size(), [&](size_t b, size_t e) {
+					for (size_t i = b; i < e; ++i) {
+						const int32_t row = rows[i];
+						p[row] += v[row] * d;
+					}
+				});
+			}
 		} else {
 			parallel_for(rows.size(), [&](size_t b, size_t e) {
 				for (size_t i = b; i < e; ++i) {
@@ -1240,7 +1397,7 @@ int64_t ECSCore::batch_vec_add(const StringName &anchor, const PackedStringArray
 					const int32_t row = rows[i];
 					p[row] += v[row] * d;
 				}
-			});
+			}, 3.0);
 		} else {
 			parallel_for(rows.size(), [&](size_t b, size_t e) {
 				for (size_t i = b; i < e; ++i) {
@@ -1394,6 +1551,8 @@ Array ECSCore::deserialize(const Dictionary &data) {
 			}
 		}
 	}
+	// push_row 直接填充不经过 add_component → 重建签名视图
+	rebuild_signatures();
 	return result;
 }
 
@@ -1480,6 +1639,8 @@ Array ECSCore::instantiate(int32_t prefab, int32_t count, const Dictionary &over
 			}
 		}
 	}
+	// push_row 直接填充不经过 add_component → 重建签名视图
+	rebuild_signatures();
 	return result;
 }
 
@@ -1620,6 +1781,7 @@ void ECSCore::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_field", "entity", "comp", "field", "value"), &ECSCore::set_field);
 	ClassDB::bind_method(D_METHOD("get_column", "comp", "field"), &ECSCore::get_column);
 	ClassDB::bind_method(D_METHOD("set_column", "comp", "field", "values"), &ECSCore::set_column);
+	ClassDB::bind_method(D_METHOD("get_columns", "comps_fields"), &ECSCore::get_columns);
 	ClassDB::bind_method(D_METHOD("batch_apply", "anchor", "must", "op_comp", "op_field", "op", "factor", "addend"), &ECSCore::batch_apply);
 	ClassDB::bind_method(D_METHOD("batch_apply_where", "anchor", "must", "op_comp", "op_field", "op", "factor", "addend", "conditions"), &ECSCore::batch_apply_where);
 	ClassDB::bind_method(D_METHOD("batch_count", "anchor", "must", "conditions"), &ECSCore::batch_count);
