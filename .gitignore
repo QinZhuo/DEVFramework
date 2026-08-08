@@ -16,6 +16,7 @@ gdextension/build*/
 addons/DEVFramework/Entity/ECS/Native/libdevecs.dylib
 addons/DEVFramework/Entity/ECS/Native/libdevecs.so
 addons/DEVFramework/Entity/ECS/Native/libdevecs.dll
+addons/VoxelSupport/Native/~*
 
 # GDExtension uid 缓存不入库
 *.gdextension.uid
