@@ -88,10 +88,13 @@ var _struct_mutex := Mutex.new()          # 立即结构变更(create/destroy/ad
 var _event_queues := {}                  # type(StringName) -> Array[Variant]
 var _event_subscribers := {}             # type(StringName) -> Array[Callable]
 
-# ---------------- 查询缓存 ----------------
-var _query_cache := {}                   # 查询签名 -> PackedInt32Array
-var _cache_version := 0                  # 结构版本(实体/组件变化时 +1)
-var _query_cache_version := -1           # 缓存对应的版本
+# ---------------- 查询缓存(增量失效) ----------------
+# 缓存条目: {result, deps: PackedStringArray, comp_v: {组件->版本}, world_v: int}
+# 命中条件: 全局版本一致 且 每条依赖组件的版本一致 —— 只失效真正受影响组件的缓存,
+#           create_entity 不再失效任何缓存, add/remove 组件只失效该组件的缓存。
+var _query_cache := {}
+var _comp_versions := {}                  # 组件名 -> 结构版本(该组件实体集合变化的代数)
+var _world_version := 0                   # 全局结构版本(destroy/批量结构变更时 +1)
 
 func _init(use_shared_core: bool = true) -> void:
 	# 默认使用全局共享核心(游戏通常只有一个世界);
@@ -156,14 +159,13 @@ func registered_components() -> Array[Script]:
 # ============================================================
 
 ## 创建实体, 返回实体 id(int32: index|version<<24)
+## 注意: 新实体无组件, 不影响任何查询结果 → 不失效查询缓存。
 func create_entity() -> int:
 	if not _available:
 		return -1
 	var e: int = -1
 	_struct_mutex.lock()
 	e = _core.create_entity()
-	if e >= 0:
-		_cache_version += 1
 	_struct_mutex.unlock()
 	return e
 
@@ -171,14 +173,16 @@ func is_alive(entity: int) -> bool:
 	return _available and _core.is_alive(entity)
 
 ## 销毁实体(从所有组件移除, 复用 id 防悬垂)
+## 销毁会移除实体的全部组件(组件未知) → 全局版本失效。
 func destroy_entity(entity: int) -> void:
 	if _available:
 		_struct_mutex.lock()
 		_core.destroy_entity(entity)
-		_cache_version += 1
+		_world_version += 1
 		_struct_mutex.unlock()
 
 ## 给实体附加组件。component 传 ECSComponent 子类或已注册类名。
+## 只失效该组件相关的查询缓存。
 func add_component(entity: int, component, def_data: Dictionary = {}) -> bool:
 	if not _available:
 		return false
@@ -188,7 +192,7 @@ func add_component(entity: int, component, def_data: Dictionary = {}) -> bool:
 	_struct_mutex.lock()
 	var ok: bool = _core.add_component(entity, name)
 	if ok:
-		_cache_version += 1
+		_bump_comp(name)
 		# 附加后用 def_data 覆盖默认值(可选, 数据驱动兼容)
 		for k in def_data:
 			_core.set_field(entity, name, StringName(k), def_data[k])
@@ -208,7 +212,7 @@ func remove_component(entity: int, component) -> void:
 	if name != &"":
 		_struct_mutex.lock()
 		_core.remove_component(entity, name)
-		_cache_version += 1
+		_bump_comp(name)
 		_struct_mutex.unlock()
 
 func _resolve_component_name(component) -> StringName:
@@ -249,7 +253,8 @@ func set_field(entity: int, component, field: StringName, value) -> void:
 ## 注意: 行号属于 anchor 组件; 跨组件访问时, 先 entity_of_row(anchor, row) 取实体ID,
 ##       再 row_of_entity(other_comp, entity) 得其他组件的行号。
 ## 需要实体 ID 时用 entity_of_row() 转换。
-## 带缓存: 相同签名查询复用结果, 实体/组件结构变化时自动失效。
+## 需要"一次拿多组件对齐行号"时改用 query_aligned()(免逐实体转换)。
+## 带缓存(增量失效): 相同签名查询复用结果, 仅当涉及组件结构变化时才失效。
 func query_rows(anchor, must: Array = [], without: Array = []) -> PackedInt32Array:
 	if not _available:
 		return PackedInt32Array()
@@ -274,19 +279,92 @@ func query_rows(anchor, must: Array = [], without: Array = []) -> PackedInt32Arr
 	# 并行批内跳过查询缓存: 主线程系统可能正在改结构, 用缓存会读到陈旧结果
 	if _parallel_batch_active:
 		return _core.query_rows(anchor_name, must_names, without_names)
-	var key := str(anchor_name) + "|" + str(must_names) + "|" + str(without_names)
+	var key := "r|" + str(anchor_name) + "|" + str(must_names) + "|" + str(without_names)
 	_cache_mutex.lock()
-	if _query_cache.has(key) and _query_cache_version == _cache_version:
-		var cached: PackedInt32Array = _query_cache[key]
+	var entry: Dictionary = _query_cache.get(key, {})
+	if not entry.is_empty() and _entry_valid(entry):
+		var cached: PackedInt32Array = entry.result
 		_cache_mutex.unlock()
 		return cached
 	var result: PackedInt32Array = _core.query_rows(anchor_name, must_names, without_names)
-	if _query_cache.size() > 64:
-		_query_cache.clear()  # 缓存过大时清空(防内存膨胀)
-	_query_cache[key] = result
-	_query_cache_version = _cache_version
+	_cache_store(key, anchor_name, must_names, without_names, result)
 	_cache_mutex.unlock()
 	return result
+
+## 对齐行号查询: 一次遍历收集匹配实体, 返回 anchor 与全部 must 组件的对齐 dense 行号。
+## 返回 Array[int] 数组: [0] = anchor 行号, [1..] = 对应 must[i] 组件的行号。
+## 第 k 个匹配实体: anchor 列用 [0][k] 索引, must[i] 列用 [1+i][k] 索引 ——
+## 同一 k 直接并行索引各组件列, 免去逐实体 entity_of_row/row_of_entity 跨语言转换。
+## 用法:
+##   var aligned = world.query_aligned(MoveComponent, [HealthComponent])
+##   var pos: PackedVector2Array = world.get_column(MoveComponent, &"pos")
+##   var hp: PackedInt32Array = world.get_column(HealthComponent, &"hp")
+##   for i in aligned[0].size():
+##       pos[aligned[0][i]].x += ...      # 移动组件行
+##       hp[aligned[1][i]] -= 5           # 血量组件行(同一实体)
+func query_aligned(anchor, must: Array = [], without: Array = []) -> Array:
+	if not _available:
+		return []
+	var anchor_name := _resolve_component_name(anchor)
+	if anchor_name == &"":
+		return []
+	_record_access(anchor_name)
+	var must_names := PackedStringArray()
+	for m in must:
+		var mn := _resolve_component_name(m)
+		if mn == &"":
+			continue
+		must_names.append(mn)
+		_record_access(mn)
+	var without_names := PackedStringArray()
+	for w in without:
+		var wn := _resolve_component_name(w)
+		if wn == &"":
+			continue
+		without_names.append(wn)
+		_record_access(wn)
+	if _parallel_batch_active:
+		return _core.query_rows_aligned(anchor_name, must_names, without_names)
+	var key := "a|" + str(anchor_name) + "|" + str(must_names) + "|" + str(without_names)
+	_cache_mutex.lock()
+	var entry: Dictionary = _query_cache.get(key, {})
+	if not entry.is_empty() and _entry_valid(entry):
+		var cached: Array = entry.result
+		_cache_mutex.unlock()
+		return cached
+	var result: Array = _core.query_rows_aligned(anchor_name, must_names, without_names)
+	_cache_store(key, anchor_name, must_names, without_names, result)
+	_cache_mutex.unlock()
+	return result
+
+## 缓存条目是否仍有效: 全局版本一致 且 所有依赖组件版本一致。
+func _entry_valid(entry: Dictionary) -> bool:
+	if entry.world_v != _world_version:
+		return false
+	for c in entry.deps:
+		if entry.comp_v.get(c, 0) != _comp_versions.get(c, 0):
+			return false
+	return true
+
+## 写入缓存条目(锁内调用)。deps = anchor + must + without 全部组件。
+func _cache_store(key: String, anchor_name: StringName, must_names: PackedStringArray,
+		without_names: PackedStringArray, result) -> void:
+	if _query_cache.size() > 64:
+		_query_cache.clear()  # 缓存过大时清空(防内存膨胀)
+	var deps := PackedStringArray()
+	deps.append(anchor_name)
+	for mn in must_names:
+		deps.append(mn)
+	for wn in without_names:
+		deps.append(wn)
+	var comp_v := {}
+	for c in deps:
+		comp_v[c] = _comp_versions.get(c, 0)
+	_query_cache[key] = {"result": result, "deps": deps, "comp_v": comp_v, "world_v": _world_version}
+
+## 组件结构版本 +1(该组件实体集合变化)。
+func _bump_comp(comp: StringName) -> void:
+	_comp_versions[comp] = _comp_versions.get(comp, 0) + 1
 
 ## 取整列数据(返回 Packed 数组拷贝, 按 anchor 组件的 dense 行号索引)。
 func get_column(component, field: StringName):
@@ -392,6 +470,7 @@ func cmd_destroy(entity: int) -> void:
 	if _available and entity >= 0:
 		_cmd_mutex.lock()
 		_core.cmd_destroy(entity)
+		_cmd_ops.append(["destroy"])
 		_cmd_mutex.unlock()
 
 ## 排队: 给实体加组件(flush 时执行)。
@@ -402,6 +481,7 @@ func cmd_add_component(entity: int, component) -> void:
 	if name != &"":
 		_cmd_mutex.lock()
 		_core.cmd_add_component(entity, name)
+		_cmd_ops.append(["add", name])
 		_cmd_mutex.unlock()
 
 ## 排队: 给实体移除组件(flush 时执行)。
@@ -412,6 +492,7 @@ func cmd_remove_component(entity: int, component) -> void:
 	if name != &"":
 		_cmd_mutex.lock()
 		_core.cmd_remove_component(entity, name)
+		_cmd_ops.append(["remove", name])
 		_cmd_mutex.unlock()
 
 ## 待执行命令数。
@@ -422,15 +503,28 @@ func cmd_pending_count() -> int:
 	return n
 
 ## 立即执行全部排队命令(通常由 tick() 帧末自动调用)。
+## 按命令类型精确失效查询缓存: add/remove 组件只失效该组件, destroy 全局失效。
 func flush_commands() -> void:
 	if _available:
 		_cmd_mutex.lock()
 		_core.flush_commands()
 		_cmd_mutex.unlock()
-		_cache_version += 1
+		var has_destroy := false
+		for op in _cmd_ops:
+			match op[0]:
+				"destroy":
+					has_destroy = true
+				"add":
+					_bump_comp(op[1])
+				"remove":
+					_bump_comp(op[1])
+		if has_destroy:
+			_world_version += 1
+		_cmd_ops.clear()
 	_cmd_create_count = 0  # 句柄仅在当帧内有效
 
 var _cmd_create_count: int = 0
+var _cmd_ops: Array = []   # 本帧排队的命令操作记录(供 flush 精确失效缓存)
 
 # ============================================================
 #  系统
@@ -899,7 +993,11 @@ func serialize() -> Dictionary:
 ## 返回 Array[int]: 新建实体的真实实体 ID 列表(用它绑定 ECSNode 等)。
 ## 注意: 组件需先 register_component(名称一致)再调用。
 func deserialize(data: Dictionary) -> Array:
-	return _core.deserialize(data) if _available else []
+	if not _available:
+		return []
+	var ids: Array = _core.deserialize(data)
+	_world_version += 1  # 批量重建, 无法精确追踪 → 全局失效
+	return ids
 
 ## 内存统计(调试)
 func debug_stats() -> Dictionary:
@@ -1000,7 +1098,10 @@ func prefab_add(prefab: int, component, values: Dictionary) -> bool:
 	if not _available:
 		return false
 	register_component(component) if component is Script else null
-	return _core.prefab_add(prefab, _resolve_component_name(component), values)
+	var name := _resolve_component_name(component)
+	if name != &"":
+		_bump_comp(name)
+	return _core.prefab_add(prefab, name, values)
 
 ## 批量实例化: 复制 prefab 的组件结构与字段值到 count 个新实体。
 ## overrides: Dictionary {组件类名: {字段名: 覆盖值}}(可选)
@@ -1012,6 +1113,7 @@ func instantiate(prefab: int, count: int, overrides: Dictionary = {}) -> Array:
 	var norm_overrides := {}
 	for k in overrides:
 		norm_overrides[_resolve_component_name(k)] = overrides[k]
+	_world_version += 1  # 批量生成实体 + 组件, 无法精确追踪 → 全局失效
 	return _core.instantiate(prefab, count, norm_overrides)
 
 ## 便捷: 从 ECSPrefabDef 配置构建 prefab 模板, 返回 prefab 实体 ID。

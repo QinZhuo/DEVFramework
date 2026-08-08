@@ -148,6 +148,12 @@ public:
 	// 返回匹配实体的实体 ID 列表(可直接索引任意组件列)。
 	PackedInt32Array query_rows(const StringName &anchor, const PackedStringArray &must,
 			const PackedStringArray &without) const;
+	// 对齐行号查询: 一次返回多组件的对齐 dense 行号数组。
+	// 返回 Array: [0] = anchor 组件的 dense 行号, [1..] = 对应 must[i] 的组件行号。
+	// 第 k 个匹配实体在 anchor 的第 rows[0][k] 行、在 must[i] 的第 rows[1+i][k] 行,
+	// 可直接用同一索引 k 并行索引各组件列(免去逐实体跨组件行号转换)。
+	Array query_rows_aligned(const StringName &anchor, const PackedStringArray &must,
+			const PackedStringArray &without) const;
 	int32_t entity_of_row(const StringName &comp, int32_t row) const;
 
 	// ---- 单实体字段访问 (低频路径) ----

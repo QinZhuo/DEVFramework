@@ -491,6 +491,77 @@ PackedInt32Array ECSCore::query_rows(const StringName &anchor, const PackedStrin
 	return out;
 }
 
+// 对齐行号查询: 一次遍历收集匹配实体, 同步填充 anchor 与各 must 组件的行号。
+Array ECSCore::query_rows_aligned(const StringName &anchor, const PackedStringArray &must,
+		const PackedStringArray &without) const {
+	Array out;
+	const ECSComponentData *a = find_comp(anchor);
+	if (a == nullptr || a->set.dense.empty()) {
+		return out;
+	}
+	const int32_t m = int32_t(must.size());
+	const int32_t w = int32_t(without.size());
+
+	const ECSComponentData *req[8];
+	const ECSComponentData *ban[8];
+	if (m > 8 || w > 8) {
+		return out;
+	}
+	for (int32_t i = 0; i < m; ++i) {
+		req[i] = find_comp(must[i]);
+	}
+	for (int32_t i = 0; i < w; ++i) {
+		ban[i] = find_comp(without[i]);
+	}
+
+	const auto &dense = a->set.dense;
+	PackedInt32Array anchor_rows;
+	anchor_rows.resize(int32_t(dense.size()));
+	int32_t n = 0;
+	for (int32_t r = 0; r < int32_t(dense.size()); ++r) {
+		const int32_t e = dense[r];
+		if (is_prefab_index(e)) {
+			continue;
+		}
+		bool ok = true;
+		for (int32_t i = 0; i < m; ++i) {
+			if (req[i] == nullptr || !req[i]->set.has(e)) {
+				ok = false;
+				break;
+			}
+		}
+		if (ok) {
+			for (int32_t i = 0; i < w; ++i) {
+				if (ban[i] != nullptr && ban[i]->set.has(e)) {
+					ok = false;
+					break;
+				}
+			}
+		}
+		if (ok) {
+			anchor_rows[n++] = r;
+		}
+	}
+	anchor_rows.resize(n);
+	out.push_back(anchor_rows);
+
+	// 每个 must 组件: 对齐行号(同一实体集合, 顺序与 anchor_rows 一致)
+	for (int32_t i = 0; i < m; ++i) {
+		PackedInt32Array comp_rows;
+		if (req[i] == nullptr) {
+			out.push_back(comp_rows);
+			continue;
+		}
+		comp_rows.resize(n);
+		for (int32_t k = 0; k < n; ++k) {
+			const int32_t e = dense[anchor_rows[k]];
+			comp_rows[k] = req[i]->set.row_of(e);
+		}
+		out.push_back(comp_rows);
+	}
+	return out;
+}
+
 // 行号(anchor dense 下标) -> 实体 ID
 int32_t ECSCore::entity_of_row(const StringName &comp, int32_t row) const {
 	const ECSComponentData *c = find_comp(comp);
@@ -1450,6 +1521,7 @@ void ECSCore::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("remove_component", "entity", "comp"), &ECSCore::remove_component);
 	ClassDB::bind_method(D_METHOD("count_entities", "comp"), &ECSCore::count_entities);
 	ClassDB::bind_method(D_METHOD("query_rows", "anchor", "must", "without"), &ECSCore::query_rows);
+	ClassDB::bind_method(D_METHOD("query_rows_aligned", "anchor", "must", "without"), &ECSCore::query_rows_aligned);
 	ClassDB::bind_method(D_METHOD("entity_of_row", "comp", "row"), &ECSCore::entity_of_row);
 	ClassDB::bind_method(D_METHOD("get_field", "entity", "comp", "field"), &ECSCore::get_field);
 	ClassDB::bind_method(D_METHOD("set_field", "entity", "comp", "field", "value"), &ECSCore::set_field);

@@ -15,7 +15,7 @@ static var _inst: Object = null
 static var _required_methods := [
 	&"register_component", &"create_entity", &"is_alive", &"destroy_entity",
 	&"add_component", &"has_component", &"remove_component", &"count_entities",
-	&"query_rows", &"entity_of_row", &"get_field", &"set_field",
+	&"query_rows", &"query_rows_aligned", &"entity_of_row", &"get_field", &"set_field",
 	&"get_column", &"set_column",
 	&"batch_apply_where", &"batch_count",
 	&"create_prefab", &"is_prefab", &"prefab_add", &"instantiate", &"prefab_get_field",
