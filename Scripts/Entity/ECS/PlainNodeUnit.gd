@@ -17,7 +17,7 @@ var team: int = 0
 var dmg: float = 5.0
 var size: float = 10.0
 
-## 共享实体列表(由 ECSPerfLab 注入, 用于找敌)
+## 共享实体列表(由 ECSDemo 注入, 用于找敌)
 var all_units: Array[PlainNodeUnit] = []
 
 ## 颜色(表现)
@@ -32,7 +32,7 @@ var dead: bool = false
 ## 模式: true=战斗玩法(找敌/攻击/吞并), false=纯数值热点(仅回血+伤害结算)
 var numhot_mode: bool = false
 
-## 统计: 每帧耗时(由 ECSPerfLab 读取)
+## 统计: 每帧耗时(由 ECSDemo 读取)
 var last_process_us: int = 0
 
 

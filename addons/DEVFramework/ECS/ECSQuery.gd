@@ -82,16 +82,16 @@ func set_value(field: StringName, value) -> ECSQuery:
 # ---------- 列间声明动作(规则层, C++ batch 执行, 列与列联动) ----------
 # 参数顺序统一为: (目标字段, 源组件, 源字段)。例: add_from(&"dmg", BattleCell, &"atk") 即 dmg += atk。
 
-## 动作: 目标字段 += 源字段列。例: add_from(&"dmg", BattleCell, &"atk") → dmg += atk
-func add_from(field: StringName, src, src_field: StringName) -> ECSQuery:
+## 动作: 目标字段 += 源字段列(可乘 factor)。例: add_from(&"dmg", BattleCell, &"atk", 2.0) → dmg += atk*2
+func add_from(field: StringName, src, src_field: StringName, factor: float = 1.0) -> ECSQuery:
 	actions.append({"type": "col", "field": field, "src": src, "src_field": src_field,
-			"op": ECSWorld.ColOp.COL_ADD, "factor": 1.0, "addend": 0.0})
+			"op": ECSWorld.ColOp.COL_ADD, "factor": factor, "addend": 0.0})
 	return self
 
-## 动作: 目标字段 -= 源字段列。例: sub_from(&"hp", BattleCell, &"atk") → hp -= atk
-func sub_from(field: StringName, src, src_field: StringName) -> ECSQuery:
+## 动作: 目标字段 -= 源字段列(可乘 factor)。例: sub_from(&"hp", BattleCell, &"atk", 2.0) → hp -= atk*2
+func sub_from(field: StringName, src, src_field: StringName, factor: float = 1.0) -> ECSQuery:
 	actions.append({"type": "col", "field": field, "src": src, "src_field": src_field,
-			"op": ECSWorld.ColOp.COL_SUB, "factor": 1.0, "addend": 0.0})
+			"op": ECSWorld.ColOp.COL_SUB, "factor": factor, "addend": 0.0})
 	return self
 
 ## 动作: 目标字段 *= 源字段列(可标量缩放 factor)。例: mul_from(&"dmg", BattleCell, &"atk", 2.0) → dmg *= atk*2
