@@ -4,7 +4,7 @@ extends ECSSystem
 ## ECSSyncSystem —— 批量同步 ECS 位置 → Godot 节点位置。
 ##
 ## 中期方案的核心 System:
-##   不再让每个 EntityView 自己 _process 同步,
+##   不再让每个 ECSNode 自己 _process 同步,
 ##   而是由本系统一次遍历所有"带 NodeLink 的实体", 批量搬运位置。
 ##
 ## 优势:
@@ -13,7 +13,7 @@ extends ECSSystem
 ##
 ## 注意:
 ##   - 本系统处理"ECS → 节点"方向
-##   - "节点 → ECS"(交互写回)由 EntityView.sync_node_to_ecs() 或业务代码处理
+##   - "节点 → ECS"(交互写回)由 ECSNode.sync_node_to_ecs() 或业务代码处理
 
 ## 场景根节点(查找 NodeLink.node_path 用)。
 ## 若未设置, 默认取当前场景根。

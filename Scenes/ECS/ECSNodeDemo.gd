@@ -3,10 +3,10 @@ extends Control
 ## 三层架构 Demo —— ECS 与 Godot 配合的完整方案
 ##
 ##  ① 海量实体(长期方案): 2 万点阵, ECS 数据直读渲染, 不建 Node
-##  ② 关键实体(中期方案): 10 个小兵, EntityView + NodeLink + ECSSyncSystem
+##  ② 关键实体(中期方案): 10 个小兵, ECSNode + NodeLink + ECSSyncSystem
 ##  ③ 交互(配合逻辑): 拖拽小兵 → 位置写回 ECS
 ##
-## 运行: F5 运行 Scenes/ECS/EntityViewDemo.tscn
+## 运行: F5 运行 Scenes/ECS/ECSNodeDemo.tscn
 
 ## —— ① 海量实体参数 ——
 @export var crowd_count: int = 20000
@@ -23,8 +23,8 @@ extends Control
 @onready var respawn_button: Button = %RespawnButton
 
 var world: ECSWorld
-var views: Array[EntityView] = []
-var _dragging: EntityView = null
+var views: Array[ECSNode] = []
+var _dragging: ECSNode = null
 var _frame := 0
 
 
@@ -67,10 +67,10 @@ func _spawn_crowd() -> void:
 	crowd_cloud.set_color(Color(0.35, 0.45, 0.9, 0.8))
 
 
-## ② 关键实体: EntityView + NodeLink + SyncSystem
+## ② 关键实体: ECSNode + NodeLink + SyncSystem
 func _spawn_squad() -> void:
 	for i in squad_count:
-		var view := EntityView.spawn(world, null, Vector2.ZERO, world_root)
+		var view := ECSNode.spawn(world, null, Vector2.ZERO, world_root)
 		view.name = "Unit_%d" % i
 		view.add_component(ECSDemoMoveComponent)
 		view.add_component(HealthComponent)
@@ -140,8 +140,8 @@ func _input(event: InputEvent) -> void:
 		_dragging.sync_node_to_ecs()
 
 
-func _pick_at(pos: Vector2) -> EntityView:
-	var hit: EntityView = null
+func _pick_at(pos: Vector2) -> ECSNode:
+	var hit: ECSNode = null
 	var best := 40.0 * 40.0
 	for v in views:
 		if v.node == null or not world.is_alive(v.entity_id):
@@ -174,7 +174,7 @@ func _on_load_pressed() -> void:
 	for eid in entity_ids:
 		if not world.has_component(eid, NodeLink):
 			continue
-		var view := EntityView.new()
+		var view := ECSNode.new()
 		view.world = world
 		view.entity_id = eid
 		view.name = "Unit_%d" % eid
@@ -214,5 +214,5 @@ func _update_stats() -> void:
 	for v in views:
 		if world.is_alive(v.entity_id):
 			alive += 1
-	stats_label.text = "ECS 三层架构 Demo\n\n① 海量实体(点阵): %d\n② 关键实体(节点): %d (存活 %d)\n\n🖱 拖拽小兵 → 写回 ECS(双向同步)\n💾 存档 / 📂 读档\n\n[用法] 海量用渲染直读, 关键用 EntityView+SyncSystem" % [
+	stats_label.text = "ECS 三层架构 Demo\n\n① 海量实体(点阵): %d\n② 关键实体(节点): %d (存活 %d)\n\n🖱 拖拽小兵 → 写回 ECS(双向同步)\n💾 存档 / 📂 读档\n\n[用法] 海量用渲染直读, 关键用 ECSNode+SyncSystem" % [
 		crowd_count, views.size(), alive]

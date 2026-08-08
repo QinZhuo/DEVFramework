@@ -1,11 +1,11 @@
-class_name EntityView
+class_name ECSNode
 extends Node
 
-## EntityView —— ECS 实体与 Godot 场景节点的高层便利封装。
+## ECSNode —— ECS 实体与 Godot 场景节点的高层便利封装。
 ##
 ## 架构定位(三层中的"关键实体"层):
 ##   - 海量实体(10万+): 渲染直读, 不建 Node(ECSDemo 点阵)
-##   - 关键实体(玩家/NPC/Boss): EntityView 桥接 ← 本类
+##   - 关键实体(玩家/NPC/Boss): ECSNode 桥接 ← 本类
 ##
 ## 本类内部基于 NodeLink 组件:
 ##   - 自动给实体挂 NodeLink(记录 node_path, 可序列化)
@@ -13,7 +13,7 @@ extends Node
 ##   - 提供 get/set_field 便捷 API 供 Godot 逻辑读写 ECS
 ##
 ## 用法:
-##   var view = EntityView.spawn(world, player_scene, Vector2(100, 200))
+##   var view = ECSNode.spawn(world, player_scene, Vector2(100, 200))
 ##   view.add_component(HealthComponent)
 ##   view.bind_pos(ECSDemoMoveComponent, &"pos")
 ##   view.get_field(HealthComponent, &"hp")
@@ -48,8 +48,8 @@ var _active := true
 ## 静态工厂: 创建 ECS 实体 + NodeLink + 表现节点。
 ## world: ECS 世界; scene: PackedScene 或 Node;
 ## pos: 初始世界坐标(可选); parent: 挂载父节点(默认当前场景根)
-static func spawn(world: ECSWorld, scene, pos: Vector2 = Vector2.ZERO, parent: Node = null) -> EntityView:
-	var view := EntityView.new()
+static func spawn(world: ECSWorld, scene, pos: Vector2 = Vector2.ZERO, parent: Node = null) -> ECSNode:
+	var view := ECSNode.new()
 	view.world = world
 	view.entity_id = world.create_entity()
 	# 实例化表现节点

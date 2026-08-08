@@ -13,7 +13,7 @@ extends ECSComponent
 ## 配合使用:
 ##   - 实体 + NodeLink + 位置组件(如 TransformComponent/ECSDemoMoveComponent)
 ##   - ECSSyncSystem 自动把 ECS 位置 → node.position
-##   - 节点交互(Godot 逻辑)用 EntityView 便利层或直接 world.get/set_field
+##   - 节点交互(Godot 逻辑)用 ECSNode 便利层或直接 world.get/set_field
 
 ## 关联的 Godot 节点路径(相对场景根, 可序列化)
 @export var node_path: String = ""
