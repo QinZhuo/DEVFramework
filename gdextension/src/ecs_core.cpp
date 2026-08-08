@@ -456,6 +456,166 @@ static void collect_rows(const ECSComponentData *anchor, const ECSComponentData 
 	}
 }
 
+// ---------------------------------------------------------------------------
+// 条件过滤: 解析 Array[Dictionary] 条件列表, 用于 batch_apply_where / batch_count
+// 每个条件: {comp: StringName, field: StringName, op: int(CondOp), value: double}
+// ---------------------------------------------------------------------------
+namespace {
+
+struct ECSFilterCond {
+	const ECSComponentData *comp = nullptr;
+	int field_idx = -1;
+	int32_t op = 0;      // CondOp
+	double value = 0.0;
+};
+
+// 解析条件列表, 返回有效条件数
+int parse_conditions(const ECSCore *core, const Array &conds,
+		std::vector<ECSFilterCond> &out, int max_conds) {
+	out.clear();
+	for (int i = 0; i < conds.size() && int(out.size()) < max_conds; ++i) {
+		Dictionary d = conds[i];
+		if (!d.has("comp") || !d.has("field")) {
+			continue;
+		}
+		ECSFilterCond c;
+		c.comp = core->find_comp(StringName(d["comp"]));
+		if (c.comp == nullptr) {
+			continue;
+		}
+		c.field_idx = c.comp->field_index(StringName(d["field"]));
+		if (c.field_idx < 0) {
+			continue;
+		}
+		c.op = int64_t(d.get("op", int64_t(0)));
+		c.value = double(d.get("value", 0.0));
+		out.push_back(c);
+	}
+	return int(out.size());
+}
+
+// 单实体是否满足所有条件(按列值比较)
+inline bool cond_matches(const ECSCore *core, int32_t e, const std::vector<ECSFilterCond> &conds) {
+	for (const auto &c : conds) {
+		const ECSColumn &col = c.comp->columns[c.field_idx];
+		double v = 0.0;
+		switch (col.type) {
+			case Variant::INT: v = double(col.i32[e]); break;
+			case Variant::FLOAT: v = double(col.f32[e]); break;
+			default: return false; // 条件仅支持数值字段
+		}
+		switch (c.op) {
+			case ECSCore::COND_LT: if (!(v < c.value)) return false; break;
+			case ECSCore::COND_LE: if (!(v <= c.value)) return false; break;
+			case ECSCore::COND_GT: if (!(v > c.value)) return false; break;
+			case ECSCore::COND_GE: if (!(v >= c.value)) return false; break;
+			case ECSCore::COND_EQ: if (!(v == c.value)) return false; break;
+			case ECSCore::COND_NE: if (!(v != c.value)) return false; break;
+			default: return false;
+		}
+	}
+	return true;
+}
+
+// 收集 anchor+must+条件 都满足的实体
+void collect_rows_where(const ECSCore *core, const ECSComponentData *anchor,
+		const ECSComponentData *const *req, int32_t m,
+		const std::vector<ECSFilterCond> &conds, std::vector<int32_t> &out) {
+	out.clear();
+	const auto &dense = anchor->set.dense;
+	for (int32_t r = 0; r < int32_t(dense.size()); ++r) {
+		const int32_t e = dense[r];
+		bool ok = true;
+		for (int32_t i = 0; i < m; ++i) {
+			if (req[i] == nullptr || !req[i]->set.has(e)) {
+				ok = false;
+				break;
+			}
+		}
+		if (ok && cond_matches(core, e, conds)) {
+			out.push_back(e);
+		}
+	}
+}
+
+} // namespace
+
+int64_t ECSCore::batch_count(const StringName &anchor, const PackedStringArray &must,
+		const Array &conditions) const {
+	const ECSComponentData *a = find_comp(anchor);
+	if (a == nullptr) {
+		return 0;
+	}
+	const int32_t m = int32_t(must.size());
+	const ECSComponentData *req[8];
+	for (int32_t i = 0; i < m && i < 8; ++i) {
+		req[i] = find_comp(must[i]);
+	}
+	std::vector<ECSFilterCond> conds;
+	parse_conditions(this, conditions, conds, 8);
+	std::vector<int32_t> rows;
+	collect_rows_where(this, a, req, m > 8 ? 8 : m, conds, rows);
+	return int64_t(rows.size());
+}
+
+int64_t ECSCore::batch_apply_where(const StringName &anchor, const PackedStringArray &must,
+		const StringName &op_comp, const StringName &op_field, int64_t op,
+		double factor, double addend, const Array &conditions) {
+	ECSComponentData *a = find_comp(anchor);
+	ECSComponentData *oc = find_comp(op_comp);
+	if (a == nullptr || oc == nullptr) {
+		return 0;
+	}
+	const int fi = oc->field_index(op_field);
+	if (fi < 0) {
+		return 0;
+	}
+	const int32_t m = int32_t(must.size());
+	const ECSComponentData *req[8];
+	for (int32_t i = 0; i < m && i < 8; ++i) {
+		req[i] = find_comp(must[i]);
+	}
+	std::vector<ECSFilterCond> conds;
+	parse_conditions(this, conditions, conds, 8);
+	std::vector<int32_t> rows;
+	collect_rows_where(this, a, req, m > 8 ? 8 : m, conds, rows);
+
+	ECSColumn &col = oc->columns[fi];
+	int64_t n = 0;
+	switch (col.type) {
+		case Variant::INT: {
+			int32_t *w = col.i32.ptrw();
+			const int32_t add = int32_t(addend);
+			for (int32_t e : rows) {
+				switch (op) {
+					case BATCH_ADD: w[e] += add; break;
+					case BATCH_MUL_ADD: w[e] = int32_t(double(w[e]) * factor + addend); break;
+					case BATCH_SET: w[e] = add; break;
+					default: break;
+				}
+				++n;
+			}
+			break;
+		}
+		case Variant::FLOAT: {
+			float *w = col.f32.ptrw();
+			for (int32_t e : rows) {
+				switch (op) {
+					case BATCH_ADD: w[e] += float(addend); break;
+					case BATCH_MUL_ADD: w[e] = float(double(w[e]) * factor + addend); break;
+					case BATCH_SET: w[e] = float(addend); break;
+					default: break;
+				}
+				++n;
+			}
+			break;
+		}
+		default:
+			break;
+	}
+	return n;
+}
+
 int64_t ECSCore::batch_apply(const StringName &anchor, const PackedStringArray &must,
 		const StringName &op_comp, const StringName &op_field, int64_t op,
 		double factor, double addend) {
@@ -773,6 +933,8 @@ void ECSCore::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_column", "comp", "field"), &ECSCore::get_column);
 	ClassDB::bind_method(D_METHOD("set_column", "comp", "field", "values"), &ECSCore::set_column);
 	ClassDB::bind_method(D_METHOD("batch_apply", "anchor", "must", "op_comp", "op_field", "op", "factor", "addend"), &ECSCore::batch_apply);
+	ClassDB::bind_method(D_METHOD("batch_apply_where", "anchor", "must", "op_comp", "op_field", "op", "factor", "addend", "conditions"), &ECSCore::batch_apply_where);
+	ClassDB::bind_method(D_METHOD("batch_count", "anchor", "must", "conditions"), &ECSCore::batch_count);
 	ClassDB::bind_method(D_METHOD("batch_clamp", "anchor", "must", "op_comp", "op_field", "min_comp", "min_field", "max_comp", "max_field"), &ECSCore::batch_clamp);
 	ClassDB::bind_method(D_METHOD("batch_vec_add", "anchor", "must", "pos_comp", "pos_field", "vel_comp", "vel_field", "delta"), &ECSCore::batch_vec_add);
 	ClassDB::bind_method(D_METHOD("debug_stats"), &ECSCore::debug_stats);

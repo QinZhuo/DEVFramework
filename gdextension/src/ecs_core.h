@@ -135,6 +135,16 @@ public:
 
 	// ---- Tier 0: 原生批量运算 (纯 C++ 循环, 无 GDScript 解释开销) ----
 	enum BatchOp { BATCH_ADD = 0, BATCH_MUL_ADD = 1, BATCH_SET = 2, BATCH_CLAMP = 3 };
+	// 条件比较符
+	enum CondOp { COND_LT = 0, COND_LE = 1, COND_GT = 2, COND_GE = 3, COND_EQ = 4, COND_NE = 5 };
+	// batch_apply 带条件版本: conditions 为 Array[Dictionary], 每项 {comp, field, op, value}
+	// 仅对满足全部条件的实体执行 op。返回处理的实体数。
+	int64_t batch_apply_where(const StringName &anchor, const PackedStringArray &must,
+			const StringName &op_comp, const StringName &op_field, int64_t op,
+			double factor, double addend, const Array &conditions);
+	// 统计满足条件的实体数(纯查询, 不修改)
+	int64_t batch_count(const StringName &anchor, const PackedStringArray &must,
+			const Array &conditions) const;
 	int64_t batch_apply(const StringName &anchor, const PackedStringArray &must,
 			const StringName &op_comp, const StringName &op_field, int64_t op,
 			double factor, double addend);
@@ -159,10 +169,12 @@ public:
 	// 注意: 需先 register_component 同名的组件(名称一致), 否则忽略该组件数据。
 	Array deserialize(const Dictionary &data);
 
+	// 供条件过滤解析内部使用
+	const ECSComponentData *find_comp(const StringName &name) const;
+
 private:
 	// ---- 内部 ----
 	ECSComponentData *find_comp(const StringName &name);
-	const ECSComponentData *find_comp(const StringName &name) const;
 	int32_t comp_index(const StringName &name) const;
 
 	// 签名聚簇: 实体 ID 分配

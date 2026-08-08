@@ -17,6 +17,7 @@ static var _required_methods := [
 	&"add_component", &"has_component", &"remove_component", &"count_entities",
 	&"query_rows", &"entity_of_row", &"get_field", &"set_field",
 	&"get_column", &"set_column",
+	&"batch_apply_where", &"batch_count",
 ]
 
 ## 获取原生实例(懒初始化 + 自动重试)。返回 null 表示不可用。

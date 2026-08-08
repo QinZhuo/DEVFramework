@@ -15,6 +15,23 @@ extends RefCounted
 ##   world.register_system(HealSystem.new())        # ECSSystem 子类
 ##   world.tick(delta)                              # 每帧调用(或挂 ECSTick Node)
 
+## —— 批量运算操作符(传给 batch_apply / batch_apply_if 的 op 参数) ——
+enum BatchOp {
+	ADD_VALUE = 0,       # 加值:   col += addend
+	MULTIPLY_ADD = 1,    # 乘加:   col = col * factor + addend
+	SET_VALUE = 2,       # 赋值:   col = addend
+}
+
+## —— 条件比较符(传给 batch_apply_if / batch_count_if 的 conditions.op) ——
+enum CondOp {
+	LESS_THAN = 0,        # <   小于
+	LESS_OR_EQUAL = 1,    # <=  小于等于
+	GREATER_THAN = 2,     # >   大于
+	GREATER_OR_EQUAL = 3, # >=  大于等于
+	EQUAL = 4,            # ==  等于
+	NOT_EQUAL = 5,        # !=  不等于
+}
+
 # ---------------- 核心句柄 ----------------
 var _core: Object = null                 # ECSCore 原生实例
 var _available: bool = false
@@ -197,7 +214,7 @@ func set_column(component, field: StringName, values) -> void:
 # ---- Tier 0: 原生批量运算(纯 C++ 循环, 无 GDScript 解释开销) ----
 
 ## 批量数值变换(anchor 组件中同时拥有 must 的实体, 对 op 字段原地运算)。
-## op: 0=ADD(col+=addend), 1=MUL_ADD(col=col*factor+addend), 2=SET(col=addend), 3=CLAMP(见 batch_clamp)
+## op: ECSWorld.BatchOp(ADD=0 加法, MUL_ADD=1 乘加, SET=2 赋值)
 func batch_apply(anchor, must: Array, op_comp, op_field: StringName, op: int, factor: float, addend: float) -> int:
 	if not _available:
 		return 0
@@ -393,3 +410,66 @@ func deserialize(data: Dictionary) -> Array:
 ## 内存统计(调试)
 func debug_stats() -> Dictionary:
 	return _core.debug_stats() if _available else {}
+
+# ============================================================
+#  Tier0 条件过滤批量(只处理满足条件的实体)
+# ============================================================
+
+## 条件过滤批量运算: 仅对满足全部条件的实体执行 op 运算。
+## 参数含义:
+##   anchor/must: 匹配实体的组件签名(anchor 必含, must 全含)
+##   op_comp/op_field: 要修改的目标组件与字段
+##   op: ECSWorld.BatchOp(ADD 加 / MUL_ADD 乘加 / SET 赋值)
+##   factor: MUL_ADD 时的乘数; addend: ADD/MUL_ADD 时的加数
+##   conditions: Array[Dictionary] 过滤条件, 每项 {comp, field, op, value}
+##     - comp 可传组件类(Script)或类名(String); field 传字段名
+##     - op: ECSWorld.CondOp(LT < / LE <= / GT > / GE >= / EQ == / NE !=)
+## 返回处理的实体数。
+##
+## 示例(给 hp<50 的实体 +10):
+##   world.batch_apply_if(HealthComponent, [], HealthComponent, &"hp",
+##       ECSWorld.BatchOp.ADD_VALUE, 0.0, 10.0,
+##       [{comp: HealthComponent, field: &"hp", op: ECSWorld.CondOp.LESS_THAN, value: 50}])
+func batch_apply_if(anchor, must: Array, op_comp, op_field: StringName,
+		op: int, factor: float, addend: float, conditions: Array) -> int:
+	if not _available:
+		return 0
+	return _core.batch_apply_where(_resolve_component_name(anchor), _names(must),
+		_resolve_component_name(op_comp), op_field, op, factor, addend, _normalize_conds(conditions))
+
+## 便捷: 给满足条件的实体的目标字段增加值 amount。
+## 等价于 batch_apply_if(..., BatchOp.ADD_VALUE, 0.0, amount, conditions)。
+## 示例(给 hp<50 的实体回血 10):
+##   world.batch_add_value_if(HealthComponent, [], HealthComponent, &"hp", 10.0,
+##       [{comp: HealthComponent, field: &"hp", op: ECSWorld.CondOp.LESS_THAN, value: 50}])
+func batch_add_value_if(anchor, must: Array, op_comp, op_field: StringName,
+		amount: float, conditions: Array) -> int:
+	return batch_apply_if(anchor, must, op_comp, op_field, BatchOp.ADD_VALUE, 0.0, amount, conditions)
+
+## 便捷: 给满足条件的实体的目标字段设置为 value。
+## 等价于 batch_apply_if(..., BatchOp.SET_VALUE, 0.0, value, conditions)。
+func batch_set_value_if(anchor, must: Array, op_comp, op_field: StringName,
+		value: float, conditions: Array) -> int:
+	return batch_apply_if(anchor, must, op_comp, op_field, BatchOp.SET_VALUE, 0.0, value, conditions)
+
+## 统计满足指定条件的实体数量(纯查询, 不修改任何数据)。
+## conditions 格式同 batch_apply_if。
+## 示例(统计血量不满的敌人数量):
+##   world.batch_count_if(HealthComponent, [],
+##       [{comp: HealthComponent, field: &"hp", op: ECSWorld.CondOp.LESS_THAN, value: 100}])
+func batch_count_if(anchor, must: Array, conditions: Array) -> int:
+	if not _available:
+		return 0
+	return _core.batch_count(_resolve_component_name(anchor), _names(must), _normalize_conds(conditions))
+
+## 规范化条件列表: 把 comp(Script/String) → 类名 String, 便于 C++ 解析
+func _normalize_conds(conditions: Array) -> Array:
+	var out: Array = []
+	for c in conditions:
+		var d := {}
+		d["comp"] = _resolve_component_name(c.get("comp", &""))
+		d["field"] = str(c.get("field", &""))
+		d["op"] = int(c.get("op", 0))
+		d["value"] = c.get("value", 0.0)
+		out.append(d)
+	return out
