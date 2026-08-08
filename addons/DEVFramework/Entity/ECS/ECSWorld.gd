@@ -211,7 +211,7 @@ func set_column(component, field: StringName, values) -> void:
 	if _available:
 		_core.set_column(_resolve_component_name(component), field, values)
 
-# ---- Tier 0: 原生批量运算(纯 C++ 循环, 无 GDScript 解释开销) ----
+# ---- 原生API层: 批量运算(纯 C++ 循环, 无 GDScript 解释开销) ----
 
 ## 批量数值变换(anchor 组件中同时拥有 must 的实体, 对 op 字段原地运算)。
 ## op: ECSWorld.BatchOp(ADD=0 加法, MUL_ADD=1 乘加, SET=2 赋值)
@@ -412,7 +412,7 @@ func debug_stats() -> Dictionary:
 	return _core.debug_stats() if _available else {}
 
 # ============================================================
-#  Tier0 条件过滤批量(只处理满足条件的实体)
+#  原生API层: 条件过滤批量(只处理满足条件的实体)
 # ============================================================
 
 ## 条件过滤批量运算: 仅对满足全部条件的实体执行 op 运算。
@@ -536,3 +536,15 @@ func spawn_from_def(def: ECSPrefabDef, count: int = 1, overrides: Dictionary = {
 	if prefab < 0:
 		return []
 	return instantiate(prefab, count, overrides)
+
+# ============================================================
+#  声明规则层 (ECSRule: 遍历→条件→动作, C++ 批量执行)
+# ============================================================
+
+## 注册声明规则(自动包成 ECSRuleSystem 加入世界, 每帧执行)。
+## priority 与 register_system 一致(越大越先执行)。
+func register_rule(rule: ECSRule, priority: int = 0) -> ECSRuleSystem:
+	var system := ECSRuleSystem.new()
+	system.add_rule(rule)
+	register_system(system, priority)
+	return system

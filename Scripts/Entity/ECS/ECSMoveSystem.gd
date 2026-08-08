@@ -1,7 +1,7 @@
 class_name ECSMoveSystem
 extends ECSSystem
 
-## ECS 演示移动系统 —— Tier0 原生批量(纯 C++ 循环, 无 GDScript 解释)。
+## ECS 演示移动系统 —— 原生API层(纯 C++ 循环, 无 GDScript 解释)。
 ##
 ## 用 Vector2 字段做位置积分:
 ##   pos += vel * delta   (batch_vec_add, 单次调用处理全部实体)

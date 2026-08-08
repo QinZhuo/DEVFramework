@@ -1,7 +1,7 @@
 class_name NativeBenchmarkSystem
 extends ECSSystem
 
-## Tier 0 基准系统: 全部走 C++ 原生批量运算, GDScript 只做一次调用。
+## 原生API层基准系统: 全部走 C++ 原生批量运算, GDScript 只做一次调用。
 
 func required_components() -> Array[Script]:
 	return [HealthComponent, MoveComponent]

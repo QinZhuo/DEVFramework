@@ -1,8 +1,8 @@
 class_name ECSScriptMoveSystem
 extends ECSSystem
 
-## 脚本(Tier2)移动系统 —— GDScript 列循环。
-## 与 ECSMoveSystem(Tier0)逻辑完全对称: pos += vel * delta。
+## 手写脚本层: 移动系统 —— GDScript 列循环。
+## 与 ECSMoveSystem(原生API层)逻辑完全对称: pos += vel * delta。
 ## 区别: 逐实体在 GDScript 中循环访问列数组。
 
 func required_components() -> Array[Script]:

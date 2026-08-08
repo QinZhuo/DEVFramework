@@ -1,8 +1,8 @@
 class_name ECSNativeHealSystem
 extends ECSSystem
 
-## 原生(Tier0)治疗系统 —— 纯 C++ 批量运算, 无 GDScript 循环。
-## 与 HealSystem(Tier2)逻辑完全对称: hp 每秒回复 5, 封顶 max_hp。
+## 原生API层: 治疗系统 —— 纯 C++ 批量运算, 无 GDScript 循环。
+## 与 HealSystem(手写脚本层)逻辑完全对称: hp 每秒回复 5, 封顶 max_hp。
 ## 区别: 全部在 C++ 内循环完成, GDScript 只发起 2 次调用。
 
 func required_components() -> Array[Script]:

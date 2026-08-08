@@ -51,6 +51,8 @@ func _setup_world() -> void:
 	world.register_system(ECSSyncSystem.new(), 10)
 	# 可选: 移动系统(展示 ECS 驱动)
 	world.register_system(ECSMoveSystem.new(), 20)
+	# 声明规则层: 给 hp<50 的关键实体回血(遍历→条件→动作, C++ 批量执行)
+	world.register_rule(HealRule.new(), 5)
 
 
 ## ① 海量实体: 从 ECSPrefabDef 配置批量生成(配置驱动 + C++ 高性能实例化)
@@ -83,6 +85,8 @@ func _spawn_squad() -> void:
 		# 给关键实体挂 NodeLink(标记为"关键实体", 供读档识别 + SyncSystem 同步)
 		world.add_component(ids[i], NodeLink)
 		world.set_field(ids[i], NodeLink, &"node_path", "")  # 节点路径由 ECSNode 持有, 存档主要靠实体 ID
+		# 给关键实体设随机血量(部分低于 50, 便于观察声明规则回血)
+		world.set_field(ids[i], HealthComponent, &"hp", 20 + (i * 13) % 80)
 		# 位置/颜色来自配置或运行时初始化
 		view.set_field(ECSDemoMoveComponent, &"pos",
 				Vector2(randf_range(80.0, 1070.0), randf_range(80.0, 640.0)))
