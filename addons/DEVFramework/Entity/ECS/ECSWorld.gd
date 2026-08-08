@@ -353,16 +353,53 @@ func _resort() -> void:
 # ============================================================
 
 ## 投递事件(帧末统一派发给订阅者)。
+## payload 可为任意值; 也支持带实体信息的字典 {entity: id, data: ...}。
 func emit_event(type: StringName, payload = null) -> void:
 	if not _event_queues.has(type):
 		_event_queues[type] = []
 	_event_queues[type].append(payload)
+
+## 投递"实体事件": 指定事件的来源/目标实体。
+## 订阅者可用 on_entity_event(带组件过滤)只收到相关实体的事件。
+func emit_entity_event(type: StringName, entity: int, data = null) -> void:
+	var payload := {"entity": entity, "data": data}
+	emit_event(type, payload)
 
 ## 订阅事件。handler(payload)。
 func on_event(type: StringName, handler: Callable) -> void:
 	if not _event_subscribers.has(type):
 		_event_subscribers[type] = []
 	_event_subscribers[type].append(handler)
+
+## 订阅"实体事件"并按组件过滤。
+## 只收到: 事件携带 entity_id, 且该实体拥有全部 filter 组件。
+## handler(entity_id, data)。
+func on_entity_event(type: StringName, filter: Array, handler: Callable) -> void:
+	var wrapped := func(payload):
+		if not payload is Dictionary or not payload.has("entity"):
+			return
+		var eid: int = payload["entity"]
+		for comp in filter:
+			if not has_component(eid, comp):
+				return
+		handler.call(eid, payload.get("data", null))
+	on_event(type, wrapped)
+
+## 订阅"实体事件"并按组件过滤(带 where 条件)。
+## conditions: Array[Dictionary] 同 batch_apply_if 条件格式。
+## handler(entity_id, data)。
+func on_entity_event_where(type: StringName, filter: Array, conditions: Array, handler: Callable) -> void:
+	var wrapped := func(payload):
+		if not payload is Dictionary or not payload.has("entity"):
+			return
+		var eid: int = payload["entity"]
+		for comp in filter:
+			if not has_component(eid, comp):
+				return
+		if not _entity_matches_conds(eid, conditions):
+			return
+		handler.call(eid, payload.get("data", null))
+	on_event(type, wrapped)
 
 func off_event(type: StringName, handler: Callable) -> void:
 	var arr: Array = _event_subscribers.get(type, [])
@@ -381,6 +418,35 @@ func pending_event_count() -> int:
 ## 订阅某事件的处理器数量
 func subscriber_count(type: StringName) -> int:
 	return (_event_subscribers.get(type, []) as Array).size()
+
+## 判断实体是否满足条件(复用 batch_count 的过滤逻辑)
+func _entity_matches_conds(eid: int, conditions: Array) -> bool:
+	if conditions.is_empty():
+		return true
+	# 用 batch_count 单实体判断: 构造一个临时条件直接查
+	for c in conditions:
+		var comp_name := _resolve_component_name(c.get("comp", &""))
+		var field: StringName = c.get("field", &"")
+		var op: int = int(c.get("op", 0))
+		var value = c.get("value", 0.0)
+		var v = get_field(eid, StringName(comp_name), field)
+		if v == null:
+			return false
+		var num := float(v)
+		match op:
+			CondOp.LESS_THAN:
+				if not num < float(value): return false
+			CondOp.LESS_OR_EQUAL:
+				if not num <= float(value): return false
+			CondOp.GREATER_THAN:
+				if not num > float(value): return false
+			CondOp.GREATER_OR_EQUAL:
+				if not num >= float(value): return false
+			CondOp.EQUAL:
+				if not num == float(value): return false
+			CondOp.NOT_EQUAL:
+				if not num != float(value): return false
+	return true
 
 func _dispatch_events() -> void:
 	for type in _event_queues:
