@@ -1,6 +1,7 @@
 [gd_scene format=3 uid="uid://rdfjaoednchw"]
 
 [ext_resource type="Script" path="res://Scenes/ECS/EntityViewDemo.gd" id="1_demo"]
+[ext_resource type="Script" path="res://Scripts/Entity/ECS/ECSPointCloud.gd" id="2_cloud"]
 
 [node name="EntityViewDemo" type="Control"]
 layout_mode = 3
@@ -11,6 +12,10 @@ grow_horizontal = 2
 grow_vertical = 2
 script = ExtResource("1_demo")
 
+[node name="CrowdCloud" type="Node2D" parent="."]
+unique_name_in_owner = true
+script = ExtResource("2_cloud")
+
 [node name="WorldRoot" type="Node2D" parent="."]
 unique_name_in_owner = true
 
@@ -18,11 +23,11 @@ unique_name_in_owner = true
 unique_name_in_owner = true
 offset_left = 16.0
 offset_top = 16.0
-offset_right = 560.0
-offset_bottom = 160.0
+offset_right = 620.0
+offset_bottom = 200.0
 theme_override_colors/font_color = Color(0.9, 0.95, 1, 1)
 theme_override_font_sizes/font_size = 18
-text = "EntityView 桥接 Demo"
+text = "ECS 三层架构 Demo"
 
 [node name="SaveButton" type="Button" parent="."]
 unique_name_in_owner = true
