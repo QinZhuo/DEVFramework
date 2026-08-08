@@ -808,6 +808,81 @@ void collect_rows_where(const ECSCore *core, const ECSComponentData *anchor,
 }
 } // namespace
 
+// 对齐行号 + 条件过滤: 只返回满足 anchor+must+without+conditions 的实体,
+// 并对 comps 指定的组件输出对齐行号。
+Array ECSCore::query_rows_aligned_where(const StringName &anchor, const PackedStringArray &must,
+		const PackedStringArray &without, const Array &conditions,
+		const PackedStringArray &comps) const {
+	Array out;
+	const ECSComponentData *a = find_comp(anchor);
+	if (a == nullptr || a->set.dense.empty()) {
+		return out;
+	}
+	const int32_t m = int32_t(must.size());
+	const int32_t w = int32_t(without.size());
+	const ECSComponentData *req[8];
+	const ECSComponentData *ban[8];
+	if (m > 8 || w > 8) {
+		return out;
+	}
+	for (int32_t i = 0; i < m; ++i) {
+		req[i] = find_comp(must[i]);
+	}
+	for (int32_t i = 0; i < w; ++i) {
+		ban[i] = find_comp(without[i]);
+	}
+	std::vector<ECSFilterCond> conds;
+	parse_conditions(this, conditions, conds, 8);
+
+	const auto &dense = a->set.dense;
+	PackedInt32Array anchor_rows;
+	anchor_rows.resize(int32_t(dense.size()));
+	int32_t n = 0;
+	for (int32_t r = 0; r < int32_t(dense.size()); ++r) {
+		const int32_t e = dense[r];
+		if (is_prefab_index(e)) {
+			continue;
+		}
+		bool ok = true;
+		for (int32_t i = 0; i < m; ++i) {
+			if (req[i] == nullptr || !req[i]->set.has(e)) {
+				ok = false;
+				break;
+			}
+		}
+		if (ok) {
+			for (int32_t i = 0; i < w; ++i) {
+				if (ban[i] != nullptr && ban[i]->set.has(e)) {
+					ok = false;
+					break;
+				}
+			}
+		}
+		if (ok && cond_matches(this, e, conds)) {
+			anchor_rows[n++] = r;
+		}
+	}
+	anchor_rows.resize(n);
+	out.push_back(anchor_rows);
+
+	// comps 对齐行号(与 anchor_rows 顺序一一对应)
+	for (int32_t i = 0; i < int32_t(comps.size()) && i < 8; ++i) {
+		const ECSComponentData *c = find_comp(comps[i]);
+		PackedInt32Array cr;
+		if (c == nullptr) {
+			out.push_back(cr);
+			continue;
+		}
+		cr.resize(n);
+		for (int32_t k = 0; k < n; ++k) {
+			const int32_t e = dense[anchor_rows[k]];
+			cr[k] = c->set.row_of(e);
+		}
+		out.push_back(cr);
+	}
+	return out;
+}
+
 int64_t ECSCore::batch_count(const StringName &anchor, const PackedStringArray &must,
 		const Array &conditions) const {
 	const ECSComponentData *a = find_comp(anchor);
@@ -1539,6 +1614,7 @@ void ECSCore::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_entity_components", "entity"), &ECSCore::get_entity_components);
 	ClassDB::bind_method(D_METHOD("query_rows", "anchor", "must", "without"), &ECSCore::query_rows);
 	ClassDB::bind_method(D_METHOD("query_rows_aligned", "anchor", "must", "without"), &ECSCore::query_rows_aligned);
+	ClassDB::bind_method(D_METHOD("query_rows_aligned_where", "anchor", "must", "without", "conditions", "comps"), &ECSCore::query_rows_aligned_where);
 	ClassDB::bind_method(D_METHOD("entity_of_row", "comp", "row"), &ECSCore::entity_of_row);
 	ClassDB::bind_method(D_METHOD("get_field", "entity", "comp", "field"), &ECSCore::get_field);
 	ClassDB::bind_method(D_METHOD("set_field", "entity", "comp", "field", "value"), &ECSCore::set_field);

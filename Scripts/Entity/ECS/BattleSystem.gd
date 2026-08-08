@@ -1,12 +1,12 @@
 class_name BattleSystem
 extends ECSSystem
 
-## 吞并战斗系统 —— 核心逻辑(各层共用)。
+## 吞并战斗系统 —— 核心逻辑(各层共用)。与 ECSRule 统一查询链 + Callback 执行。
 ##
 ## 负责: 找敌 + 移动 + 攻击判定 + 扣血 + 击杀吞并。
 ## 每个细胞各自为战: 无阵营, 找最近的任何活细胞攻击, 击杀后由最近活细胞吞并。
 ## 大小(size)更新由各层的"数值系统"负责(体现实现差异):
-##   - 手写脚本层: BattleSizeSystem (GDScript 循环)
+##   - 手写脚本层: BattleSizeSystem (统一查询链 Callback)
 ##   - 声明规则层: BattleSizeRule (ECSRule)
 ##   - 原生API层:  BattleSizeNativeSystem (batch)
 ##
@@ -25,9 +25,11 @@ func required_components() -> Array[Script]:
 	return [BattleCell]
 
 func _run(ctx: ECSSystemContext, delta: float) -> void:
-	var w := ctx.world
 	_frame += 1
-	var rows: PackedInt32Array = w.query_rows(BattleCell, [], [])
+	ctx.for_each(BattleCell).each(_battle_cb.bind(delta), [BattleCell]).execute()
+
+
+func _battle_cb(rows: PackedInt32Array, _comp_rows: Dictionary, w: ECSWorld, delta: float) -> void:
 	if rows.is_empty():
 		return
 	if spatial == null:
@@ -78,10 +80,11 @@ func _run(ctx: ECSSystemContext, delta: float) -> void:
 		if absorber >= 0 and hp_col[absorber] > 0 and hp_col[e] <= 0:
 			hp_col[absorber] = minf(hp_col[absorber] + max_col[e] * 0.5, max_col[absorber] * 1.5)
 
-	# 写回
+	# 写回(COW 副本 → 原生存储)
 	w.set_column(BattleCell, &"pos", pos_col)
 	w.set_column(BattleCell, &"vel", vel_col)
 	w.set_column(BattleCell, &"hp", hp_col)
+
 	# 击杀销毁: 用 Command Buffer 排队(行号 -> 实体ID), 帧末统一删除,
 	# 避免在系统遍历中直接改结构(迭代失效/重入问题)
 	for e in _dead:

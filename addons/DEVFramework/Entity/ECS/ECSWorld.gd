@@ -367,6 +367,44 @@ func query_aligned(anchor, must: Array = [], without: Array = []) -> Array:
 	_cache_mutex.unlock()
 	return result
 
+## 对齐行号 + 条件过滤查询(供 ECSRule.call 等高级遍历)。
+## 只返回满足 conditions 的实体; 对齐输出的组件由 comps 显式指定。
+## 返回 Array: [0] = anchor 行号(已过滤), [1..] = comps[i] 的对齐行号。
+## 不缓存(条件变化无稳定签名)。conditions 格式同 batch_apply_if。
+func query_aligned_where(anchor, must: Array = [], without: Array = [],
+		conditions: Array = [], comps: Array = []) -> Array:
+	if not _available:
+		return []
+	var anchor_name := _resolve_component_name(anchor)
+	if anchor_name == &"":
+		return []
+	_record_access(anchor_name)
+	var must_names := PackedStringArray()
+	for m in must:
+		var mn := _resolve_component_name(m)
+		if mn == &"":
+			continue
+		must_names.append(mn)
+		_record_access(mn)
+	var without_names := PackedStringArray()
+	for w in without:
+		var wn := _resolve_component_name(w)
+		if wn == &"":
+			continue
+		without_names.append(wn)
+		_record_access(wn)
+	var comps_names := PackedStringArray()
+	for c in comps:
+		var cn := _resolve_component_name(c)
+		if cn == &"":
+			continue
+		comps_names.append(cn)
+		_record_access(cn)
+	for c in conditions:
+		_record_access(_resolve_component_name(c.get("comp", &"")))
+	return _core.query_rows_aligned_where(anchor_name, must_names, without_names,
+		_normalize_conds(conditions), comps_names)
+
 ## 缓存条目是否仍有效: 全局版本一致 且 所有依赖组件版本一致。
 func _entry_valid(entry: Dictionary) -> bool:
 	if entry.world_v != _world_version:

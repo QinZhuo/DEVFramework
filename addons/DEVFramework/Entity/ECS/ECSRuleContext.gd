@@ -16,11 +16,12 @@ func _init(p_world: ECSWorld = null) -> void:
 	world = p_world
 
 
-## 开始声明规则: 遍历所有拥有 anchor 组件的实体
-func for_each(anchor) -> ECSRuleQuery:
+## 开始声明规则: 遍历所有拥有 anchor 组件的实体。
+## must: 必须同时拥有的组件; without: 不得拥有的组件(可省略)。
+func for_each(anchor, must: Array = [], without: Array = []) -> ECSRuleQuery:
 	# 用 load 实例化查询构建器(规避全局类 .new() 的解析问题)
 	var q = load("res://addons/DEVFramework/Entity/ECS/ECSRuleQuery.gd").new()
-	q._init_rule(world, anchor)
+	q._init_rule(world, anchor, must, without)
 	_queries.append(q)
 	return q
 

@@ -156,6 +156,12 @@ public:
 	// 可直接用同一索引 k 并行索引各组件列(免去逐实体跨组件行号转换)。
 	Array query_rows_aligned(const StringName &anchor, const PackedStringArray &must,
 			const PackedStringArray &without) const;
+	// 对齐行号 + 条件过滤: 同 query_rows_aligned, 但只返回满足 conditions 的实体,
+	// 且对齐输出的组件由 comps 显式指定(不必是 must 子集)。
+	// 返回 Array: [0] = anchor 行号(已过滤), [1..] = 对应 comps[i] 的对齐行号。
+	Array query_rows_aligned_where(const StringName &anchor, const PackedStringArray &must,
+			const PackedStringArray &without, const Array &conditions,
+			const PackedStringArray &comps) const;
 	int32_t entity_of_row(const StringName &comp, int32_t row) const;
 
 	// ---- 单实体字段访问 (低频路径) ----
