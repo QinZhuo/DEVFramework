@@ -14,7 +14,7 @@ func write_components() -> Array[Script]:
 
 func _run(ctx: ECSSystemContext, delta: float) -> void:
 	exec_order.append("Heal")
-	ctx.for_each(HealthComponent).each(func(rows: PackedInt32Array, data: Dictionary):
+	ctx.for_each(HealthComponent).process(func(rows: PackedInt32Array, data: Dictionary):
 		var hp: PackedInt32Array = data["HealthComponent"]["hp"]
 		var max_hp: PackedInt32Array = data["HealthComponent"]["max_hp"]
 		var heal := int(5.0 * delta * 60.0)

@@ -8,7 +8,7 @@ extends RefCounted
 ##       func required_components() -> Array[Script]:
 ##           return [HealthComponent]
 ##       func _run(ctx: ECSSystemContext, delta: float) -> void:
-##           ctx.for_each(HealthComponent).each(func(rows, data):
+##           ctx.for_each(HealthComponent).process(func(rows, data):
 ##               var hp = data["HealthComponent"]["hp"]
 ##               for r in rows:
 ##                   hp[r] += 5
@@ -16,7 +16,7 @@ extends RefCounted
 ##
 ## 性能要点:
 ##   - 高频逻辑优先用规则动作(C++ batch): add/sub/mul/div/add_from/set_from/clamp_where。
-##   - 复杂逻辑用 each 回调(预拉列自动写回或对齐行号模式)。
+##   - 复杂逻辑用 process 回调(预拉列自动写回或对齐行号模式)。
 ##   - 不要在循环内 get_field/set_field(单实体跨语言调用)。
 
 ## 系统启停开关

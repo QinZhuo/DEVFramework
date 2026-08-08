@@ -22,10 +22,10 @@ func emit_event(type: StringName, payload = null) -> void:
 
 ## 统一查询链入口(与 查询链 同一套遍历→条件→动作构建器)。
 ## 手写系统也可用: for_each(Comp).where(...).add(...) 走 C++ batch(最快),
-## 或 .each(callback) 用 GDScript 自定义逻辑(最灵活)。
+## 或 .process(callback) 用 GDScript 自定义逻辑(最灵活)。
 ## 注意: 与 查询链(由 _execute_all 自动执行)不同, 系统内构建的查询必须链尾 .execute():
 ##   ctx.for_each(Comp).where(...).add(...).execute()
-##   ctx.for_each(Comp).each(cb, [Comp]).execute()
+##   ctx.for_each(Comp).process(cb, [Comp]).execute()
 ## 见 ECSQuery 文档。
 func for_each(anchor, must: Array = [], without: Array = []) -> ECSQuery:
 	var q = load("res://addons/DEVFramework/ECS/ECSQuery.gd").new()

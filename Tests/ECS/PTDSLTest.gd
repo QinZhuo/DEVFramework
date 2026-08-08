@@ -1,7 +1,7 @@
 class_name PTDSLTest
 extends RefCounted
 
-## 规则层 DSL 扩展自检: 列间运算(add_from/set_from/clamp_where) + each 预拉列自动写回
+## 规则层 DSL 扩展自检: 列间运算(add_from/set_from/clamp_where) + process 预拉列自动写回
 
 static func _q(w: ECSWorld) -> ECSQuery:
 	return load("res://addons/DEVFramework/ECS/ECSQuery.gd").new()._init_rule(w, PTCompA)
@@ -43,12 +43,26 @@ static func run() -> void:
 	q3.execute()
 	print("[DSL] set_from=", float(w.get_field(ids[3], PTCompA, &"y")))  # 3*2+1=7
 
-	# ---- each fields 模式: 预拉列 + 自动写回(回调内零跨语言) ----
+	# ---- process fields 模式: 预拉列 + 自动写回(回调内零跨语言) ----
 	var q4 := _q(w)
-	q4.each(func(rows: PackedInt32Array, data: Dictionary):
+	q4.process(func(rows: PackedInt32Array, data: Dictionary):
 		var xc: PackedInt32Array = data["PTCompA"]["x"]
 		for r in rows:
 			xc[r] += 1000
 	, {PTCompA: [&"x"]})
 	q4.execute()
-	print("[DSL] each_fields=", int(w.get_field(ids[0], PTCompA, &"x")))  # 1000
+	print("[DSL] process_fields=", int(w.get_field(ids[0], PTCompA, &"x")))  # 1000
+
+	# ---- with().process(): 回调直接收列参数(推荐写法, 无字符串 key) ----
+	var q5 := _q(w)
+	q5.with([&"x", &"y"])
+	q5.process(PTDSLTest._with_cb)
+	q5.execute()
+	print("[DSL] with_process_x=", int(w.get_field(ids[1], PTCompA, &"x")),  # 3+500=503
+			" y=", float(w.get_field(ids[1], PTCompA, &"y")))              # 1+0.5=1.5
+
+
+static func _with_cb(rows: PackedInt32Array, xc: PackedInt32Array, yc: PackedFloat32Array) -> void:
+	for r in rows:
+		xc[r] += 500
+		yc[r] += 0.5

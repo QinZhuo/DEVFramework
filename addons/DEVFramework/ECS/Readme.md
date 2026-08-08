@@ -7,7 +7,7 @@
 **定位**（与场景节点配合的三种用法）：
 - **海量实体**（1 万+）：纯 ECS 数据 + 渲染直读列，不建 Node。
 - **关键实体**（玩家/NPC/Boss）：`ECSNode` 桥接实体与场景节点。
-- **数值逻辑**：规则 DSL / `each` 回调在系统内批量执行。
+- **数值逻辑**：规则 DSL / `process` 回调在系统内批量执行。
 
 ---
 
@@ -18,7 +18,7 @@
 3. [实体与组件操作](#三实体与组件操作)
 4. [系统与统一查询链](#四系统与统一查询链)
 5. [规则层 DSL（C++ batch 执行）](#五规则层-dslc-batch-执行)
-6. [each 回调（手写层）](#六each-回调手写层)
+6. [process 回调（手写层）](#六process-回调手写层)
 7. [查询](#七查询)
 8. [批量列访问](#八批量列访问)
 9. [系统并行调度](#九系统并行调度)
@@ -35,11 +35,11 @@
 
 | 层次 | 章节 | 说明 |
 |---|---|---|
-| **① 入门**（90% 场景） | 快速开始 / 组件定义 / 实体操作 / 系统与查询链 / 规则层 DSL / each 回调 / ECSNode | 定义组件 → 建实体 → 写系统（`for_each` 查询链）→ tick 驱动。**大多数需求到这里就够了** |
+| **① 入门**（90% 场景） | 快速开始 / 组件定义 / 实体操作 / 系统与查询链 / 规则层 DSL / process 回调 / ECSNode | 定义组件 → 建实体 → 写系统（`for_each` 查询链）→ tick 驱动。**大多数需求到这里就够了** |
 | **② 进阶** | 查询 / 批量列访问 / 命令缓冲 / Prefab 与序列化 | 数据查询、批量读写、结构变更、存档 |
 | **③ 高级**（性能/机制） | 系统并行调度 / 生命周期钩子与变化检测 / 事件 | 并行、实体生命周期、事件驱动 |
 
-> 规则：**普通开发者只走查询链（`for_each` → 动作）**。`batch_*`、`query_aligned*`、`borrow/return_columns` 等是底层原生 API（性能层），已由规则 DSL / `each` 封装，仅在需要极致控制时直接使用。
+> 规则：**普通开发者只走查询链（`for_each` → 动作）**。`batch_*`、`query_aligned*`、`borrow/return_columns` 等是底层原生 API（性能层），已由规则 DSL / `process` 封装，仅在需要极致控制时直接使用。
 
 ---
 
@@ -130,7 +130,7 @@ func _run(ctx: ECSSystemContext, delta: float) -> void:
 **三种动作模式**（同一查询链）：
 - **标量动作**：`.add()/.sub()/.mul()/.div()/.set_value()` → C++ batch
 - **列间动作**：`.add_from()/.set_from()/.clamp_where()` → C++ batch
-- **回调动作**：`.each(cb)` → GDScript 灵活逻辑
+- **回调动作**：`.process(cb)` → GDScript 灵活逻辑
 
 `ECSSystemContext` 提供查询链入口 `for_each` 与低频 `get_field`/`set_field`/`emit_event`（底层列直连用 `ECSWorld.get_column`/`set_column`）。
 
@@ -184,32 +184,40 @@ ctx.for_each(Unit, [HealthComponent], [Dead])   # 有 Unit 且有 Health、无 D
 
 ---
 
-## 六、each 回调（手写层）
+## 六、process 回调（手写层）
 
 复杂逻辑用 GDScript 回调。两种参数模式：
 
-### A. 预拉列模式（推荐，零跨语言 + 自动写回）
+### A. 推荐写法：`.with(字段...)` 声明 + 回调直接收列参数
 
 ```gdscript
 func _run(ctx: ECSSystemContext, _delta: float) -> void:
-	ctx.for_each(BattleCell).each(_battle_cb, {BattleCell: [&"hp", &"pos"]}).execute()
+	# 声明要遍历的字段 → 回调按顺序直接收列(rows, hp, pos), 无字符串 key
+	ctx.for_each(BattleCell).with([&"hp", &"pos"]).process(_battle_cb).execute()
 
-func _battle_cb(rows: PackedInt32Array, data: Dictionary) -> void:
-	var hp: PackedFloat32Array = data["BattleCell"]["hp"]
-	var pos: PackedVector2Array = data["BattleCell"]["pos"]
+func _battle_cb(rows: PackedInt32Array, hp: PackedFloat32Array, pos: PackedVector2Array) -> void:
 	for r in rows:
 		hp[r] -= 1
 		pos[r] += Vector2(1, 0)
 ```
 
-- `rows`：满足条件的 anchor 行号；`data[组件类名][字段名]`：预拉列（借出独占引用，写无 COW）。
+- `rows`：满足条件的行号；`hp`/`pos`：按 `.with` 声明顺序直接传入的列（borrow 独占引用，写无 COW）。
 - 框架回调后**自动写回**，回调内零跨语言调用。
 
-### B. 对齐行号模式
+### B. 预拉列字典模式（跨组件多字段）
 
 ```gdscript
-func _run(ctx: ECSSystemContext, _delta: float) -> void:
-	ctx.for_each(BattleCell).each(_battle_cb2, [BattleCell]).execute()
+ctx.for_each(BattleCell).process(func(rows, data):
+	var hp: PackedFloat32Array = data["BattleCell"]["hp"]   # data[组件类名][字段名]
+	var atk: PackedFloat32Array = data["EnemyComp"]["atk"]
+	for r in rows: hp[r] -= 1
+, {BattleCell: [&"hp"], EnemyComp: [&"atk"]}).execute()
+```
+
+### C. 对齐行号模式（回调内手动取列写回）
+
+```gdscript
+ctx.for_each(BattleCell).process(_battle_cb2, [BattleCell]).execute()
 
 func _battle_cb2(rows: PackedInt32Array, _comp_rows: Dictionary, w: ECSWorld) -> void:
 	var hp: PackedFloat32Array = w.get_column(BattleCell, &"hp")
@@ -220,7 +228,7 @@ func _battle_cb2(rows: PackedInt32Array, _comp_rows: Dictionary, w: ECSWorld) ->
 
 - `comp_rows`：各组件对齐行号；回调内 `get_column` 取列 → 改 → `set_column` 写回（列是 COW 副本，改后必须写回）。
 
-> 热路径请优先用规则动作（C++ batch），`each` 用于无法声明化的逻辑。
+> 热路径请优先用规则动作（C++ batch），`process` 用于无法声明化的逻辑。
 
 ---
 
@@ -246,7 +254,7 @@ var filt: Array = world.query_aligned_where(Unit, [], [], [
 
 ## 八、批量列访问（高级原生 API）
 
-> 本章为**高级原生 API**。普通场景用 `each(cb, fields)` 预拉列 + 自动写回即可（见六），此处用于需要精细控制列内存的底层场景。
+> 本章为**高级原生 API**。普通场景用 `process(cb, fields)` 预拉列 + 自动写回即可（见六），此处用于需要精细控制列内存的底层场景。
 
 ```gdscript
 # 一次取多组件多列（1 次跨语言替代 N 次 get_column）
@@ -388,6 +396,6 @@ world.register_system(ECSSyncSystem.new(), 10)
 
 **性能实践建议**：
 - 数值热点用规则 DSL（`add/sub/mul/div/add_from/set_from/clamp_where`）→ C++ batch。
-- 高频写路径用 `borrow/return` 避免 COW；复杂逻辑用 `each(fields)` 预拉列 + 自动写回。
+- 高频写路径用 `borrow/return` 避免 COW；复杂逻辑用 `process(fields)` 预拉列 + 自动写回。
 - 海量实体渲染直读列（参考 `ECSPointCloud`），关键实体用 `ECSNode`。
 - 并行系统声明好 `read/write_components()`，结构变更走 `cmd_*`。

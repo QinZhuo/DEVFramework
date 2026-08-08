@@ -13,7 +13,7 @@ func required_components() -> Array[Script]:
 	return [BattleCell]
 
 func _run(ctx: ECSSystemContext, _delta: float) -> void:
-	ctx.for_each(BattleCell).each(_numhot_cb, [BattleCell]).execute()
+	ctx.for_each(BattleCell).process(_numhot_cb, [BattleCell]).execute()
 
 
 func _numhot_cb(rows: PackedInt32Array, _comp_rows: Dictionary, w: ECSWorld) -> void:

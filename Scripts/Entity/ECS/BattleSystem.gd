@@ -26,7 +26,7 @@ func required_components() -> Array[Script]:
 
 func _run(ctx: ECSSystemContext, delta: float) -> void:
 	_frame += 1
-	ctx.for_each(BattleCell).each(_battle_cb.bind(delta), [BattleCell]).execute()
+	ctx.for_each(BattleCell).process(_battle_cb.bind(delta), [BattleCell]).execute()
 
 
 func _battle_cb(rows: PackedInt32Array, _comp_rows: Dictionary, w: ECSWorld, delta: float) -> void:

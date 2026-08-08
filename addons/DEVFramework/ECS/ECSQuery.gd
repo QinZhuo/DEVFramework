@@ -12,7 +12,7 @@ extends RefCounted
 ##        ...mul_from(...) / sub_from(...) / div_from(...) / set_from(...)
 ##        for_each(Comp).clamp_where(&"hp", Comp, &"min_hp", Comp, &"max_hp")
 ##   3. Callback 动作(手写层, GDScript 执行, 最灵活):
-##        for_each(Comp).each(func(rows, data): ...)   # data 预拉列, 自动写回
+##        for_each(Comp).process(func(rows, data): ...)   # data 预拉列, 自动写回
 ## 手写层与规则层共享同一查询链: 组件匹配(must/without) + 条件(where) 完全一致。
 
 var world: ECSWorld
@@ -21,6 +21,7 @@ var must: Array = []       # 必须同时拥有的组件
 var without: Array = []    # 不得拥有的组件
 var conditions: Array = []   # [{comp, field, op, value}]
 var actions: Array = []      # [{type, ...}]
+var _with_fields: Array = [] # with() 声明的锚组件遍历字段(顺序 = 回调参数顺序)
 var _executed := false
 
 
@@ -122,20 +123,30 @@ func clamp_where(field: StringName, min_comp, min_field: StringName,
 
 # ---------- Callback 动作(手写层, GDScript 执行) ----------
 
-## 动作: 用 GDScript Callback 自定义遍历逻辑。
-## 两种参数模式:
-##   A. each(cb, comps: Array) —— 回调签名 cb(rows, comp_rows, world)
-##      comp_rows 是各组件对齐行号; 回调内 world.get_column 取列 → 改 → set_column 写回。
-##   B. each(cb, fields: Dictionary) —— 回调签名 cb(rows, data), 推荐:
-##      fields 是"组件 → 字段名列表"映射 {组件: [字段...]}; 框架回调前 get_columns 预拉全部列,
-##      回调内 data[组件类名][字段名] 直接读写(零跨语言), 回调后框架自动 set_columns 写回。
-##      rows 是满足条件的 anchor 行号; data 里列按各组件 dense 行号索引。
-## 例: ctx.for_each(BattleCell).each(func(rows, data):
-##         var hp: PackedFloat32Array = data["BattleCell"]["hp"]   # data[组件类名][字段名]
-##         for r in rows: hp[r] -= 1
-##     , {BattleCell: [&"hp"]})    # fields = 要预拉的列: 组件 BattleCell 的 hp 字段
-func each(cb: Callable, fields = {}) -> ECSQuery:
-	if fields is Dictionary and not fields.is_empty():
+## 声明要遍历的锚组件字段(数组), 配合 .process(cb) 使用 —— 推荐写法:
+##   ctx.for_each(BattleCell).with([&"hp", &"pos"]).process(func(rows, hp, pos):
+##       for r in rows:
+##           hp[r] -= 1
+##           pos[r] += Vector2(1, 0)
+##   )
+## 回调参数: 第 1 个是 rows(满足条件的行号), 之后按声明顺序对应各字段列。
+## 框架借出独占列(写无 COW) → 回调内直接读写列 → 自动写回, 回调内零跨语言。
+func with(fields: Array) -> ECSQuery:
+	_with_fields = fields
+	return self
+
+## 动作: 用 GDScript Callback 自定义遍历逻辑。三种用法:
+##   A. 推荐: 先 .with(&"f1", &"f2", ...) 声明字段, 再 process(cb) —— 回调 cb(rows, col1, col2, ...)
+##      直接收列参数(顺序对应声明), 无字符串 key, 自动写回。
+##   B. process(cb, fields: Dictionary) —— 回调 cb(rows, data), data[组件类名][字段名] 访问。
+##      fields = {组件: [字段...]} 组件→字段映射; 适合跨组件多字段。
+##   C. process(cb, comps: Array) —— 回调 cb(rows, comp_rows, world); 回调内 get_column/set_column。
+func process(cb: Callable, fields = {}) -> ECSQuery:
+	if not _with_fields.is_empty():
+		# A 模式: with(字段...) 声明 → 回调直接收列参数
+		actions.append({"type": "call_with", "callable": cb, "fields": _with_fields})
+		_with_fields = []
+	elif fields is Dictionary and not fields.is_empty():
 		actions.append({"type": "call_fields", "callable": cb, "fields": fields})
 	else:
 		var comps: Array = fields if fields is Array else []
@@ -222,4 +233,22 @@ func _run() -> int:
 				total += frows.size()
 				act.callable.call(frows, data)
 				world.return_columns(data)
+			"call_with":
+				# with(字段...) 声明 → 回调直接收列参数(顺序对应), 零跨语言 + 自动写回
+				var waligned: Array = world.query_aligned_where(anchor, must, without,
+						conditions, [anchor])
+				if waligned.is_empty():
+					continue
+				var wrows: PackedInt32Array = waligned[0]
+				if wrows.is_empty():
+					continue
+				var wnorm := [{"comp": _comp_name(anchor), "fields": act.fields}]
+				var wdata: Dictionary = world.borrow_columns(wnorm)
+				var wcols: Dictionary = wdata.get(_comp_name(anchor), {})
+				var wargs: Array = [wrows]
+				for f in act.fields:
+					wargs.append(wcols.get(f))
+				total += wrows.size()
+				act.callable.callv(wargs)
+				world.return_columns(wdata)
 	return total

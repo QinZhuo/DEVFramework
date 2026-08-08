@@ -1,7 +1,7 @@
 class_name PTQueryTest
 extends RefCounted
 
-## 查询链 统一查询链自检: each Callback / sub·mul·div 动作 / must·without / query_aligned_where
+## 查询链 统一查询链自检: process Callback / sub·mul·div 动作 / must·without / query_aligned_where
 
 static var seen: Array = []
 
@@ -39,18 +39,18 @@ static func run() -> void:
 			ok = false
 	print("[Query] aligned_where=", ra.size(), " same_entity=", ok)
 
-	# ---- each Callback: 条件过滤后遍历 ----
+	# ---- process Callback: 条件过滤后遍历 ----
 	seen.clear()
 	var q = load("res://addons/DEVFramework/ECS/ECSQuery.gd").new()
 	q._init_rule(w, PTCompA)
 	q.where(&"x").less_than(10)
-	q.each(PTQueryTest._cb, [PTCompA])
+	q.process(PTQueryTest._cb, [PTCompA])
 	q.execute()
 	var expected := true
 	for i in range(10):
 		if not seen.has(i):
 			expected = false
-	print("[Query] each_filtered=", expected, " count=", seen.size())
+	print("[Query] process_filtered=", expected, " count=", seen.size())
 
 	# ---- 规则动作 mul ----
 	var q2 = load("res://addons/DEVFramework/ECS/ECSQuery.gd").new()
@@ -69,14 +69,14 @@ static func run() -> void:
 	var rows: PackedInt32Array = w.query_rows(PTCompA, [PTCompB], [PTCompC])
 	print("[Query] must_without=", rows.size())   # 20 - 4 = 16
 
-	# ---- each 内写列(get_column 改 + set_column 写回) ----
+	# ---- process 内写列(get_column 改 + set_column 写回) ----
 	var q4 = load("res://addons/DEVFramework/ECS/ECSQuery.gd").new()
 	q4._init_rule(w, PTCompA)
-	q4.each(func(rows: PackedInt32Array, _cr: Dictionary, ww: ECSWorld):
+	q4.process(func(rows: PackedInt32Array, _cr: Dictionary, ww: ECSWorld):
 		var xa: PackedInt32Array = ww.get_column(PTCompA, &"x")
 		for r in rows:
 			xa[r] += 1000
 		ww.set_column(PTCompA, &"x", xa)
 	, [PTCompA])
 	q4.execute()
-	print("[Query] each_write=", int(w.get_field(ids[0], PTCompA, &"x")))   # 0+1000=1000
+	print("[Query] process_write=", int(w.get_field(ids[0], PTCompA, &"x")))   # 0+1000=1000

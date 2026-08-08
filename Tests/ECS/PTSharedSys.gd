@@ -15,7 +15,7 @@ func _run(ctx: ECSSystemContext, _delta: float) -> void:
 	frame += 1
 	if frame <= 8:
 		print("[PTShared] frame=%d thread=%d" % [frame, OS.get_thread_caller_id()])
-	ctx.for_each(PTCompA).each(func(rows: PackedInt32Array, data: Dictionary):
+	ctx.for_each(PTCompA).process(func(rows: PackedInt32Array, data: Dictionary):
 		var col: PackedInt32Array = data["PTCompA"]["x"]
 		for r in rows:
 			col[r] += 1
