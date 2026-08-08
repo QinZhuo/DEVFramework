@@ -31,6 +31,18 @@
 
 ---
 
+## 使用层次（先看入门，再按需进阶）
+
+| 层次 | 章节 | 说明 |
+|---|---|---|
+| **① 入门**（90% 场景） | 快速开始 / 组件定义 / 实体操作 / 系统与查询链 / 规则层 DSL / each 回调 / ECSNode | 定义组件 → 建实体 → 写系统（`for_each` 查询链）→ tick 驱动。**大多数需求到这里就够了** |
+| **② 进阶** | 查询 / 批量列访问 / 命令缓冲 / Prefab 与序列化 | 数据查询、批量读写、结构变更、存档 |
+| **③ 高级**（性能/机制） | 系统并行调度 / 生命周期钩子与变化检测 / 事件 | 并行、实体生命周期、事件驱动 |
+
+> 规则：**普通开发者只走查询链（`for_each` → 动作）**。`batch_*`、`query_aligned*`、`borrow/return_columns` 等是底层原生 API（性能层），已由规则 DSL / `each` 封装，仅在需要极致控制时直接使用。
+
+---
+
 ## 一、快速开始
 
 ```gdscript
@@ -120,13 +132,13 @@ func _run(ctx: ECSSystemContext, delta: float) -> void:
 - **列间动作**：`.add_from()/.set_from()/.clamp_where()` → C++ batch
 - **回调动作**：`.each(cb)` → GDScript 灵活逻辑
 
-`ECSSystemContext` 提供查询链入口 `for_each` 与低频 `get_field`/`set_field`/`emit`（底层列直连用 `ECSWorld.get_column`/`set_column`）。
+`ECSSystemContext` 提供查询链入口 `for_each` 与低频 `get_field`/`set_field`/`emit_event`（底层列直连用 `ECSWorld.get_column`/`set_column`）。
 
 ---
 
 ## 五、规则层 DSL（C++ batch 执行）
 
-`ECSRuleQuery`（由 `ctx.for_each(Comp, must=[], without=[])` 创建）链式构建，**链尾必须 `.execute()`**（`查询链` 由 `_execute_all` 自动执行，手写系统内需显式）。
+`ECSQuery`（由 `ctx.for_each(Comp, must=[], without=[])` 创建）链式构建，**链尾必须 `.execute()`**。
 
 ### 标量动作
 
@@ -146,6 +158,7 @@ ctx.for_each(HealthComponent)
 ### 列间动作（列与列联动）
 
 ```gdscript
+# 列间动作参数顺序统一为 (目标字段, 源组件, 源字段)
 # size = 8 + hp * 0.08（纯 C++）
 ctx.for_each(BattleCell).set_from(&"size", BattleCell, &"hp", 0.08, 8.0).execute()
 
@@ -158,8 +171,8 @@ ctx.for_each(BattleCell).where(&"hp").greater_than(0).clamp_where(&"hp", BattleC
 
 | 动作 | 语义 |
 |---|---|
-| `add_from/sub_from` | 目标列 `+= / -=` 源列 |
-| `mul_from/div_from` | 目标列 `*= / /=` 源列（可乘 factor，除零跳过） |
+| `add_from/sub_from(field, src, src_field)` | 目标列 `+= / -=` 源列 |
+| `mul_from/div_from(field, src, src_field, factor)` | 目标列 `*= / /=` 源列（可乘 factor，除零跳过） |
 | `set_from(field, src, src_field, factor, addend)` | 目标列 `= 源列*factor + addend` |
 | `clamp_where(field, min_comp, min_field, max_comp, max_field)` | 满足条件时列钳制 |
 
@@ -231,7 +244,9 @@ var filt: Array = world.query_aligned_where(Unit, [], [], [
 
 ---
 
-## 八、批量列访问
+## 八、批量列访问（高级原生 API）
+
+> 本章为**高级原生 API**。普通场景用 `each(cb, fields)` 预拉列 + 自动写回即可（见六），此处用于需要精细控制列内存的底层场景。
 
 ```gdscript
 # 一次取多组件多列（1 次跨语言替代 N 次 get_column）
@@ -279,7 +294,7 @@ var placeholder := world.cmd_create()              # 返回负占位句柄
 world.cmd_add_component(placeholder, HealthComponent)
 world.cmd_destroy(entity)
 world.cmd_remove_component(entity, MoveComponent)
-# world.tick() 帧末自动 flush_commands()
+# world.tick() 帧末自动 cmd_flush()
 ```
 
 ---

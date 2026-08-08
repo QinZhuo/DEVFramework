@@ -3,8 +3,8 @@ extends RefCounted
 
 ## 规则层 DSL 扩展自检: 列间运算(add_from/set_from/clamp_where) + each 预拉列自动写回
 
-static func _q(w: ECSWorld) -> ECSRuleQuery:
-	return load("res://addons/DEVFramework/ECS/ECSRuleQuery.gd").new()._init_rule(w, PTCompA)
+static func _q(w: ECSWorld) -> ECSQuery:
+	return load("res://addons/DEVFramework/ECS/ECSQuery.gd").new()._init_rule(w, PTCompA)
 
 static func run() -> void:
 	var w := ECSWorld.new(false)

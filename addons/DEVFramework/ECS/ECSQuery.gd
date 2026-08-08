@@ -1,4 +1,4 @@
-class_name ECSRuleQuery
+class_name ECSQuery
 extends RefCounted
 
 ## 统一查询链 —— 查询链(声明规则)与手写脚本系统共用的"遍历→条件→动作"构建器。
@@ -30,7 +30,7 @@ func _init(p_world: ECSWorld = null, p_anchor = null) -> void:
 
 
 ## 由 ECSRuleContext / ECSSystemContext.for_each 实例化后调用。
-func _init_rule(p_world: ECSWorld, p_anchor, p_must: Array = [], p_without: Array = []) -> ECSRuleQuery:
+func _init_rule(p_world: ECSWorld, p_anchor, p_must: Array = [], p_without: Array = []) -> ECSQuery:
 	world = p_world
 	anchor = p_anchor
 	must = p_must
@@ -41,11 +41,11 @@ func _init_rule(p_world: ECSWorld, p_anchor, p_must: Array = [], p_without: Arra
 # ---------- 条件(可多个, AND 语义) ----------
 
 ## 指定条件字段, 后续用 less_than / greater_than 等比较
-func where(field: StringName) -> ECSRuleCond:
-	return ECSRuleCond.new(self, field)
+func where(field: StringName) -> ECSCond:
+	return ECSCond.new(self, field)
 
 ## 直接指定完整条件(等价 where().xxx())
-func where_cond(field: StringName, op: int, value) -> ECSRuleQuery:
+func where_cond(field: StringName, op: int, value) -> ECSQuery:
 	conditions.append({"comp": anchor, "field": field, "op": op, "value": value})
 	return self
 
@@ -53,66 +53,67 @@ func where_cond(field: StringName, op: int, value) -> ECSRuleQuery:
 # ---------- 标量声明动作(规则层, C++ batch 执行) ----------
 
 ## 动作: 给字段加值
-func add(field: StringName, amount) -> ECSRuleQuery:
+func add(field: StringName, amount) -> ECSQuery:
 	actions.append({"type": "add", "field": field, "amount": amount})
 	return self
 
 ## 动作: 给字段减量(等价 add(-amount))
-func sub(field: StringName, amount) -> ECSRuleQuery:
+func sub(field: StringName, amount) -> ECSQuery:
 	actions.append({"type": "sub", "field": field, "amount": amount})
 	return self
 
 ## 动作: 给字段乘系数
-func mul(field: StringName, factor) -> ECSRuleQuery:
+func mul(field: StringName, factor) -> ECSQuery:
 	actions.append({"type": "mul", "field": field, "factor": factor})
 	return self
 
 ## 动作: 给字段除以除数
-func div(field: StringName, divisor) -> ECSRuleQuery:
+func div(field: StringName, divisor) -> ECSQuery:
 	actions.append({"type": "div", "field": field, "divisor": divisor})
 	return self
 
 ## 动作: 给字段设置值
-func set_value(field: StringName, value) -> ECSRuleQuery:
+func set_value(field: StringName, value) -> ECSQuery:
 	actions.append({"type": "set", "field": field, "value": value})
 	return self
 
 
 # ---------- 列间声明动作(规则层, C++ batch 执行, 列与列联动) ----------
+# 参数顺序统一为: (目标字段, 源组件, 源字段)。例: add_from(&"dmg", BattleCell, &"atk") 即 dmg += atk。
 
-## 动作: 目标字段 += 源字段列(src 组件某字段, 可传 Script 或类名)
-func add_from(field: StringName, src, src_field: StringName) -> ECSRuleQuery:
+## 动作: 目标字段 += 源字段列。例: add_from(&"dmg", BattleCell, &"atk") → dmg += atk
+func add_from(field: StringName, src, src_field: StringName) -> ECSQuery:
 	actions.append({"type": "col", "field": field, "src": src, "src_field": src_field,
 			"op": ECSWorld.ColOp.COL_ADD, "factor": 1.0, "addend": 0.0})
 	return self
 
-## 动作: 目标字段 -= 源字段列
-func sub_from(field: StringName, src, src_field: StringName) -> ECSRuleQuery:
+## 动作: 目标字段 -= 源字段列。例: sub_from(&"hp", BattleCell, &"atk") → hp -= atk
+func sub_from(field: StringName, src, src_field: StringName) -> ECSQuery:
 	actions.append({"type": "col", "field": field, "src": src, "src_field": src_field,
 			"op": ECSWorld.ColOp.COL_SUB, "factor": 1.0, "addend": 0.0})
 	return self
 
-## 动作: 目标字段 *= 源字段列(可标量缩放 factor)
-func mul_from(field: StringName, src, src_field: StringName, factor: float = 1.0) -> ECSRuleQuery:
+## 动作: 目标字段 *= 源字段列(可标量缩放 factor)。例: mul_from(&"dmg", BattleCell, &"atk", 2.0) → dmg *= atk*2
+func mul_from(field: StringName, src, src_field: StringName, factor: float = 1.0) -> ECSQuery:
 	actions.append({"type": "col", "field": field, "src": src, "src_field": src_field,
 			"op": ECSWorld.ColOp.COL_MUL, "factor": factor, "addend": 0.0})
 	return self
 
-## 动作: 目标字段 /= 源字段列(除零跳过)
-func div_from(field: StringName, src, src_field: StringName, factor: float = 1.0) -> ECSRuleQuery:
+## 动作: 目标字段 /= 源字段列(除零跳过)。例: div_from(&"cd", BattleCell, &"atk") → cd /= atk
+func div_from(field: StringName, src, src_field: StringName, factor: float = 1.0) -> ECSQuery:
 	actions.append({"type": "col", "field": field, "src": src, "src_field": src_field,
 			"op": ECSWorld.ColOp.COL_DIV, "factor": factor, "addend": 0.0})
 	return self
 
-## 动作: 目标字段 = 源字段列(可标量缩放)。例: size = hp * 0.08 + 8
-func set_from(field: StringName, src, src_field: StringName, factor: float = 1.0, addend: float = 0.0) -> ECSRuleQuery:
+## 动作: 目标字段 = 源字段列(可标量缩放)。例: set_from(&"size", BattleCell, &"hp", 0.08, 8.0) → size = hp*0.08 + 8
+func set_from(field: StringName, src, src_field: StringName, factor: float = 1.0, addend: float = 0.0) -> ECSQuery:
 	actions.append({"type": "col", "field": field, "src": src, "src_field": src_field,
 			"op": ECSWorld.ColOp.COL_SET, "factor": factor, "addend": addend})
 	return self
 
 ## 动作: 仅满足条件的实体 目标字段 = clamp(目标字段, min, max)(列间边界)
 func clamp_where(field: StringName, min_comp, min_field: StringName,
-		max_comp, max_field: StringName) -> ECSRuleQuery:
+		max_comp, max_field: StringName) -> ECSQuery:
 	actions.append({"type": "clamp", "field": field,
 			"min_comp": min_comp, "min_field": min_field,
 			"max_comp": max_comp, "max_field": max_field})
@@ -126,14 +127,14 @@ func clamp_where(field: StringName, min_comp, min_field: StringName,
 ##   A. each(cb, comps: Array) —— 回调签名 cb(rows, comp_rows, world)
 ##      comp_rows 是各组件对齐行号; 回调内 world.get_column 取列 → 改 → set_column 写回。
 ##   B. each(cb, fields: Dictionary) —— 回调签名 cb(rows, data), 推荐:
-##      fields = {组件: [字段...]}; 框架回调前 get_columns 预拉全部列(1 次跨语言),
+##      fields 是"组件 → 字段名列表"映射 {组件: [字段...]}; 框架回调前 get_columns 预拉全部列,
 ##      回调内 data[组件类名][字段名] 直接读写(零跨语言), 回调后框架自动 set_columns 写回。
 ##      rows 是满足条件的 anchor 行号; data 里列按各组件 dense 行号索引。
 ## 例: ctx.for_each(BattleCell).each(func(rows, data):
-##         var hp: PackedFloat32Array = data["BattleCell"]["hp"]
+##         var hp: PackedFloat32Array = data["BattleCell"]["hp"]   # data[组件类名][字段名]
 ##         for r in rows: hp[r] -= 1
-##     , {BattleCell: [&"hp"]})
-func each(cb: Callable, fields = {}) -> ECSRuleQuery:
+##     , {BattleCell: [&"hp"]})    # fields = 要预拉的列: 组件 BattleCell 的 hp 字段
+func each(cb: Callable, fields = {}) -> ECSQuery:
 	if fields is Dictionary and not fields.is_empty():
 		actions.append({"type": "call_fields", "callable": cb, "fields": fields})
 	else:

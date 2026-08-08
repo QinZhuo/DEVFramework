@@ -16,8 +16,8 @@ func get_field(entity: int, component, field: StringName):
 func set_field(entity: int, component, field: StringName, value) -> void:
 	world.set_field(entity, component, field, value)
 
-## 投递事件(帧末统一派发)
-func emit(type: StringName, payload = null) -> void:
+## 投递事件(帧末统一派发, 同 world.emit_event)
+func emit_event(type: StringName, payload = null) -> void:
 	world.emit_event(type, payload)
 
 ## 统一查询链入口(与 查询链 同一套遍历→条件→动作构建器)。
@@ -26,8 +26,8 @@ func emit(type: StringName, payload = null) -> void:
 ## 注意: 与 查询链(由 _execute_all 自动执行)不同, 系统内构建的查询必须链尾 .execute():
 ##   ctx.for_each(Comp).where(...).add(...).execute()
 ##   ctx.for_each(Comp).each(cb, [Comp]).execute()
-## 见 ECSRuleQuery 文档。
-func for_each(anchor, must: Array = [], without: Array = []) -> ECSRuleQuery:
-	var q = load("res://addons/DEVFramework/ECS/ECSRuleQuery.gd").new()
+## 见 ECSQuery 文档。
+func for_each(anchor, must: Array = [], without: Array = []) -> ECSQuery:
+	var q = load("res://addons/DEVFramework/ECS/ECSQuery.gd").new()
 	q._init_rule(world, anchor, must, without)
 	return q

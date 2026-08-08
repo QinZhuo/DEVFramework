@@ -638,7 +638,7 @@ func cmd_pending_count() -> int:
 ## 立即执行全部排队命令(通常由 tick() 帧末自动调用)。
 ## 按命令类型精确失效查询缓存: add/remove 组件只失效该组件, destroy 全局失效。
 ## flush 后在主线程触发对应组件钩子(占位实体经 created_entity_at 解析为真实实体)。
-func flush_commands() -> void:
+func cmd_flush() -> void:
 	# flush 前收集 destroy 目标的组件(destroy 后无法枚举)
 	var destroy_comps := {}
 	var need_enum := _has_any_component_hooks or not _entity_destroyed_hooks.is_empty()
@@ -762,7 +762,7 @@ func tick(delta: float) -> void:
 		_finalize_access()
 	_preheated = true
 	_dispatch_events()
-	flush_commands()
+	cmd_flush()
 
 ## 依赖图拓扑排序: 满足 before/after 约束, 同层按优先级降序。
 ## 依赖冲突(环)时优先保留 priority 更高者, 弱化为无约束。

@@ -41,7 +41,7 @@ static func run() -> void:
 
 	# ---- each Callback: 条件过滤后遍历 ----
 	seen.clear()
-	var q = load("res://addons/DEVFramework/ECS/ECSRuleQuery.gd").new()
+	var q = load("res://addons/DEVFramework/ECS/ECSQuery.gd").new()
 	q._init_rule(w, PTCompA)
 	q.where(&"x").less_than(10)
 	q.each(PTQueryTest._cb, [PTCompA])
@@ -53,13 +53,13 @@ static func run() -> void:
 	print("[Query] each_filtered=", expected, " count=", seen.size())
 
 	# ---- 规则动作 mul ----
-	var q2 = load("res://addons/DEVFramework/ECS/ECSRuleQuery.gd").new()
+	var q2 = load("res://addons/DEVFramework/ECS/ECSQuery.gd").new()
 	q2._init_rule(w, PTCompA)
 	q2.mul(&"x", 2.0)
 	q2.execute()
 	print("[Query] mul_1=", int(w.get_field(ids[1], PTCompA, &"x")))   # 1*2=2
 	# div: ids[4] 原 4 → mul 8 → div 4 → 2
-	var q3 = load("res://addons/DEVFramework/ECS/ECSRuleQuery.gd").new()
+	var q3 = load("res://addons/DEVFramework/ECS/ECSQuery.gd").new()
 	q3._init_rule(w, PTCompA)
 	q3.div(&"x", 4.0)
 	q3.execute()
@@ -70,7 +70,7 @@ static func run() -> void:
 	print("[Query] must_without=", rows.size())   # 20 - 4 = 16
 
 	# ---- each 内写列(get_column 改 + set_column 写回) ----
-	var q4 = load("res://addons/DEVFramework/ECS/ECSRuleQuery.gd").new()
+	var q4 = load("res://addons/DEVFramework/ECS/ECSQuery.gd").new()
 	q4._init_rule(w, PTCompA)
 	q4.each(func(rows: PackedInt32Array, _cr: Dictionary, ww: ECSWorld):
 		var xa: PackedInt32Array = ww.get_column(PTCompA, &"x")

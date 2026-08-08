@@ -55,7 +55,7 @@ static func run() -> void:
 	events.clear()
 	var h := w.cmd_create()
 	w.cmd_add_component(h, PTCompA)
-	w.flush_commands()
+	w.cmd_flush()
 	_tag("cmd_add_fired", events.size() == 1 and events[0][0] == "add")
 
 	# ---- 命令缓冲版: cmd_destroy -> flush 后触发 remove + on_destroy ----
@@ -64,6 +64,6 @@ static func run() -> void:
 	w.add_component(e2, PTCompA)
 	events.clear()
 	w.cmd_destroy(e2)
-	w.flush_commands()
+	w.cmd_flush()
 	_tag("cmd_destroy_fired", events.size() == 2 and events[0][0] == "remove"
 			and events[1][0] == "destroy")
