@@ -1,10 +1,11 @@
 class_name ECSComponent
-extends RefCounted
+extends Resource
 
 ## ECS 组件基类 —— 纯数据 schema 声明。
 ##
-## 用法: 子类中声明 @export 字段(支持 int/float/bool/Vector2/Vector3/Color/String),
-## 实例仅用于"描述结构", 运行时数据实际存储在 C++ SoA 列中, 不会为每个实体创建实例。
+## 继承 Resource(而非 RefCounted): 组件实例可作为子资源存进 .tres / Inspector 可视化编辑,
+## 支持 @export 字段(int/float/bool/Vector2/Vector3/Color/String)。
+## 实例仅用于"描述结构"或"Prefab 配置", 运行时数据实际存储在 C++ SoA 列中。
 ##
 ## class_name HealthComponent extends ECSComponent:
 ##     @export var max_hp: int = 100

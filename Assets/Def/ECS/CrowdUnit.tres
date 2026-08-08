@@ -3,12 +3,11 @@
 [ext_resource type="Script" path="res://addons/DEVFramework/Entity/ECS/ECSPrefabDef.gd" id="1_def"]
 [ext_resource type="Script" path="res://Scripts/Entity/ECS/ECSDemoMoveComponent.gd" id="2_comp"]
 
+[sub_resource type="Resource" id="Resource_move"]
+script = ExtResource("2_comp")
+pos = Vector2(0, 0)
+vel = Vector2(0, 0)
+
 [resource]
 script = ExtResource("1_def")
-components = [{
-"comp": ExtResource("2_comp"),
-"fields": {
-"pos": Vector2(0, 0),
-"vel": Vector2(0, 0)
-}
-}]
+component_instances = [SubResource("Resource_move")]

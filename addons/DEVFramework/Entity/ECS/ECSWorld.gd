@@ -507,6 +507,7 @@ func instantiate(prefab: int, count: int, overrides: Dictionary = {}) -> Array:
 	return _core.instantiate(prefab, count, norm_overrides)
 
 ## 便捷: 从 ECSPrefabDef 配置构建 prefab 模板, 返回 prefab 实体 ID。
+## 配置用"组件实例数组": 每个实例的 @export 字段 = 该组件初始值。
 ## 之后可 world.instantiate(prefab, n) 批量生成。
 func build_prefab(def: ECSPrefabDef) -> int:
 	if def == null:
@@ -514,12 +515,18 @@ func build_prefab(def: ECSPrefabDef) -> int:
 	var prefab := create_prefab()
 	if prefab < 0:
 		return -1
-	for cd in def.components:
-		var comp: Script = cd.get("comp", null)
-		if comp == null:
+	for inst in def.component_instances:
+		if inst == null:
 			continue
-		var fields: Dictionary = cd.get("fields", {})
-		prefab_add(prefab, comp, fields)
+		var comp_script: Script = inst.get_script()
+		if comp_script == null:
+			continue
+		# 提取该组件实例的所有 @export 字段值(与 schema 反射一致)
+		var fields := {}
+		for p in inst.get_property_list():
+			if p.usage & PROPERTY_USAGE_SCRIPT_VARIABLE:
+				fields[p.name] = inst.get(p.name)
+		prefab_add(prefab, comp_script, fields)
 	return prefab
 
 ## 便捷: 从配置直接批量生成实体(构建 prefab + 实例化)。

@@ -4,18 +4,16 @@
 [ext_resource type="Script" path="res://Scripts/Entity/ECS/ECSDemoMoveComponent.gd" id="2_comp"]
 [ext_resource type="Script" path="res://Scripts/Entity/ECS/HealthComponent.gd" id="3_hp"]
 
+[sub_resource type="Resource" id="Resource_move"]
+script = ExtResource("2_comp")
+pos = Vector2(0, 0)
+vel = Vector2(0, 0)
+
+[sub_resource type="Resource" id="Resource_hp"]
+script = ExtResource("3_hp")
+hp = 100
+max_hp = 120
+
 [resource]
 script = ExtResource("1_def")
-components = [{
-"comp": ExtResource("2_comp"),
-"fields": {
-"pos": Vector2(0, 0),
-"vel": Vector2(0, 0)
-}
-}, {
-"comp": ExtResource("3_hp"),
-"fields": {
-"hp": 100,
-"max_hp": 120
-}
-}]
+component_instances = [SubResource("Resource_move"), SubResource("Resource_hp")]
