@@ -1019,24 +1019,25 @@ Array ECSCore::query_rows_aligned(const StringName &anchor, const PackedStringAr
 			out.push_back(comp_rows);
 			continue;
 		}
-		std::unordered_map<int32_t, int32_t> cg;
+		std::vector<int32_t> cg; // 实体 index -> 聚合行号(直接索引, 免哈希)
 		int32_t grow = 0;
 		for (const auto &a : archetypes_) {
 			if (!a.has_comp(mi[i])) {
 				continue;
 			}
 			for (int32_t r = 0; r < int32_t(a.entities.size()); ++r) {
-				if (is_prefab_index(a.entities[r])) {
+				const int32_t e = a.entities[r];
+				if (is_prefab_index(e)) {
 					continue;
 				}
-				cg[a.entities[r]] = grow++;
+				if ((int32_t)cg.size() <= e) cg.resize(e + 1, -1);
+				cg[e] = grow++;
 			}
 		}
 		comp_rows.resize(n);
 		for (int32_t k = 0; k < n; ++k) {
 			const int32_t e = agg[anchor_rows[k]];
-			auto it = cg.find(e);
-			comp_rows[k] = (it != cg.end()) ? it->second : -1;
+			comp_rows[k] = (e >= 0 && e < (int32_t)cg.size()) ? cg[e] : -1;
 		}
 		out.push_back(comp_rows);
 	}
@@ -2104,34 +2105,24 @@ int64_t ECSCore::batch_apply_col_rows(const StringName &anchor, const PackedInt3
 	}
 	const int32_t cnt = int32_t(rows.size());
 	// 快路径: 单块 + 连续全行(rows=0..cnt-1) + 无 prefab + 同组件 VECTOR2 COL_ADD → SIMD
-	bool single = (cnt > 0);
+	// O(1) 全量连续判断: 无条件查询(rows 首尾 + 大小) → 无需逐项检查; 再确认单块
+	bool full = (cnt > 0) && (cnt == (int32_t)agg.size()) && rows[0] == 0 && rows[cnt - 1] == cnt - 1;
+	bool single = false;
 	int32_t barch = -1;
-	if (single) {
-		for (int32_t i = 0; i < cnt; ++i) {
-			const int32_t grow = rows[i];
-			if (grow < 0 || grow >= (int32_t)agg.size()) {
-				single = false;
-				break;
-			}
-			const int32_t earch = entity_arch_[agg[grow]];
-			if (barch < 0) {
-				barch = earch;
-			} else if (earch != barch) {
-				single = false;
-				break;
+	if (full) {
+		for (int32_t arch = 0; arch < (int32_t)archetypes_.size(); ++arch) {
+			if (archetypes_[arch].has_comp(ai)) {
+				if (barch < 0) {
+					barch = arch;
+				} else {
+					barch = -2; // 多块
+					break;
+				}
 			}
 		}
+		single = (barch >= 0);
 	}
-	bool contiguous = single;
-	if (contiguous) {
-		for (int32_t i = 0; i < cnt; ++i) {
-			if (rows[i] != i) {
-				contiguous = false;
-				break;
-			}
-		}
-	}
-	if (contiguous && barch >= 0 && op == COL_ADD && oci == sci) {
+	if (single && (op == COL_ADD || op == COL_SET) && oci == sci) {
 		auto &a = archetypes_[barch];
 		bool has_pref = false;
 		for (int32_t r = 0; r < int32_t(a.entities.size()); ++r) {
@@ -2670,23 +2661,24 @@ Array ECSCore::query_rows_aligned_where(const StringName &anchor, const PackedSt
 		PackedInt32Array cr;
 		cr.resize(n);
 		if (cci >= 0) {
-			std::unordered_map<int32_t, int32_t> cg;
+			std::vector<int32_t> cg; // 实体 index -> 聚合行号(直接索引, 免哈希)
 			int32_t grow = 0;
 			for (const auto &a : archetypes_) {
 				if (!a.has_comp(cci)) {
 					continue;
 				}
 				for (int32_t r = 0; r < int32_t(a.entities.size()); ++r) {
-					if (is_prefab_index(a.entities[r])) {
+					const int32_t e = a.entities[r];
+					if (is_prefab_index(e)) {
 						continue;
 					}
-					cg[a.entities[r]] = grow++;
+					if ((int32_t)cg.size() <= e) cg.resize(e + 1, -1);
+					cg[e] = grow++;
 				}
 			}
 			for (int32_t k = 0; k < n; ++k) {
 				const int32_t e = agg[anchor_rows[k]];
-				auto it = cg.find(e);
-				cr[k] = (it != cg.end()) ? it->second : -1;
+				cr[k] = (e >= 0 && e < (int32_t)cg.size()) ? cg[e] : -1;
 			}
 		}
 		out.push_back(cr);
