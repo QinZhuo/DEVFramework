@@ -1749,7 +1749,7 @@ bool ECSCore::cond_matches_entity(int32_t entity, const std::vector<ECSFilterCon
 		if (arch < 0) {
 			return false;
 		}
-		const int32_t ci = comp_index(c.comp->name);
+		const int32_t ci = c.comp_idx;
 		if (ci < 0 || !archetypes_[arch].has_comp(ci)) {
 			return false;
 		}
@@ -1878,6 +1878,11 @@ void ECSCore::collect_agg(int32_t ai, const int32_t *mi, int32_t m,
 	out.clear();
 	std::vector<ECSFilterCond> conds;
 	parse_conditions(this, conditions, conds, 8);
+	for (auto &c : conds) {
+		if (c.comp) {
+			c.comp_idx = comp_index(c.comp->name);
+		}
+	}
 	int32_t offset = 0;
 	for (const auto &a : archetypes_) {
 		if (!a.has_comp(ai)) {
@@ -2316,6 +2321,11 @@ Array ECSCore::batch_collect(const StringName &anchor, const PackedStringArray &
 	std::vector<std::vector<ECSFilterCond>> all_conds(ng);
 	for (int32_t gi = 0; gi < ng; ++gi) {
 		parse_conditions(this, groups[gi], all_conds[gi], 8);
+		for (auto &c : all_conds[gi]) {
+			if (c.comp) {
+				c.comp_idx = comp_index(c.comp->name);
+			}
+		}
 	}
 	std::vector<PackedInt32Array> results(ng);
 	int32_t offset = 0;

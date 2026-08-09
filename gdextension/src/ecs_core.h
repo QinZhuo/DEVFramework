@@ -101,6 +101,7 @@ struct ECSFilterCond {
 	int32_t op = 0;
 	double value = 0.0;
 	int axis = -1;
+	int32_t comp_idx = -1; // 组件注册索引(parse 后填充, 供快路径避免逐次 comp_index 扫描)
 };
 
 // ---------------------------------------------------------------------------
