@@ -43,6 +43,38 @@
 
 ---
 
+## 实体体系选择（Entity / Entity2D·3D / Component）
+
+框架有两种"实体/组件"写法, 按场景选:
+
+| 类 | 基类 | 职责 | 何时用 |
+|---|---|---|---|
+| **`Entity`** | RefCounted | 纯数据实体(内建 `ecs` 桥接, 数据放 ECS 列) | 轻量数据/逻辑实体(Buff/Modifier/纯数据) |
+| **`Entity2D`/`Entity3D`** | Node2D/Node3D | 节点实体(ECS 实体 + 场景表现 + 位置同步) | 需要场景节点的实体(角色/子弹/单位) |
+| **`Component`** | Node | 表现/交互补充(挂 Entity2D/3D 下, 补充其 ECS 数据) | 给实体挂附加功能, 需场景节点 |
+| **ECS 体系** | — | 纯数据逻辑(`ECSWorld`/`ECSComponent`/`ECSSystem`/`ECSQuery`) | 海量数据、批量逻辑, 不直接面向对象 |
+
+```gdscript
+# 只有数据 → Entity
+var e := Buff.new()
+e.ecs.world = world
+e.add_component(ECSAttribute, {"hp": 100})
+
+# 需要场景表现 → Entity2D
+var unit := Entity2D.new()
+unit.world = world
+unit.add_component(MoveComponent, {"pos": Vector2.ZERO})
+unit.bind_pos(MoveComponent, &"pos")
+get_tree().current_scene.add_child(unit)
+
+# 挂载补充功能 → Component(须挂 Entity2D/3D 下)
+unit.add_child(MyPowerComp.new())
+```
+
+> **组件二义提醒**：`Component`(Node 表现补充) 与 `ECSComponent`(纯数据 schema) 不同——数据用 `ECSComponent` + `add_component`, 表现/交互补充用 `Component` 挂节点。
+
+---
+
 ## 一、快速开始
 
 ```gdscript
