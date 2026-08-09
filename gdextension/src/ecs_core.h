@@ -117,8 +117,13 @@ struct Archetype {
 	std::vector<std::vector<ECSColumn>> cols; // [comp_pos][field]
 	std::vector<int32_t> entities;            // 实体 index
 	std::vector<int32_t> row_map;             // 实体 index -> 行号(-1)
+	uint64_t bits = 0;                        // 组件位集(comp < 64, 参考 Flecs/Bevy 位匹配)
 
+	// 组件位置(升序 comps): 用位集 popcount O(1)(comp<64), 超 64 fallback 二分
 	inline int comp_pos(int32_t comp) const {
+		if (comp < 64 && ((bits >> comp) & 1)) {
+			return __builtin_popcountll(bits & ((1ULL << comp) - 1));
+		}
 		auto it = std::lower_bound(comps.begin(), comps.end(), comp);
 		if (it != comps.end() && *it == comp) {
 			return int(it - comps.begin());
@@ -126,6 +131,9 @@ struct Archetype {
 		return -1;
 	}
 	inline bool has_comp(int32_t comp) const {
+		if (comp < 64) {
+			return ((bits >> comp) & 1) != 0;
+		}
 		return std::binary_search(comps.begin(), comps.end(), comp);
 	}
 	inline int32_t row_of(int32_t entity) const {
@@ -366,6 +374,8 @@ private:
 	std::vector<int32_t> free_list_;
 	// 实体 index -> 所属 archetype(-1 = 无组件)
 	std::vector<int32_t> entity_arch_;
+	// 查询缓存: 查询签名(anchor+must+without 组件索引) -> 匹配 archetype 列表(结构变更时清空)
+	mutable std::unordered_map<uint64_t, std::vector<int32_t>> _arch_cache;
 	// prefab 模板实体 index 集合
 	std::vector<int32_t> prefab_indices_;
 	// 列借出计数(borrow_columns 增加、return_columns 减少; 并行多个借出时原子累加)

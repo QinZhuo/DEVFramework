@@ -573,6 +573,12 @@ int32_t ECSCore::find_archetype(const std::vector<int32_t> &comps) {
 	}
 	Archetype a;
 	a.comps = comps;
+	a.bits = 0;
+	for (int32_t cc : comps) {
+		if (cc < 64) {
+			a.bits |= (1ULL << cc);
+		}
+	}
 	a.cols.resize(comps.size());
 	for (size_t cp = 0; cp < comps.size(); ++cp) {
 		const int32_t ci = comps[cp];
@@ -676,6 +682,20 @@ void ECSCore::collect_archs(int32_t ai, const int32_t *mi, int32_t m,
 	if (ai < 0) {
 		return;
 	}
+	// 查询缓存: 签名(组件索引组合) -> 匹配 archetype 列表; 结构变更时清空
+	uint64_t key = uint64_t(ai) + 1;
+	for (int32_t i = 0; i < m; ++i) {
+		key = key * 1099511628211ull + uint64_t(mi[i] + 1);
+	}
+	for (int32_t i = 0; i < w; ++i) {
+		key = key * 1099511628211ull + uint64_t(wi[i] + 1) * 97;
+	}
+	auto cit = _arch_cache.find(key);
+	if (cit != _arch_cache.end()) {
+		out = cit->second;
+		return;
+	}
+	std::vector<int32_t> res;
 	for (int32_t arch = 0; arch < int32_t(archetypes_.size()); ++arch) {
 		const auto &a = archetypes_[arch];
 		if (!a.has_comp(ai)) {
@@ -697,9 +717,11 @@ void ECSCore::collect_archs(int32_t ai, const int32_t *mi, int32_t m,
 			}
 		}
 		if (ok) {
-			out.push_back(arch);
+			res.push_back(arch);
 		}
 	}
+	_arch_cache[key] = res;
+	out = std::move(res);
 }
 
 int32_t ECSCore::allocate_entity_id() {
@@ -775,6 +797,7 @@ void ECSCore::destroy_entity(int32_t entity) {
 		remove_from_archetype(arch, index);
 	}
 	entity_arch_[index] = -1;
+	_arch_cache.clear();
 	release_entity_id(index);
 }
 
@@ -799,6 +822,7 @@ bool ECSCore::add_component(int32_t entity, const StringName &comp) {
 	sorted_insert(comps_new, ci);
 	const int32_t dst = find_archetype(comps_new);
 	migrate_entity(index, old_arch, dst);
+	_arch_cache.clear();
 	return true;
 }
 
@@ -834,6 +858,7 @@ void ECSCore::remove_component(int32_t entity, const StringName &comp) {
 	} else {
 		migrate_entity(index, arch, find_archetype(comps_new));
 	}
+	_arch_cache.clear();
 }
 
 int32_t ECSCore::count_entities(const StringName &comp) const {
