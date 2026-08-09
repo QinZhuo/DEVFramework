@@ -46,14 +46,15 @@ func setup(count: int, seed: int, parent: Node) -> void:
 func tick(delta: float) -> void:
 	# 每帧高频逻辑由系统列批量处理(ECS 底层加速)
 	world.tick(delta)
-	# 从 ECS 列批量同步节点位置与显示尺寸(Vector2 列直读, 每帧全量保证公平对比)
-	var poscol: PackedVector2Array = world.get_column(DemoEntityBallNode, &"pos")
-	var scol: PackedFloat32Array = world.get_column(DemoEntityBallNode, &"size")
-	var n := mini(nodes.size(), poscol.size())
-	for i in n:
-		var node: DemoEntityBallNode = nodes[i]
-		node.position = poscol[i]
-		node.set_visual_size(scol[i])
+	# 渲染同步(位置/大小 → 节点): 屏蔽渲染时跳过, 只做数值逻辑
+	if render_enabled:
+		var poscol: PackedVector2Array = world.get_column(DemoEntityBallNode, &"pos")
+		var scol: PackedFloat32Array = world.get_column(DemoEntityBallNode, &"size")
+		var n := mini(nodes.size(), poscol.size())
+		for i in n:
+			var node: DemoEntityBallNode = nodes[i]
+			node.position = poscol[i]
+			node.set_visual_size(scol[i])
 
 
 func teardown() -> void:

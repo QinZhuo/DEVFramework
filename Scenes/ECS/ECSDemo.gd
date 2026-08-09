@@ -4,10 +4,13 @@ extends Control
 ## 三种实现各自独立脚本、独立文件夹(便于对照学习):
 ##   res://Scripts/Entity/ECS/Demo/impl_node/    普通 Node 实现(纯 OOP, 不用 ECS)
 ##   res://Scripts/Entity/ECS/Demo/impl_query/   ECS 查询链实现(组件 + 系统 + for_each)
-##   res://Scripts/Entity/ECS/Demo/impl_entity/  Entity 节点写法(传统 OOP 写法自动接 ECS)
+##   res://Scripts/Entity/ECS/Demo/impl_entity/  Entity 节点写法(@export 即 schema + 系统批量)
 ##
 ## 小球逻辑(三种实现完全一致): 随机移动(边界回弹) + hp 周期 0→100→0 增减 + 大小随 hp。
-## 三种实现都用**真实节点显示**。切换时**销毁上一个实现、只保留当前**, 减少互相影响。
+## 三种实现都用真实节点显示。切换时销毁上一个实现、只保留当前。
+## 额外能力:
+##   · 创建耗时: 每次切换/启动记录"创建世界"的耗时(建实体/节点/数据), 表格对比
+##   · 渲染开关: 屏蔽渲染相关逻辑(位置/显示更新), 只做数值运算, 对比渲染同步的开销
 ## 本脚本只做调度: 创建/销毁当前 DemoImpl, 测量耗时, 渲染表格。
 
 const IMPL_NAMES := ["普通Node实现", "ECS查询链实现", "Entity节点写法"]
@@ -18,11 +21,14 @@ const INIT_SEED := 20260808
 
 @onready var stats_label: Label = %StatsLabel
 @onready var switch_button: Button = %SwitchButton
+@onready var render_button: Button = %RenderButton
 
 var _impl: DemoImpl = null
 var _current := 1                            # 0=普通Node, 1=ECS查询链(默认), 2=Entity节点写法
+var _setup_ms := 0.0                         # 当前实现"创建世界"耗时(ms)
+var _render_on := true                       # 渲染开关
 
-# 各实现已测结果: 实现名 -> {ms, fps}(切换时写入)
+# 各实现已测结果: 实现名 -> {ms, fps, setup_ms}(切换时写入)
 var _results := {}
 
 # 当前实现滚动平均(最近 WINDOW 帧)
@@ -33,6 +39,7 @@ var _frame := 0
 
 func _ready() -> void:
 	switch_button.pressed.connect(_on_switch_pressed)
+	render_button.pressed.connect(_on_render_toggled)
 	_spawn(_current)
 	_refresh_ui()
 
@@ -46,8 +53,11 @@ func _spawn(idx: int) -> void:
 			cls = DemoQueryImpl
 		_:
 			cls = DemoEntityImpl
+	var t0 := Time.get_ticks_usec()
 	_impl = cls.new()
 	_impl.setup(ball_count, INIT_SEED, %WorldRoot)
+	_impl.render_enabled = _render_on
+	_setup_ms = (Time.get_ticks_usec() - t0) / 1000.0
 
 
 func _process(delta: float) -> void:
@@ -73,7 +83,9 @@ func _avg_ms() -> float:
 
 func _on_switch_pressed() -> void:
 	# 把当前实现结果写入表格, 然后销毁它、重建下一个实现(只保留当前, 减少互相影响)
-	_results[_impl.impl_name] = {"ms": _avg_ms(), "fps": 1000.0 / maxf(_avg_ms(), 0.001)}
+	_results[_impl.impl_name] = {
+		"ms": _avg_ms(), "fps": 1000.0 / maxf(_avg_ms(), 0.001), "setup_ms": _setup_ms,
+	}
 	_impl.teardown()
 	_current = (_current + 1) % IMPL_NAMES.size()
 	_spawn(_current)
@@ -81,21 +93,32 @@ func _on_switch_pressed() -> void:
 	_refresh_ui()
 
 
-## 以表格形式展示各实现的平均耗时与帧率(已测的固定, 当前行实时刷新)。
+func _on_render_toggled() -> void:
+	# 切换渲染开关: 屏蔽位置/显示同步, 只保留数值运算(对比渲染开销)
+	_render_on = not _render_on
+	if _impl:
+		_impl.render_enabled = _render_on
+	_refresh_ui()
+
+
+## 以表格形式展示各实现的创建耗时/平均耗时/帧率(已测的固定, 当前行实时刷新)。
 func _refresh_ui() -> void:
 	var text := "ECS 小球对比测试 ｜ 每路 %d 个小球(真实节点显示)\n" % ball_count
 	text += "生命值 0→100 周期增减, 大小随 hp\n\n"
-	text += "实现                平均耗时   平均帧率\n"
-	text += "──────────────────────────────\n"
+	text += "实现                创建      平均耗时   平均帧率\n"
+	text += "──────────────────────────────────────────\n"
 	for i in IMPL_NAMES.size():
 		var name: String = IMPL_NAMES[i]
 		var cur_ms := _avg_ms() if i == _current else 0.0
+		var cur_setup := _setup_ms if i == _current else 0.0
+		var mark := "▶" if i == _current else " "
 		if _results.has(name):
 			var r: Dictionary = _results[name]
-			text += "%s %-16s  %7.3f ms  %5d FPS\n" % ["▶" if i == _current else " ", name, r.ms, int(r.fps)]
+			text += "%s %-14s  %6.1fms  %8.3fms  %5d FPS\n" % [mark, name, r.setup_ms, r.ms, int(r.fps)]
 		elif i == _current:
-			text += "%s %-16s  %7.3f ms  %5d FPS  (测中)\n" % ["▶", name, cur_ms, int(1000.0 / maxf(cur_ms, 0.001))]
+			text += "%s %-14s  %6.1fms  %8.3fms  %5d FPS  (测中)\n" % [mark, name, cur_setup, cur_ms, int(1000.0 / maxf(cur_ms, 0.001))]
 		else:
-			text += "%s %-16s       —        —\n" % [" ", name]
+			text += "%s %-14s      —        —        —\n" % [mark, name]
+	text += "\n渲染: %s  (点击右下按钮切换, 屏蔽位置/显示同步对比纯数值开销)" % ("开 🎨" if _render_on else "关 🚫")
 	text += "\n🖱 点击下方按钮切换实现"
 	stats_label.text = text

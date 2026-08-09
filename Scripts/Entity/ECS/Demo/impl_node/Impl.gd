@@ -28,6 +28,7 @@ func setup(count: int, seed: int, parent: Node) -> void:
 
 func tick(delta: float) -> void:
 	for n in balls:
+		n.render_enabled = render_enabled
 		n._process(delta)
 
 

@@ -16,22 +16,23 @@ var dir: int = 1
 var size: float = 5.0
 
 var logic_enabled: bool = true
+var render_enabled: bool = true
 
 
 func _process(delta: float) -> void:
 	if not logic_enabled:
 		return
-	# 移动
-	position.x += vx * delta
-	position.y += vy * delta
-	# 边界回弹
-	if position.x < 10.0 or position.x > 1150.0:
-		vx = -vx
-		position.x = clampf(position.x, 10.0, 1150.0)
-	if position.y < 10.0 or position.y > 710.0:
-		vy = -vy
-		position.y = clampf(position.y, 10.0, 710.0)
-	# 生命值周期增减: 0 → 100 → 0
+	# 移动 + 边界回弹(渲染相关: 位置) —— 屏蔽渲染时跳过
+	if render_enabled:
+		position.x += vx * delta
+		position.y += vy * delta
+		if position.x < 10.0 or position.x > 1150.0:
+			vx = -vx
+			position.x = clampf(position.x, 10.0, 1150.0)
+		if position.y < 10.0 or position.y > 710.0:
+			vy = -vy
+			position.y = clampf(position.y, 10.0, 710.0)
+	# 数值逻辑(生命值周期增减): 始终执行
 	hp += dir * HP_RATE * delta * 60.0
 	if hp >= 100.0:
 		hp = 100.0
@@ -39,9 +40,10 @@ func _process(delta: float) -> void:
 	elif hp <= 0.0:
 		hp = 0.0
 		dir = 1
-	# 大小 = hp(0 消失, 100 最大)
-	size = hp
-	queue_redraw()
+	if render_enabled:
+		# 大小 = hp + 重绘(渲染相关)
+		size = hp
+		queue_redraw()
 
 
 func _draw() -> void:

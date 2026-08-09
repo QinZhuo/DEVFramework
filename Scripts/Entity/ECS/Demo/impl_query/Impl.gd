@@ -20,24 +20,20 @@ func setup(count: int, seed: int, parent: Node) -> void:
 	rng.seed = seed
 	for _i in count:
 		# 随机小球初始数据(与另外两种实现同种子同布局)
+		var pos := Vector2(rng.randf_range(20.0, 1140.0), rng.randf_range(20.0, 700.0))
 		var ang := rng.randf() * TAU
 		var spd := rng.randf_range(20.0, 60.0)
-		var x := rng.randf_range(20.0, 1140.0)
-		var y := rng.randf_range(20.0, 700.0)
-		var vx := cos(ang) * spd
-		var vy := sin(ang) * spd
+		var vel := Vector2(cos(ang) * spd, sin(ang) * spd)
 		var hp := rng.randf_range(0.0, 100.0)
 		# 实体数据进 ECS 列
 		var e := world.create_entity()
 		world.add_component(e, DemoQueryBall)
-		world.set_field(e, DemoQueryBall, &"x", x)
-		world.set_field(e, DemoQueryBall, &"y", y)
-		world.set_field(e, DemoQueryBall, &"vx", vx)
-		world.set_field(e, DemoQueryBall, &"vy", vy)
+		world.set_field(e, DemoQueryBall, &"pos", pos)
+		world.set_field(e, DemoQueryBall, &"vel", vel)
 		world.set_field(e, DemoQueryBall, &"hp", hp)
 		# 显示节点: 位置/大小由系统同步, 节点只做表现
 		var v := DemoQueryBallNode.new()
-		v.position = Vector2(x, y)
+		v.position = pos
 		parent.add_child(v)
 		v.set_process(false)
 		visuals.append(v)
@@ -45,15 +41,15 @@ func setup(count: int, seed: int, parent: Node) -> void:
 
 func tick(delta: float) -> void:
 	world.tick(delta)
-	# 从 ECS 列批量同步显示节点(位置 + 大小, 边界保护)
-	var xcol: PackedFloat32Array = world.get_column(DemoQueryBall, &"x")
-	var ycol: PackedFloat32Array = world.get_column(DemoQueryBall, &"y")
-	var scol: PackedFloat32Array = world.get_column(DemoQueryBall, &"size")
-	var n := mini(visuals.size(), xcol.size())
-	for i in n:
-		var v: DemoQueryBallNode = visuals[i]
-		v.position = Vector2(xcol[i], ycol[i])
-		v.set_visual_size(scol[i])
+	# 渲染同步(位置/大小 → 显示节点): 屏蔽渲染时跳过, 只做数值逻辑
+	if render_enabled:
+		var poscol: PackedVector2Array = world.get_column(DemoQueryBall, &"pos")
+		var scol: PackedFloat32Array = world.get_column(DemoQueryBall, &"size")
+		var n := mini(visuals.size(), poscol.size())
+		for i in n:
+			var v: DemoQueryBallNode = visuals[i]
+			v.position = poscol[i]
+			v.set_visual_size(scol[i])
 
 
 func teardown() -> void:

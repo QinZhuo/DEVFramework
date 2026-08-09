@@ -42,3 +42,12 @@ offset_top = 620.0
 offset_right = 220.0
 offset_bottom = 660.0
 text = "🔄 切换实现"
+
+[node name="RenderButton" type="Button" parent="." unique_id=889910001]
+unique_name_in_owner = true
+layout_mode = 0
+offset_left = 230.0
+offset_top = 620.0
+offset_right = 434.0
+offset_bottom = 660.0
+text = "🎨 渲染开/关"
