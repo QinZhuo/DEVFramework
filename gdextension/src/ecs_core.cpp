@@ -8,6 +8,9 @@
 
 using namespace godot;
 
+// 系统 worker 线程标志: 系统任务在 worker 线程执行时, 其内部 batch 需串行(避免嵌套提交任务卡死)
+static thread_local bool g_in_system_thread = false;
+
 // ---------------------------------------------------------------------------
 // ECSCore 并行线程池 (batch 分片并行)
 // ---------------------------------------------------------------------------
@@ -76,7 +79,7 @@ template <typename F>
 void ECSCore::parallel_for(size_t n, F &&fn, double cost_per_item) {
 	ensure_workers();  // 确保线程池启动 + thread_count_ 就绪
 	// 按工作量估算是否值得并行(而非固定条数): 高成本项(向量/SIMD)更早并行
-	if (double(n) * cost_per_item < 10000.0 || thread_count_ <= 1) {
+	if (g_in_system_thread || double(n) * cost_per_item < 10000.0 || thread_count_ <= 1) {
 		fn(0, n);
 		return;
 	}
@@ -120,8 +123,10 @@ void ECSCore::run_systems_parallel(const Array &systems) {
 			++active_tasks_;
 			Variant sys = systems[i];
 			tasks_.emplace_back([sys]() {
+				g_in_system_thread = true;
 				Callable cb = sys;
 				cb.call();
+				g_in_system_thread = false;
 			});
 		}
 	}
@@ -130,6 +135,46 @@ void ECSCore::run_systems_parallel(const Array &systems) {
 	{
 		std::unique_lock<std::mutex> lock(task_mutex_);
 		task_cv_.wait(lock, [this]() { return active_tasks_ <= 0; });
+	}
+}
+
+void ECSCore::sync_fields(const PackedInt32Array &nl_rows, const PackedInt32Array &comp_rows,
+		const Array &nodes, const StringName &comp,
+		const PackedStringArray &fields, const PackedStringArray &props) {
+	ECSComponentData *cd = find_comp(comp);
+	if (cd == nullptr) {
+		return;
+	}
+	const int32_t n = nl_rows.size();
+	const int32_t nf = fields.size();
+	if (n <= 0 || nf <= 0) {
+		return;
+	}
+	for (int32_t i = 0; i < n; ++i) {
+		const int32_t nl_row = nl_rows[i];
+		if (nl_row < 0 || nl_row >= (int32_t)nodes.size()) {
+			continue;
+		}
+		Object *obj = nodes[nl_row].operator Object *();
+		if (obj == nullptr) {
+			continue;
+		}
+		const int32_t row = comp_rows[i];
+		if (row < 0) {
+			continue;
+		}
+		for (int32_t fi = 0; fi < nf; ++fi) {
+			const int32_t ci = cd->field_index(fields[fi]);
+			if (ci < 0) {
+				continue;
+			}
+			ECSColumn &col = cd->columns[ci];
+			if (row >= (int32_t)col.size()) {
+				continue;
+			}
+			Variant v = col.get(row);
+			obj->set(props[fi], v);
+		}
 	}
 }
 
@@ -962,7 +1007,21 @@ struct ECSFilterCond {
 	int field_idx = -1;
 	int32_t op = 0;      // CondOp
 	double value = 0.0;
+	int axis = -1;       // 向量分量: -1 无, 0/1/2 = x/y/z(字段名 "pos.x" 时)
 };
+
+// 解析字段名: "pos.x" -> ("pos", 0); "pos" -> ("pos", -1)
+static void split_field_axis(const String &fn, String &base, int &axis) {
+	axis = -1;
+	int dot = fn.find(".");
+	if (dot < 0) {
+		base = fn;
+		return;
+	}
+	base = fn.substr(0, dot);
+	String ax = fn.substr(dot + 1);
+	axis = ax == "x" ? 0 : ax == "y" ? 1 : ax == "z" ? 2 : -1;
+}
 
 // 解析条件列表, 返回有效条件数
 int parse_conditions(const ECSCore *core, const Array &conds,
@@ -978,7 +1037,9 @@ int parse_conditions(const ECSCore *core, const Array &conds,
 		if (c.comp == nullptr) {
 			continue;
 		}
-		c.field_idx = c.comp->field_index(StringName(d["field"]));
+		String fbase;
+		split_field_axis(String(d["field"]), fbase, c.axis);
+		c.field_idx = c.comp->field_index(StringName(fbase));
 		if (c.field_idx < 0) {
 			continue;
 		}
@@ -1001,7 +1062,15 @@ inline bool cond_matches(const ECSCore *core, int32_t entity, const std::vector<
 		switch (col.type) {
 			case Variant::INT: v = double(col.i32[row]); break;
 			case Variant::FLOAT: v = double(col.f32[row]); break;
-			default: return false; // 条件仅支持数值字段
+			case Variant::VECTOR2:
+				if (c.axis >= 0 && c.axis < 2) v = double(col.v2[row][c.axis]);
+				else return false;
+				break;
+			case Variant::VECTOR3:
+				if (c.axis >= 0 && c.axis < 3) v = double(col.v3[row][c.axis]);
+				else return false;
+				break;
+			default: return false; // 条件仅支持数值/向量分量字段
 		}
 		switch (c.op) {
 			case ECSCore::COND_LT: if (!(v < c.value)) return false; break;
@@ -1077,9 +1146,10 @@ int64_t ECSCore::batch_apply_col(const StringName &anchor, const PackedStringArr
 	const int32_t cnt = int32_t(rows.size());
 	const double cost = 1.5;
 
-	if (ocol.type == Variant::FLOAT && scol.type == Variant::FLOAT) {
+	if (ocol.type == Variant::FLOAT && (scol.type == Variant::FLOAT || scol.type == Variant::INT)) {
+		// 支持 FLOAT 列 op INT 列(源转 float), 便于 hp += dir*rate 等混型运算
+		const bool src_is_int = (scol.type == Variant::INT);
 		float *w = ocol.f32.ptrw();
-		const float *src = scol.f32.ptr();
 		parallel_for(size_t(cnt), [&](size_t b, size_t e) {
 			for (size_t i = b; i < e; ++i) {
 				const int32_t erow = rows[i];
@@ -1087,7 +1157,8 @@ int64_t ECSCore::batch_apply_col(const StringName &anchor, const PackedStringArr
 				const int32_t orow = same_comp ? erow : oc->set.row_of(ee);
 				const int32_t srow = src_is_anchor ? erow : sc->set.row_of(ee);
 				if (orow < 0 || srow < 0) continue;
-				const float v = float(double(src[srow]) * factor + addend);
+				const double sv = src_is_int ? double(scol.i32.ptr()[srow]) : double(scol.f32.ptr()[srow]);
+				const float v = float(sv * factor + addend);
 				switch (op) {
 					case COL_ADD: w[orow] += v; break;
 					case COL_SUB: w[orow] -= v; break;
@@ -1364,7 +1435,10 @@ int64_t ECSCore::batch_apply_where(const StringName &anchor, const PackedStringA
 	if (a == nullptr || oc == nullptr) {
 		return 0;
 	}
-	const int fi = oc->field_index(op_field);
+	String op_fbase;
+	int op_axis;
+	split_field_axis(String(op_field), op_fbase, op_axis);
+	const int fi = oc->field_index(StringName(op_fbase));
 	if (fi < 0) {
 		return 0;
 	}
@@ -1446,6 +1520,45 @@ int64_t ECSCore::batch_apply_where(const StringName &anchor, const PackedStringA
 				});
 			}
 			n = int64_t(rows.size());
+			break;
+		}
+		case Variant::VECTOR2: {
+			Vector2 *w = col.v2.ptrw();
+			// 分量操作(字段名 "pos.x"): 只写该分量
+			if (op_axis >= 0 && op_axis < 2) {
+				parallel_for(rows.size(), [&](size_t b, size_t e) {
+					for (size_t i = b; i < e; ++i) {
+						const int32_t orow = same_comp ? rows[i] : oc->set.row_of(a_dense[rows[i]]);
+						if (orow < 0) continue;
+						switch (op) {
+							case BATCH_ADD: w[orow][op_axis] += float(addend); break;
+							case BATCH_MUL_ADD: w[orow][op_axis] = float(double(w[orow][op_axis]) * factor + addend); break;
+							case BATCH_SET: w[orow][op_axis] = float(addend); break;
+							default: break;
+						}
+					}
+				});
+				n = int64_t(rows.size());
+			}
+			break;
+		}
+		case Variant::VECTOR3: {
+			Vector3 *w = col.v3.ptrw();
+			if (op_axis >= 0 && op_axis < 3) {
+				parallel_for(rows.size(), [&](size_t b, size_t e) {
+					for (size_t i = b; i < e; ++i) {
+						const int32_t orow = same_comp ? rows[i] : oc->set.row_of(a_dense[rows[i]]);
+						if (orow < 0) continue;
+						switch (op) {
+							case BATCH_ADD: w[orow][op_axis] += float(addend); break;
+							case BATCH_MUL_ADD: w[orow][op_axis] = float(double(w[orow][op_axis]) * factor + addend); break;
+							case BATCH_SET: w[orow][op_axis] = float(addend); break;
+							default: break;
+						}
+					}
+				});
+				n = int64_t(rows.size());
+			}
 			break;
 		}
 		default:
@@ -1773,6 +1886,115 @@ int64_t ECSCore::batch_vec_add(const StringName &anchor, const PackedStringArray
 				}
 			});
 		}
+		n = int64_t(rows.size());
+	}
+	return n;
+}
+
+int64_t ECSCore::batch_move(const StringName &anchor, const PackedStringArray &must,
+		const StringName &pos_comp, const StringName &pos_field,
+		const StringName &vel_comp, const StringName &vel_field,
+		double delta, double x_min, double x_max, double y_min, double y_max) {
+	ECSComponentData *a = find_comp(anchor);
+	ECSComponentData *posc = find_comp(pos_comp);
+	ECSComponentData *velc = find_comp(vel_comp);
+	if (a == nullptr || posc == nullptr || velc == nullptr) {
+		return 0;
+	}
+	const int pfi = posc->field_index(pos_field);
+	const int vfi = velc->field_index(vel_field);
+	if (pfi < 0 || vfi < 0) {
+		return 0;
+	}
+	const int32_t m = int32_t(must.size());
+	const ECSComponentData *req[8];
+	for (int32_t i = 0; i < m && i < 8; ++i) {
+		req[i] = find_comp(must[i]);
+	}
+	std::vector<int32_t> rows;
+	collect_rows(a, req, m > 8 ? 8 : m, rows, &prefab_indices_);
+	ECSColumn &poscol = posc->columns[pfi];
+	ECSColumn &velcol = velc->columns[vfi];
+	const bool pos_is_anchor = (pos_comp == anchor);
+	const bool vel_is_anchor = (vel_comp == anchor);
+	const auto &a_dense = a->set.dense;
+	const float d = float(delta);
+	const float xmi = float(x_min), xma = float(x_max), ymi = float(y_min), yma = float(y_max);
+	int64_t n = 0;
+	if (poscol.type == Variant::VECTOR2 && velcol.type == Variant::VECTOR2) {
+		Vector2 *p = poscol.v2.ptrw();
+		Vector2 *v = velcol.v2.ptrw();
+		parallel_for(rows.size(), [&](size_t b, size_t e) {
+			for (size_t i = b; i < e; ++i) {
+				const int32_t r = rows[i];
+				const int32_t eid = a_dense[r];
+				const int32_t pr = pos_is_anchor ? r : posc->set.row_of(eid);
+				const int32_t vr = vel_is_anchor ? r : velc->set.row_of(eid);
+				if (pr < 0 || vr < 0) {
+					continue;
+				}
+				Vector2 np = p[pr] + v[vr] * d;
+				Vector2 nv = v[vr];
+				if (np.x < xmi) { nv.x = -nv.x; np.x = xmi; }
+				else if (np.x > xma) { nv.x = -nv.x; np.x = xma; }
+				if (np.y < ymi) { nv.y = -nv.y; np.y = ymi; }
+				else if (np.y > yma) { nv.y = -nv.y; np.y = yma; }
+				p[pr] = np;
+				v[vr] = nv;
+			}
+		}, 3.0);
+		n = int64_t(rows.size());
+	}
+	return n;
+}
+
+int64_t ECSCore::batch_cycle(const StringName &anchor, const PackedStringArray &must,
+		const StringName &comp, const StringName &field,
+		const StringName &dir_comp, const StringName &dir_field,
+		double rate, double min, double max) {
+	ECSComponentData *a = find_comp(anchor);
+	ECSComponentData *fc = find_comp(comp);
+	ECSComponentData *dc = find_comp(dir_comp);
+	if (a == nullptr || fc == nullptr || dc == nullptr) {
+		return 0;
+	}
+	const int ffi = fc->field_index(field);
+	const int dfi = dc->field_index(dir_field);
+	if (ffi < 0 || dfi < 0) {
+		return 0;
+	}
+	const int32_t m = int32_t(must.size());
+	const ECSComponentData *req[8];
+	for (int32_t i = 0; i < m && i < 8; ++i) {
+		req[i] = find_comp(must[i]);
+	}
+	std::vector<int32_t> rows;
+	collect_rows(a, req, m > 8 ? 8 : m, rows, &prefab_indices_);
+	ECSColumn &fcol = fc->columns[ffi];
+	ECSColumn &dcol = dc->columns[dfi];
+	const bool f_is_anchor = (comp == anchor);
+	const bool d_is_anchor = (dir_comp == anchor);
+	const auto &a_dense = a->set.dense;
+	const float rt = float(rate);
+	const float rmin = float(min), rmax = float(max);
+	int64_t n = 0;
+	if (fcol.type == Variant::FLOAT && dcol.type == Variant::INT) {
+		float *f = fcol.f32.ptrw();
+		int32_t *d = dcol.i32.ptrw();
+		parallel_for(rows.size(), [&](size_t b, size_t e) {
+			for (size_t i = b; i < e; ++i) {
+				const int32_t r = rows[i];
+				const int32_t eid = a_dense[r];
+				const int32_t fr = f_is_anchor ? r : fc->set.row_of(eid);
+				const int32_t dr = d_is_anchor ? r : dc->set.row_of(eid);
+				if (fr < 0 || dr < 0) {
+					continue;
+				}
+				f[fr] += d[dr] * rt;
+				if (f[fr] >= rmax) { f[fr] = rmax; d[dr] = -d[dr]; }
+				else if (f[fr] <= rmin) { f[fr] = rmin; d[dr] = -d[dr]; }
+			}
+		}, 3.0);
 		n = int64_t(rows.size());
 	}
 	return n;
@@ -2151,6 +2373,8 @@ void ECSCore::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("is_column_borrowed"), &ECSCore::is_column_borrowed);
 	ClassDB::bind_method(D_METHOD("batch_apply_col", "anchor", "must", "op_comp", "op_field", "src_comp", "src_field", "op", "factor", "addend", "conditions"), &ECSCore::batch_apply_col);
 	ClassDB::bind_method(D_METHOD("batch_clamp_where", "anchor", "must", "op_comp", "op_field", "min_comp", "min_field", "max_comp", "max_field", "conditions"), &ECSCore::batch_clamp_where);
+	ClassDB::bind_method(D_METHOD("batch_move", "anchor", "must", "pos_comp", "pos_field", "vel_comp", "vel_field", "delta", "x_min", "x_max", "y_min", "y_max"), &ECSCore::batch_move);
+	ClassDB::bind_method(D_METHOD("batch_cycle", "anchor", "must", "comp", "field", "dir_comp", "dir_field", "rate", "min", "max"), &ECSCore::batch_cycle);
 	ClassDB::bind_method(D_METHOD("batch_apply", "anchor", "must", "op_comp", "op_field", "op", "factor", "addend"), &ECSCore::batch_apply);
 	ClassDB::bind_method(D_METHOD("batch_apply_where", "anchor", "must", "op_comp", "op_field", "op", "factor", "addend", "conditions"), &ECSCore::batch_apply_where);
 	ClassDB::bind_method(D_METHOD("batch_count", "anchor", "must", "conditions"), &ECSCore::batch_count);
@@ -2159,6 +2383,7 @@ void ECSCore::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("debug_stats"), &ECSCore::debug_stats);
 	ClassDB::bind_method(D_METHOD("set_thread_count", "count"), &ECSCore::set_thread_count);
 	ClassDB::bind_method(D_METHOD("run_systems_parallel", "systems"), &ECSCore::run_systems_parallel);
+	ClassDB::bind_method(D_METHOD("sync_fields", "nl_rows", "comp_rows", "nodes", "comp", "fields", "props"), &ECSCore::sync_fields);
 	ClassDB::bind_method(D_METHOD("serialize"), &ECSCore::serialize);
 	ClassDB::bind_method(D_METHOD("deserialize", "data"), &ECSCore::deserialize);
 	ClassDB::bind_method(D_METHOD("create_prefab"), &ECSCore::create_prefab);

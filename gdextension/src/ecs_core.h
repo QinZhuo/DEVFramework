@@ -228,6 +228,18 @@ public:
 			const StringName &max_comp, const StringName &max_field,
 			const Array &conditions);
 
+	// 通用移动原语: pos += vel*delta, 越界回弹(vel 翻转, pos 钳制)。支持 VECTOR2/VECTOR3 位置。
+	// 通用(非特化): 任意 pos/vel 组件字段 + 边界。
+	int64_t batch_move(const StringName &anchor, const PackedStringArray &must,
+			const StringName &pos_comp, const StringName &pos_field,
+			const StringName &vel_comp, const StringName &vel_field,
+			double delta, double x_min, double x_max, double y_min, double y_max);
+	// 通用周期原语: field += dir*rate, 越界(min/max)翻转 dir。支持 INT/FLOAT 字段。
+	int64_t batch_cycle(const StringName &anchor, const PackedStringArray &must,
+			const StringName &comp, const StringName &field,
+			const StringName &dir_comp, const StringName &dir_field,
+			double rate, double min, double max);
+
 	// 内存统计(调试)
 	Dictionary debug_stats() const;
 
@@ -339,6 +351,14 @@ private:
 	// 系统批并行执行(复用持久 worker 池, 免每帧临时建线程)。
 	// systems: Array[Callable](无参, 已 bind 系统+上下文)。主线程执行第一个, worker 池并行其余。
 	void run_systems_parallel(const Array &systems);
+
+	// 批量把 ECS 组件字段列写入节点属性(ECSSyncSystem 的 C++ 内层, 省 GDScript 循环解释)。
+	// nl_rows: NodeLink 行号(dense); comp_rows: 与 nl_rows 对齐的 comp 组件行号;
+	// nodes: Array[Node], 索引 = NodeLink 行号(允许 null);
+	// comp: 组件名; fields: 字段名; props: 节点属性名(与 fields 等长)。
+	void sync_fields(const PackedInt32Array &nl_rows, const PackedInt32Array &comp_rows,
+			const Array &nodes, const StringName &comp,
+			const PackedStringArray &fields, const PackedStringArray &props);
 
 public:
 	~ECSCore();

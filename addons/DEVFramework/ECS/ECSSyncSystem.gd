@@ -94,22 +94,6 @@ func _run(ctx: ECSSystemContext, _delta: float) -> void:
 			continue
 		var nl_rows_a: PackedInt32Array = aligned[0]
 		var comp_rows_a: PackedInt32Array = aligned[1]
-		# 一次拉取该 comp 全部规则字段列(数组对齐, 循环内数组索引)
-		var cols: Array = []
-		for f in fields:
-			cols.append(w.get_column(comp, StringName(f)))
-		var n_fields := fields.size()
-		for k in nl_rows_a.size():
-			var nl_row := nl_rows_a[k]
-			var node: Node = _nl_nodes[nl_row]
-			if node == null:
-				continue
-			var comp_row := comp_rows_a[k]
-			if comp_row < 0:
-				continue
-			# 索引赋值 node[prop] = v(性能≈直接赋值, 通用, 省 node.set 动态解析)
-			for fi in n_fields:
-				var col = cols[fi]
-				if comp_row >= col.size():
-					continue
-				node[props[fi]] = col[comp_row]
+		# C++ 批量同步(内层循环下沉到原生库): 读列 + 写节点属性
+		w.native().call(&"sync_fields", nl_rows_a, comp_rows_a, _nl_nodes,
+				w.component_name(item.comp), fields, props)
