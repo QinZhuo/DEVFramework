@@ -140,32 +140,49 @@ static func _is_data_field(p: Dictionary, require_export: bool) -> bool:
 	return true
 
 
-## 收集实例的纯数据字段 schema: {name, fields:[{name, type, default}]}
-static func collect_schema(instance, require_export: bool = false, own_only: bool = true) -> Dictionary:
+## 数据字段信息缓存: Script -> {require_export+own_only 组合 -> [{name, type}]}
+## 字段集合是脚本静态的(声明/排除表/export 标记不变), 反射一次缓存, 之后只读值 ——
+## 避免 Entity 批量 register_to_ecs 时每次 10000 次完整反射(get_property_list 遍历)。
+static var _data_fields_cache := {}
+
+
+## 返回实例脚本的纯数据字段信息 [{name, type}] (静态, 缓存; 值另取)。
+static func _data_fields(instance, require_export: bool, own_only: bool) -> Array:
+	var s: Script = instance.get_script()
+	if s == null:
+		return []
+	var by_flags: Dictionary = _data_fields_cache.get(s, {})
+	var key := str(require_export) + "_" + str(own_only)
+	if by_flags.has(key):
+		return by_flags[key]
+	# 首次: 反射计算字段名+类型(own_only 过滤继承基类 + ECS_EXCLUDE + export 判定)
 	var own := _own_script_field_names(instance)
 	var excluded := _excluded_fields(instance)
-	var fields := []
+	var infos := []
 	for p in instance.get_property_list():
 		if own_only and not own.has(p.name):
 			continue
 		if excluded.has(p.name):
 			continue
 		if _is_data_field(p, require_export):
-			fields.append({"name": p.name, "type": p.type, "default": instance.get(p.name)})
+			infos.append({"name": p.name, "type": p.type})
+	by_flags[key] = infos
+	_data_fields_cache[s] = by_flags
+	return infos
+
+
+## 收集实例的纯数据字段 schema: {name, fields:[{name, type, default}]}
+static func collect_schema(instance, require_export: bool = false, own_only: bool = true) -> Dictionary:
 	var s: Script = instance.get_script()
+	var fields := []
+	for f in _data_fields(instance, require_export, own_only):
+		fields.append({"name": f.name, "type": f.type, "default": instance.get(f.name)})
 	return {"name": s.get_global_name() if s != null else &"", "fields": fields}
 
 
 ## 收集实例当前各数据字段的值: {field_name: value}
 static func collect_values(instance, require_export: bool = false, own_only: bool = true) -> Dictionary:
-	var own := _own_script_field_names(instance)
-	var excluded := _excluded_fields(instance)
 	var values := {}
-	for p in instance.get_property_list():
-		if own_only and not own.has(p.name):
-			continue
-		if excluded.has(p.name):
-			continue
-		if _is_data_field(p, require_export):
-			values[p.name] = instance.get(p.name)
+	for f in _data_fields(instance, require_export, own_only):
+		values[f.name] = instance.get(f.name)
 	return values
