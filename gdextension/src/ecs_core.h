@@ -22,6 +22,7 @@
 #include <godot_cpp/variant/vector3.hpp>
 #include <godot_cpp/variant/vector4.hpp>
 #include <godot_cpp/variant/variant.hpp>
+#include <algorithm>
 #include <atomic>
 #include <cstdint>
 #include <condition_variable>
@@ -88,39 +89,47 @@ struct ECSField {
 struct ECSComponentData {
 	StringName name;
 	std::vector<ECSField> fields;
-	std::vector<ECSColumn> columns;
-	std::vector<Variant> defaults; // 每字段默认值, add_component 时填充新行
-	ECSSparseSet set;
+	std::vector<Variant> defaults; // 每字段默认值, 迁移/新增组件时填充
 
 	int field_index(const StringName &f) const;
-	inline ECSColumn &column(int fi) { return columns[fi]; }
-	inline const ECSColumn &column(int fi) const { return columns[fi]; }
-	// 给实体追加一行(列按 dense 行号紧凑存储, 行号 = dense 下标)
-	inline void push_row(int32_t entity) {
-		const int32_t row = set.add(entity);
-		for (size_t fi = 0; fi < columns.size(); ++fi) {
-			columns[fi].push_default(defaults[fi]);
-		}
-		(void)row; // 行号恒为 old size, 列 push 已对齐
-	}
-	// 移除实体所在行(swap-remove: 末行补位, 列同步)
-	void remove_row(int32_t entity);
-	// 行号 -> 实体 (dense[row])
-	inline int32_t entity_at(int32_t row) const {
-		return (row >= 0 && row < int32_t(set.dense.size())) ? set.dense[row] : -1;
-	}
+};
+
+// 条件过滤项(batch 条件用, 组件组合过滤)
+struct ECSFilterCond {
+	const ECSComponentData *comp = nullptr;
+	int field_idx = -1;
+	int32_t op = 0;
+	double value = 0.0;
+	int axis = -1;
 };
 
 // ---------------------------------------------------------------------------
-// 组件签名 (有序组件索引列表) -> 聚簇组
-// 用于: 同签名实体 ID 连续分配, 遍历时缓存友好
-//       + 增量视图: entities 维护"拥有该签名全部组件的实体", 查询 O(结果数)
+// Archetype: 按组件组合分块的存储(archetype ECS, 参考 Flecs/Bevy/Unity DOTS)。
+// 每个 archetype 拥有"组件组合相同"的实体, 列数据独立成块(SoA, 块内行连续)。
+//  - comps: 升序组件索引(components_ 下标)
+//  - cols:  [comp_pos][field] 的列, 行号 = 实体在块内的行(0..entities.size()-1)
+//  - entities: 实体 index(行号 = 下标); row_map: 实体 index -> 行号(-1)
+// 查询只遍历匹配的 archetype 块 → O(结果数) + 块内连续(缓存友好) + 块级并行。
 // ---------------------------------------------------------------------------
-struct ECSSignature {
-	std::vector<int32_t> comps; // 升序组件索引
-	std::vector<int32_t> free_ids;
-	int32_t next_hint = 0;      // 分配游标
-	std::vector<int32_t> entities; // 拥有此签名全部组件的实体 index(结构变更时增量维护)
+struct Archetype {
+	std::vector<int32_t> comps;
+	std::vector<std::vector<ECSColumn>> cols; // [comp_pos][field]
+	std::vector<int32_t> entities;            // 实体 index
+	std::vector<int32_t> row_map;             // 实体 index -> 行号(-1)
+
+	inline int comp_pos(int32_t comp) const {
+		auto it = std::lower_bound(comps.begin(), comps.end(), comp);
+		if (it != comps.end() && *it == comp) {
+			return int(it - comps.begin());
+		}
+		return -1;
+	}
+	inline bool has_comp(int32_t comp) const {
+		return std::binary_search(comps.begin(), comps.end(), comp);
+	}
+	inline int32_t row_of(int32_t entity) const {
+		return (int32_t(entity) < int32_t(row_map.size())) ? row_map[entity] : -1;
+	}
 };
 
 // ---------------------------------------------------------------------------
@@ -152,7 +161,10 @@ public:
 	PackedStringArray get_entity_components(int32_t entity) const;
 
 	// ---- 查询 ----
-	// 返回匹配实体的实体 ID 列表(可直接索引任意组件列)。
+	// 返回匹配实体的实体 ID 列表(可直接 get_field/set_field, archetype 下最直观的查询)。
+	PackedInt32Array query_entities(const StringName &anchor, const PackedStringArray &must,
+			const PackedStringArray &without) const;
+	// 返回匹配实体的聚合行号(该组件 get_column 的索引, 供列索引/对齐用)。
 	PackedInt32Array query_rows(const StringName &anchor, const PackedStringArray &must,
 			const PackedStringArray &without) const;
 	// 对齐行号查询: 一次返回多组件的对齐 dense 行号数组。
@@ -168,6 +180,8 @@ public:
 			const PackedStringArray &without, const Array &conditions,
 			const PackedStringArray &comps) const;
 	int32_t entity_of_row(const StringName &comp, int32_t row) const;
+	// 聚合行号(某组件的 get_column 索引) -> 实体 ID(archetype 下跨块聚合顺序)。
+	int32_t get_entity_at(const StringName &comp, int32_t row) const;
 
 	// ---- 单实体字段访问 (低频路径) ----
 	Variant get_field(int32_t entity, const StringName &comp, const StringName &field) const;
@@ -313,33 +327,44 @@ private:
 	int32_t comp_index(const StringName &name) const;
 	inline bool is_prefab_index(int32_t index) const;
 
-	// 签名聚簇: 实体 ID 分配
-	int32_t sig_index_for(const std::vector<int32_t> &comps);
+	// archetype 内部: 组件组合分块(替代原签名索引)
+	int32_t find_archetype(const std::vector<int32_t> &comps);
 	int32_t allocate_entity_id();
 	void release_entity_id(int32_t index);
-
-	// ---- 签名增量视图(查询加速) ----
-	// 依据实体当前组件集合, 重新归属到正确签名(结构变更后调用)。
-	void recompute_entity_sig(int32_t index);
-	// 重建全部签名实体列表(批量结构变更如 deserialize/instantiate 末尾调用)。
-	void rebuild_signatures();
-	// 收集匹配签名(含 anchor+must, 不含 without)的 anchor 行号。
-	// 签名遍历 → 查询从 O(N) 全扫降为 O(结果数)。
-	void collect_sig_rows(int32_t ai, const int32_t *mi, int32_t m,
-			const int32_t *wi, int32_t w, PackedInt32Array &out) const;
-	// 带条件过滤的签名收集(conditions 为 GDScript Array, 由 parse_conditions 解析)。
-	void collect_sig_rows_where(int32_t ai, const int32_t *mi, int32_t m,
+	// 把实体迁移到新 archetype(拷贝列数据; 新组件填默认值)。
+	void migrate_entity(int32_t index, int32_t src_arch, int32_t dst_arch);
+	// 从 archetype 移除实体(swap-remove + 列同步)。
+	void remove_from_archetype(int32_t arch, int32_t index);
+	// 在已排序 comps 中插入 comp(保持升序, 已存在则忽略)。
+	static void sorted_insert(std::vector<int32_t> &comps, int32_t comp);
+	// 收集匹配 archetype(含 anchor+must, 不含 without), 返回 archetype 索引列表。
+	void collect_archs(int32_t ai, const int32_t *mi, int32_t m,
+			const int32_t *wi, int32_t w, std::vector<int32_t> &out) const;
+	// 收集满足 must/without/conditions 的 anchor 聚合行号(batch 用)。
+	void collect_agg(int32_t ai, const int32_t *mi, int32_t m,
 			const int32_t *wi, int32_t w, const Array &conditions,
-			PackedInt32Array &out) const;
+			std::vector<int32_t> &out) const;
+	// 跨块列聚合(get_column/borrow 用): 含 ci 的 archetype 块按序拼接非 prefab 实体值。
+	Variant column_aggregate(int32_t ci, int32_t fi) const;
+	// 跨块列拆回(set_column/return 用): 聚合 PackedArray 按序写回各块。
+	void column_scatter(int32_t ci, int32_t fi, const Variant &values);
+	// 单实体标量/分量列操作(batch 用): 实体拥有的 op 组件列按 op/factor/addend 修改。
+	bool batch_apply_entity(int32_t entity, int32_t oci, int32_t ofi, int32_t op_axis,
+			int64_t op, double factor, double addend);
+	// 单实体列间操作: op 列 = op 列 OP (src 列*factor+addend)。
+	bool batch_apply_entity_col(int32_t entity, int32_t oci, int32_t ofi, int32_t sci, int32_t sfi,
+			int64_t op, double factor, double addend);
+	// 单实体是否满足全部条件(直接读 archetype 列, 快路径)。
+	bool cond_matches_entity(int32_t entity, const std::vector<ECSFilterCond> &conds) const;
 
-	// ---- 存储 ----
-	std::vector<ECSComponentData> components_;
-	std::vector<ECSSignature> signatures_;
+	// ---- 存储(archetype 分块) ----
+	std::vector<ECSComponentData> components_;   // 组件注册元数据(无数据列)
+	std::vector<Archetype> archetypes_;          // 组件组合分块存储
 	// 实体池: index | (version << 24), 复用防悬垂
 	std::vector<uint32_t> versions_;
 	std::vector<int32_t> free_list_;
-	// 实体 index -> 所属签名索引(-1 = 无组件/未分配), 签名增量视图用
-	std::vector<int32_t> entity_sig_;
+	// 实体 index -> 所属 archetype(-1 = 无组件)
+	std::vector<int32_t> entity_arch_;
 	// prefab 模板实体 index 集合
 	std::vector<int32_t> prefab_indices_;
 	// 列借出计数(borrow_columns 增加、return_columns 减少; 并行多个借出时原子累加)

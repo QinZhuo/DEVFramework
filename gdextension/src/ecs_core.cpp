@@ -157,14 +157,28 @@ void ECSCore::run_systems_parallel(const Array &systems) {
 void ECSCore::sync_fields(const PackedInt32Array &nl_rows, const PackedInt32Array &comp_rows,
 		const Array &nodes, const StringName &comp,
 		const PackedStringArray &fields, const PackedStringArray &props) {
-	ECSComponentData *cd = find_comp(comp);
-	if (cd == nullptr) {
+	const int32_t ci = comp_index(comp);
+	if (ci < 0) {
 		return;
 	}
 	const int32_t n = nl_rows.size();
 	const int32_t nf = fields.size();
 	if (n <= 0 || nf <= 0) {
 		return;
+	}
+	// 构建 comp 聚合行号 -> (arch, row) 表(与 get_column 顺序一致)
+	std::vector<std::pair<int32_t, int32_t>> cref; // 聚合行号 -> (arch, row)
+	for (int32_t arch = 0; arch < int32_t(archetypes_.size()); ++arch) {
+		const auto &a = archetypes_[arch];
+		if (!a.has_comp(ci)) {
+			continue;
+		}
+		for (int32_t r = 0; r < int32_t(a.entities.size()); ++r) {
+			if (is_prefab_index(a.entities[r])) {
+				continue;
+			}
+			cref.emplace_back(arch, r);
+		}
 	}
 	for (int32_t i = 0; i < n; ++i) {
 		const int32_t nl_row = nl_rows[i];
@@ -175,20 +189,22 @@ void ECSCore::sync_fields(const PackedInt32Array &nl_rows, const PackedInt32Arra
 		if (obj == nullptr) {
 			continue;
 		}
-		const int32_t row = comp_rows[i];
-		if (row < 0) {
+		const int32_t grow = comp_rows[i];
+		if (grow < 0 || grow >= (int32_t)cref.size()) {
+			continue;
+		}
+		const auto &cr = cref[grow];
+		const auto &a = archetypes_[cr.first];
+		const int cp = a.comp_pos(ci);
+		if (cp < 0) {
 			continue;
 		}
 		for (int32_t fi = 0; fi < nf; ++fi) {
-			const int32_t ci = cd->field_index(fields[fi]);
-			if (ci < 0) {
+			const int32_t fi2 = components_[ci].field_index(fields[fi]);
+			if (fi2 < 0) {
 				continue;
 			}
-			ECSColumn &col = cd->columns[ci];
-			if (row >= (int32_t)col.size()) {
-				continue;
-			}
-			Variant v = col.get(row);
+			Variant v = a.cols[cp][fi2].get(cr.second);
 			obj->set(props[fi], v);
 		}
 	}
@@ -295,34 +311,6 @@ void ECSColumn::pop() {
 		case Variant::COLOR: col.resize(col.size() - 1); break;
 		case Variant::STRING: s.resize(s.size() - 1); break;
 		default: break;
-	}
-}
-
-// ---------------------------------------------------------------------------
-// ECSComponentData — 行级操作 (列按 dense 行号紧凑存储)
-// ---------------------------------------------------------------------------
-
-// swap-remove 一行: 末行数据补到被删行, 列同步删除末行。
-// 前提: entity 已拥有本组件 (sparse[entity] >= 0)。
-void ECSComponentData::remove_row(int32_t entity) {
-	const int32_t row = set.row_of(entity);
-	if (row < 0) {
-		return;
-	}
-	const int32_t last_row = int32_t(set.size()) - 1;
-	// 稀疏集内部 swap: dense[row] = dense[last]; sparse[dense[last]] = row
-	set.remove(entity);
-	// 列同步: 若被删行不是末行, 用末行数据覆盖被删行, 再弹掉末行
-	if (row != last_row) {
-		for (size_t fi = 0; fi < columns.size(); ++fi) {
-			ECSColumn &c = columns[fi];
-			// 列按行号索引, 末行数据在 last_row 位置
-			Variant v = c.get(last_row);
-			c.set(row, v);
-		}
-	}
-	for (size_t fi = 0; fi < columns.size(); ++fi) {
-		columns[fi].pop();
 	}
 }
 
@@ -576,17 +564,142 @@ int32_t ECSCore::comp_index(const StringName &name) const {
 	return -1;
 }
 
-// 签名聚簇索引: 相同组件集合共享一个签名组(用于 ID 分配)
-int32_t ECSCore::sig_index_for(const std::vector<int32_t> &comps) {
-	for (int32_t i = 0; i < int32_t(signatures_.size()); ++i) {
-		if (signatures_[i].comps == comps) {
+// 查找/创建 archetype(组件组合分块存储)
+int32_t ECSCore::find_archetype(const std::vector<int32_t> &comps) {
+	for (int32_t i = 0; i < int32_t(archetypes_.size()); ++i) {
+		if (archetypes_[i].comps == comps) {
 			return i;
 		}
 	}
-	ECSSignature sig;
-	sig.comps = comps;
-	signatures_.push_back(std::move(sig));
-	return int32_t(signatures_.size()) - 1;
+	Archetype a;
+	a.comps = comps;
+	a.cols.resize(comps.size());
+	for (size_t cp = 0; cp < comps.size(); ++cp) {
+		const int32_t ci = comps[cp];
+		a.cols[cp].resize(components_[ci].fields.size());
+		for (size_t f = 0; f < components_[ci].fields.size(); ++f) {
+			a.cols[cp][f].type = components_[ci].fields[f].type;
+		}
+	}
+	archetypes_.push_back(std::move(a));
+	return int32_t(archetypes_.size()) - 1;
+}
+
+void ECSCore::sorted_insert(std::vector<int32_t> &comps, int32_t comp) {
+	auto it = std::lower_bound(comps.begin(), comps.end(), comp);
+	if (it != comps.end() && *it == comp) {
+		return;
+	}
+	comps.insert(it, comp);
+}
+
+// 从 archetype 移除实体(swap-remove + 列同步)
+void ECSCore::remove_from_archetype(int32_t arch, int32_t index) {
+	Archetype &a = archetypes_[arch];
+	const int32_t row = a.row_of(index);
+	if (row < 0) {
+		return;
+	}
+	const int32_t last = int32_t(a.entities.size()) - 1;
+	const int32_t last_e = a.entities[last];
+	if (row != last) {
+		a.entities[row] = last_e;
+		a.row_map[last_e] = row;
+		for (size_t cp = 0; cp < a.comps.size(); ++cp) {
+			const int32_t ci = a.comps[cp];
+			for (size_t f = 0; f < components_[ci].fields.size(); ++f) {
+				ECSColumn &c = a.cols[cp][f];
+				c.set(row, c.get(last));
+				c.pop();
+			}
+		}
+	} else {
+		for (size_t cp = 0; cp < a.comps.size(); ++cp) {
+			const int32_t ci = a.comps[cp];
+			for (size_t f = 0; f < components_[ci].fields.size(); ++f) {
+				a.cols[cp][f].pop();
+			}
+		}
+	}
+	a.entities.pop_back();
+	a.row_map[index] = -1;
+}
+
+// 把实体迁移到目标 archetype(拷贝旧组件数据 + 新组件默认值)
+void ECSCore::migrate_entity(int32_t index, int32_t src_arch, int32_t dst_arch) {
+	Archetype &dst = archetypes_[dst_arch];
+	const int32_t row = int32_t(dst.entities.size());
+	dst.entities.push_back(index);
+	if (int32_t(dst.row_map.size()) <= index) {
+		dst.row_map.resize(index + 1, -1);
+	}
+	dst.row_map[index] = row;
+	if (src_arch >= 0) {
+		Archetype &src = archetypes_[src_arch];
+		const int32_t src_row = src.row_of(index);
+		if (src_row >= 0) {
+			for (size_t cp = 0; cp < src.comps.size(); ++cp) {
+				const int32_t ci = src.comps[cp];
+				const int32_t dp = dst.comp_pos(ci);
+				if (dp < 0) {
+					continue;
+				}
+				for (size_t f = 0; f < components_[ci].fields.size(); ++f) {
+					ECSColumn &dcol = dst.cols[dp][f];
+					dcol.resize(row + 1);
+					dcol.set(row, src.cols[cp][f].get(src_row));
+				}
+			}
+		}
+	}
+	for (size_t cp = 0; cp < dst.comps.size(); ++cp) {
+		const int32_t ci = dst.comps[cp];
+		if (src_arch >= 0 && archetypes_[src_arch].has_comp(ci)) {
+			continue;
+		}
+		const auto &comp = components_[ci];
+		for (size_t f = 0; f < comp.fields.size(); ++f) {
+			ECSColumn &dcol = dst.cols[cp][f];
+			dcol.resize(row + 1);
+			dcol.set(row, comp.defaults[f]);
+		}
+	}
+	if (src_arch >= 0) {
+		remove_from_archetype(src_arch, index);
+	}
+	entity_arch_[index] = dst_arch;
+}
+
+// 收集匹配 archetype(含 anchor+must, 不含 without), 返回 archetype 索引
+void ECSCore::collect_archs(int32_t ai, const int32_t *mi, int32_t m,
+		const int32_t *wi, int32_t w, std::vector<int32_t> &out) const {
+	if (ai < 0) {
+		return;
+	}
+	for (int32_t arch = 0; arch < int32_t(archetypes_.size()); ++arch) {
+		const auto &a = archetypes_[arch];
+		if (!a.has_comp(ai)) {
+			continue;
+		}
+		bool ok = true;
+		for (int32_t i = 0; i < m; ++i) {
+			if (!a.has_comp(mi[i])) {
+				ok = false;
+				break;
+			}
+		}
+		if (ok) {
+			for (int32_t i = 0; i < w; ++i) {
+				if (a.has_comp(wi[i])) {
+					ok = false;
+					break;
+				}
+			}
+		}
+		if (ok) {
+			out.push_back(arch);
+		}
+	}
 }
 
 int32_t ECSCore::allocate_entity_id() {
@@ -619,12 +732,10 @@ int32_t ECSCore::register_component(const StringName &name, const PackedStringAr
 	ECSComponentData data;
 	data.name = name;
 	data.fields.resize(n);
-	data.columns.resize(n);
 	data.defaults.resize(n);
 	for (int32_t i = 0; i < n; ++i) {
 		data.fields[i].name = fnames[i];
 		data.fields[i].type = Variant::Type(int64_t(ftypes[i]));
-		data.columns[i].type = data.fields[i].type;
 		data.defaults[i] = (i < fdefaults.size()) ? fdefaults[i] : Variant();
 	}
 	components_.push_back(std::move(data));
@@ -638,10 +749,10 @@ int32_t ECSCore::register_component(const StringName &name, const PackedStringAr
 int32_t ECSCore::create_entity() {
 	int32_t index = allocate_entity_id();
 	uint32_t version = versions_[index];
-	if (int32_t(entity_sig_.size()) <= index) {
-		entity_sig_.resize(index + 1, -1);
+	if (int32_t(entity_arch_.size()) <= index) {
+		entity_arch_.resize(index + 1, -1);
 	}
-	entity_sig_[index] = -1; // 新实体无组件, 不属于任何签名
+	entity_arch_[index] = -1; // 新实体无组件, 不属于任何 archetype
 	return (int32_t(version) << 24) | index;
 }
 
@@ -659,182 +770,100 @@ void ECSCore::destroy_entity(int32_t entity) {
 	if (index < 0 || index >= int32_t(versions_.size()) || !is_alive(entity)) {
 		return;
 	}
-	// 从所有组件稀疏集中移除(列按行号 swap-remove 同步)
-	for (auto &c : components_) {
-		if (c.set.has(index)) {
-			c.remove_row(index);
-		}
+	const int32_t arch = (index < int32_t(entity_arch_.size())) ? entity_arch_[index] : -1;
+	if (arch >= 0) {
+		remove_from_archetype(arch, index);
 	}
-	// 组件已清空 → 从签名列表移除
-	if (int32_t(entity_sig_.size()) > index && entity_sig_[index] >= 0) {
-		auto &list = signatures_[entity_sig_[index]].entities;
-		auto it = std::find(list.begin(), list.end(), index);
-		if (it != list.end()) {
-			list.erase(it);
-		}
-		entity_sig_[index] = -1;
-	}
+	entity_arch_[index] = -1;
 	release_entity_id(index);
 }
 
 // ---------------------------------------------------------------------------
-// ECSCore — 签名增量视图辅助
-// 签名实体列表 = "拥有该签名全部组件的实体", 结构变更时增量维护。
-// 查询按签名匹配直接返回实体集合, 从 O(anchor.dense) 全扫降为 O(结果数)。
-// ---------------------------------------------------------------------------
-
-void ECSCore::recompute_entity_sig(int32_t index) {
-	if (index < 0) {
-		return;
-	}
-	// 收集实体当前组件索引(升序)
-	std::vector<int32_t> comps;
-	for (int32_t ci = 0; ci < int32_t(components_.size()); ++ci) {
-		if (components_[ci].set.has(index)) {
-			comps.push_back(ci);
-		}
-	}
-	const int32_t new_sig = comps.empty() ? -1 : sig_index_for(comps);
-	const int32_t old_sig = (index < int32_t(entity_sig_.size())) ? entity_sig_[index] : -1;
-	if (old_sig == new_sig) {
-		return;
-	}
-	if (old_sig >= 0) {
-		auto &list = signatures_[old_sig].entities;
-		auto it = std::find(list.begin(), list.end(), index);
-		if (it != list.end()) {
-			list.erase(it);
-		}
-	}
-	if (new_sig >= 0) {
-		signatures_[new_sig].entities.push_back(index);
-	}
-	if (int32_t(entity_sig_.size()) <= index) {
-		entity_sig_.resize(index + 1, -1);
-	}
-	entity_sig_[index] = new_sig;
-}
-
-// 重建全部签名实体列表(批量结构变更如 deserialize/instantiate 末尾调用)。
-void ECSCore::rebuild_signatures() {
-	for (auto &sig : signatures_) {
-		sig.entities.clear();
-	}
-	if (int32_t(entity_sig_.size()) < int32_t(versions_.size())) {
-		entity_sig_.resize(versions_.size(), -1);
-	}
-	std::fill(entity_sig_.begin(), entity_sig_.end(), -1);
-	for (int32_t index = 0; index < int32_t(versions_.size()); ++index) {
-		if (std::find(free_list_.begin(), free_list_.end(), index) != free_list_.end()) {
-			continue; // 已释放
-		}
-		recompute_entity_sig(index);
-	}
-}
-
-// 收集匹配签名(含 anchor+must, 不含 without)的 anchor 行号。
-void ECSCore::collect_sig_rows(int32_t ai, const int32_t *mi, int32_t m,
-		const int32_t *wi, int32_t w, PackedInt32Array &out) const {
-	if (ai < 0) {
-		return;
-	}
-	const auto &a_col = components_[ai].set;
-	for (const auto &sig : signatures_) {
-		if (!std::binary_search(sig.comps.begin(), sig.comps.end(), ai)) {
-			continue;
-		}
-		bool ok = true;
-		for (int32_t i = 0; i < m; ++i) {
-			if (!std::binary_search(sig.comps.begin(), sig.comps.end(), mi[i])) {
-				ok = false;
-				break;
-			}
-		}
-		if (ok) {
-			for (int32_t i = 0; i < w; ++i) {
-				if (std::binary_search(sig.comps.begin(), sig.comps.end(), wi[i])) {
-					ok = false;
-					break;
-				}
-			}
-		}
-		if (!ok) {
-			continue;
-		}
-		for (int32_t e : sig.entities) {
-			if (is_prefab_index(e)) {
-				continue;
-			}
-			const int32_t row = a_col.row_of(e);
-			if (row >= 0) {
-				out.append(row);
-			}
-		}
-	}
-}
-
-// ---------------------------------------------------------------------------
-// ECSCore — 组件增删查
+// ECSCore — 组件增删查 (archetype 迁移)
 // ---------------------------------------------------------------------------
 
 bool ECSCore::add_component(int32_t entity, const StringName &comp) {
 	const int32_t index = entity & 0x00FFFFFF;
-	ECSComponentData *c = find_comp(comp);
-	if (c == nullptr || !is_alive(entity)) {
+	const int32_t ci = comp_index(comp);
+	if (ci < 0 || !is_alive(entity)) {
 		return false;
 	}
-	if (c->set.has(index)) {
+	const int32_t old_arch = (index < int32_t(entity_arch_.size())) ? entity_arch_[index] : -1;
+	if (old_arch >= 0 && archetypes_[old_arch].has_comp(ci)) {
 		return true; // 幂等
 	}
-	// 列按 dense 行号紧凑存储: push 一行默认值 (行号 = old dense size)
-	c->push_row(index);
-	recompute_entity_sig(index);
+	std::vector<int32_t> comps_new;
+	if (old_arch >= 0) {
+		comps_new = archetypes_[old_arch].comps;
+	}
+	sorted_insert(comps_new, ci);
+	const int32_t dst = find_archetype(comps_new);
+	migrate_entity(index, old_arch, dst);
 	return true;
 }
 
 bool ECSCore::has_component(int32_t entity, const StringName &comp) const {
 	const int32_t index = entity & 0x00FFFFFF;
-	const ECSComponentData *c = find_comp(comp);
-	return c != nullptr && c->set.has(index);
+	const int32_t ci = comp_index(comp);
+	if (ci < 0) {
+		return false;
+	}
+	const int32_t arch = (index < int32_t(entity_arch_.size())) ? entity_arch_[index] : -1;
+	return arch >= 0 && archetypes_[arch].has_comp(ci);
 }
 
 void ECSCore::remove_component(int32_t entity, const StringName &comp) {
 	const int32_t index = entity & 0x00FFFFFF;
-	ECSComponentData *c = find_comp(comp);
-	if (c == nullptr) {
+	const int32_t ci = comp_index(comp);
+	if (ci < 0) {
 		return;
 	}
-	if (!c->set.has(index)) {
+	const int32_t arch = (index < int32_t(entity_arch_.size())) ? entity_arch_[index] : -1;
+	if (arch < 0 || !archetypes_[arch].has_comp(ci)) {
 		return;
 	}
-	// swap-remove: 列按行号同步
-	c->remove_row(index);
-	recompute_entity_sig(index);
+	std::vector<int32_t> comps_new;
+	for (int32_t c : archetypes_[arch].comps) {
+		if (c != ci) {
+			comps_new.push_back(c);
+		}
+	}
+	if (comps_new.empty()) {
+		remove_from_archetype(arch, index);
+		entity_arch_[index] = -1;
+	} else {
+		migrate_entity(index, arch, find_archetype(comps_new));
+	}
 }
 
 int32_t ECSCore::count_entities(const StringName &comp) const {
-	const ECSComponentData *c = find_comp(comp);
-	if (c == nullptr) {
+	const int32_t ci = comp_index(comp);
+	if (ci < 0) {
 		return 0;
 	}
-	// 排除 prefab 模板
 	int32_t n = 0;
-	for (int32_t r = 0; r < int32_t(c->set.dense.size()); ++r) {
-		if (!is_prefab_index(c->set.dense[r])) {
-			++n;
+	for (const auto &a : archetypes_) {
+		if (!a.has_comp(ci)) {
+			continue;
+		}
+		for (int32_t e : a.entities) {
+			if (!is_prefab_index(e)) {
+				++n;
+			}
 		}
 	}
 	return n;
 }
 
-// 枚举实体的全部组件名(按注册顺序)。低频路径: destroy 前收集钩子信息用。
 PackedStringArray ECSCore::get_entity_components(int32_t entity) const {
 	PackedStringArray out;
 	const int32_t index = entity & 0x00FFFFFF;
-	for (const auto &cd : components_) {
-		if (cd.set.has(index)) {
-			out.append(cd.name);
-		}
+	const int32_t arch = (index < int32_t(entity_arch_.size())) ? entity_arch_[index] : -1;
+	if (arch < 0) {
+		return out;
+	}
+	for (int32_t ci : archetypes_[arch].comps) {
+		out.append(components_[ci].name);
 	}
 	return out;
 }
@@ -842,6 +871,58 @@ PackedStringArray ECSCore::get_entity_components(int32_t entity) const {
 // ---------------------------------------------------------------------------
 // ECSCore — 查询
 // ---------------------------------------------------------------------------
+
+PackedInt32Array ECSCore::query_entities(const StringName &anchor, const PackedStringArray &must,
+		const PackedStringArray &without) const {
+	PackedInt32Array out;
+	if (must.size() > 8 || without.size() > 8) {
+		return out;
+	}
+	const int32_t ai = comp_index(anchor);
+	if (ai < 0) {
+		return out;
+	}
+	int32_t mi[8];
+	int32_t wi[8];
+	const int32_t m = int32_t(must.size());
+	const int32_t w = int32_t(without.size());
+	for (int32_t i = 0; i < m; ++i) {
+		mi[i] = comp_index(must[i]);
+	}
+	for (int32_t i = 0; i < w; ++i) {
+		wi[i] = comp_index(without[i]);
+	}
+	// 遍历所有含 anchor 的 archetype, 收集满足 must/without 的实体 ID
+	for (const auto &a : archetypes_) {
+		if (!a.has_comp(ai)) {
+			continue;
+		}
+		bool ok = true;
+		for (int32_t i = 0; i < m; ++i) {
+			if (!a.has_comp(mi[i])) {
+				ok = false;
+				break;
+			}
+		}
+		if (ok) {
+			for (int32_t i = 0; i < w; ++i) {
+				if (a.has_comp(wi[i])) {
+					ok = false;
+					break;
+				}
+			}
+		}
+		if (ok) {
+			for (int32_t row = 0; row < int32_t(a.entities.size()); ++row) {
+				if (is_prefab_index(a.entities[row])) {
+					continue;
+				}
+				out.append(a.entities[row]);
+			}
+		}
+	}
+	return out;
+}
 
 PackedInt32Array ECSCore::query_rows(const StringName &anchor, const PackedStringArray &must,
 		const PackedStringArray &without) const {
@@ -863,12 +944,44 @@ PackedInt32Array ECSCore::query_rows(const StringName &anchor, const PackedStrin
 	for (int32_t i = 0; i < w; ++i) {
 		wi[i] = comp_index(without[i]);
 	}
-	// 签名增量视图: 遍历匹配签名收集实体(无需全扫 anchor dense)
-	collect_sig_rows(ai, mi, m, wi, w, out);
+	// 遍历所有含 anchor 的 archetype, 返回满足 must/without 的实体的聚合行号
+	// (聚合行号 = 该组件 get_column 的索引, 跨块按 archetype 顺序累积)
+	int32_t offset = 0;
+	for (const auto &a : archetypes_) {
+		if (!a.has_comp(ai)) {
+			continue;
+		}
+		bool ok = true;
+		for (int32_t i = 0; i < m; ++i) {
+			if (!a.has_comp(mi[i])) {
+				ok = false;
+				break;
+			}
+		}
+		if (ok) {
+			for (int32_t i = 0; i < w; ++i) {
+				if (a.has_comp(wi[i])) {
+					ok = false;
+					break;
+				}
+			}
+		}
+		int32_t n_nonpref = 0;
+		for (int32_t row = 0; row < int32_t(a.entities.size()); ++row) {
+			if (is_prefab_index(a.entities[row])) {
+				continue;
+			}
+			if (ok) {
+				out.append(offset + n_nonpref);
+			}
+			++n_nonpref;
+		}
+		offset += n_nonpref;
+	}
 	return out;
 }
 
-// 对齐行号查询: 基于签名视图收集匹配实体, 同步填充 anchor 与各 must 组件的行号。
+// 对齐行号查询: 返回 [anchor 聚合行号, 各 must 组件聚合行号](同一实体集合, 顺序一致)。
 Array ECSCore::query_rows_aligned(const StringName &anchor, const PackedStringArray &must,
 		const PackedStringArray &without) const {
 	Array out;
@@ -880,56 +993,121 @@ Array ECSCore::query_rows_aligned(const StringName &anchor, const PackedStringAr
 		return out;
 	}
 	const int32_t m = int32_t(must.size());
-	const int32_t w = int32_t(without.size());
 	int32_t mi[8];
-	int32_t wi[8];
 	for (int32_t i = 0; i < m; ++i) {
 		mi[i] = comp_index(must[i]);
 	}
-	for (int32_t i = 0; i < w; ++i) {
-		wi[i] = comp_index(without[i]);
-	}
-
-	PackedInt32Array anchor_rows;
-	collect_sig_rows(ai, mi, m, wi, w, anchor_rows);
+	PackedInt32Array anchor_rows = query_rows(anchor, must, without);
 	const int32_t n = int32_t(anchor_rows.size());
 	out.push_back(anchor_rows);
-
-	// 每个 must 组件: 对齐行号(同一实体集合, 顺序与 anchor_rows 一致)
-	const auto &a_dense = components_[ai].set.dense;
+	// anchor 聚合行号 -> 实体表(一次 O(N), 避免逐实体 get_entity_at O(N^2))
+	std::vector<int32_t> agg;
+	for (const auto &a : archetypes_) {
+		if (!a.has_comp(ai)) {
+			continue;
+		}
+		for (int32_t r = 0; r < int32_t(a.entities.size()); ++r) {
+			if (is_prefab_index(a.entities[r])) {
+				continue;
+			}
+			agg.push_back(a.entities[r]);
+		}
+	}
 	for (int32_t i = 0; i < m; ++i) {
 		PackedInt32Array comp_rows;
 		if (mi[i] < 0) {
 			out.push_back(comp_rows);
 			continue;
 		}
-		const auto &c_set = components_[mi[i]].set;
+		std::unordered_map<int32_t, int32_t> cg;
+		int32_t grow = 0;
+		for (const auto &a : archetypes_) {
+			if (!a.has_comp(mi[i])) {
+				continue;
+			}
+			for (int32_t r = 0; r < int32_t(a.entities.size()); ++r) {
+				if (is_prefab_index(a.entities[r])) {
+					continue;
+				}
+				cg[a.entities[r]] = grow++;
+			}
+		}
 		comp_rows.resize(n);
 		for (int32_t k = 0; k < n; ++k) {
-			const int32_t e = a_dense[anchor_rows[k]];
-			comp_rows[k] = c_set.row_of(e);
+			const int32_t e = agg[anchor_rows[k]];
+			auto it = cg.find(e);
+			comp_rows[k] = (it != cg.end()) ? it->second : -1;
 		}
 		out.push_back(comp_rows);
 	}
 	return out;
 }
 
-// 行号(anchor dense 下标) -> 实体 ID
+// 聚合行号(某组件的 get_column 索引) -> 实体 ID
 int32_t ECSCore::entity_of_row(const StringName &comp, int32_t row) const {
-	const ECSComponentData *c = find_comp(comp);
-	if (c == nullptr || row < 0 || row >= int32_t(c->set.dense.size())) {
-		return -1;
-	}
-	return c->set.dense[row];
+	return get_entity_at(comp, row);
 }
 
-// 实体 ID -> 行号 (dense 下标)
+// 实体 ID -> 聚合行号(该组件 get_column 索引)
 int32_t ECSCore::row_of_entity(const StringName &comp, int32_t entity) const {
-	const ECSComponentData *c = find_comp(comp);
-	if (c == nullptr) {
+	const int32_t index = entity & 0x00FFFFFF;
+	const int32_t arch = (index < int32_t(entity_arch_.size())) ? entity_arch_[index] : -1;
+	if (arch < 0) {
 		return -1;
 	}
-	return c->set.row_of(entity & 0x00FFFFFF);
+	const int32_t ci = comp_index(comp);
+	if (ci < 0 || !archetypes_[arch].has_comp(ci)) {
+		return -1;
+	}
+	// 聚合行号 = 前面含 ci 的 archetype 非 prefab 数 + 块内非 prefab 位置(快: O(块数 + 块内))
+	int32_t grow = 0;
+	for (const auto &a : archetypes_) {
+		if (!a.has_comp(ci)) {
+			continue;
+		}
+		if (&a == &archetypes_[arch]) {
+			for (int32_t r = 0; r < int32_t(a.entities.size()); ++r) {
+				if (is_prefab_index(a.entities[r])) {
+					continue;
+				}
+				if (a.entities[r] == index) {
+					return grow;
+				}
+				++grow;
+			}
+			return -1;
+		}
+		for (int32_t r = 0; r < int32_t(a.entities.size()); ++r) {
+			if (!is_prefab_index(a.entities[r])) {
+				++grow;
+			}
+		}
+	}
+	return -1;
+}
+
+// 聚合行号 -> 实体 ID(跨块按 archetype 顺序)
+int32_t ECSCore::get_entity_at(const StringName &comp, int32_t row) const {
+	const int32_t ci = comp_index(comp);
+	if (ci < 0) {
+		return -1;
+	}
+	int32_t grow = 0;
+	for (const auto &a : archetypes_) {
+		if (!a.has_comp(ci)) {
+			continue;
+		}
+		for (int32_t r = 0; r < int32_t(a.entities.size()); ++r) {
+			if (is_prefab_index(a.entities[r])) {
+				continue;
+			}
+			if (grow == row) {
+				return a.entities[r];
+			}
+			++grow;
+		}
+	}
+	return -1;
 }
 
 // ---------------------------------------------------------------------------
@@ -938,130 +1116,465 @@ int32_t ECSCore::row_of_entity(const StringName &comp, int32_t entity) const {
 
 Variant ECSCore::get_field(int32_t entity, const StringName &comp, const StringName &field) const {
 	const int32_t index = entity & 0x00FFFFFF;
-	const ECSComponentData *c = find_comp(comp);
-	if (c == nullptr) {
+	const int32_t arch = (index < int32_t(entity_arch_.size())) ? entity_arch_[index] : -1;
+	if (arch < 0) {
 		return Variant();
 	}
-	// 稀疏集: 实体 -> 行号, 列按行号索引(紧凑)
-	const int32_t row = c->set.row_of(index);
-	if (row < 0) {
+	const int32_t ci = comp_index(comp);
+	if (ci < 0) {
 		return Variant();
 	}
-	const int fi = c->field_index(field);
+	const auto &a = archetypes_[arch];
+	const int cp = a.comp_pos(ci);
+	if (cp < 0) {
+		return Variant();
+	}
+	const int fi = components_[ci].field_index(field);
 	if (fi < 0) {
 		return Variant();
 	}
-	return c->columns[fi].get(row);
+	const int32_t row = a.row_of(index);
+	if (row < 0) {
+		return Variant();
+	}
+	return a.cols[cp][fi].get(row);
 }
 
 void ECSCore::set_field(int32_t entity, const StringName &comp, const StringName &field, const Variant &value) {
 	const int32_t index = entity & 0x00FFFFFF;
-	ECSComponentData *c = find_comp(comp);
-	if (c == nullptr) {
+	const int32_t arch = (index < int32_t(entity_arch_.size())) ? entity_arch_[index] : -1;
+	if (arch < 0) {
 		return;
 	}
-	const int32_t row = c->set.row_of(index);
-	if (row < 0) {
+	const int32_t ci = comp_index(comp);
+	if (ci < 0) {
 		return;
 	}
-	const int fi = c->field_index(field);
+	auto &a = archetypes_[arch];
+	const int cp = a.comp_pos(ci);
+	if (cp < 0) {
+		return;
+	}
+	const int fi = components_[ci].field_index(field);
 	if (fi < 0) {
 		return;
 	}
-	c->columns[fi].set(row, value);
+	const int32_t row = a.row_of(index);
+	if (row < 0) {
+		return;
+	}
+	a.cols[cp][fi].set(row, value);
 }
 
 // ---------------------------------------------------------------------------
 // ECSCore — 批量列访问 (零拷贝)
 // ---------------------------------------------------------------------------
 
+// 跨块列聚合: 含 ci 的 archetype 块按序拼接非 prefab 实体值(get_column 索引 = 聚合顺序)
+// 跨块列聚合: 含 ci 的 archetype 块按序拼接非 prefab 实体值(get_column 索引 = 聚合顺序)
+Variant ECSCore::column_aggregate(int32_t ci, int32_t fi) const {
+	const Variant::Type t = components_[ci].fields[fi].type;
+	struct Blk {
+		const Archetype *a;
+		int cp;
+	};
+	std::vector<Blk> blocks;
+	size_t total = 0;
+	for (const auto &a : archetypes_) {
+		if (!a.has_comp(ci)) {
+			continue;
+		}
+		const int cp = a.comp_pos(ci);
+		int cnt = 0;
+		for (int32_t r = 0; r < int32_t(a.entities.size()); ++r) {
+			if (!is_prefab_index(a.entities[r])) {
+				++cnt;
+			}
+		}
+		if (cnt > 0) {
+			blocks.push_back({&a, cp});
+			total += size_t(cnt);
+		}
+	}
+	// 无 prefab 块整块 memcpy(快路径)
+	auto has_pref = [this](const Archetype &a) {
+		for (int32_t r = 0; r < int32_t(a.entities.size()); ++r) {
+			if (is_prefab_index(a.entities[r])) {
+				return true;
+			}
+		}
+		return false;
+	};
+	switch (t) {
+		case Variant::INT: {
+			PackedInt32Array a;
+			a.resize(int32_t(total));
+			int32_t *dst = a.ptrw();
+			size_t idx = 0;
+			for (const auto &b : blocks) {
+				const auto &col = b.a->cols[b.cp][fi].i32;
+				if (!has_pref(*b.a)) {
+					memcpy(dst + idx, col.data(), col.size() * sizeof(int32_t));
+					idx += col.size();
+				} else {
+					for (int32_t r = 0; r < int32_t(b.a->entities.size()); ++r) {
+						if (is_prefab_index(b.a->entities[r])) {
+							continue;
+						}
+						dst[idx++] = col[r];
+					}
+				}
+			}
+			return a;
+		}
+		case Variant::FLOAT: {
+			PackedFloat32Array a;
+			a.resize(int32_t(total));
+			float *dst = a.ptrw();
+			size_t idx = 0;
+			for (const auto &b : blocks) {
+				const auto &col = b.a->cols[b.cp][fi].f32;
+				if (!has_pref(*b.a)) {
+					memcpy(dst + idx, col.data(), col.size() * sizeof(float));
+					idx += col.size();
+				} else {
+					for (int32_t r = 0; r < int32_t(b.a->entities.size()); ++r) {
+						if (is_prefab_index(b.a->entities[r])) {
+							continue;
+						}
+						dst[idx++] = col[r];
+					}
+				}
+			}
+			return a;
+		}
+		case Variant::BOOL: {
+			PackedByteArray a;
+			a.resize(int32_t(total));
+			uint8_t *dst = a.ptrw();
+			size_t idx = 0;
+			for (const auto &b : blocks) {
+				const auto &col = b.a->cols[b.cp][fi].b;
+				if (!has_pref(*b.a)) {
+					memcpy(dst + idx, col.data(), col.size());
+					idx += col.size();
+				} else {
+					for (int32_t r = 0; r < int32_t(b.a->entities.size()); ++r) {
+						if (is_prefab_index(b.a->entities[r])) {
+							continue;
+						}
+						dst[idx++] = col[r];
+					}
+				}
+			}
+			return a;
+		}
+		case Variant::VECTOR2: {
+			PackedVector2Array a;
+			a.resize(int32_t(total));
+			Vector2 *dst = a.ptrw();
+			size_t idx = 0;
+			for (const auto &b : blocks) {
+				const auto &col = b.a->cols[b.cp][fi].v2;
+				if (!has_pref(*b.a)) {
+					memcpy(dst + idx, col.data(), col.size() * sizeof(Vector2));
+					idx += col.size();
+				} else {
+					for (int32_t r = 0; r < int32_t(b.a->entities.size()); ++r) {
+						if (is_prefab_index(b.a->entities[r])) {
+							continue;
+						}
+						dst[idx++] = col[r];
+					}
+				}
+			}
+			return a;
+		}
+		case Variant::VECTOR3: {
+			PackedVector3Array a;
+			a.resize(int32_t(total));
+			Vector3 *dst = a.ptrw();
+			size_t idx = 0;
+			for (const auto &b : blocks) {
+				const auto &col = b.a->cols[b.cp][fi].v3;
+				if (!has_pref(*b.a)) {
+					memcpy(dst + idx, col.data(), col.size() * sizeof(Vector3));
+					idx += col.size();
+				} else {
+					for (int32_t r = 0; r < int32_t(b.a->entities.size()); ++r) {
+						if (is_prefab_index(b.a->entities[r])) {
+							continue;
+						}
+						dst[idx++] = col[r];
+					}
+				}
+			}
+			return a;
+		}
+		case Variant::VECTOR4: {
+			PackedVector4Array a;
+			a.resize(int32_t(total));
+			Vector4 *dst = a.ptrw();
+			size_t idx = 0;
+			for (const auto &b : blocks) {
+				const auto &col = b.a->cols[b.cp][fi].v4;
+				if (!has_pref(*b.a)) {
+					memcpy(dst + idx, col.data(), col.size() * sizeof(Vector4));
+					idx += col.size();
+				} else {
+					for (int32_t r = 0; r < int32_t(b.a->entities.size()); ++r) {
+						if (is_prefab_index(b.a->entities[r])) {
+							continue;
+						}
+						dst[idx++] = col[r];
+					}
+				}
+			}
+			return a;
+		}
+		case Variant::COLOR: {
+			PackedColorArray a;
+			a.resize(int32_t(total));
+			Color *dst = a.ptrw();
+			size_t idx = 0;
+			for (const auto &b : blocks) {
+				const auto &col = b.a->cols[b.cp][fi].col;
+				if (!has_pref(*b.a)) {
+					memcpy(dst + idx, col.data(), col.size() * sizeof(Color));
+					idx += col.size();
+				} else {
+					for (int32_t r = 0; r < int32_t(b.a->entities.size()); ++r) {
+						if (is_prefab_index(b.a->entities[r])) {
+							continue;
+						}
+						dst[idx++] = col[r];
+					}
+				}
+			}
+			return a;
+		}
+		case Variant::STRING: {
+			PackedStringArray a;
+			a.resize(int32_t(total));
+			size_t idx = 0;
+			for (const auto &b : blocks) {
+				const auto &col = b.a->cols[b.cp][fi].s;
+				for (int32_t r = 0; r < int32_t(b.a->entities.size()); ++r) {
+					if (is_prefab_index(b.a->entities[r])) {
+						continue;
+					}
+					a.set(int32_t(idx++), col[r]);
+				}
+			}
+			return a;
+		}
+		default:
+			return Variant();
+	}
+}
+
+// 跨块列拆回: 聚合 PackedArray 按序写回各块(与 column_aggregate 顺序一致)
+void ECSCore::column_scatter(int32_t ci, int32_t fi, const Variant &values) {
+	const Variant::Type t = components_[ci].fields[fi].type;
+	size_t idx = 0;
+	auto has_pref = [this](const Archetype &a) {
+		for (int32_t r = 0; r < int32_t(a.entities.size()); ++r) {
+			if (is_prefab_index(a.entities[r])) {
+				return true;
+			}
+		}
+		return false;
+	};
+	for (auto &a : archetypes_) {
+		if (!a.has_comp(ci)) {
+			continue;
+		}
+		const int cp = a.comp_pos(ci);
+		auto &col = a.cols[cp][fi];
+		if (!has_pref(a)) {
+			switch (t) {
+				case Variant::INT: {
+					PackedInt32Array p = values;
+					memcpy(col.i32.data(), p.ptr() + idx, col.i32.size() * sizeof(int32_t));
+					idx += col.i32.size();
+					break;
+				}
+				case Variant::FLOAT: {
+					PackedFloat32Array p = values;
+					memcpy(col.f32.data(), p.ptr() + idx, col.f32.size() * sizeof(float));
+					idx += col.f32.size();
+					break;
+				}
+				case Variant::BOOL: {
+					PackedByteArray p = values;
+					memcpy(col.b.data(), p.ptr() + idx, col.b.size());
+					idx += col.b.size();
+					break;
+				}
+				case Variant::VECTOR2: {
+					PackedVector2Array p = values;
+					memcpy(col.v2.data(), p.ptr() + idx, col.v2.size() * sizeof(Vector2));
+					idx += col.v2.size();
+					break;
+				}
+				case Variant::VECTOR3: {
+					PackedVector3Array p = values;
+					memcpy(col.v3.data(), p.ptr() + idx, col.v3.size() * sizeof(Vector3));
+					idx += col.v3.size();
+					break;
+				}
+				case Variant::VECTOR4: {
+					PackedVector4Array p = values;
+					memcpy(col.v4.data(), p.ptr() + idx, col.v4.size() * sizeof(Vector4));
+					idx += col.v4.size();
+					break;
+				}
+				case Variant::COLOR: {
+					PackedColorArray p = values;
+					memcpy(col.col.data(), p.ptr() + idx, col.col.size() * sizeof(Color));
+					idx += col.col.size();
+					break;
+				}
+				default: {
+					for (int32_t r = 0; r < int32_t(a.entities.size()); ++r) {
+						Variant v;
+				switch (values.get_type()) {
+					case Variant::INT: { PackedInt32Array p = values; v = Variant(int64_t(p[int32_t(idx)])); break; }
+					case Variant::FLOAT: { PackedFloat32Array p = values; v = Variant(double(p[int32_t(idx)])); break; }
+					case Variant::BOOL: { PackedByteArray p = values; v = Variant(bool(p[int32_t(idx)])); break; }
+					case Variant::VECTOR2: { PackedVector2Array p = values; v = Variant(Vector2(p[int32_t(idx)])); break; }
+					case Variant::VECTOR3: { PackedVector3Array p = values; v = Variant(Vector3(p[int32_t(idx)])); break; }
+					case Variant::VECTOR4: { PackedVector4Array p = values; v = Variant(Vector4(p[int32_t(idx)])); break; }
+					case Variant::COLOR: { PackedColorArray p = values; v = Variant(Color(p[int32_t(idx)])); break; }
+					case Variant::STRING: { PackedStringArray p = values; v = Variant(p[int32_t(idx)]); break; }
+					default: v = Variant();
+				}
+				++idx;
+						col.set(r, v);
+					}
+					break;
+				}
+			}
+		} else {
+			for (int32_t r = 0; r < int32_t(a.entities.size()); ++r) {
+				if (is_prefab_index(a.entities[r])) {
+					continue;
+				}
+				Variant v;
+				switch (values.get_type()) {
+					case Variant::INT: { PackedInt32Array p = values; v = Variant(int64_t(p[int32_t(idx)])); break; }
+					case Variant::FLOAT: { PackedFloat32Array p = values; v = Variant(double(p[int32_t(idx)])); break; }
+					case Variant::BOOL: { PackedByteArray p = values; v = Variant(bool(p[int32_t(idx)])); break; }
+					case Variant::VECTOR2: { PackedVector2Array p = values; v = Variant(Vector2(p[int32_t(idx)])); break; }
+					case Variant::VECTOR3: { PackedVector3Array p = values; v = Variant(Vector3(p[int32_t(idx)])); break; }
+					case Variant::VECTOR4: { PackedVector4Array p = values; v = Variant(Vector4(p[int32_t(idx)])); break; }
+					case Variant::COLOR: { PackedColorArray p = values; v = Variant(Color(p[int32_t(idx)])); break; }
+					case Variant::STRING: { PackedStringArray p = values; v = Variant(p[int32_t(idx)]); break; }
+					default: v = Variant();
+				}
+				++idx;
+				col.set(r, v);
+			}
+		}
+	}
+}
+void ECSCore::set_columns(const Dictionary &values) {
+	Array keys = values.keys();
+	for (int32_t i = 0; i < keys.size(); ++i) {
+		const int32_t ci = comp_index(StringName(keys[i]));
+		if (ci < 0) {
+			continue;
+		}
+		Dictionary fields = values[keys[i]];
+		Array fkeys = fields.keys();
+		for (int32_t j = 0; j < fkeys.size(); ++j) {
+			const StringName fname = StringName(fkeys[j]);
+			const int32_t fi = components_[ci].field_index(fname);
+			if (fi < 0) {
+				continue;
+			}
+			column_scatter(ci, fi, fields[fname]);
+		}
+	}
+}
+
+
 Variant ECSCore::get_column(const StringName &comp, const StringName &field) const {
 	const int32_t ci = comp_index(comp);
 	if (ci < 0) {
 		return Variant();
 	}
-	const ECSComponentData &cd = components_[ci];
-	const int fi = cd.field_index(field);
+	const int fi = components_[ci].field_index(field);
 	if (fi < 0) {
 		return Variant();
 	}
-	// 内部裸内存列 → PackedArray 拷贝(供 GDScript 访问)
-	const ECSColumn &col = cd.columns[fi];
-	return col_to_packed(col);
+	return column_aggregate(ci, fi);
 }
 
-// 一次取多组件多列: 返回 {compName: {fieldName: PackedArray}}, 一次跨语言替代 N 次 get_column。
 Dictionary ECSCore::get_columns(const Array &comps_fields) const {
 	Dictionary out;
 	for (int32_t i = 0; i < comps_fields.size(); ++i) {
 		Dictionary cf = comps_fields[i];
-		const ECSComponentData *c = find_comp(StringName(cf["comp"]));
-		if (c == nullptr) {
+		const int32_t ci = comp_index(StringName(cf["comp"]));
+		if (ci < 0) {
 			continue;
 		}
 		Dictionary fields_dict;
 		Array fields = cf["fields"];
 		for (int32_t j = 0; j < fields.size(); ++j) {
 			const StringName fname = StringName(fields[j]);
-			const int32_t fi = c->field_index(fname);
+			const int32_t fi = components_[ci].field_index(fname);
 			if (fi < 0) {
 				continue;
 			}
-			const ECSColumn &col = c->columns[fi];
-			fields_dict[fname] = col_to_packed(col);
+			fields_dict[fname] = column_aggregate(ci, fi);
 		}
-		out[c->name] = fields_dict;
+		out[components_[ci].name] = fields_dict;
 	}
 	return out;
 }
 
-// 借出列: 把内部列移出(内部置空), 返回独占引用 —— 回调内写列无 COW 深拷贝。
-// 支持并行: 多个系统同时借出不同组件列时计数累加, 互不干扰。
 Dictionary ECSCore::borrow_columns(const Array &comps_fields) {
 	_borrow_count_.fetch_add(1);
 	Dictionary out;
 	for (int32_t i = 0; i < comps_fields.size(); ++i) {
 		Dictionary cf = comps_fields[i];
-		ECSComponentData *c = find_comp(StringName(cf["comp"]));
-		if (c == nullptr) {
+		const int32_t ci = comp_index(StringName(cf["comp"]));
+		if (ci < 0) {
 			continue;
 		}
 		Dictionary fields_dict;
 		Array fields = cf["fields"];
 		for (int32_t j = 0; j < fields.size(); ++j) {
 			const StringName fname = StringName(fields[j]);
-			const int32_t fi = c->field_index(fname);
+			const int32_t fi = components_[ci].field_index(fname);
 			if (fi < 0) {
 				continue;
 			}
-			ECSColumn &col = c->columns[fi];
-			fields_dict[fname] = col_borrow_out(col);
+			fields_dict[fname] = column_aggregate(ci, fi);
 		}
-		out[c->name] = fields_dict;
+		out[components_[ci].name] = fields_dict;
 	}
 	return out;
 }
 
-// 归还列: 内部列 = 返回数组(拷回)。
 void ECSCore::return_columns(const Dictionary &borrowed) {
 	_borrow_count_.fetch_sub(1);
 	Array keys = borrowed.keys();
 	for (int32_t i = 0; i < keys.size(); ++i) {
-		const StringName comp = StringName(keys[i]);
-		ECSComponentData *c = find_comp(comp);
-		if (c == nullptr) {
+		const int32_t ci = comp_index(StringName(keys[i]));
+		if (ci < 0) {
 			continue;
 		}
-		Dictionary fields = borrowed[comp];
+		Dictionary fields = borrowed[keys[i]];
 		Array fkeys = fields.keys();
 		for (int32_t j = 0; j < fkeys.size(); ++j) {
 			const StringName fname = StringName(fkeys[j]);
-			const int32_t fi = c->field_index(fname);
+			const int32_t fi = components_[ci].field_index(fname);
 			if (fi < 0) {
 				continue;
 			}
-			ECSColumn &col = c->columns[fi];
-			col_from_packed(col, fields[fname]);
+			column_scatter(ci, fi, fields[fname]);
 		}
 	}
 }
@@ -1069,92 +1582,216 @@ void ECSCore::return_columns(const Dictionary &borrowed) {
 bool ECSCore::is_column_borrowed() const {
 	return _borrow_count_.load() > 0;
 }
-void ECSCore::set_columns(const Dictionary &values) {
-	// Godot Dictionary 无顺序索引, 用 keys()
-	Array keys = values.keys();
-	for (int32_t i = 0; i < keys.size(); ++i) {
-		const StringName comp = StringName(keys[i]);
-		ECSComponentData *c = find_comp(comp);
-		if (c == nullptr) {
-			continue;
-		}
-		Dictionary fields = values[comp];
-		Array fkeys = fields.keys();
-		for (int32_t j = 0; j < fkeys.size(); ++j) {
-			const StringName fname = StringName(fkeys[j]);
-			const int32_t fi = c->field_index(fname);
-			if (fi < 0) {
-				continue;
-			}
-			ECSColumn &col = c->columns[fi];
-			col_from_packed(col, fields[fname]);
-		}
-	}
-}
 
 void ECSCore::set_column(const StringName &comp, const StringName &field, const Variant &values) {
-	ECSComponentData *cd = find_comp(comp);
-	if (cd == nullptr) {
+	const int32_t ci = comp_index(comp);
+	if (ci < 0) {
 		return;
 	}
-	const int fi = cd->field_index(field);
+	const int fi = components_[ci].field_index(field);
 	if (fi < 0) {
 		return;
 	}
-	// PackedArray → 内部裸内存列(拷贝)
-	ECSColumn &col = cd->columns[fi];
-	col_from_packed(col, values);
+	column_scatter(ci, fi, values);
 }
 
-// ---------------------------------------------------------------------------
-// ECSCore — Tier 0: 原生批量运算
-// ---------------------------------------------------------------------------
+// 单实体标量/分量列操作(batch 用)
+bool ECSCore::batch_apply_entity(int32_t entity, int32_t oci, int32_t ofi, int32_t op_axis,
+		int64_t op, double factor, double addend) {
+	const int32_t earch = entity_arch_[entity];
+	if (earch < 0) {
+		return false;
+	}
+	const int32_t erow = archetypes_[earch].row_of(entity);
+	if (erow < 0) {
+		return false;
+	}
+	const int cp = archetypes_[earch].comp_pos(oci);
+	if (cp < 0) {
+		return false;
+	}
+	auto &col = archetypes_[earch].cols[cp][ofi];
+	switch (col.type) {
+		case Variant::INT: {
+			int32_t &w = col.i32[erow];
+			switch (op) {
+				case BATCH_ADD: w += int32_t(addend); break;
+				case BATCH_MUL_ADD: w = int32_t(double(w) * factor + addend); break;
+				case BATCH_SET: w = int32_t(addend); break;
+				default: break;
+			}
+			break;
+		}
+		case Variant::FLOAT: {
+			float &w = col.f32[erow];
+			switch (op) {
+				case BATCH_ADD: w += float(addend); break;
+				case BATCH_MUL_ADD: w = float(double(w) * factor + addend); break;
+				case BATCH_SET: w = float(addend); break;
+				default: break;
+			}
+			break;
+		}
+		case Variant::VECTOR2: {
+			if (op_axis >= 0 && op_axis < 2) {
+				float &w = col.v2[erow][op_axis];
+				switch (op) {
+					case BATCH_ADD: w += float(addend); break;
+					case BATCH_MUL_ADD: w = float(double(w) * factor + addend); break;
+					case BATCH_SET: w = float(addend); break;
+					default: break;
+				}
+			}
+			break;
+		}
+		case Variant::VECTOR3: {
+			if (op_axis >= 0 && op_axis < 3) {
+				float &w = col.v3[erow][op_axis];
+				switch (op) {
+					case BATCH_ADD: w += float(addend); break;
+					case BATCH_MUL_ADD: w = float(double(w) * factor + addend); break;
+					case BATCH_SET: w = float(addend); break;
+					default: break;
+				}
+			}
+			break;
+		}
+		default:
+			break;
+	}
+	return true;
+}
 
-// 收集 anchor dense 中满足 must 的实体行号(直接遍历 anchor 稀疏集)
-static void collect_rows(const ECSComponentData *anchor, const ECSComponentData *const *req,
-		int32_t m, std::vector<int32_t> &out,
-		const std::vector<int32_t> *prefabs = nullptr) {
-	out.clear();
-	const auto &dense = anchor->set.dense;
-	for (int32_t r = 0; r < int32_t(dense.size()); ++r) {
-		const int32_t e = dense[r];
-		if (prefabs) {
-			bool is_pref = false;
-			for (int32_t p : *prefabs) {
-				if (p == e) { is_pref = true; break; }
-			}
-			if (is_pref) {
-				continue;
-			}
+// 单实体列间操作: op 列 = op 列 OP (src 列*factor+addend)
+bool ECSCore::batch_apply_entity_col(int32_t entity, int32_t oci, int32_t ofi, int32_t sci, int32_t sfi,
+		int64_t op, double factor, double addend) {
+	const int32_t earch = entity_arch_[entity];
+	if (earch < 0) {
+		return false;
+	}
+	const int32_t erow = archetypes_[earch].row_of(entity);
+	if (erow < 0) {
+		return false;
+	}
+	const int cp = archetypes_[earch].comp_pos(oci);
+	const int scp = archetypes_[earch].comp_pos(sci);
+	if (cp < 0 || scp < 0) {
+		return false;
+	}
+	auto &ocol = archetypes_[earch].cols[cp][ofi];
+	const auto &scol = archetypes_[earch].cols[scp][sfi];
+	if (ocol.type == Variant::FLOAT && (scol.type == Variant::FLOAT || scol.type == Variant::INT)) {
+		const double sv = (scol.type == Variant::INT) ? double(scol.i32[erow]) : double(scol.f32[erow]);
+		const float v = float(sv * factor + addend);
+		float &w = ocol.f32[erow];
+		switch (op) {
+			case COL_ADD: w += v; break;
+			case COL_SUB: w -= v; break;
+			case COL_MUL: w *= v; break;
+			case COL_DIV: if (v != 0.0f) w /= v; break;
+			case COL_SET: w = v; break;
+			default: break;
 		}
-		bool ok = true;
-		for (int32_t i = 0; i < m; ++i) {
-			if (req[i] == nullptr || !req[i]->set.has(e)) {
-				ok = false;
+		return true;
+	}
+	if (ocol.type == Variant::INT && scol.type == Variant::INT) {
+		const int32_t v = int32_t(double(scol.i32[erow]) * factor + addend);
+		int32_t &w = ocol.i32[erow];
+		switch (op) {
+			case COL_ADD: w += v; break;
+			case COL_SUB: w -= v; break;
+			case COL_MUL: w *= v; break;
+			case COL_DIV: if (v != 0) w /= v; break;
+			case COL_SET: w = v; break;
+			default: break;
+		}
+		return true;
+	}
+	if (ocol.type == Variant::VECTOR2 && scol.type == Variant::VECTOR2) {
+		const float f = float(factor);
+		Vector2 v = scol.v2[erow] * f;
+		Vector2 &w = ocol.v2[erow];
+		switch (op) {
+			case COL_ADD: w += v; break;
+			case COL_SUB: w -= v; break;
+			case COL_MUL: w *= v; break;
+			case COL_DIV: if (v.x != 0.0f && v.y != 0.0f) w /= v; break;
+			case COL_SET: w = v; break;
+			default: break;
+		}
+		return true;
+	}
+	if (ocol.type == Variant::VECTOR3 && scol.type == Variant::VECTOR3) {
+		const float f = float(factor);
+		Vector3 v = scol.v3[erow] * f;
+		Vector3 &w = ocol.v3[erow];
+		switch (op) {
+			case COL_ADD: w += v; break;
+			case COL_SUB: w -= v; break;
+			case COL_MUL: w *= v; break;
+			case COL_DIV: if (v.x != 0.0f && v.y != 0.0f && v.z != 0.0f) w /= v; break;
+			case COL_SET: w = v; break;
+			default: break;
+		}
+		return true;
+	}
+	return false;
+}
+
+// 单实体是否满足全部条件(直接读 archetype 列, 快路径)
+bool ECSCore::cond_matches_entity(int32_t entity, const std::vector<ECSFilterCond> &conds) const {
+	for (const auto &c : conds) {
+		if (c.comp == nullptr || c.field_idx < 0) {
+			return false;
+		}
+		const int32_t arch = entity_arch_[entity];
+		if (arch < 0) {
+			return false;
+		}
+		const int32_t ci = comp_index(c.comp->name);
+		if (ci < 0 || !archetypes_[arch].has_comp(ci)) {
+			return false;
+		}
+		const int32_t row = archetypes_[arch].row_of(entity);
+		if (row < 0) {
+			return false;
+		}
+		const int cp = archetypes_[arch].comp_pos(ci);
+		if (cp < 0) {
+			return false;
+		}
+		const auto &col = archetypes_[arch].cols[cp][c.field_idx];
+		double val = 0.0;
+		switch (col.type) {
+			case Variant::INT: val = double(col.i32[row]); break;
+			case Variant::FLOAT: val = double(col.f32[row]); break;
+			case Variant::VECTOR2:
+				if (c.axis >= 0 && c.axis < 2) val = double(col.v2[row][c.axis]);
+				else return false;
 				break;
-			}
+			case Variant::VECTOR3:
+				if (c.axis >= 0 && c.axis < 3) val = double(col.v3[row][c.axis]);
+				else return false;
+				break;
+			default: return false;
 		}
-		if (ok) {
-			out.push_back(r); // 行号! 列按行号索引
+		switch (c.op) {
+			case COND_LT: if (!(val < c.value)) return false; break;
+			case COND_LE: if (!(val <= c.value)) return false; break;
+			case COND_GT: if (!(val > c.value)) return false; break;
+			case COND_GE: if (!(val >= c.value)) return false; break;
+			case COND_EQ: if (!(val == c.value)) return false; break;
+			case COND_NE: if (!(val != c.value)) return false; break;
+			default: return false;
 		}
 	}
+	return true;
 }
 
 // ---------------------------------------------------------------------------
-// 条件过滤: 解析 Array[Dictionary] 条件列表, 用于 batch_apply_where / batch_count
-// 每个条件: {comp: StringName, field: StringName, op: int(CondOp), value: double}
+// 条件过滤解析(namespace)
 // ---------------------------------------------------------------------------
 namespace {
-
-struct ECSFilterCond {
-	const ECSComponentData *comp = nullptr;
-	int field_idx = -1;
-	int32_t op = 0;      // CondOp
-	double value = 0.0;
-	int axis = -1;       // 向量分量: -1 无, 0/1/2 = x/y/z(字段名 "pos.x" 时)
-};
-
-// 解析字段名: "pos.x" -> ("pos", 0); "pos" -> ("pos", -1)
 static void split_field_axis(const String &fn, String &base, int &axis) {
 	axis = -1;
 	int dot = fn.find(".");
@@ -1167,7 +1804,6 @@ static void split_field_axis(const String &fn, String &base, int &axis) {
 	axis = ax == "x" ? 0 : ax == "y" ? 1 : ax == "z" ? 2 : -1;
 }
 
-// 解析条件列表, 返回有效条件数
 int parse_conditions(const ECSCore *core, const Array &conds,
 		std::vector<ECSFilterCond> &out, int max_conds) {
 	out.clear();
@@ -1193,579 +1829,407 @@ int parse_conditions(const ECSCore *core, const Array &conds,
 	}
 	return int(out.size());
 }
-
-// 单实体是否满足所有条件(按列值比较)。entity 为真实实体ID(条件组件列按各自行号访问)
-inline bool cond_matches(const ECSCore *core, int32_t entity, const std::vector<ECSFilterCond> &conds) {
-	for (const auto &c : conds) {
-		const ECSColumn &col = c.comp->columns[c.field_idx];
-		const int32_t row = c.comp->set.row_of(entity & 0x00FFFFFF);
-		if (row < 0) {
-			return false; // 条件组件该实体未拥有 -> 不满足
+// 从聚合 PackedArray(Variant) 取第 k 个值
+static Variant agg_at(const Variant &v, int32_t k) {
+	switch (v.get_type()) {
+		case Variant::INT: {
+			PackedInt32Array p = v;
+			return (k < p.size()) ? Variant(int64_t(p[k])) : Variant();
 		}
-		double v = 0.0;
-		switch (col.type) {
-			case Variant::INT: v = double(col.i32[row]); break;
-			case Variant::FLOAT: v = double(col.f32[row]); break;
-			case Variant::VECTOR2:
-				if (c.axis >= 0 && c.axis < 2) v = double(col.v2[row][c.axis]);
-				else return false;
-				break;
-			case Variant::VECTOR3:
-				if (c.axis >= 0 && c.axis < 3) v = double(col.v3[row][c.axis]);
-				else return false;
-				break;
-			default: return false; // 条件仅支持数值/向量分量字段
+		case Variant::FLOAT: {
+			PackedFloat32Array p = v;
+			return (k < p.size()) ? Variant(double(p[k])) : Variant();
 		}
-		switch (c.op) {
-			case ECSCore::COND_LT: if (!(v < c.value)) return false; break;
-			case ECSCore::COND_LE: if (!(v <= c.value)) return false; break;
-			case ECSCore::COND_GT: if (!(v > c.value)) return false; break;
-			case ECSCore::COND_GE: if (!(v >= c.value)) return false; break;
-			case ECSCore::COND_EQ: if (!(v == c.value)) return false; break;
-			case ECSCore::COND_NE: if (!(v != c.value)) return false; break;
-			default: return false;
+		case Variant::BOOL: {
+			PackedByteArray p = v;
+			return (k < p.size()) ? Variant(bool(p[k])) : Variant();
 		}
-	}
-	return true;
-}
-
-// 收集 anchor+must+条件 都满足的实体行号
-void collect_rows_where(const ECSCore *core, const ECSComponentData *anchor,
-		const ECSComponentData *const *req, int32_t m,
-		const std::vector<ECSFilterCond> &conds, std::vector<int32_t> &out) {
-	out.clear();
-	const auto &dense = anchor->set.dense;
-	for (int32_t r = 0; r < int32_t(dense.size()); ++r) {
-		const int32_t e = dense[r];
-		if (core->is_prefab(e)) {
-			continue; // 跳过 prefab 模板
+		case Variant::VECTOR2: {
+			PackedVector2Array p = v;
+			return (k < p.size()) ? Variant(Vector2(p[k])) : Variant();
 		}
-		bool ok = true;
-		for (int32_t i = 0; i < m; ++i) {
-			if (req[i] == nullptr || !req[i]->set.has(e)) {
-				ok = false;
-				break;
-			}
+		case Variant::VECTOR3: {
+			PackedVector3Array p = v;
+			return (k < p.size()) ? Variant(Vector3(p[k])) : Variant();
 		}
-		if (ok && cond_matches(core, e, conds)) {
-			out.push_back(r); // 行号
+		case Variant::VECTOR4: {
+			PackedVector4Array p = v;
+			return (k < p.size()) ? Variant(Vector4(p[k])) : Variant();
 		}
+		case Variant::COLOR: {
+			PackedColorArray p = v;
+			return (k < p.size()) ? Variant(Color(p[k])) : Variant();
+		}
+		case Variant::STRING: {
+			PackedStringArray p = v;
+			return (k < p.size()) ? Variant(p[k]) : Variant();
+		}
+		default:
+			return Variant();
 	}
 }
 } // namespace
 
-// 列间运算: col = col OP (src * factor + addend), 仅满足条件的实体。
-// 支持 INT/FLOAT(含 addend) 与 VECTOR2/VECTOR3(用 factor 标量缩放, 忽略 addend)。
-int64_t ECSCore::batch_apply_col(const StringName &anchor, const PackedStringArray &must,
-		const StringName &op_comp, const StringName &op_field,
-		const StringName &src_comp, const StringName &src_field,
-		int64_t op, double factor, double addend, const Array &conditions) {
-	ECSComponentData *a = find_comp(anchor);
-	ECSComponentData *oc = find_comp(op_comp);
-	ECSComponentData *sc = find_comp(src_comp);
-	if (a == nullptr || oc == nullptr || sc == nullptr) {
-		return 0;
-	}
-	const int ofi = oc->field_index(op_field);
-	const int sfi = sc->field_index(src_field);
-	if (ofi < 0 || sfi < 0) {
-		return 0;
-	}
-	const int32_t m = int32_t(must.size());
-	const ECSComponentData *req[8];
-	for (int32_t i = 0; i < m && i < 8; ++i) {
-		req[i] = find_comp(must[i]);
-	}
+// 收集满足 must/without/conditions 的 anchor 聚合行号(batch 用)
+void ECSCore::collect_agg(int32_t ai, const int32_t *mi, int32_t m,
+		const int32_t *wi, int32_t w, const Array &conditions,
+		std::vector<int32_t> &out) const {
+	out.clear();
 	std::vector<ECSFilterCond> conds;
 	parse_conditions(this, conditions, conds, 8);
-	std::vector<int32_t> rows;
-	collect_rows_where(this, a, req, m > 8 ? 8 : m, conds, rows);
-
-	ECSColumn &ocol = oc->columns[ofi];
-	const ECSColumn &scol = sc->columns[sfi];
-	const bool same_comp = (op_comp == anchor);
-	const bool src_is_anchor = (src_comp == anchor);
-	const auto &a_dense = a->set.dense;
-	int64_t n = 0;
-	const int32_t cnt = int32_t(rows.size());
-	const double cost = 1.5;
-
-	if (ocol.type == Variant::FLOAT && (scol.type == Variant::FLOAT || scol.type == Variant::INT)) {
-		// 支持 FLOAT 列 op INT 列(源转 float), 便于 hp += dir*rate 等混型运算
-		const bool src_is_int = (scol.type == Variant::INT);
-		float *w = ocol.f32.data();
-		parallel_for(size_t(cnt), [&](size_t b, size_t e) {
-			for (size_t i = b; i < e; ++i) {
-				const int32_t erow = rows[i];
-				const int32_t ee = a_dense[erow];
-				const int32_t orow = same_comp ? erow : oc->set.row_of(ee);
-				const int32_t srow = src_is_anchor ? erow : sc->set.row_of(ee);
-				if (orow < 0 || srow < 0) continue;
-				const double sv = src_is_int ? double(scol.i32.data()[srow]) : double(scol.f32.data()[srow]);
-				const float v = float(sv * factor + addend);
-				switch (op) {
-					case COL_ADD: w[orow] += v; break;
-					case COL_SUB: w[orow] -= v; break;
-					case COL_MUL: w[orow] *= v; break;
-					case COL_DIV: if (v != 0.0f) w[orow] /= v; break;
-					case COL_SET: w[orow] = v; break;
-					default: break;
+	int32_t offset = 0;
+	for (const auto &a : archetypes_) {
+		if (!a.has_comp(ai)) {
+			continue;
+		}
+		bool ok = true;
+		for (int32_t i = 0; i < m; ++i) {
+			if (!a.has_comp(mi[i])) {
+				ok = false;
+				break;
+			}
+		}
+		if (ok) {
+			for (int32_t i = 0; i < w; ++i) {
+				if (a.has_comp(wi[i])) {
+					ok = false;
+					break;
 				}
 			}
-		}, cost);
-		n = cnt;
-	} else if (ocol.type == Variant::INT && scol.type == Variant::INT) {
-		int32_t *w = ocol.i32.data();
-		const int32_t *src = scol.i32.data();
-		parallel_for(size_t(cnt), [&](size_t b, size_t e) {
-			for (size_t i = b; i < e; ++i) {
-				const int32_t erow = rows[i];
-				const int32_t ee = a_dense[erow];
-				const int32_t orow = same_comp ? erow : oc->set.row_of(ee);
-				const int32_t srow = src_is_anchor ? erow : sc->set.row_of(ee);
-				if (orow < 0 || srow < 0) continue;
-				const int32_t v = int32_t(double(src[srow]) * factor + addend);
-				switch (op) {
-					case COL_ADD: w[orow] += v; break;
-					case COL_SUB: w[orow] -= v; break;
-					case COL_MUL: w[orow] *= v; break;
-					case COL_DIV: if (v != 0) w[orow] /= v; break;
-					case COL_SET: w[orow] = v; break;
-					default: break;
-				}
+		}
+		int32_t np = 0;
+		for (int32_t row = 0; row < int32_t(a.entities.size()); ++row) {
+			if (is_prefab_index(a.entities[row])) {
+				continue;
 			}
-		}, cost);
-		n = cnt;
-	} else if (ocol.type == Variant::VECTOR2 && scol.type == Variant::VECTOR2) {
-		Vector2 *w = ocol.v2.data();
-		const Vector2 *src = scol.v2.data();
-		const float f = float(factor);
-		parallel_for(size_t(cnt), [&](size_t b, size_t e) {
-			for (size_t i = b; i < e; ++i) {
-				const int32_t erow = rows[i];
-				const int32_t ee = a_dense[erow];
-				const int32_t orow = same_comp ? erow : oc->set.row_of(ee);
-				const int32_t srow = src_is_anchor ? erow : sc->set.row_of(ee);
-				if (orow < 0 || srow < 0) continue;
-				const Vector2 v = src[srow] * f;
-				switch (op) {
-					case COL_ADD: w[orow] += v; break;
-					case COL_SUB: w[orow] -= v; break;
-					case COL_MUL: w[orow] *= v; break;
-					case COL_DIV: if (v.x != 0.0f && v.y != 0.0f) w[orow] /= v; break;
-					case COL_SET: w[orow] = v; break;
-					default: break;
-				}
+			if (ok && cond_matches_entity(a.entities[row], conds)) {
+				out.push_back(offset + np);
 			}
-		}, 3.0);
-		n = cnt;
-	} else if (ocol.type == Variant::VECTOR3 && scol.type == Variant::VECTOR3) {
-		Vector3 *w = ocol.v3.data();
-		const Vector3 *src = scol.v3.data();
-		const float f = float(factor);
-		parallel_for(size_t(cnt), [&](size_t b, size_t e) {
-			for (size_t i = b; i < e; ++i) {
-				const int32_t erow = rows[i];
-				const int32_t ee = a_dense[erow];
-				const int32_t orow = same_comp ? erow : oc->set.row_of(ee);
-				const int32_t srow = src_is_anchor ? erow : sc->set.row_of(ee);
-				if (orow < 0 || srow < 0) continue;
-				const Vector3 v = src[srow] * f;
-				switch (op) {
-					case COL_ADD: w[orow] += v; break;
-					case COL_SUB: w[orow] -= v; break;
-					case COL_MUL: w[orow] *= v; break;
-					case COL_DIV: if (v.x != 0.0f && v.y != 0.0f && v.z != 0.0f) w[orow] /= v; break;
-					case COL_SET: w[orow] = v; break;
-					default: break;
-				}
-			}
-		}, 3.0);
-		n = cnt;
+			++np;
+		}
+		offset += np;
 	}
-	return n;
 }
 
 // ---------------------------------------------------------------------------
-// 优化: 批量收集 + 行集动作
+// ECSCore — Tier 0: 原生批量运算 (archetype 分块)
 // ---------------------------------------------------------------------------
 
-// 对预收集的 anchor 行集做标量批量动作(跳过收集)。rows_v[i] 为 anchor dense 行号。
-int64_t ECSCore::batch_apply_rows(const StringName &anchor, const PackedInt32Array &rows,
+int64_t ECSCore::batch_apply_where(const StringName &anchor, const PackedStringArray &must,
 		const StringName &op_comp, const StringName &op_field, int64_t op,
-		double factor, double addend) {
-	ECSComponentData *a = find_comp(anchor);
-	ECSComponentData *oc = find_comp(op_comp);
-	if (a == nullptr || oc == nullptr) {
+		double factor, double addend, const Array &conditions) {
+	const int32_t ai = comp_index(anchor);
+	const int32_t oci = comp_index(op_comp);
+	if (ai < 0 || oci < 0) {
 		return 0;
 	}
 	String op_fbase;
 	int op_axis;
 	split_field_axis(String(op_field), op_fbase, op_axis);
-	const int fi = oc->field_index(StringName(op_fbase));
-	if (fi < 0) {
+	const int ofi = components_[oci].field_index(StringName(op_fbase));
+	if (ofi < 0) {
 		return 0;
 	}
-	ECSColumn &col = oc->columns[fi];
-	const int32_t cnt = int32_t(rows.size());
-	if (cnt <= 0) {
-		return 0;
+	const int32_t m = int32_t(must.size());
+	int32_t mi[8];
+	for (int32_t i = 0; i < m && i < 8; ++i) {
+		mi[i] = comp_index(must[i]);
 	}
-	// 行号拷到裸内存: 并行 worker 读裸 std::vector, 避免多线程读 Godot PackedInt32Array 的 Variant 竞态
-	std::vector<int32_t> rows_v(cnt);
-	memcpy(rows_v.data(), rows.ptr(), cnt * sizeof(int32_t));
-	const bool same_comp = (op_comp == anchor);
-	const auto &a_dense = a->set.dense;
-	switch (col.type) {
-		case Variant::INT: {
-			int32_t *w = col.i32.data();
-			const int32_t add = int32_t(addend);
-			if (same_comp) {
-				parallel_for(size_t(cnt), [&](size_t b, size_t e) {
-					for (size_t i = b; i < e; ++i) {
-						const int32_t row = rows_v[i];
-						switch (op) {
-							case BATCH_ADD: w[row] += add; break;
-							case BATCH_MUL_ADD: w[row] = int32_t(double(w[row]) * factor + addend); break;
-							case BATCH_SET: w[row] = add; break;
-							default: break;
-						}
-					}
-				});
-			} else {
-				parallel_for(size_t(cnt), [&](size_t b, size_t e) {
-					for (size_t i = b; i < e; ++i) {
-						const int32_t orow = oc->set.row_of(a_dense[rows_v[i]]);
-						if (orow < 0) continue;
-						switch (op) {
-							case BATCH_ADD: w[orow] += add; break;
-							case BATCH_MUL_ADD: w[orow] = int32_t(double(w[orow]) * factor + addend); break;
-							case BATCH_SET: w[orow] = add; break;
-							default: break;
-						}
-					}
-				});
-			}
-			return cnt;
+	std::vector<int32_t> rows;
+	collect_agg(ai, mi, m > 8 ? 8 : m, nullptr, 0, conditions, rows);
+	std::vector<int32_t> agg;
+	for (const auto &a : archetypes_) {
+		if (!a.has_comp(ai)) {
+			continue;
 		}
-		case Variant::FLOAT: {
-			float *w = col.f32.data();
-			if (same_comp) {
-				parallel_for(size_t(cnt), [&](size_t b, size_t e) {
-					for (size_t i = b; i < e; ++i) {
-						const int32_t row = rows_v[i];
-						switch (op) {
-							case BATCH_ADD: w[row] += float(addend); break;
-							case BATCH_MUL_ADD: w[row] = float(double(w[row]) * factor + addend); break;
-							case BATCH_SET: w[row] = float(addend); break;
-							default: break;
-						}
-					}
-				});
-			} else {
-				parallel_for(size_t(cnt), [&](size_t b, size_t e) {
-					for (size_t i = b; i < e; ++i) {
-						const int32_t orow = oc->set.row_of(a_dense[rows_v[i]]);
-						if (orow < 0) continue;
-						switch (op) {
-							case BATCH_ADD: w[orow] += float(addend); break;
-							case BATCH_MUL_ADD: w[orow] = float(double(w[orow]) * factor + addend); break;
-							case BATCH_SET: w[orow] = float(addend); break;
-							default: break;
-						}
-					}
-				});
+		for (int32_t r = 0; r < int32_t(a.entities.size()); ++r) {
+			if (is_prefab_index(a.entities[r])) {
+				continue;
 			}
-			return cnt;
+			agg.push_back(a.entities[r]);
 		}
-		case Variant::VECTOR2: {
-			Vector2 *w = col.v2.data();
-			if (op_axis >= 0 && op_axis < 2) {
-				if (same_comp) {
-					parallel_for(size_t(cnt), [&](size_t b, size_t e) {
-						for (size_t i = b; i < e; ++i) {
-							const int32_t row = rows_v[i];
-							switch (op) {
-								case BATCH_ADD: w[row][op_axis] += float(addend); break;
-								case BATCH_MUL_ADD: w[row][op_axis] = float(double(w[row][op_axis]) * factor + addend); break;
-								case BATCH_SET: w[row][op_axis] = float(addend); break;
-								default: break;
-							}
-						}
-					});
-				} else {
-					parallel_for(size_t(cnt), [&](size_t b, size_t e) {
-						for (size_t i = b; i < e; ++i) {
-							const int32_t orow = oc->set.row_of(a_dense[rows_v[i]]);
-							if (orow < 0) continue;
-							switch (op) {
-								case BATCH_ADD: w[orow][op_axis] += float(addend); break;
-								case BATCH_MUL_ADD: w[orow][op_axis] = float(double(w[orow][op_axis]) * factor + addend); break;
-								case BATCH_SET: w[orow][op_axis] = float(addend); break;
-								default: break;
-							}
-						}
-					});
-				}
-				return cnt;
-			}
-			break;
-		}
-		case Variant::VECTOR3: {
-			Vector3 *w = col.v3.data();
-			if (op_axis >= 0 && op_axis < 3) {
-				if (same_comp) {
-					parallel_for(size_t(cnt), [&](size_t b, size_t e) {
-						for (size_t i = b; i < e; ++i) {
-							const int32_t row = rows_v[i];
-							switch (op) {
-								case BATCH_ADD: w[row][op_axis] += float(addend); break;
-								case BATCH_MUL_ADD: w[row][op_axis] = float(double(w[row][op_axis]) * factor + addend); break;
-								case BATCH_SET: w[row][op_axis] = float(addend); break;
-								default: break;
-							}
-						}
-					});
-				} else {
-					parallel_for(size_t(cnt), [&](size_t b, size_t e) {
-						for (size_t i = b; i < e; ++i) {
-							const int32_t orow = oc->set.row_of(a_dense[rows_v[i]]);
-							if (orow < 0) continue;
-							switch (op) {
-								case BATCH_ADD: w[orow][op_axis] += float(addend); break;
-								case BATCH_MUL_ADD: w[orow][op_axis] = float(double(w[orow][op_axis]) * factor + addend); break;
-								case BATCH_SET: w[orow][op_axis] = float(addend); break;
-								default: break;
-							}
-						}
-					});
-				}
-				return cnt;
-			}
-			break;
-		}
-		default:
-			break;
 	}
-	return 0;
+	std::atomic<int64_t> cnt{0};
+	parallel_for(size_t(rows.size()), [&](size_t b, size_t e) {
+		for (size_t i = b; i < e; ++i) {
+			const int32_t grow = rows[i];
+			if (grow < 0 || grow >= (int32_t)agg.size()) {
+				continue;
+			}
+			if (batch_apply_entity(agg[grow], oci, ofi, op_axis, op, factor, addend)) {
+				cnt.fetch_add(1, std::memory_order_relaxed);
+			}
+		}
+	}, 1.5);
+	return cnt.load();
 }
 
-// 对预收集的 anchor 行集做列间动作(跳过收集)。支持 INT/FLOAT(含 addend) 与 VECTOR2/VECTOR3。
+int64_t ECSCore::batch_count(const StringName &anchor, const PackedStringArray &must,
+		const Array &conditions) const {
+	const int32_t ai = comp_index(anchor);
+	if (ai < 0) {
+		return 0;
+	}
+	const int32_t m = int32_t(must.size());
+	int32_t mi[8];
+	for (int32_t i = 0; i < m && i < 8; ++i) {
+		mi[i] = comp_index(must[i]);
+	}
+	std::vector<int32_t> rows;
+	collect_agg(ai, mi, m > 8 ? 8 : m, nullptr, 0, conditions, rows);
+	return int64_t(rows.size());
+}
+
+int64_t ECSCore::batch_apply(const StringName &anchor, const PackedStringArray &must,
+		const StringName &op_comp, const StringName &op_field, int64_t op,
+		double factor, double addend) {
+	return batch_apply_where(anchor, must, op_comp, op_field, op, factor, addend, Array());
+}
+
+int64_t ECSCore::batch_apply_col(const StringName &anchor, const PackedStringArray &must,
+		const StringName &op_comp, const StringName &op_field,
+		const StringName &src_comp, const StringName &src_field,
+		int64_t op, double factor, double addend, const Array &conditions) {
+	const int32_t ai = comp_index(anchor);
+	const int32_t oci = comp_index(op_comp);
+	const int32_t sci = comp_index(src_comp);
+	if (ai < 0 || oci < 0 || sci < 0) {
+		return 0;
+	}
+	const int ofi = components_[oci].field_index(op_field);
+	const int sfi = components_[sci].field_index(src_field);
+	if (ofi < 0 || sfi < 0) {
+		return 0;
+	}
+	const int32_t m = int32_t(must.size());
+	int32_t mi[8];
+	for (int32_t i = 0; i < m && i < 8; ++i) {
+		mi[i] = comp_index(must[i]);
+	}
+	std::vector<int32_t> rows;
+	collect_agg(ai, mi, m > 8 ? 8 : m, nullptr, 0, conditions, rows);
+	std::vector<int32_t> agg;
+	for (const auto &a : archetypes_) {
+		if (!a.has_comp(ai)) {
+			continue;
+		}
+		for (int32_t r = 0; r < int32_t(a.entities.size()); ++r) {
+			if (is_prefab_index(a.entities[r])) {
+				continue;
+			}
+			agg.push_back(a.entities[r]);
+		}
+	}
+	std::atomic<int64_t> cnt{0};
+	parallel_for(size_t(rows.size()), [&](size_t b, size_t e) {
+		for (size_t i = b; i < e; ++i) {
+			const int32_t grow = rows[i];
+			if (grow < 0 || grow >= (int32_t)agg.size()) {
+				continue;
+			}
+			if (batch_apply_entity_col(agg[grow], oci, ofi, sci, sfi, op, factor, addend)) {
+				cnt.fetch_add(1, std::memory_order_relaxed);
+			}
+		}
+	}, 1.5);
+	return cnt.load();
+}
+
+int64_t ECSCore::batch_apply_rows(const StringName &anchor, const PackedInt32Array &rows,
+		const StringName &op_comp, const StringName &op_field, int64_t op,
+		double factor, double addend) {
+	const int32_t ai = comp_index(anchor);
+	const int32_t oci = comp_index(op_comp);
+	if (ai < 0 || oci < 0) {
+		return 0;
+	}
+	String op_fbase;
+	int op_axis;
+	split_field_axis(String(op_field), op_fbase, op_axis);
+	const int ofi = components_[oci].field_index(StringName(op_fbase));
+	if (ofi < 0) {
+		return 0;
+	}
+	std::vector<int32_t> agg;
+	for (const auto &a : archetypes_) {
+		if (!a.has_comp(ai)) {
+			continue;
+		}
+		for (int32_t r = 0; r < int32_t(a.entities.size()); ++r) {
+			if (is_prefab_index(a.entities[r])) {
+				continue;
+			}
+			agg.push_back(a.entities[r]);
+		}
+	}
+	const int32_t cnt = int32_t(rows.size());
+	parallel_for(size_t(cnt), [&](size_t b, size_t e) {
+		for (size_t i = b; i < e; ++i) {
+			const int32_t grow = rows[i];
+			if (grow < 0 || grow >= (int32_t)agg.size()) {
+				continue;
+			}
+			batch_apply_entity(agg[grow], oci, ofi, op_axis, op, factor, addend);
+		}
+	}, 1.5);
+	return cnt;
+}
+
 int64_t ECSCore::batch_apply_col_rows(const StringName &anchor, const PackedInt32Array &rows,
 		const StringName &op_comp, const StringName &op_field,
 		const StringName &src_comp, const StringName &src_field,
 		int64_t op, double factor, double addend) {
-	ECSComponentData *a = find_comp(anchor);
-	ECSComponentData *oc = find_comp(op_comp);
-	ECSComponentData *sc = find_comp(src_comp);
-	if (a == nullptr || oc == nullptr || sc == nullptr) {
+	const int32_t ai = comp_index(anchor);
+	const int32_t oci = comp_index(op_comp);
+	const int32_t sci = comp_index(src_comp);
+	if (ai < 0 || oci < 0 || sci < 0) {
 		return 0;
 	}
-	const int ofi = oc->field_index(op_field);
-	const int sfi = sc->field_index(src_field);
+	const int ofi = components_[oci].field_index(op_field);
+	const int sfi = components_[sci].field_index(src_field);
 	if (ofi < 0 || sfi < 0) {
 		return 0;
 	}
-	ECSColumn &ocol = oc->columns[ofi];
-	const ECSColumn &scol = sc->columns[sfi];
+	std::vector<int32_t> agg;
+	for (const auto &a : archetypes_) {
+		if (!a.has_comp(ai)) {
+			continue;
+		}
+		for (int32_t r = 0; r < int32_t(a.entities.size()); ++r) {
+			if (is_prefab_index(a.entities[r])) {
+				continue;
+			}
+			agg.push_back(a.entities[r]);
+		}
+	}
 	const int32_t cnt = int32_t(rows.size());
-	if (cnt <= 0) {
-		return 0;
+	// 快路径: 单块 + 连续全行(rows=0..cnt-1) + 无 prefab + 同组件 VECTOR2 COL_ADD → SIMD
+	bool single = (cnt > 0);
+	int32_t barch = -1;
+	if (single) {
+		for (int32_t i = 0; i < cnt; ++i) {
+			const int32_t grow = rows[i];
+			if (grow < 0 || grow >= (int32_t)agg.size()) {
+				single = false;
+				break;
+			}
+			const int32_t earch = entity_arch_[agg[grow]];
+			if (barch < 0) {
+				barch = earch;
+			} else if (earch != barch) {
+				single = false;
+				break;
+			}
+		}
 	}
-	// 行号拷到裸内存: 并行 worker 读裸 std::vector, 避免多线程读 Godot PackedInt32Array 的 Variant 竞态
-	std::vector<int32_t> rows_v(cnt);
-	memcpy(rows_v.data(), rows.ptr(), cnt * sizeof(int32_t));
-	const bool same_comp = (op_comp == anchor);
-	const bool src_is_anchor = (src_comp == anchor);
-	const auto &a_dense = a->set.dense;
-
-	if (ocol.type == Variant::FLOAT && (scol.type == Variant::FLOAT || scol.type == Variant::INT)) {
-		const bool src_is_int = (scol.type == Variant::INT);
-		float *w = ocol.f32.data();
-		// 连续全行快路径(SIMD): rows=0..cnt-1 且同列, ADD/SET 可向量化(两循环模型内层直算)
-		bool contiguous = same_comp && src_is_anchor;
-		if (contiguous) {
-			for (int32_t ci = 0; ci < cnt; ++ci) {
-				if (rows_v[ci] != ci) {
-					contiguous = false;
-					break;
-				}
+	bool contiguous = single;
+	if (contiguous) {
+		for (int32_t i = 0; i < cnt; ++i) {
+			if (rows[i] != i) {
+				contiguous = false;
+				break;
 			}
 		}
-		if (contiguous && op == COL_ADD) {
-			const __m128 fv = _mm_set1_ps(float(factor));
-			const __m128 av = _mm_set1_ps(float(addend));
-			if (src_is_int) {
-				const int32_t *si = scol.i32.data();
-				parallel_for(size_t(cnt), [&](size_t b, size_t e) {
-					size_t i = b;
-					for (; i + 4 <= e; i += 4) {
-						const __m128 sv = _mm_cvtepi32_ps(_mm_loadu_si128(reinterpret_cast<const __m128i *>(si + i)));
-						const __m128 val = _mm_add_ps(_mm_mul_ps(sv, fv), av);
-						_mm_storeu_ps(w + i, _mm_add_ps(_mm_loadu_ps(w + i), val));
-					}
-					for (; i < e; ++i) w[i] += float(double(si[i]) * factor + addend);
-				}, 1.5);
-			} else {
-				const float *sf = scol.f32.data();
-				parallel_for(size_t(cnt), [&](size_t b, size_t e) {
-					size_t i = b;
-					for (; i + 4 <= e; i += 4) {
-						const __m128 sv = _mm_loadu_ps(sf + i);
-						const __m128 val = _mm_add_ps(_mm_mul_ps(sv, fv), av);
-						_mm_storeu_ps(w + i, _mm_add_ps(_mm_loadu_ps(w + i), val));
-					}
-					for (; i < e; ++i) w[i] += float(double(sf[i]) * factor + addend);
-				}, 1.5);
-			}
-			return cnt;
-		}
-		if (contiguous && op == COL_SET && !src_is_int) {
-			const float *sf = scol.f32.data();
-			const __m128 fv = _mm_set1_ps(float(factor));
-			const __m128 av = _mm_set1_ps(float(addend));
-			parallel_for(size_t(cnt), [&](size_t b, size_t e) {
-				size_t i = b;
-				for (; i + 4 <= e; i += 4) {
-					const __m128 sv = _mm_loadu_ps(sf + i);
-					_mm_storeu_ps(w + i, _mm_add_ps(_mm_mul_ps(sv, fv), av));
-				}
-				for (; i < e; ++i) w[i] = float(double(sf[i]) * factor + addend);
-			}, 1.5);
-			return cnt;
-		}
-		parallel_for(size_t(cnt), [&](size_t b, size_t e) {
-			for (size_t i = b; i < e; ++i) {
-				const int32_t erow = rows_v[i];
-				const int32_t ee = a_dense[erow];
-				const int32_t orow = same_comp ? erow : oc->set.row_of(ee);
-				const int32_t srow = src_is_anchor ? erow : sc->set.row_of(ee);
-				if (orow < 0 || srow < 0) continue;
-				const double sv = src_is_int ? double(scol.i32.data()[srow]) : double(scol.f32.data()[srow]);
-				const float v = float(sv * factor + addend);
-				switch (op) {
-					case COL_ADD: w[orow] += v; break;
-					case COL_SUB: w[orow] -= v; break;
-					case COL_MUL: w[orow] *= v; break;
-					case COL_DIV: if (v != 0.0f) w[orow] /= v; break;
-					case COL_SET: w[orow] = v; break;
-					default: break;
-				}
-			}
-		}, 1.5);
-		return cnt;
-	} else if (ocol.type == Variant::INT && scol.type == Variant::INT) {
-		int32_t *w = ocol.i32.data();
-		const int32_t *src = scol.i32.data();
-		parallel_for(size_t(cnt), [&](size_t b, size_t e) {
-			for (size_t i = b; i < e; ++i) {
-				const int32_t erow = rows_v[i];
-				const int32_t ee = a_dense[erow];
-				const int32_t orow = same_comp ? erow : oc->set.row_of(ee);
-				const int32_t srow = src_is_anchor ? erow : sc->set.row_of(ee);
-				if (orow < 0 || srow < 0) continue;
-				const int32_t v = int32_t(double(src[srow]) * factor + addend);
-				switch (op) {
-					case COL_ADD: w[orow] += v; break;
-					case COL_SUB: w[orow] -= v; break;
-					case COL_MUL: w[orow] *= v; break;
-					case COL_DIV: if (v != 0) w[orow] /= v; break;
-					case COL_SET: w[orow] = v; break;
-					default: break;
-				}
-			}
-		}, 1.5);
-		return cnt;
-	} else if (ocol.type == Variant::VECTOR2 && scol.type == Variant::VECTOR2) {
-		Vector2 *w = ocol.v2.data();
-		const Vector2 *src = scol.v2.data();
-		const float f = float(factor);
-		// 连续全行快路径(SIMD): pos += vel*delta 等, 一次处理 2 个 Vector2(4 float)
-		bool contiguous = same_comp && src_is_anchor;
-		if (contiguous) {
-			for (int32_t ci = 0; ci < cnt; ++ci) {
-				if (rows_v[ci] != ci) {
-					contiguous = false;
-					break;
-				}
-			}
-		}
-		if (contiguous && op == COL_ADD) {
-			float *wpf = reinterpret_cast<float *>(w);
-			const float *spf = reinterpret_cast<const float *>(src);
-			const __m128 fv = _mm_set1_ps(f);
-			parallel_for(size_t(cnt), [&](size_t b, size_t e) {
-				size_t i = b;
-				for (; i + 2 <= e; i += 2) {
-					const __m128 posv = _mm_loadu_ps(wpf + i * 2);
-					const __m128 velv = _mm_loadu_ps(spf + i * 2);
-					_mm_storeu_ps(wpf + i * 2, _mm_add_ps(posv, _mm_mul_ps(velv, fv)));
-				}
-				for (; i < e; ++i) w[i] += src[i] * f;
-			}, 3.0);
-			return cnt;
-		}
-		if (contiguous && op == COL_SET) {
-			float *wpf = reinterpret_cast<float *>(w);
-			const float *spf = reinterpret_cast<const float *>(src);
-			const __m128 fv = _mm_set1_ps(f);
-			parallel_for(size_t(cnt), [&](size_t b, size_t e) {
-				size_t i = b;
-				for (; i + 2 <= e; i += 2) {
-					const __m128 sv = _mm_loadu_ps(spf + i * 2);
-					_mm_storeu_ps(wpf + i * 2, _mm_mul_ps(sv, fv));
-				}
-				for (; i < e; ++i) w[i] = src[i] * f;
-			}, 3.0);
-			return cnt;
-		}
-		parallel_for(size_t(cnt), [&](size_t b, size_t e) {
-			for (size_t i = b; i < e; ++i) {
-				const int32_t erow = rows_v[i];
-				const int32_t ee = a_dense[erow];
-				const int32_t orow = same_comp ? erow : oc->set.row_of(ee);
-				const int32_t srow = src_is_anchor ? erow : sc->set.row_of(ee);
-				if (orow < 0 || srow < 0) continue;
-				const Vector2 v = src[srow] * f;
-				switch (op) {
-					case COL_ADD: w[orow] += v; break;
-					case COL_SUB: w[orow] -= v; break;
-					case COL_MUL: w[orow] *= v; break;
-					case COL_DIV: if (v.x != 0.0f && v.y != 0.0f) w[orow] /= v; break;
-					case COL_SET: w[orow] = v; break;
-					default: break;
-				}
-			}
-		}, 3.0);
-		return cnt;
-	} else if (ocol.type == Variant::VECTOR3 && scol.type == Variant::VECTOR3) {
-		Vector3 *w = ocol.v3.data();
-		const Vector3 *src = scol.v3.data();
-		const float f = float(factor);
-		parallel_for(size_t(cnt), [&](size_t b, size_t e) {
-			for (size_t i = b; i < e; ++i) {
-				const int32_t erow = rows_v[i];
-				const int32_t ee = a_dense[erow];
-				const int32_t orow = same_comp ? erow : oc->set.row_of(ee);
-				const int32_t srow = src_is_anchor ? erow : sc->set.row_of(ee);
-				if (orow < 0 || srow < 0) continue;
-				const Vector3 v = src[srow] * f;
-				switch (op) {
-					case COL_ADD: w[orow] += v; break;
-					case COL_SUB: w[orow] -= v; break;
-					case COL_MUL: w[orow] *= v; break;
-					case COL_DIV: if (v.x != 0.0f && v.y != 0.0f && v.z != 0.0f) w[orow] /= v; break;
-					case COL_SET: w[orow] = v; break;
-					default: break;
-				}
-			}
-		}, 3.0);
-		return cnt;
 	}
-	return 0;
+	if (contiguous && barch >= 0 && op == COL_ADD && oci == sci) {
+		auto &a = archetypes_[barch];
+		bool has_pref = false;
+		for (int32_t r = 0; r < int32_t(a.entities.size()); ++r) {
+			if (is_prefab_index(a.entities[r])) {
+				has_pref = true;
+				break;
+			}
+		}
+		if (!has_pref) {
+			const int cp = a.comp_pos(oci);
+			const int scp = a.comp_pos(sci);
+			if (cp >= 0 && scp >= 0) {
+				auto &ocol = a.cols[cp][ofi];
+				auto &scol = a.cols[scp][sfi];
+				if (ocol.type == Variant::VECTOR2 && scol.type == Variant::VECTOR2 && op == COL_ADD) {
+					float *w = reinterpret_cast<float *>(ocol.v2.data());
+					const float *s = reinterpret_cast<const float *>(scol.v2.data());
+					const float f = float(factor);
+					const __m128 fv = _mm_set1_ps(f);
+					parallel_for(size_t(cnt), [&](size_t b, size_t e) {
+						size_t i = b;
+						for (; i + 2 <= e; i += 2) {
+							const __m128 pv = _mm_loadu_ps(w + i * 2);
+							const __m128 sv = _mm_loadu_ps(s + i * 2);
+							_mm_storeu_ps(w + i * 2, _mm_add_ps(pv, _mm_mul_ps(sv, fv)));
+						}
+						for (; i < e; ++i) {
+							ocol.v2[i] += scol.v2[i] * f;
+						}
+					}, 3.0);
+					return cnt;
+				}
+				if (ocol.type == Variant::FLOAT && scol.type == Variant::FLOAT
+						&& (op == COL_ADD || op == COL_SET)) {
+					float *w = ocol.f32.data();
+					const float *s = scol.f32.data();
+					const float f = float(factor);
+					const float av = float(addend);
+					const __m128 fv = _mm_set1_ps(f);
+					const __m128 avv = _mm_set1_ps(av);
+					parallel_for(size_t(cnt), [&](size_t b, size_t e) {
+						size_t i = b;
+						if (op == COL_ADD) {
+							for (; i + 4 <= e; i += 4) {
+								const __m128 sv = _mm_loadu_ps(s + i);
+								const __m128 val = _mm_add_ps(_mm_mul_ps(sv, fv), avv);
+								_mm_storeu_ps(w + i, _mm_add_ps(_mm_loadu_ps(w + i), val));
+							}
+							for (; i < e; ++i) {
+								w[i] += s[i] * f + av;
+							}
+						} else {
+							for (; i + 4 <= e; i += 4) {
+								const __m128 sv = _mm_loadu_ps(s + i);
+								_mm_storeu_ps(w + i, _mm_add_ps(_mm_mul_ps(sv, fv), avv));
+							}
+							for (; i < e; ++i) {
+								w[i] = s[i] * f + av;
+							}
+						}
+					}, 1.5);
+					return cnt;
+				}
+				if (ocol.type == Variant::FLOAT && scol.type == Variant::INT && op == COL_ADD) {
+					float *w = ocol.f32.data();
+					const int32_t *s = scol.i32.data();
+					const float f = float(factor);
+					const float av = float(addend);
+					const __m128 fv = _mm_set1_ps(f);
+					const __m128 avv = _mm_set1_ps(av);
+					parallel_for(size_t(cnt), [&](size_t b, size_t e) {
+						size_t i = b;
+						for (; i + 4 <= e; i += 4) {
+							const __m128 sv = _mm_cvtepi32_ps(_mm_loadu_si128(reinterpret_cast<const __m128i *>(s + i)));
+							const __m128 val = _mm_add_ps(_mm_mul_ps(sv, fv), avv);
+							_mm_storeu_ps(w + i, _mm_add_ps(_mm_loadu_ps(w + i), val));
+						}
+						for (; i < e; ++i) {
+							w[i] += float(double(s[i]) * factor + addend);
+						}
+					}, 1.5);
+					return cnt;
+				}
+			}
+		}
+	}
+	parallel_for(size_t(cnt), [&](size_t b, size_t e) {
+		for (size_t i = b; i < e; ++i) {
+			const int32_t grow = rows[i];
+			if (grow < 0 || grow >= (int32_t)agg.size()) {
+				continue;
+			}
+			batch_apply_entity_col(agg[grow], oci, ofi, sci, sfi, op, factor, addend);
+		}
+	}, 1.5);
+	return cnt;
 }
 
-// 批量收集: 单次遍历匹配签名实体, 同时判定多组条件, 产出多组 anchor 行号。
 Array ECSCore::batch_collect(const StringName &anchor, const PackedStringArray &must,
 		const PackedStringArray &without, const Array &groups) const {
 	Array out;
@@ -1778,61 +2242,56 @@ Array ECSCore::batch_collect(const StringName &anchor, const PackedStringArray &
 	}
 	const int32_t m = int32_t(must.size());
 	const int32_t w = int32_t(without.size());
-	if (m > 8 || w > 8) {
-		return out;
-	}
 	int32_t mi[8];
 	int32_t wi[8];
-	for (int32_t i = 0; i < m; ++i) {
+	for (int32_t i = 0; i < m && i < 8; ++i) {
 		mi[i] = comp_index(must[i]);
 	}
-	for (int32_t i = 0; i < w; ++i) {
+	for (int32_t i = 0; i < w && i < 8; ++i) {
 		wi[i] = comp_index(without[i]);
 	}
-	// 一次性解析全部组条件(避免逐查询重复 parse_conditions)
 	const int32_t ng = int32_t(groups.size());
 	std::vector<std::vector<ECSFilterCond>> all_conds(ng);
 	for (int32_t gi = 0; gi < ng; ++gi) {
 		parse_conditions(this, groups[gi], all_conds[gi], 8);
 	}
 	std::vector<PackedInt32Array> results(ng);
-	const auto &a_col = components_[ai].set;
-	for (const auto &sig : signatures_) {
-		if (!std::binary_search(sig.comps.begin(), sig.comps.end(), ai)) {
+	int32_t offset = 0;
+	for (const auto &a : archetypes_) {
+		if (!a.has_comp(ai)) {
 			continue;
 		}
 		bool ok = true;
-		for (int32_t i = 0; i < m; ++i) {
-			if (!std::binary_search(sig.comps.begin(), sig.comps.end(), mi[i])) {
+		for (int32_t i = 0; i < m && i < 8; ++i) {
+			if (!a.has_comp(mi[i])) {
 				ok = false;
 				break;
 			}
 		}
 		if (ok) {
-			for (int32_t i = 0; i < w; ++i) {
-				if (std::binary_search(sig.comps.begin(), sig.comps.end(), wi[i])) {
+			for (int32_t i = 0; i < w && i < 8; ++i) {
+				if (a.has_comp(wi[i])) {
 					ok = false;
 					break;
 				}
 			}
 		}
-		if (!ok) {
-			continue;
-		}
-		for (int32_t e : sig.entities) {
-			if (is_prefab_index(e)) {
+		int32_t np = 0;
+		for (int32_t row = 0; row < int32_t(a.entities.size()); ++row) {
+			if (is_prefab_index(a.entities[row])) {
 				continue;
 			}
-			const int32_t row = a_col.row_of(e);
-			if (row < 0) {
-				continue;
-			}
-			for (int32_t gi = 0; gi < ng; ++gi) {
-				if (all_conds[gi].empty() || cond_matches(this, e, all_conds[gi])) {
-					results[gi].append(row);
+			const int32_t e = a.entities[row];
+			if (ok) {
+				for (int32_t gi = 0; gi < ng; ++gi) {
+					if (all_conds[gi].empty() || cond_matches_entity(e, all_conds[gi])) {
+						results[gi].append(offset + np);
+					}
 				}
 			}
+			++np;
 		}
+		offset += np;
 	}
 	for (int32_t gi = 0; gi < ng; ++gi) {
 		out.push_back(results[gi]);
@@ -1840,127 +2299,328 @@ Array ECSCore::batch_collect(const StringName &anchor, const PackedStringArray &
 	return out;
 }
 
-// 带条件过滤的列钳制: col = clamp(col, min, max)(仅满足 conditions 的实体)。
+// 带条件过滤的列钳制: 仅满足条件的实体 col = clamp(col, min, max)
 int64_t ECSCore::batch_clamp_where(const StringName &anchor, const PackedStringArray &must,
 		const StringName &op_comp, const StringName &op_field,
 		const StringName &min_comp, const StringName &min_field,
 		const StringName &max_comp, const StringName &max_field,
 		const Array &conditions) {
-	ECSComponentData *a = find_comp(anchor);
-	ECSComponentData *oc = find_comp(op_comp);
-	ECSComponentData *minc = find_comp(min_comp);
-	ECSComponentData *maxc = find_comp(max_comp);
-	if (a == nullptr || oc == nullptr || minc == nullptr || maxc == nullptr) {
+	const int32_t ai = comp_index(anchor);
+	const int32_t oci = comp_index(op_comp);
+	const int32_t nci = comp_index(min_comp);
+	const int32_t xci = comp_index(max_comp);
+	if (ai < 0 || oci < 0 || nci < 0 || xci < 0) {
 		return 0;
 	}
-	const int ofi = oc->field_index(op_field);
-	const int minfi = minc->field_index(min_field);
-	const int maxfi = maxc->field_index(max_field);
-	if (ofi < 0 || minfi < 0 || maxfi < 0) {
+	const int ofi = components_[oci].field_index(op_field);
+	const int nfi = components_[nci].field_index(min_field);
+	const int xfi = components_[xci].field_index(max_field);
+	if (ofi < 0 || nfi < 0 || xfi < 0) {
 		return 0;
 	}
 	const int32_t m = int32_t(must.size());
-	const ECSComponentData *req[8];
+	int32_t mi[8];
 	for (int32_t i = 0; i < m && i < 8; ++i) {
-		req[i] = find_comp(must[i]);
+		mi[i] = comp_index(must[i]);
 	}
-	std::vector<ECSFilterCond> conds;
-	parse_conditions(this, conditions, conds, 8);
 	std::vector<int32_t> rows;
-	collect_rows_where(this, a, req, m > 8 ? 8 : m, conds, rows);
-
-	ECSColumn &ocol = oc->columns[ofi];
-	const ECSColumn &mincol = minc->columns[minfi];
-	const ECSColumn &maxcol = maxc->columns[maxfi];
-	const bool same_comp = (op_comp == anchor);
-	const bool min_is_anchor = (min_comp == anchor);
-	const bool max_is_anchor = (max_comp == anchor);
-	const auto &a_dense = a->set.dense;
-	const int32_t cnt = int32_t(rows.size());
-	// 边界列支持 INT 或 FLOAT, 目标支持 INT 或 FLOAT(混合类型用 double 统一钳制)
-	const bool min_ok = (mincol.type == Variant::INT || mincol.type == Variant::FLOAT);
-	const bool max_ok = (maxcol.type == Variant::INT || maxcol.type == Variant::FLOAT);
-	auto bound_val = [](const ECSColumn &c, int32_t row) -> double {
-		return (c.type == Variant::FLOAT) ? double(c.f32[row]) : double(c.i32[row]);
-	};
-	if (ocol.type == Variant::FLOAT && min_ok && max_ok) {
-		float *w = ocol.f32.data();
-		parallel_for(size_t(cnt), [&](size_t b, size_t e) {
-			for (size_t i = b; i < e; ++i) {
-				const int32_t erow = rows[i];
-				const int32_t ee = a_dense[erow];
-				const int32_t orow = same_comp ? erow : oc->set.row_of(ee);
-				const int32_t nrow = min_is_anchor ? erow : minc->set.row_of(ee);
-				const int32_t xrow = max_is_anchor ? erow : maxc->set.row_of(ee);
-				if (orow < 0 || nrow < 0 || xrow < 0) continue;
-				w[orow] = float(std::clamp(double(w[orow]), bound_val(mincol, nrow), bound_val(maxcol, xrow)));
-			}
-		}, 1.5);
-		return cnt;
-	} else if (ocol.type == Variant::INT && min_ok && max_ok) {
-		int32_t *w = ocol.i32.data();
-		parallel_for(size_t(cnt), [&](size_t b, size_t e) {
-			for (size_t i = b; i < e; ++i) {
-				const int32_t erow = rows[i];
-				const int32_t ee = a_dense[erow];
-				const int32_t orow = same_comp ? erow : oc->set.row_of(ee);
-				const int32_t nrow = min_is_anchor ? erow : minc->set.row_of(ee);
-				const int32_t xrow = max_is_anchor ? erow : maxc->set.row_of(ee);
-				if (orow < 0 || nrow < 0 || xrow < 0) continue;
-				w[orow] = int32_t(std::clamp(double(w[orow]), bound_val(mincol, nrow), bound_val(maxcol, xrow)));
-			}
-		}, 1.0);
-		return cnt;
-	}
-	return 0;
-}
-void ECSCore::collect_sig_rows_where(int32_t ai, const int32_t *mi, int32_t m,
-		const int32_t *wi, int32_t w, const Array &conditions, PackedInt32Array &out) const {
-	if (ai < 0) {
-		return;
-	}
-	std::vector<ECSFilterCond> conds;
-	parse_conditions(this, conditions, conds, 8);
-	const auto &a_col = components_[ai].set;
-	for (const auto &sig : signatures_) {
-		if (!std::binary_search(sig.comps.begin(), sig.comps.end(), ai)) {
+	collect_agg(ai, mi, m > 8 ? 8 : m, nullptr, 0, conditions, rows);
+	std::vector<int32_t> agg;
+	for (const auto &a : archetypes_) {
+		if (!a.has_comp(ai)) {
 			continue;
 		}
-		bool ok = true;
-		for (int32_t i = 0; i < m; ++i) {
-			if (!std::binary_search(sig.comps.begin(), sig.comps.end(), mi[i])) {
-				ok = false;
-				break;
+		for (int32_t r = 0; r < int32_t(a.entities.size()); ++r) {
+			if (is_prefab_index(a.entities[r])) {
+				continue;
+			}
+			agg.push_back(a.entities[r]);
+		}
+	}
+	std::atomic<int64_t> cnt{0};
+	parallel_for(size_t(rows.size()), [&](size_t b, size_t e) {
+		for (size_t i = b; i < e; ++i) {
+			const int32_t grow = rows[i];
+			if (grow < 0 || grow >= (int32_t)agg.size()) {
+				continue;
+			}
+			const int32_t en = agg[grow];
+			const int32_t earch = entity_arch_[en];
+			if (earch < 0) {
+				continue;
+			}
+			const int32_t erow = archetypes_[earch].row_of(en);
+			if (erow < 0) {
+				continue;
+			}
+			const int cp = archetypes_[earch].comp_pos(oci);
+			const int ncp = archetypes_[earch].comp_pos(nci);
+			const int xcp = archetypes_[earch].comp_pos(xci);
+			if (cp < 0 || ncp < 0 || xcp < 0) {
+				continue;
+			}
+			auto &ocol = archetypes_[earch].cols[cp][ofi];
+			const auto &minc = archetypes_[earch].cols[ncp][nfi];
+			const auto &maxc = archetypes_[earch].cols[xcp][xfi];
+			if (ocol.type == Variant::FLOAT && minc.type == Variant::FLOAT && maxc.type == Variant::FLOAT) {
+				ocol.f32[erow] = std::clamp(ocol.f32[erow], minc.f32[erow], maxc.f32[erow]);
+			} else if (ocol.type == Variant::INT && minc.type == Variant::INT && maxc.type == Variant::INT) {
+				ocol.i32[erow] = std::clamp(ocol.i32[erow], minc.i32[erow], maxc.i32[erow]);
+			}
+			cnt.fetch_add(1, std::memory_order_relaxed);
+		}
+	}, 1.0);
+	return cnt.load();
+}
+
+int64_t ECSCore::batch_clamp(const StringName &anchor, const PackedStringArray &must,
+		const StringName &op_comp, const StringName &op_field,
+		const StringName &min_comp, const StringName &min_field,
+		const StringName &max_comp, const StringName &max_field) {
+	return batch_clamp_where(anchor, must, op_comp, op_field,
+			min_comp, min_field, max_comp, max_field, Array());
+}
+
+// 通用移动原语: pos += vel*delta, 越界回弹(vel 翻转, pos 钳制)
+int64_t ECSCore::batch_vec_add(const StringName &anchor, const PackedStringArray &must,
+		const StringName &pos_comp, const StringName &pos_field,
+		const StringName &vel_comp, const StringName &vel_field, double delta) {
+	const int32_t ai = comp_index(anchor);
+	const int32_t pci = comp_index(pos_comp);
+	const int32_t vci = comp_index(vel_comp);
+	if (ai < 0 || pci < 0 || vci < 0) {
+		return 0;
+	}
+	const int pfi = components_[pci].field_index(pos_field);
+	const int vfi = components_[vci].field_index(vel_field);
+	if (pfi < 0 || vfi < 0) {
+		return 0;
+	}
+	const int32_t m = int32_t(must.size());
+	int32_t mi[8];
+	for (int32_t i = 0; i < m && i < 8; ++i) {
+		mi[i] = comp_index(must[i]);
+	}
+	std::vector<int32_t> rows;
+	collect_agg(ai, mi, m > 8 ? 8 : m, nullptr, 0, Array(), rows);
+	std::vector<int32_t> agg;
+	for (const auto &a : archetypes_) {
+		if (!a.has_comp(ai)) {
+			continue;
+		}
+		for (int32_t r = 0; r < int32_t(a.entities.size()); ++r) {
+			if (is_prefab_index(a.entities[r])) {
+				continue;
+			}
+			agg.push_back(a.entities[r]);
+		}
+	}
+	parallel_for(size_t(rows.size()), [&](size_t b, size_t e) {
+		for (size_t i = b; i < e; ++i) {
+			const int32_t grow = rows[i];
+			if (grow < 0 || grow >= (int32_t)agg.size()) {
+				continue;
+			}
+			const int32_t en = agg[grow];
+			const int32_t earch = entity_arch_[en];
+			if (earch < 0) {
+				continue;
+			}
+			const int32_t erow = archetypes_[earch].row_of(en);
+			if (erow < 0) {
+				continue;
+			}
+			const int pcp = archetypes_[earch].comp_pos(pci);
+			const int vcp = archetypes_[earch].comp_pos(vci);
+			if (pcp < 0 || vcp < 0) {
+				continue;
+			}
+			auto &pcol = archetypes_[earch].cols[pcp][pfi];
+			const auto &vcol = archetypes_[earch].cols[vcp][vfi];
+			if (pcol.type == Variant::VECTOR2 && vcol.type == Variant::VECTOR2) {
+				pcol.v2[erow] += vcol.v2[erow] * float(delta);
+			} else if (pcol.type == Variant::VECTOR3 && vcol.type == Variant::VECTOR3) {
+				pcol.v3[erow] += vcol.v3[erow] * float(delta);
 			}
 		}
-		if (ok) {
-			for (int32_t i = 0; i < w; ++i) {
-				if (std::binary_search(sig.comps.begin(), sig.comps.end(), wi[i])) {
-					ok = false;
-					break;
+	}, 3.0);
+	return int64_t(rows.size());
+}
+
+int64_t ECSCore::batch_move(const StringName &anchor, const PackedStringArray &must,
+		const StringName &pos_comp, const StringName &pos_field,
+		const StringName &vel_comp, const StringName &vel_field,
+		double delta, double x_min, double x_max, double y_min, double y_max) {
+	const int32_t ai = comp_index(anchor);
+	const int32_t pci = comp_index(pos_comp);
+	const int32_t vci = comp_index(vel_comp);
+	if (ai < 0 || pci < 0 || vci < 0) {
+		return 0;
+	}
+	const int pfi = components_[pci].field_index(pos_field);
+	const int vfi = components_[vci].field_index(vel_field);
+	if (pfi < 0 || vfi < 0) {
+		return 0;
+	}
+	const int32_t m = int32_t(must.size());
+	int32_t mi[8];
+	for (int32_t i = 0; i < m && i < 8; ++i) {
+		mi[i] = comp_index(must[i]);
+	}
+	std::vector<int32_t> rows;
+	collect_agg(ai, mi, m > 8 ? 8 : m, nullptr, 0, Array(), rows);
+	std::vector<int32_t> agg;
+	for (const auto &a : archetypes_) {
+		if (!a.has_comp(ai)) {
+			continue;
+		}
+		for (int32_t r = 0; r < int32_t(a.entities.size()); ++r) {
+			if (is_prefab_index(a.entities[r])) {
+				continue;
+			}
+			agg.push_back(a.entities[r]);
+		}
+	}
+	parallel_for(size_t(rows.size()), [&](size_t b, size_t e) {
+		for (size_t i = b; i < e; ++i) {
+			const int32_t grow = rows[i];
+			if (grow < 0 || grow >= (int32_t)agg.size()) {
+				continue;
+			}
+			const int32_t en = agg[grow];
+			const int32_t earch = entity_arch_[en];
+			if (earch < 0) {
+				continue;
+			}
+			const int32_t erow = archetypes_[earch].row_of(en);
+			if (erow < 0) {
+				continue;
+			}
+			const int pcp = archetypes_[earch].comp_pos(pci);
+			const int vcp = archetypes_[earch].comp_pos(vci);
+			if (pcp < 0 || vcp < 0) {
+				continue;
+			}
+			auto &pcol = archetypes_[earch].cols[pcp][pfi];
+			auto &vcol = archetypes_[earch].cols[vcp][vfi];
+			if (pcol.type != Variant::VECTOR2 || vcol.type != Variant::VECTOR2) {
+				continue;
+			}
+			Vector2 &p = pcol.v2[erow];
+			Vector2 &v = vcol.v2[erow];
+			p += v * float(delta);
+			if (p.x < x_min) {
+				p.x = x_min;
+				v.x = -v.x;
+			} else if (p.x > x_max) {
+				p.x = x_max;
+				v.x = -v.x;
+			}
+			if (p.y < y_min) {
+				p.y = y_min;
+				v.y = -v.y;
+			} else if (p.y > y_max) {
+				p.y = y_max;
+				v.y = -v.y;
+			}
+		}
+	}, 3.0);
+	return int64_t(rows.size());
+}
+
+// 通用周期原语: field += dir*rate, 越界(min/max)翻转 dir
+int64_t ECSCore::batch_cycle(const StringName &anchor, const PackedStringArray &must,
+		const StringName &comp, const StringName &field,
+		const StringName &dir_comp, const StringName &dir_field,
+		double rate, double min, double max) {
+	const int32_t ai = comp_index(anchor);
+	const int32_t cci = comp_index(comp);
+	const int32_t dci = comp_index(dir_comp);
+	if (ai < 0 || cci < 0 || dci < 0) {
+		return 0;
+	}
+	const int cfi = components_[cci].field_index(field);
+	const int dfi = components_[dci].field_index(dir_field);
+	if (cfi < 0 || dfi < 0) {
+		return 0;
+	}
+	const int32_t m = int32_t(must.size());
+	int32_t mi[8];
+	for (int32_t i = 0; i < m && i < 8; ++i) {
+		mi[i] = comp_index(must[i]);
+	}
+	std::vector<int32_t> rows;
+	collect_agg(ai, mi, m > 8 ? 8 : m, nullptr, 0, Array(), rows);
+	std::vector<int32_t> agg;
+	for (const auto &a : archetypes_) {
+		if (!a.has_comp(ai)) {
+			continue;
+		}
+		for (int32_t r = 0; r < int32_t(a.entities.size()); ++r) {
+			if (is_prefab_index(a.entities[r])) {
+				continue;
+			}
+			agg.push_back(a.entities[r]);
+		}
+	}
+	parallel_for(size_t(rows.size()), [&](size_t b, size_t e) {
+		for (size_t i = b; i < e; ++i) {
+			const int32_t grow = rows[i];
+			if (grow < 0 || grow >= (int32_t)agg.size()) {
+				continue;
+			}
+			const int32_t en = agg[grow];
+			const int32_t earch = entity_arch_[en];
+			if (earch < 0) {
+				continue;
+			}
+			const int32_t erow = archetypes_[earch].row_of(en);
+			if (erow < 0) {
+				continue;
+			}
+			const int ccp = archetypes_[earch].comp_pos(cci);
+			const int dcp = archetypes_[earch].comp_pos(dci);
+			if (ccp < 0 || dcp < 0) {
+				continue;
+			}
+			auto &fcol = archetypes_[earch].cols[ccp][cfi];
+			auto &dcol = archetypes_[earch].cols[dcp][dfi];
+			if (fcol.type == Variant::FLOAT && dcol.type == Variant::INT) {
+				float &f = fcol.f32[erow];
+				f += float(double(dcol.i32[erow]) * rate);
+				if (f > max) {
+					f = float(max);
+					dcol.i32[erow] = -dcol.i32[erow];
+				} else if (f < min) {
+					f = float(min);
+					dcol.i32[erow] = -dcol.i32[erow];
+				}
+			} else if (fcol.type == Variant::FLOAT && dcol.type == Variant::FLOAT) {
+				float &f = fcol.f32[erow];
+				f += float(double(dcol.f32[erow]) * rate);
+				if (f > max) {
+					f = float(max);
+					dcol.f32[erow] = -dcol.f32[erow];
+				} else if (f < min) {
+					f = float(min);
+					dcol.f32[erow] = -dcol.f32[erow];
+				}
+			} else if (fcol.type == Variant::INT && dcol.type == Variant::INT) {
+				int32_t &f = fcol.i32[erow];
+				f += int32_t(double(dcol.i32[erow]) * rate);
+				if (f > max) {
+					f = int32_t(max);
+					dcol.i32[erow] = -dcol.i32[erow];
+				} else if (f < min) {
+					f = int32_t(min);
+					dcol.i32[erow] = -dcol.i32[erow];
 				}
 			}
 		}
-		if (!ok) {
-			continue;
-		}
-		for (int32_t e : sig.entities) {
-			if (is_prefab_index(e)) {
-				continue;
-			}
-			if (!cond_matches(this, e, conds)) {
-				continue;
-			}
-			const int32_t row = a_col.row_of(e);
-			if (row >= 0) {
-				out.append(row);
-			}
-		}
-	}
+	}, 1.5);
+	return int64_t(rows.size());
 }
 
-// 对齐行号 + 条件过滤: 只返回满足 anchor+must+without+conditions 的实体,
-// 并对 comps 指定的组件输出对齐行号(基于签名视图)。
 Array ECSCore::query_rows_aligned_where(const StringName &anchor, const PackedStringArray &must,
 		const PackedStringArray &without, const Array &conditions,
 		const PackedStringArray &comps) const {
@@ -1982,625 +2642,57 @@ Array ECSCore::query_rows_aligned_where(const StringName &anchor, const PackedSt
 	for (int32_t i = 0; i < w; ++i) {
 		wi[i] = comp_index(without[i]);
 	}
-
+	std::vector<int32_t> rows;
+	collect_agg(ai, mi, m, wi, w, conditions, rows);
 	PackedInt32Array anchor_rows;
-	collect_sig_rows_where(ai, mi, m, wi, w, conditions, anchor_rows);
+	anchor_rows.resize(int32_t(rows.size()));
+	for (size_t k = 0; k < rows.size(); ++k) {
+		anchor_rows.set(int32_t(k), rows[k]);
+	}
 	const int32_t n = int32_t(anchor_rows.size());
 	out.push_back(anchor_rows);
-
-	// comps 对齐行号(与 anchor_rows 顺序一一对应)
-	const auto &a_dense = components_[ai].set.dense;
-	for (int32_t i = 0; i < int32_t(comps.size()) && i < 8; ++i) {
-		const ECSComponentData *c = find_comp(comps[i]);
-		PackedInt32Array cr;
-		if (c == nullptr) {
-			out.push_back(cr);
+	// anchor 聚合行号 -> 实体表(一次 O(N), 避免逐实体 get_entity_at O(N^2))
+	std::vector<int32_t> agg;
+	for (const auto &a : archetypes_) {
+		if (!a.has_comp(ai)) {
 			continue;
 		}
+		for (int32_t r = 0; r < int32_t(a.entities.size()); ++r) {
+			if (is_prefab_index(a.entities[r])) {
+				continue;
+			}
+			agg.push_back(a.entities[r]);
+		}
+	}
+	for (int32_t i = 0; i < int32_t(comps.size()) && i < 8; ++i) {
+		const StringName cname = comps[i];
+		const int32_t cci = comp_index(cname);
+		PackedInt32Array cr;
 		cr.resize(n);
-		for (int32_t k = 0; k < n; ++k) {
-			const int32_t e = a_dense[anchor_rows[k]];
-			cr[k] = c->set.row_of(e);
+		if (cci >= 0) {
+			std::unordered_map<int32_t, int32_t> cg;
+			int32_t grow = 0;
+			for (const auto &a : archetypes_) {
+				if (!a.has_comp(cci)) {
+					continue;
+				}
+				for (int32_t r = 0; r < int32_t(a.entities.size()); ++r) {
+					if (is_prefab_index(a.entities[r])) {
+						continue;
+					}
+					cg[a.entities[r]] = grow++;
+				}
+			}
+			for (int32_t k = 0; k < n; ++k) {
+				const int32_t e = agg[anchor_rows[k]];
+				auto it = cg.find(e);
+				cr[k] = (it != cg.end()) ? it->second : -1;
+			}
 		}
 		out.push_back(cr);
 	}
 	return out;
 }
-
-int64_t ECSCore::batch_count(const StringName &anchor, const PackedStringArray &must,
-		const Array &conditions) const {
-	const ECSComponentData *a = find_comp(anchor);
-	if (a == nullptr) {
-		return 0;
-	}
-	const int32_t m = int32_t(must.size());
-	const ECSComponentData *req[8];
-	for (int32_t i = 0; i < m && i < 8; ++i) {
-		req[i] = find_comp(must[i]);
-	}
-	std::vector<ECSFilterCond> conds;
-	parse_conditions(this, conditions, conds, 8);
-	std::vector<int32_t> rows;
-	collect_rows_where(this, a, req, m > 8 ? 8 : m, conds, rows);
-	return int64_t(rows.size());
-}
-
-int64_t ECSCore::batch_apply_where(const StringName &anchor, const PackedStringArray &must,
-		const StringName &op_comp, const StringName &op_field, int64_t op,
-		double factor, double addend, const Array &conditions) {
-	ECSComponentData *a = find_comp(anchor);
-	ECSComponentData *oc = find_comp(op_comp);
-	if (a == nullptr || oc == nullptr) {
-		return 0;
-	}
-	String op_fbase;
-	int op_axis;
-	split_field_axis(String(op_field), op_fbase, op_axis);
-	const int fi = oc->field_index(StringName(op_fbase));
-	if (fi < 0) {
-		return 0;
-	}
-	const int32_t m = int32_t(must.size());
-	const ECSComponentData *req[8];
-	for (int32_t i = 0; i < m && i < 8; ++i) {
-		req[i] = find_comp(must[i]);
-	}
-	std::vector<ECSFilterCond> conds;
-	parse_conditions(this, conditions, conds, 8);
-	std::vector<int32_t> rows;
-	collect_rows_where(this, a, req, m > 8 ? 8 : m, conds, rows);
-
-	ECSColumn &col = oc->columns[fi];
-	int64_t n = 0;
-	// 目标列行号: anchor 行号 -> 实体ID -> op_comp 行号
-	// 若 op_comp == anchor, 行号可直接复用(快路径, 无转换)
-	const bool same_comp = (op_comp == anchor);
-	const auto &a_dense = a->set.dense;
-	switch (col.type) {
-		case Variant::INT: {
-			int32_t *w = col.i32.data();
-			const int32_t add = int32_t(addend);
-			if (same_comp) {
-				parallel_for(rows.size(), [&](size_t b, size_t e) {
-					for (size_t i = b; i < e; ++i) {
-						const int32_t row = rows[i];
-						switch (op) {
-							case BATCH_ADD: w[row] += add; break;
-							case BATCH_MUL_ADD: w[row] = int32_t(double(w[row]) * factor + addend); break;
-							case BATCH_SET: w[row] = add; break;
-							default: break;
-						}
-					}
-				});
-			} else {
-				parallel_for(rows.size(), [&](size_t b, size_t e) {
-					for (size_t i = b; i < e; ++i) {
-						const int32_t orow = oc->set.row_of(a_dense[rows[i]]);
-						if (orow < 0) continue;
-						switch (op) {
-							case BATCH_ADD: w[orow] += add; break;
-							case BATCH_MUL_ADD: w[orow] = int32_t(double(w[orow]) * factor + addend); break;
-							case BATCH_SET: w[orow] = add; break;
-							default: break;
-						}
-					}
-				});
-			}
-			n = int64_t(rows.size());
-			break;
-		}
-		case Variant::FLOAT: {
-			float *w = col.f32.data();
-			if (same_comp) {
-				parallel_for(rows.size(), [&](size_t b, size_t e) {
-					for (size_t i = b; i < e; ++i) {
-						const int32_t row = rows[i];
-						switch (op) {
-							case BATCH_ADD: w[row] += float(addend); break;
-							case BATCH_MUL_ADD: w[row] = float(double(w[row]) * factor + addend); break;
-							case BATCH_SET: w[row] = float(addend); break;
-							default: break;
-						}
-					}
-				});
-			} else {
-				parallel_for(rows.size(), [&](size_t b, size_t e) {
-					for (size_t i = b; i < e; ++i) {
-						const int32_t orow = oc->set.row_of(a_dense[rows[i]]);
-						if (orow < 0) continue;
-						switch (op) {
-							case BATCH_ADD: w[orow] += float(addend); break;
-							case BATCH_MUL_ADD: w[orow] = float(double(w[orow]) * factor + addend); break;
-							case BATCH_SET: w[orow] = float(addend); break;
-							default: break;
-						}
-					}
-				});
-			}
-			n = int64_t(rows.size());
-			break;
-		}
-		case Variant::VECTOR2: {
-			Vector2 *w = col.v2.data();
-			// 分量操作(字段名 "pos.x"): 只写该分量
-			if (op_axis >= 0 && op_axis < 2) {
-				parallel_for(rows.size(), [&](size_t b, size_t e) {
-					for (size_t i = b; i < e; ++i) {
-						const int32_t orow = same_comp ? rows[i] : oc->set.row_of(a_dense[rows[i]]);
-						if (orow < 0) continue;
-						switch (op) {
-							case BATCH_ADD: w[orow][op_axis] += float(addend); break;
-							case BATCH_MUL_ADD: w[orow][op_axis] = float(double(w[orow][op_axis]) * factor + addend); break;
-							case BATCH_SET: w[orow][op_axis] = float(addend); break;
-							default: break;
-						}
-					}
-				});
-				n = int64_t(rows.size());
-			}
-			break;
-		}
-		case Variant::VECTOR3: {
-			Vector3 *w = col.v3.data();
-			if (op_axis >= 0 && op_axis < 3) {
-				parallel_for(rows.size(), [&](size_t b, size_t e) {
-					for (size_t i = b; i < e; ++i) {
-						const int32_t orow = same_comp ? rows[i] : oc->set.row_of(a_dense[rows[i]]);
-						if (orow < 0) continue;
-						switch (op) {
-							case BATCH_ADD: w[orow][op_axis] += float(addend); break;
-							case BATCH_MUL_ADD: w[orow][op_axis] = float(double(w[orow][op_axis]) * factor + addend); break;
-							case BATCH_SET: w[orow][op_axis] = float(addend); break;
-							default: break;
-						}
-					}
-				});
-				n = int64_t(rows.size());
-			}
-			break;
-		}
-		default:
-			break;
-	}
-	return n;
-}
-
-int64_t ECSCore::batch_apply(const StringName &anchor, const PackedStringArray &must,
-		const StringName &op_comp, const StringName &op_field, int64_t op,
-		double factor, double addend) {
-	ECSComponentData *a = find_comp(anchor);
-	ECSComponentData *oc = find_comp(op_comp);
-	if (a == nullptr || oc == nullptr) {
-		return 0;
-	}
-	const int fi = oc->field_index(op_field);
-	if (fi < 0) {
-		return 0;
-	}
-	const int32_t m = int32_t(must.size());
-	const ECSComponentData *req[8];
-	for (int32_t i = 0; i < m && i < 8; ++i) {
-		req[i] = find_comp(must[i]);
-	}
-	std::vector<int32_t> rows;
-	collect_rows(a, req, m > 8 ? 8 : m, rows, &prefab_indices_);
-
-	ECSColumn &col = oc->columns[fi];
-	int64_t n = 0;
-	// 目标列行号: anchor 行号 -> 实体ID -> op_comp 行号
-	const bool same_comp = (op_comp == anchor);
-	const auto &a_dense = a->set.dense;
-	switch (col.type) {
-		case Variant::INT: {
-			int32_t *w = col.i32.data();
-			const int32_t add = int32_t(addend);
-			if (same_comp) {
-				// 无 must + 无 prefab → 行号连续, INT 的 ADD/SET 可 SIMD
-				const bool contiguous = (m == 0) && prefab_indices_.empty()
-						&& (op == BATCH_ADD || op == BATCH_SET);
-				if (contiguous) {
-					parallel_for(rows.size(), [&](size_t b, size_t e) {
-						const __m128i addv = _mm_set1_epi32(add);
-						size_t i = b;
-						if (op == BATCH_ADD) {
-							for (; i + 4 <= e; i += 4) {
-								_mm_storeu_si128(reinterpret_cast<__m128i *>(w + i),
-										_mm_add_epi32(_mm_loadu_si128(reinterpret_cast<const __m128i *>(w + i)), addv));
-							}
-							for (; i < e; ++i) w[i] += add;
-						} else {
-							for (; i + 4 <= e; i += 4) {
-								_mm_storeu_si128(reinterpret_cast<__m128i *>(w + i), addv);
-							}
-							for (; i < e; ++i) w[i] = add;
-						}
-					});
-				} else {
-					parallel_for(rows.size(), [&](size_t b, size_t e) {
-						for (size_t i = b; i < e; ++i) {
-							const int32_t row = rows[i];
-							switch (op) {
-								case BATCH_ADD: w[row] += add; break;
-								case BATCH_MUL_ADD: w[row] = int32_t(double(w[row]) * factor + addend); break;
-								case BATCH_SET: w[row] = add; break;
-								default: break;
-							}
-						}
-					});
-				}
-			} else {
-				parallel_for(rows.size(), [&](size_t b, size_t e) {
-					for (size_t i = b; i < e; ++i) {
-						const int32_t orow = oc->set.row_of(a_dense[rows[i]]);
-						if (orow < 0) continue;
-						switch (op) {
-							case BATCH_ADD: w[orow] += add; break;
-							case BATCH_MUL_ADD: w[orow] = int32_t(double(w[orow]) * factor + addend); break;
-							case BATCH_SET: w[orow] = add; break;
-							default: break;
-						}
-					}
-				});
-			}
-			n = int64_t(rows.size());
-			break;
-		}
-		case Variant::FLOAT: {
-			float *w = col.f32.data();
-			if (same_comp) {
-				// 无 must + 无 prefab → 行号连续 0..n-1, 可 SIMD 连续遍历
-				const bool contiguous = (m == 0) && prefab_indices_.empty();
-				if (contiguous) {
-					parallel_for(rows.size(), [&](size_t b, size_t e) {
-						const __m128 addv = _mm_set1_ps(float(addend));
-						const __m128 mulv = _mm_set1_ps(float(factor));
-						size_t i = b;
-						if (op == BATCH_ADD) {
-							for (; i + 4 <= e; i += 4) {
-								_mm_storeu_ps(w + i, _mm_add_ps(_mm_loadu_ps(w + i), addv));
-							}
-							for (; i < e; ++i) w[i] += float(addend);
-						} else if (op == BATCH_MUL_ADD) {
-							for (; i + 4 <= e; i += 4) {
-								_mm_storeu_ps(w + i, _mm_add_ps(_mm_mul_ps(_mm_loadu_ps(w + i), mulv), addv));
-							}
-							for (; i < e; ++i) w[i] = float(double(w[i]) * factor + addend);
-						} else if (op == BATCH_SET) {
-							for (; i + 4 <= e; i += 4) {
-								_mm_storeu_ps(w + i, addv);
-							}
-							for (; i < e; ++i) w[i] = float(addend);
-						}
-					}, 2.0); // float 运算成本 ~2x int, 更早并行
-				} else {
-					parallel_for(rows.size(), [&](size_t b, size_t e) {
-						for (size_t i = b; i < e; ++i) {
-							const int32_t row = rows[i];
-							switch (op) {
-								case BATCH_ADD: w[row] += float(addend); break;
-								case BATCH_MUL_ADD: w[row] = float(double(w[row]) * factor + addend); break;
-								case BATCH_SET: w[row] = float(addend); break;
-								default: break;
-							}
-						}
-					});
-				}
-			} else {
-				parallel_for(rows.size(), [&](size_t b, size_t e) {
-					for (size_t i = b; i < e; ++i) {
-						const int32_t orow = oc->set.row_of(a_dense[rows[i]]);
-						if (orow < 0) continue;
-						switch (op) {
-							case BATCH_ADD: w[orow] += float(addend); break;
-							case BATCH_MUL_ADD: w[orow] = float(double(w[orow]) * factor + addend); break;
-							case BATCH_SET: w[orow] = float(addend); break;
-							default: break;
-						}
-					}
-				});
-			}
-			n = int64_t(rows.size());
-			break;
-		}
-		default:
-			break;
-	}
-	return n;
-}
-
-int64_t ECSCore::batch_clamp(const StringName &anchor, const PackedStringArray &must,
-		const StringName &op_comp, const StringName &op_field,
-		const StringName &min_comp, const StringName &min_field,
-		const StringName &max_comp, const StringName &max_field) {
-	ECSComponentData *a = find_comp(anchor);
-	ECSComponentData *oc = find_comp(op_comp);
-	ECSComponentData *minc = find_comp(min_comp);
-	ECSComponentData *maxc = find_comp(max_comp);
-	if (a == nullptr || oc == nullptr || minc == nullptr || maxc == nullptr) {
-		return 0;
-	}
-	const int fi = oc->field_index(op_field);
-	const int mini = minc->field_index(min_field);
-	const int maxi = maxc->field_index(max_field);
-	if (fi < 0 || mini < 0 || maxi < 0) {
-		return 0;
-	}
-	const int32_t m = int32_t(must.size());
-	const ECSComponentData *req[8];
-	for (int32_t i = 0; i < m && i < 8; ++i) {
-		req[i] = find_comp(must[i]);
-	}
-	std::vector<int32_t> rows;
-	collect_rows(a, req, m > 8 ? 8 : m, rows, &prefab_indices_);
-
-	ECSColumn &col = oc->columns[fi];
-	const ECSColumn &mincol = minc->columns[mini];
-	const ECSColumn &maxcol = maxc->columns[maxi];
-	int64_t n = 0;
-	const bool same_comp = (op_comp == anchor);
-	const auto &a_dense = a->set.dense;
-	switch (col.type) {
-		case Variant::INT: {
-			int32_t *w = col.i32.data();
-			const int32_t *mn = mincol.i32.data();
-			const int32_t *mx = maxcol.i32.data();
-			if (same_comp) {
-				parallel_for(rows.size(), [&](size_t b, size_t e) {
-					for (size_t i = b; i < e; ++i) {
-						const int32_t row = rows[i];
-						w[row] = CLAMP(w[row], mn[row], mx[row]);
-					}
-				});
-			} else {
-				parallel_for(rows.size(), [&](size_t b, size_t e) {
-					for (size_t i = b; i < e; ++i) {
-						const int32_t orow = oc->set.row_of(a_dense[rows[i]]);
-						if (orow < 0) continue;
-						w[orow] = CLAMP(w[orow], mn[orow], mx[orow]);
-					}
-				});
-			}
-			n = int64_t(rows.size());
-			break;
-		}
-		case Variant::FLOAT: {
-			float *w = col.f32.data();
-			const float *mn = mincol.f32.data();
-			const float *mx = maxcol.f32.data();
-			if (same_comp) {
-				parallel_for(rows.size(), [&](size_t b, size_t e) {
-					for (size_t i = b; i < e; ++i) {
-						const int32_t row = rows[i];
-						w[row] = CLAMP(w[row], mn[row], mx[row]);
-					}
-				});
-			} else {
-				parallel_for(rows.size(), [&](size_t b, size_t e) {
-					for (size_t i = b; i < e; ++i) {
-						const int32_t orow = oc->set.row_of(a_dense[rows[i]]);
-						if (orow < 0) continue;
-						w[orow] = CLAMP(w[orow], mn[orow], mx[orow]);
-					}
-				});
-			}
-			n = int64_t(rows.size());
-			break;
-		}
-		default:
-			break;
-	}
-	return n;
-}
-
-int64_t ECSCore::batch_vec_add(const StringName &anchor, const PackedStringArray &must,
-		const StringName &pos_comp, const StringName &pos_field,
-		const StringName &vel_comp, const StringName &vel_field, double delta) {
-	ECSComponentData *a = find_comp(anchor);
-	ECSComponentData *posc = find_comp(pos_comp);
-	ECSComponentData *velc = find_comp(vel_comp);
-	if (a == nullptr || posc == nullptr || velc == nullptr) {
-		return 0;
-	}
-	const int pfi = posc->field_index(pos_field);
-	const int vfi = velc->field_index(vel_field);
-	if (pfi < 0 || vfi < 0) {
-		return 0;
-	}
-	const int32_t m = int32_t(must.size());
-	const ECSComponentData *req[8];
-	for (int32_t i = 0; i < m && i < 8; ++i) {
-		req[i] = find_comp(must[i]);
-	}
-	std::vector<int32_t> rows;
-	collect_rows(a, req, m > 8 ? 8 : m, rows, &prefab_indices_);
-
-	ECSColumn &poscol = posc->columns[pfi];
-	const ECSColumn &velcol = velc->columns[vfi];
-	int64_t n = 0;
-	const bool pos_is_anchor = (pos_comp == anchor);
-	const bool vel_is_anchor = (vel_comp == anchor);
-	const auto &a_dense = a->set.dense;
-	if (poscol.type == Variant::VECTOR2 && velcol.type == Variant::VECTOR2) {
-		Vector2 *p = poscol.v2.data();
-		const Vector2 *v = velcol.v2.data();
-		const float d = float(delta);
-		if (pos_is_anchor && vel_is_anchor) {
-			// 无 must + 无 prefab → 行号连续, SIMD 一次处理 2 个 Vector2(4 float)
-			const bool contiguous = (m == 0) && prefab_indices_.empty();
-			if (contiguous) {
-				parallel_for(rows.size(), [&](size_t b, size_t e) {
-					float *pf = reinterpret_cast<float *>(p);
-					const float *vf = reinterpret_cast<const float *>(v);
-					const __m128 dv = _mm_set1_ps(d);
-					size_t i = b;
-					for (; i + 2 <= e; i += 2) {
-						__m128 posv = _mm_loadu_ps(pf + i * 2);
-						__m128 velv = _mm_loadu_ps(vf + i * 2);
-						_mm_storeu_ps(pf + i * 2, _mm_add_ps(posv, _mm_mul_ps(velv, dv)));
-					}
-					for (; i < e; ++i) p[i] += v[i] * d;
-				}, 3.0);
-			} else {
-				parallel_for(rows.size(), [&](size_t b, size_t e) {
-					for (size_t i = b; i < e; ++i) {
-						const int32_t row = rows[i];
-						p[row] += v[row] * d;
-					}
-				});
-			}
-		} else {
-			parallel_for(rows.size(), [&](size_t b, size_t e) {
-				for (size_t i = b; i < e; ++i) {
-					const int32_t erow = rows[i];
-					const int32_t e = a_dense[erow];
-					const int32_t prow = pos_is_anchor ? erow : posc->set.row_of(e);
-					const int32_t vrow = vel_is_anchor ? erow : velc->set.row_of(e);
-					if (prow < 0 || vrow < 0) continue;
-					p[prow] += v[vrow] * d;
-				}
-			});
-		}
-		n = int64_t(rows.size());
-	} else if (poscol.type == Variant::VECTOR3 && velcol.type == Variant::VECTOR3) {
-		Vector3 *p = poscol.v3.data();
-		const Vector3 *v = velcol.v3.data();
-		const float d = float(delta);
-		if (pos_is_anchor && vel_is_anchor) {
-			parallel_for(rows.size(), [&](size_t b, size_t e) {
-				for (size_t i = b; i < e; ++i) {
-					const int32_t row = rows[i];
-					p[row] += v[row] * d;
-				}
-			}, 3.0);
-		} else {
-			parallel_for(rows.size(), [&](size_t b, size_t e) {
-				for (size_t i = b; i < e; ++i) {
-					const int32_t erow = rows[i];
-					const int32_t e = a_dense[erow];
-					const int32_t prow = pos_is_anchor ? erow : posc->set.row_of(e);
-					const int32_t vrow = vel_is_anchor ? erow : velc->set.row_of(e);
-					if (prow < 0 || vrow < 0) continue;
-					p[prow] += v[vrow] * d;
-				}
-			});
-		}
-		n = int64_t(rows.size());
-	}
-	return n;
-}
-
-int64_t ECSCore::batch_move(const StringName &anchor, const PackedStringArray &must,
-		const StringName &pos_comp, const StringName &pos_field,
-		const StringName &vel_comp, const StringName &vel_field,
-		double delta, double x_min, double x_max, double y_min, double y_max) {
-	ECSComponentData *a = find_comp(anchor);
-	ECSComponentData *posc = find_comp(pos_comp);
-	ECSComponentData *velc = find_comp(vel_comp);
-	if (a == nullptr || posc == nullptr || velc == nullptr) {
-		return 0;
-	}
-	const int pfi = posc->field_index(pos_field);
-	const int vfi = velc->field_index(vel_field);
-	if (pfi < 0 || vfi < 0) {
-		return 0;
-	}
-	const int32_t m = int32_t(must.size());
-	const ECSComponentData *req[8];
-	for (int32_t i = 0; i < m && i < 8; ++i) {
-		req[i] = find_comp(must[i]);
-	}
-	std::vector<int32_t> rows;
-	collect_rows(a, req, m > 8 ? 8 : m, rows, &prefab_indices_);
-	ECSColumn &poscol = posc->columns[pfi];
-	ECSColumn &velcol = velc->columns[vfi];
-	const bool pos_is_anchor = (pos_comp == anchor);
-	const bool vel_is_anchor = (vel_comp == anchor);
-	const auto &a_dense = a->set.dense;
-	const float d = float(delta);
-	const float xmi = float(x_min), xma = float(x_max), ymi = float(y_min), yma = float(y_max);
-	int64_t n = 0;
-	if (poscol.type == Variant::VECTOR2 && velcol.type == Variant::VECTOR2) {
-		Vector2 *p = poscol.v2.data();
-		Vector2 *v = velcol.v2.data();
-		parallel_for(rows.size(), [&](size_t b, size_t e) {
-			for (size_t i = b; i < e; ++i) {
-				const int32_t r = rows[i];
-				const int32_t eid = a_dense[r];
-				const int32_t pr = pos_is_anchor ? r : posc->set.row_of(eid);
-				const int32_t vr = vel_is_anchor ? r : velc->set.row_of(eid);
-				if (pr < 0 || vr < 0) {
-					continue;
-				}
-				Vector2 np = p[pr] + v[vr] * d;
-				Vector2 nv = v[vr];
-				if (np.x < xmi) { nv.x = -nv.x; np.x = xmi; }
-				else if (np.x > xma) { nv.x = -nv.x; np.x = xma; }
-				if (np.y < ymi) { nv.y = -nv.y; np.y = ymi; }
-				else if (np.y > yma) { nv.y = -nv.y; np.y = yma; }
-				p[pr] = np;
-				v[vr] = nv;
-			}
-		}, 3.0);
-		n = int64_t(rows.size());
-	}
-	return n;
-}
-
-int64_t ECSCore::batch_cycle(const StringName &anchor, const PackedStringArray &must,
-		const StringName &comp, const StringName &field,
-		const StringName &dir_comp, const StringName &dir_field,
-		double rate, double min, double max) {
-	ECSComponentData *a = find_comp(anchor);
-	ECSComponentData *fc = find_comp(comp);
-	ECSComponentData *dc = find_comp(dir_comp);
-	if (a == nullptr || fc == nullptr || dc == nullptr) {
-		return 0;
-	}
-	const int ffi = fc->field_index(field);
-	const int dfi = dc->field_index(dir_field);
-	if (ffi < 0 || dfi < 0) {
-		return 0;
-	}
-	const int32_t m = int32_t(must.size());
-	const ECSComponentData *req[8];
-	for (int32_t i = 0; i < m && i < 8; ++i) {
-		req[i] = find_comp(must[i]);
-	}
-	std::vector<int32_t> rows;
-	collect_rows(a, req, m > 8 ? 8 : m, rows, &prefab_indices_);
-	ECSColumn &fcol = fc->columns[ffi];
-	ECSColumn &dcol = dc->columns[dfi];
-	const bool f_is_anchor = (comp == anchor);
-	const bool d_is_anchor = (dir_comp == anchor);
-	const auto &a_dense = a->set.dense;
-	const float rt = float(rate);
-	const float rmin = float(min), rmax = float(max);
-	int64_t n = 0;
-	if (fcol.type == Variant::FLOAT && dcol.type == Variant::INT) {
-		float *f = fcol.f32.data();
-		int32_t *d = dcol.i32.data();
-		parallel_for(rows.size(), [&](size_t b, size_t e) {
-			for (size_t i = b; i < e; ++i) {
-				const int32_t r = rows[i];
-				const int32_t eid = a_dense[r];
-				const int32_t fr = f_is_anchor ? r : fc->set.row_of(eid);
-				const int32_t dr = d_is_anchor ? r : dc->set.row_of(eid);
-				if (fr < 0 || dr < 0) {
-					continue;
-				}
-				f[fr] += d[dr] * rt;
-				if (f[fr] >= rmax) { f[fr] = rmax; d[dr] = -d[dr]; }
-				else if (f[fr] <= rmin) { f[fr] = rmin; d[dr] = -d[dr]; }
-			}
-		}, 3.0);
-		n = int64_t(rows.size());
-	}
-	return n;
-}
-
-// ---------------------------------------------------------------------------
-// ECSCore — 调试统计
-// ---------------------------------------------------------------------------
 
 Dictionary ECSCore::debug_stats() const {
 	Dictionary d;
@@ -2610,7 +2702,7 @@ Dictionary ECSCore::debug_stats() const {
 	d["workers_started"] = workers_started_;
 	Array comp_counts;
 	for (const auto &c : components_) {
-		comp_counts.append(int64_t(c.set.size()));
+		comp_counts.append(int64_t(count_entities(c.name)));
 	}
 	d["component_counts"] = comp_counts;
 	return d;
@@ -2624,11 +2716,10 @@ Dictionary ECSCore::serialize() const {
 	Dictionary root;
 	root["version"] = int64_t(1);
 	Array comps;
-	for (const auto &c : components_) {
+	for (size_t ci = 0; ci < components_.size(); ++ci) {
+		const auto &c = components_[ci];
 		Dictionary cd;
 		cd["name"] = c.name;
-		// 字段描述
-		Array farr;
 		Array fnames_arr;
 		Array ftypes_arr;
 		Array fdefaults_arr;
@@ -2640,20 +2731,30 @@ Dictionary ECSCore::serialize() const {
 		cd["field_names"] = fnames_arr;
 		cd["field_types"] = ftypes_arr;
 		cd["defaults"] = fdefaults_arr;
-		// 实体数据: 稀疏集 dense 里的实体 + 各字段值
-		// 注意: 列按"dense 行号"索引(紧凑), 用行号 r 取值!
+		// 实体数据: 聚合实体(跨块按顺序) + 各字段聚合列值
 		Array entities;
-		const auto &dense = c.set.dense;
-		for (int32_t r = 0; r < int32_t(dense.size()); ++r) {
-			const int32_t e = dense[r];
-			if (is_prefab_index(e)) {
-				continue; // 不序列化 prefab 模板
+		std::vector<int32_t> agg_entities;
+		for (const auto &a : archetypes_) {
+			if (!a.has_comp(int32_t(ci))) {
+				continue;
 			}
+			for (int32_t r = 0; r < int32_t(a.entities.size()); ++r) {
+				if (is_prefab_index(a.entities[r])) {
+					continue;
+				}
+				agg_entities.push_back(a.entities[r]);
+			}
+		}
+		std::vector<Variant> agg_cols(c.fields.size());
+		for (size_t fi = 0; fi < c.fields.size(); ++fi) {
+			agg_cols[fi] = column_aggregate(int32_t(ci), int32_t(fi));
+		}
+		for (size_t k = 0; k < agg_entities.size(); ++k) {
 			Dictionary ed;
-			ed["entity"] = e;
+			ed["entity"] = int64_t(agg_entities[k]);
 			Array vals;
-			for (size_t fi = 0; fi < c.columns.size(); ++fi) {
-				vals.append(c.columns[fi].get(r));
+			for (size_t fi = 0; fi < c.fields.size(); ++fi) {
+				vals.append(agg_at(agg_cols[fi], int32_t(k)));
 			}
 			ed["values"] = vals;
 			entities.append(ed);
@@ -2703,13 +2804,13 @@ Array ECSCore::deserialize(const Dictionary &data) {
 		result.append(new_id); // 返回真实实体 ID
 	}
 
-	// 第二遍: 填充组件数据
+	// 第二遍: 填充组件数据(add_component + set_field, archetype 自动迁移)
 	Array comps = data["components"];
 	for (int32_t i = 0; i < comps.size(); ++i) {
 		Dictionary cd = comps[i];
 		const StringName name = cd["name"];
-		ECSComponentData *c = find_comp(name);
-		if (c == nullptr) {
+		const int32_t ci = comp_index(name);
+		if (ci < 0) {
 			continue;
 		}
 		Array entities = cd["entities"];
@@ -2720,22 +2821,18 @@ Array ECSCore::deserialize(const Dictionary &data) {
 			if (it == id_map.end()) {
 				continue;
 			}
-			const int32_t index = it->second & 0x00FFFFFF;
-			c->push_row(index); // 列按行号紧凑: 追加一行
+			const int32_t e = it->second;
+			add_component(e, name);
 			Array vals = ed["values"];
-			const int32_t nv = int32_t(vals.size());
-			const int32_t row = c->set.row_of(index);
-			for (int32_t fi = 0; fi < int32_t(c->columns.size()); ++fi) {
-				if (fi < nv) {
-					c->columns[fi].set(row, vals[fi]);
+			for (size_t fi = 0; fi < components_[ci].fields.size(); ++fi) {
+				if (fi < size_t(vals.size())) {
+					set_field(e, name, components_[ci].fields[fi].name, vals[int32_t(fi)]);
 				} else {
-					c->columns[fi].set(row, c->defaults[fi]);
+					set_field(e, name, components_[ci].fields[fi].name, components_[ci].defaults[fi]);
 				}
 			}
 		}
 	}
-	// push_row 直接填充不经过 add_component → 重建签名视图
-	rebuild_signatures();
 	return result;
 }
 
@@ -2789,41 +2886,36 @@ Array ECSCore::instantiate(int32_t prefab, int32_t count, const Dictionary &over
 		return result;
 	}
 	const int32_t pindex = prefab & 0x00FFFFFF;
-
-	// 收集 prefab 拥有的组件索引
-	std::vector<int32_t> comps;
-	for (int32_t ci = 0; ci < int32_t(components_.size()); ++ci) {
-		if (components_[ci].set.has(pindex)) {
-			comps.push_back(ci);
-		}
+	const int32_t parch = (pindex < int32_t(entity_arch_.size())) ? entity_arch_[pindex] : -1;
+	if (parch < 0) {
+		return result;
 	}
+	const auto &par = archetypes_[parch];
+	const int32_t prow = par.row_of(pindex);
+	std::vector<int32_t> comps = par.comps;
 
 	for (int32_t n = 0; n < count; ++n) {
 		const int32_t e = create_entity();
-		const int32_t eindex = e & 0x00FFFFFF;
 		result.append(e);
 		for (int32_t ci : comps) {
-			ECSComponentData &c = components_[ci];
-			const int32_t prow = c.set.row_of(pindex); // prefab 行号
-			// 挂组件: 列按行号紧凑追加
-			c.push_row(eindex);
-			const int32_t row = c.set.row_of(eindex);
-			// 复制每字段值(带 overrides 覆盖)
-			for (size_t fi = 0; fi < c.columns.size(); ++fi) {
-				Variant v = c.columns[fi].get(prow); // 从 prefab 行取
-				// 检查 overrides: {comp_name: {field_name: value}}
-				if (overrides.has(c.name)) {
-					Dictionary od = overrides[c.name];
-					if (od.has(c.fields[fi].name)) {
-						v = od[c.fields[fi].name];
+			const StringName cname = components_[ci].name;
+			add_component(e, cname);
+			const int cp = par.comp_pos(ci);
+			if (cp < 0) {
+				continue;
+			}
+			for (size_t fi = 0; fi < components_[ci].fields.size(); ++fi) {
+				Variant v = par.cols[cp][fi].get(prow);
+				if (overrides.has(cname)) {
+					Dictionary od = overrides[cname];
+					if (od.has(components_[ci].fields[fi].name)) {
+						v = od[components_[ci].fields[fi].name];
 					}
 				}
-				c.columns[fi].set(row, v);
+				set_field(e, cname, components_[ci].fields[fi].name, v);
 			}
 		}
 	}
-	// push_row 直接填充不经过 add_component → 重建签名视图
-	rebuild_signatures();
 	return result;
 }
 
@@ -2957,9 +3049,11 @@ void ECSCore::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("count_entities", "comp"), &ECSCore::count_entities);
 	ClassDB::bind_method(D_METHOD("get_entity_components", "entity"), &ECSCore::get_entity_components);
 	ClassDB::bind_method(D_METHOD("query_rows", "anchor", "must", "without"), &ECSCore::query_rows);
+	ClassDB::bind_method(D_METHOD("query_entities", "anchor", "must", "without"), &ECSCore::query_entities);
 	ClassDB::bind_method(D_METHOD("query_rows_aligned", "anchor", "must", "without"), &ECSCore::query_rows_aligned);
 	ClassDB::bind_method(D_METHOD("query_rows_aligned_where", "anchor", "must", "without", "conditions", "comps"), &ECSCore::query_rows_aligned_where);
 	ClassDB::bind_method(D_METHOD("entity_of_row", "comp", "row"), &ECSCore::entity_of_row);
+	ClassDB::bind_method(D_METHOD("get_entity_at", "comp", "row"), &ECSCore::get_entity_at);
 	ClassDB::bind_method(D_METHOD("get_field", "entity", "comp", "field"), &ECSCore::get_field);
 	ClassDB::bind_method(D_METHOD("set_field", "entity", "comp", "field", "value"), &ECSCore::set_field);
 	ClassDB::bind_method(D_METHOD("get_column", "comp", "field"), &ECSCore::get_column);

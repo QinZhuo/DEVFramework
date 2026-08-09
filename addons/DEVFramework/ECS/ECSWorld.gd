@@ -295,6 +295,35 @@ func set_field(entity: int, component, field: StringName, value) -> void:
 ##       再 row_of_entity(other_comp, entity) 得其他组件的行号。
 ## 需要实体 ID 时用 entity_of_row() 转换。
 ## 需要"一次拿多组件对齐行号"时改用 query_aligned()(免逐实体转换)。
+## 聚合行号(某组件 get_column 的索引) -> 实体 ID(archetype 下跨块聚合顺序)。
+## 配合 query_rows(返回聚合行号) 使用: 先 query_rows 拿行号, 再 get_entity_at 转实体 ID,
+## 再 get_field(实体ID, ...) 读取。
+func get_entity_at(component, row: int) -> int:
+	return _core.get_entity_at(_resolve_component_name(component), row)
+
+## 查询匹配实体, 直接返回实体 ID 数组(archetype 下最直观: 配 get_field/set_field 使用)。
+## 例: var ents = world.query_entities(BallComponent); for e in ents: world.get_field(e, BallComponent, &"hp")
+func query_entities(anchor, must: Array = [], without: Array = []) -> PackedInt32Array:
+	var anchor_name := _resolve_component_name(anchor)
+	if anchor_name == &"":
+		return PackedInt32Array()
+	_record_access(anchor_name)
+	var must_names := PackedStringArray()
+	for m in must:
+		var mn := _resolve_component_name(m)
+		if mn == &"":
+			continue
+		must_names.append(mn)
+		_record_access(mn)
+	var without_names := PackedStringArray()
+	for w in without:
+		var wn := _resolve_component_name(w)
+		if wn == &"":
+			continue
+		without_names.append(wn)
+		_record_access(wn)
+	return _core.query_entities(anchor_name, must_names, without_names)
+
 ## 带缓存(增量失效): 相同签名查询复用结果, 仅当涉及组件结构变化时才失效。
 func query_rows(anchor, must: Array = [], without: Array = []) -> PackedInt32Array:
 	var anchor_name := _resolve_component_name(anchor)
