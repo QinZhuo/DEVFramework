@@ -1,19 +1,20 @@
 extends Control
 
-## ECS 演示 —— 三种实现方式对比: 左下角按钮切换, 表格显示各实现耗时/帧率。
-## 三种实现各自独立脚本、独立文件夹(便于对照学习):
-##   res://Scripts/Entity/ECS/Demo/impl_node/    普通 Node 实现(纯 OOP, 不用 ECS)
-##   res://Scripts/Entity/ECS/Demo/impl_query/   ECS 查询链实现(组件 + 系统 + for_each)
-##   res://Scripts/Entity/ECS/Demo/impl_entity/  Entity 节点写法(@export 即 schema + 系统批量)
+## ECS 演示 —— 四种实现方式对比: 左下角按钮切换, 表格显示各实现耗时/帧率。
+## 四种实现各自独立脚本、独立文件夹(便于对照学习):
+##   res://Scripts/Entity/ECS/Demo/impl_node/      普通 Node 实现(纯 OOP, 不用 ECS)
+##   res://Scripts/Entity/ECS/Demo/impl_query/     ECS 查询链实现(声明式 batch: 组件 + 系统 + for_each)
+##   res://Scripts/Entity/ECS/Demo/impl_callback/  ECS 查询链回调实现(同一数据布局, 逻辑用手写 .with().process() 回调)
+##   res://Scripts/Entity/ECS/Demo/impl_entity/    Entity 节点写法(@export 即 schema + 系统批量)
 ##
-## 小球逻辑(三种实现完全一致): 随机移动(边界回弹) + hp 周期 0→100→0 增减 + 大小随 hp。
-## 三种实现都用真实节点显示。切换时销毁上一个实现、只保留当前。
+## 小球逻辑(四种实现完全一致): 随机移动(边界回弹) + hp 周期 0→100→0 增减 + 大小随 hp。
+## 四种实现都用真实节点显示。切换时销毁上一个实现、只保留当前。
 ## 额外能力:
 ##   · 创建耗时: 每次切换/启动记录"创建世界"的耗时(建实体/节点/数据), 表格对比
 ##   · 渲染开关: 屏蔽渲染相关逻辑(位置/显示更新), 只做数值运算, 对比渲染同步的开销
 ## 本脚本只做调度: 创建/销毁当前 DemoImpl, 测量耗时, 渲染表格。
 
-const IMPL_NAMES := ["普通Node实现", "ECS查询链实现", "Entity节点写法"]
+const IMPL_NAMES := ["普通Node实现", "ECS查询链实现", "ECS回调实现", "Entity节点写法"]
 const INIT_SEED := 20260808
 
 @export var ball_count: int = 10000
@@ -24,7 +25,7 @@ const INIT_SEED := 20260808
 @onready var render_button: Button = %RenderButton
 
 var _impl: DemoImpl = null
-var _current := 1                            # 0=普通Node, 1=ECS查询链(默认), 2=Entity节点写法
+var _current := 1                            # 0=普通Node, 1=ECS查询链(默认), 2=ECS回调, 3=Entity节点写法
 var _setup_ms := 0.0                         # 当前实现"创建世界"耗时(ms)
 var _render_on := true                       # 渲染开关
 
@@ -51,6 +52,8 @@ func _spawn(idx: int) -> void:
 			cls = DemoNodeImpl
 		1:
 			cls = DemoQueryImpl
+		2:
+			cls = DemoCallbackImpl
 		_:
 			cls = DemoEntityImpl
 	var t0 := Time.get_ticks_usec()
