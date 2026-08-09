@@ -272,9 +272,6 @@ public:
 			const StringName &dir_comp, const StringName &dir_field,
 			double rate, double min, double max);
 
-	// 原生系统内核(编译化): 内置高频逻辑(免 GDScript 系统 _run 解释 + 查询链构建)。
-	// kind: 内核类型(0 = 小球查询链)。返回处理的系统标识(0=无)。
-	int64_t run_native_system(int32_t kind, double delta);
 
 	// ---- Tier 0 优化: 批量收集 + 行集动作(一次扫描多组条件, 动作复用行集) ----
 	// 单次遍历匹配签名实体, 同时判定多组条件, 产出多组 anchor 行号(复用 rows 缓冲)。

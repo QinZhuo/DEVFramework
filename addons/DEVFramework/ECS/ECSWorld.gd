@@ -967,10 +967,6 @@ func _run_system(system: ECSSystem) -> void:
 	var delta: float = system._frame_delta
 	if delta < 0.0:
 		return
-	# 编译化: C++ 原生内核直接执行(免 GDScript _run 解释 + 查询链构建)
-	if system.native_kind >= 0:
-		_core.run_native_system(system.native_kind, delta)
-		return
 	var ctx := ECSSystemContext.new(self)
 	if not _tracking:
 		system._run(ctx, delta)
@@ -985,9 +981,6 @@ func _run_system(system: ECSSystem) -> void:
 func _parallel_worker(system: ECSSystem) -> void:
 	var delta: float = system._frame_delta
 	if delta < 0.0:
-		return
-	if system.native_kind >= 0:
-		_core.run_native_system(system.native_kind, delta)
 		return
 	var ctx := ECSSystemContext.new(self)
 	_begin_access(system)
