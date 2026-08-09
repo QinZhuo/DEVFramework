@@ -43,57 +43,65 @@
 
 ---
 
-## 实体体系选择（Entity / Entity2D·3D / Component）
-
-框架有两种"实体/组件"写法, 按场景选:
+## 实体体系选择与 Entity 桥接
 
 | 类 | 基类 | 职责 | 何时用 |
 |---|---|---|---|
-| **`Entity`** | RefCounted | 纯数据实体(内建 `ecs` 桥接, 数据放 ECS 列) | 轻量数据/逻辑实体(Buff/Modifier/纯数据) |
-| **`Entity2D`/`Entity3D`** | Node2D/Node3D | 节点实体(ECS 实体 + 场景表现 + 位置同步) | 需要场景节点的实体(角色/子弹/单位) |
-| **`Component`** | Node | 表现/交互补充(挂 Entity2D/3D 下, 补充其 ECS 数据) | 给实体挂附加功能, 需场景节点 |
-| **ECS 体系** | — | 纯数据逻辑(`ECSWorld`/`ECSComponent`/`ECSSystem`/`ECSQuery`) | 海量数据、批量逻辑, 不直接面向对象 |
+| **`Entity`** | RefCounted | 纯数据实体(内建 `ecs` 桥接) | 轻量数据/逻辑实体(Buff/Modifier/纯数据) |
+| **`Entity2D`/`Entity3D`** | Node2D/Node3D | 节点实体(数据在 ECS 列 + 场景表现) | 需要场景节点的实体(角色/子弹/单位) |
+| **`Component`** | Node | 挂 Entity2D/3D 下, 补充宿主 ECS 数据 | 给实体挂附加功能 |
+| **ECS 体系** | — | 纯数据逻辑(`ECSWorld`/`ECSComponent`/`ECSSystem`/`ECSQuery`) | 海量数据、批量逻辑 |
+
+**定位**：Entity 系列是 **"ECS ↔ Node/对象 桥接"** —— 数据存 ECS 列，节点/对象提供 OOP 门面（场景表现、交互、配置）。
+
+### 数据字段规则（哪些变量进 ECS）
+
+> **当前脚本直接声明的 `@export` / `@export_storage` 纯数据变量 = ECS 数据**（自动注册进 ECS 列）。
+> 若某字段想 `@export`（在 Inspector 编辑）但不想进 ECS，用 `const ECS_EXCLUDE := [...]` 排除。
+> 父类属性（`world`/`entity_id`/`position` 等原生/桥接）与非 `@export` 变量自动排除。
 
 ```gdscript
-# 只有数据 → Entity
-var e := Buff.new()
-e.ecs.world = world
-e.add_component(ECSAttribute, {"hp": 100})
+class_name DemoUnit extends Entity2D
+@export var pos: Vector2 = Vector2.ZERO   # ECS 数据(位置, 用 Vector2 类型, 不拆 x/y)
+@export var hp: float = 100               # ECS 数据
+@export_storage var level: int = 1        # ECS 数据(可不用 @export_storage)
+@export var color: Color = Color.WHITE    # 想在 Inspector 编辑但非 ECS → 排除表
+const ECS_EXCLUDE := ["color"]
+```
 
-# 需要场景表现 → Entity2D
-var unit := Entity2D.new()
+### Entity 桥接用法
+
+```gdscript
+var unit := DemoUnit.new()
 unit.world = world
-unit.add_component(MoveComponent, {"pos": Vector2.ZERO})
-unit.bind_pos(MoveComponent, &"pos")
-get_tree().current_scene.add_child(unit)
-
-# 挂载补充功能 → Component(须挂 Entity2D/3D 下)
-unit.add_child(MyPowerComp.new())
+unit.hp = 80                              # 设置数据字段
+unit.register_to_ecs()                    # 自动注册组件 + 附加 + 写入初值
+unit.sync_from_ecs(&"pos", &"position")   # ECS → 节点: 把 ECS 的 pos 字段同步到节点 position
+unit.sync_to_ecs(&"position", &"pos")     # 节点 → ECS: 把节点 position 写回 ECS 的 pos 字段
+unit.destroy()
 ```
 
-> **组件二义提醒**：`Component`(Node 表现补充) 与 `ECSComponent`(纯数据 schema) 不同——数据用 `ECSComponent` + `add_component`, 表现/交互补充用 `Component` 挂节点。
+- **自动注册**：`add_component` / `register_to_ecs` 会自动注册未注册的脚本组件，无需手动 `register_component`。
+- **一参数 `add_component`**：`ecs.add_component(node)` 传实例，自动反射其 `@export` 字段为初值。
+- **位置走类型**：位置字段用 `Vector2`/`Vector3`（单字段），不拆 x/y——系统与同步都直接用 Vector 类型列。
+- **通用字段同步（任何 Node/对象可用）**：
+  ```gdscript
+  ECSBridge.sync_from(link, comp, &"pos", label_node, &"position")  # ECS 字段 → 任意对象属性
+  ECSBridge.sync_to(link, comp, &"pos", label_node, &"position")    # 反向
+  ```
+  不依赖 Entity 子类，普通 Node/Label 等都能用。
 
-### 传统写法即 ECS（属性自动路由，路线 A）
+### 三种实现方式（对比学习）
 
-挂 `Entity2D`/`Entity3D`（或挂 `Component` 到其下）并设置 `world` 后，**直接读写 schema 字段自动进 ECS**，无需显式调 `ecs.set_field`：
+`res://Scripts/Entity/ECS/Demo/` 下三个独立文件夹，同一小球逻辑三种写法：
 
-```gdscript
-class_name Health extends ECSComponent
-@export var max_hp := 100
-@export var hp := 100
+| 文件夹 | 写法 | 特点 |
+|---|---|---|
+| `impl_node/` | 普通 Node 实现 | 纯 OOP: 数据在节点对象, 逻辑在 `_process` |
+| `impl_query/` | ECS 查询链实现 | 数据在 ECS 列, 系统用 `for_each` 批量, 显示用独立节点 |
+| `impl_entity/` | Entity 节点写法 | 继承 `Entity2D`, `@export` 即 schema, `register_to_ecs` 接入 ECS, 系统批量处理 |
 
-# 先注册组件（现有要求）
-my_world.register_component(Health)
-
-# 传统写法（节点脚本里）
-unit.hp = 80            # → 自动附加 Health 并写 ECS 列
-var v := unit.max_hp    # ← 从 ECS 列读
-```
-
-- **自动附加**：第一次写某组件字段时，若实体尚无该组件则自动附加（用 schema 默认值）。
-- **Component 补充**：`comp.max_hp = 200` 同样路由宿主实体。
-- **懒加载保持**：不设 `world`/不触碰 schema 字段 → `ecs` 不创建、零开销；设了 world 后属性读写成为新的触发点。
-- **注意**：schema 字段名**勿与 Node 原生属性重名**（`position`/`visible` 等，重名走原生属性不进 ECS）；组件需先 `register_component` 且 `world` 已设置，否则 `_set` 不接管、按 Godot 原生规则（未声明属性赋值会报错）。
+运行场景 `res://Scenes/ECS/ECSDemo.tscn`，左下角按钮切换三种实现，表格实时对比耗时。
 
 ---
 
@@ -418,21 +426,18 @@ var restored: Array = world.deserialize(SaveTool.load_data("user://save.dat", Sa
 
 ## 十四、Component 场景桥接
 
-关键实体（玩家/NPC）用 `Component` 桥接：
+关键实体（玩家/NPC）用 `Component` 补充宿主：
 
 ```gdscript
-var view := Component.spawn(world, player_scene, Vector2(100, 200))
-view.bind_pos(MoveComponent, &"pos")     # 位置绑定（ECSSyncSystem 批量同步）
-view.add_component(HealthComponent)
-view.set_field(HealthComponent, &"hp", 100)
-view.sync_node_to_ecs()                  # 节点 → ECS（交互写回）
-view.destroy()
-
-# 注册位置同步系统（批量，优于 N 个 _process）
-world.register_system(ECSSyncSystem.new(), 10)
+# Component 挂到 Entity2D/3D 下(或手动 host_entity), 宿主实体在 _ready 自动查找
+var comp := MyPowerComp.new()
+unit.add_child(comp)          # 自动绑定宿主(Entity2D/3D)
+comp.register_to_host()       # 把组件 @export 数据附加到宿主实体(自动注册组件)
+comp.sync_from_host(&"cd", &"cd")   # 宿主 ECS → 组件属性(指定字段)
+comp.sync_to_host(&"cd", &"cd")     # 组件属性 → 宿主 ECS
 ```
 
-`ECSSyncSystem` 遍历所有带 `NodeLink` 的实体批量搬运位置（`can_run_parallel()=false`，主线程）。
+`ECSSyncSystem`：批量同步"带 `NodeLink` 的实体"位置到节点（`can_run_parallel()=false`，主线程），适合大量实体统一位置搬运；单个实体/任意字段用 `ECSBridge.sync_from/sync_to`。
 
 ---
 

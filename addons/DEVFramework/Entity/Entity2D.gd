@@ -85,3 +85,16 @@ func sync_from_ecs(field: StringName, node_prop: StringName = field) -> void:
 ## 用法: e.sync_to_ecs(&"position", &"pos")    —— 节点 position → ECS 的 pos 字段
 func sync_to_ecs(field: StringName, node_prop: StringName = field) -> void:
 	ECSBridge.sync_to(ecs, get_script(), field, self, node_prop)
+
+
+## 记录 NodeLink(实体↔节点关联, 供 ECSSyncSystem 批量同步位置)。
+## component/field: 位置所在组件与字段(单字段 Vector2/3)。
+func attach_node_link(component: Script = null, field: StringName = &"pos") -> void:
+	if ecs.world == null or ecs.entity_id < 0:
+		return
+	ecs.add_component(NodeLink)
+	if ecs.has_component(NodeLink):
+		ecs.set_field(NodeLink, &"node_path", get_path().get_concatenated_names())
+		if component != null:
+			ecs.set_field(NodeLink, &"pos_component", component.get_global_name())
+			ecs.set_field(NodeLink, &"pos_field", str(field))

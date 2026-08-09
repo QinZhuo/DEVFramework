@@ -97,7 +97,7 @@ func _spawn_squad() -> void:
 		block.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		view.add_child(block)
 		world_root.add_child(view)
-		view.attach_node_link()
+		view.attach_node_link(ECSDemoMoveComponent, &"pos")
 		ECSBridge.sync_from(view.ecs, ECSDemoMoveComponent, &"pos", view, &"position")
 		views.append(view)
 
@@ -187,7 +187,6 @@ func _on_load_pressed() -> void:
 		view.world = world
 		view.entity_id = eid
 		view.name = "Unit_%d" % eid
-		view.bind_pos(ECSDemoMoveComponent, &"pos")
 		var saved_color: Color = world.get_field(eid, ECSDemoMoveComponent, &"color")
 		var block := ColorRect.new()
 		block.size = Vector2(26, 26)
@@ -195,7 +194,7 @@ func _on_load_pressed() -> void:
 		block.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		view.add_child(block)
 		world_root.add_child(view)
-		view.attach_node_link()
+		view.attach_node_link(ECSDemoMoveComponent, &"pos")
 		ECSBridge.sync_from(view.ecs, ECSDemoMoveComponent, &"pos", view, &"position")
 		views.append(view)
 	stats_label.text += "\n[读档] 重建 %d 个关键实体" % views.size()

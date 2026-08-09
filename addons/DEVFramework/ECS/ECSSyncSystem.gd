@@ -46,7 +46,6 @@ func _run(ctx: ECSSystemContext, delta: float) -> void:
 	var sync_flags: PackedByteArray = w.get_column(NodeLink, &"sync_position")
 	var pos_comps: PackedStringArray = w.get_column(NodeLink, &"pos_component")
 	var pos_fields: PackedStringArray = w.get_column(NodeLink, &"pos_field")
-	var use_xy: PackedByteArray = w.get_column(NodeLink, &"pos_use_xy")
 
 	for e in rows:
 		if not sync_flags[e]:
@@ -54,24 +53,19 @@ func _run(ctx: ECSSystemContext, delta: float) -> void:
 		var node := scene_root.get_node_or_null(paths[e])
 		if node == null:
 			continue
-		# 读 ECS 位置(NodeLink 行号 -> 实体ID, 再跨组件访问)
-		var eid := w.entity_of_row(NodeLink, e)
-		if eid < 0:
-			continue
-		var pos: Vector2
 		var comp_name: String = pos_comps[e]
 		if comp_name.is_empty():
 			continue
-		if use_xy[e]:
-			pos = Vector2(w.get_field(eid, StringName(comp_name), &"x"),
-					w.get_field(eid, StringName(comp_name), &"y"))
-		else:
-			var v = w.get_field(eid, StringName(comp_name), StringName(pos_fields[e]))
-			pos = v if v is Vector2 else (Vector2(v.x, v.y) if v is Vector3 else Vector2.ZERO)
-		# 写节点位置
-		if node is Node2D:
-			node.position = pos
-		elif node is Control:
-			node.position = pos
-		elif node is Node3D:
-			node.position = Vector3(pos.x, pos.y, 0)
+		# 读 ECS 位置(NodeLink 行号 -> 实体ID, 再跨组件访问; 单字段 Vector2/3)
+		var eid := w.entity_of_row(NodeLink, e)
+		if eid < 0:
+			continue
+		var v = w.get_field(eid, StringName(comp_name), StringName(pos_fields[e]))
+		if v is Vector2:
+			if node is Node2D or node is Control:
+				node.position = v
+		elif v is Vector3:
+			if node is Node3D:
+				node.position = v
+			elif node is Node2D or node is Control:
+				node.position = Vector2(v.x, v.y)

@@ -14,9 +14,8 @@ var visuals: Array[DemoQueryBallNode] = []   # 每个实体一个显示节点
 func setup(count: int, seed: int, parent: Node) -> void:
 	impl_name = "ECS查询链实现"
 	world = ECSWorld.new(false)
-	world.register_component(DemoQueryBall)
 	ball_system = DemoQueryBallSystem.new()
-	world.register_system(ball_system)
+	world.register_system(ball_system)   # register_system 自动注册 required_components
 	var rng := RandomNumberGenerator.new()
 	rng.seed = seed
 	for _i in count:
