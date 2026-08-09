@@ -22,6 +22,10 @@ extends RefCounted
 ## 系统启停开关
 var enabled: bool = true
 
+## 编译化: 指定 C++ 原生系统内核(kind), >=0 时本系统 _run 不再执行(由 ECSCore.run_native_system 处理)。
+## 用于热路径系统消除 GDScript 解释 + 查询链构建开销。默认 -1 = 普通 GDScript 系统。
+var native_kind := -1
+
 ## —— 频率控制(参考 Flecs interval/rate、Unity RateUtils、Bevy FixedUpdate) ——
 ## interval:   每隔 interval 秒运行一次(0 = 每帧)。低频系统(AI/UI/网络)用它省 CPU。
 ## rate:       每 rate 帧运行一次(1 = 每帧)。次高频逻辑按帧率节流。

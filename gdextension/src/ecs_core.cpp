@@ -1894,6 +1894,17 @@ static Variant agg_at(const Variant &v, int32_t k) {
 			return Variant();
 	}
 }
+// 原生系统条件构造(内核用)
+static Array make_native_cond(const StringName &comp, const String &field, int32_t op, double val) {
+	Array a;
+	Dictionary d;
+	d["comp"] = comp;
+	d["field"] = field;
+	d["op"] = int64_t(op);
+	d["value"] = val;
+	a.append(d);
+	return a;
+}
 } // namespace
 
 // 收集满足 must/without/conditions 的 anchor 聚合行号(batch 用)
@@ -2792,6 +2803,44 @@ Array ECSCore::query_rows_aligned_where(const StringName &anchor, const PackedSt
 	return out;
 }
 
+// 原生系统内核(编译化): 内置高频逻辑, 免 GDScript 系统 _run 解释 + 查询链构建。
+// kind 0 = 小球查询链(demo 逻辑: 移动/回弹/hp周期/size, 全部 C++ batch)。
+int64_t ECSCore::run_native_system(int32_t kind, double delta) {
+	if (kind != 0) {
+		return 0;
+	}
+	const StringName B = "DemoQueryBall";
+	PackedStringArray no_must;
+	PackedInt32Array all = query_rows(B, no_must, no_must);
+	const double hp_rate = 2.0 * delta * 60.0;
+	// 移动: pos += vel*delta
+	batch_apply_col_rows(B, all, B, "pos", B, "vel", COL_ADD, delta, 0.0);
+	// 回弹: 4 边界(越界该方向速度取反 + 位置钳制)
+	Array c_xlo = make_native_cond(B, "pos.x", COND_LT, 10.0);
+	batch_apply_where(B, no_must, B, "vel.x", BATCH_MUL_ADD, -1.0, 0.0, c_xlo);
+	batch_apply_where(B, no_must, B, "pos.x", BATCH_SET, 0.0, 10.0, c_xlo);
+	Array c_xhi = make_native_cond(B, "pos.x", COND_GT, 1150.0);
+	batch_apply_where(B, no_must, B, "vel.x", BATCH_MUL_ADD, -1.0, 0.0, c_xhi);
+	batch_apply_where(B, no_must, B, "pos.x", BATCH_SET, 0.0, 1150.0, c_xhi);
+	Array c_ylo = make_native_cond(B, "pos.y", COND_LT, 10.0);
+	batch_apply_where(B, no_must, B, "vel.y", BATCH_MUL_ADD, -1.0, 0.0, c_ylo);
+	batch_apply_where(B, no_must, B, "pos.y", BATCH_SET, 0.0, 10.0, c_ylo);
+	Array c_yhi = make_native_cond(B, "pos.y", COND_GT, 710.0);
+	batch_apply_where(B, no_must, B, "vel.y", BATCH_MUL_ADD, -1.0, 0.0, c_yhi);
+	batch_apply_where(B, no_must, B, "pos.y", BATCH_SET, 0.0, 710.0, c_yhi);
+	// hp 周期: hp += dir*rate, 越界翻转方向 + 钳制
+	batch_apply_col_rows(B, all, B, "hp", B, "dir", COL_ADD, hp_rate, 0.0);
+	Array c_h1 = make_native_cond(B, "hp", COND_GT, 100.0);
+	batch_apply_where(B, no_must, B, "dir", BATCH_MUL_ADD, -1.0, 0.0, c_h1);
+	batch_apply_where(B, no_must, B, "hp", BATCH_SET, 0.0, 100.0, c_h1);
+	Array c_h2 = make_native_cond(B, "hp", COND_LT, 0.0);
+	batch_apply_where(B, no_must, B, "dir", BATCH_MUL_ADD, -1.0, 0.0, c_h2);
+	batch_apply_where(B, no_must, B, "hp", BATCH_SET, 0.0, 0.0, c_h2);
+	// size = hp
+	batch_apply_col_rows(B, all, B, "size", B, "hp", COL_SET, 1.0, 0.0);
+	return 1;
+}
+
 Dictionary ECSCore::debug_stats() const {
 	Dictionary d;
 	d["components"] = int64_t(components_.size());
@@ -3165,6 +3214,7 @@ void ECSCore::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("batch_clamp_where", "anchor", "must", "op_comp", "op_field", "min_comp", "min_field", "max_comp", "max_field", "conditions"), &ECSCore::batch_clamp_where);
 	ClassDB::bind_method(D_METHOD("batch_move", "anchor", "must", "pos_comp", "pos_field", "vel_comp", "vel_field", "delta", "x_min", "x_max", "y_min", "y_max"), &ECSCore::batch_move);
 	ClassDB::bind_method(D_METHOD("batch_cycle", "anchor", "must", "comp", "field", "dir_comp", "dir_field", "rate", "min", "max"), &ECSCore::batch_cycle);
+	ClassDB::bind_method(D_METHOD("run_native_system", "kind", "delta"), &ECSCore::run_native_system);
 	ClassDB::bind_method(D_METHOD("batch_apply", "anchor", "must", "op_comp", "op_field", "op", "factor", "addend"), &ECSCore::batch_apply);
 	ClassDB::bind_method(D_METHOD("batch_apply_where", "anchor", "must", "op_comp", "op_field", "op", "factor", "addend", "conditions"), &ECSCore::batch_apply_where);
 	ClassDB::bind_method(D_METHOD("batch_count", "anchor", "must", "conditions"), &ECSCore::batch_count);

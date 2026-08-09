@@ -16,6 +16,7 @@ func setup(count: int, seed: int, parent: Node) -> void:
 	impl_name = "ECS查询链实现"
 	world = ECSWorld.new(false)
 	ball_system = DemoQueryBallSystem.new()
+	ball_system.native_kind = 0   # 编译化: 用 C++ 内核(免 GDScript _run), 对比"手写回调/声明式"两种脚本层写法
 	world.register_system(ball_system)   # register_system 自动注册 required_components
 	# 同步全部交给 ECSSyncSystem: NodeLink 只存 node_path, 同步字段由 add_field_rule 规则决定
 	sync_sys = ECSSyncSystem.new()
