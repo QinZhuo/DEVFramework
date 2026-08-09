@@ -73,6 +73,28 @@ unit.add_child(MyPowerComp.new())
 
 > **组件二义提醒**：`Component`(Node 表现补充) 与 `ECSComponent`(纯数据 schema) 不同——数据用 `ECSComponent` + `add_component`, 表现/交互补充用 `Component` 挂节点。
 
+### 传统写法即 ECS（属性自动路由，路线 A）
+
+挂 `Entity2D`/`Entity3D`（或挂 `Component` 到其下）并设置 `world` 后，**直接读写 schema 字段自动进 ECS**，无需显式调 `ecs.set_field`：
+
+```gdscript
+class_name Health extends ECSComponent
+@export var max_hp := 100
+@export var hp := 100
+
+# 先注册组件（现有要求）
+my_world.register_component(Health)
+
+# 传统写法（节点脚本里）
+unit.hp = 80            # → 自动附加 Health 并写 ECS 列
+var v := unit.max_hp    # ← 从 ECS 列读
+```
+
+- **自动附加**：第一次写某组件字段时，若实体尚无该组件则自动附加（用 schema 默认值）。
+- **Component 补充**：`comp.max_hp = 200` 同样路由宿主实体。
+- **懒加载保持**：不设 `world`/不触碰 schema 字段 → `ecs` 不创建、零开销；设了 world 后属性读写成为新的触发点。
+- **注意**：schema 字段名**勿与 Node 原生属性重名**（`position`/`visible` 等，重名走原生属性不进 ECS）；组件需先 `register_component` 且 `world` 已设置，否则 `_set` 不接管、按 Godot 原生规则（未声明属性赋值会报错）。
+
 ---
 
 ## 一、快速开始

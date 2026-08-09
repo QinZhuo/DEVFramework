@@ -60,6 +60,29 @@ func set_field(comp, field: StringName, value) -> void:
 	ecs.set_field(comp, field, value)
 
 
+## —— 传统属性路由(路线A): 直接读写 schema 字段自动进 ECS ——
+## 仅当 ecs 已初始化(world 已设置)且字段属于已注册组件时才接管;
+## 否则走默认逻辑, 保持懒加载。注意: schema 字段名勿与 Node3D 原生属性(position 等)重名。
+
+func _set(property: StringName, value) -> bool:
+	if _ecs == null:
+		return false
+	var owner: Script = _ecs.field_owner(property)
+	if owner == null:
+		return false
+	_ecs.set_field(owner, property, value)
+	return true
+
+
+func _get(property: StringName):
+	if _ecs == null:
+		return null
+	var owner: Script = _ecs.field_owner(property)
+	if owner == null:
+		return null
+	return _ecs.get_field(owner, property)
+
+
 func is_bound() -> bool:
 	return ecs.is_bound()
 

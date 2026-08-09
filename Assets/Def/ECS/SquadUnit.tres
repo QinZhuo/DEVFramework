@@ -13,5 +13,6 @@ script = ExtResource("3_hp")
 max_hp = 120
 
 [resource]
+resource_name = "SquadUnit"
 script = ExtResource("1_def")
 component_instances = Array[ExtResource("1_guxi5")]([SubResource("Resource_move"), SubResource("Resource_hp")])

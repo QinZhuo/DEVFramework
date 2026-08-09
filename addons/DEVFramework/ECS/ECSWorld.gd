@@ -61,6 +61,7 @@ var _core: Object = null                 # ECSCore 原生实例
 var _component_registered := {}          # Script -> bool (避免重复注册)
 var _component_names := {}               # Script -> StringName
 var _components: Array[Script] = []
+var _field_owner_cache := {}              # 字段名 -> 拥有它的组件类(注册变化时清空)
 
 # ---------------- 系统调度 ----------------
 var _systems: Array[ECSSystem] = []
@@ -83,7 +84,7 @@ var _preheated := false                   # 是否已完成首帧串行预热(�
 var _parallel_batch_active := false       # 本帧正处于并行批(禁用查询缓存, 防陈旧结果)
 var _access_sets := {}                    # ECSSystem -> {compName:true} 上一帧累积的访问记录
 var _pending_access := {}                 # ECSSystem -> {compName:true} 本帧访问缓冲
-var _access_target: Dictionary = {}       # 当前任务的访问目标集(跨线程, 用锁保护)
+var _access_target: Dictionary = {}       # 当前任务的访问目标集(读写全在 _access_mutex 内, 防并行竞争)
 var _access_target_active := false        # 当前是否有活动任务在记录访问
 var _system_access_declared := {}         # ECSSystem -> {compName:true} 声明的读写组件(静态缓存)
 var _access_mutex := Mutex.new()
@@ -163,6 +164,7 @@ func register_component(component_class: Script) -> bool:
 	_component_registered[component_class] = true
 	_component_names[component_class] = name
 	_components.append(component_class)
+	_field_owner_cache.clear()
 	return true
 
 ## 返回组件类名(StringName)
@@ -172,6 +174,25 @@ func component_name(component_class: Script) -> StringName:
 ## 已注册组件类列表
 func registered_components() -> Array[Script]:
 	return _components
+
+## 在已注册组件中查找拥有该字段的组件类(供传统属性路由 _set/_get)。
+## 结果缓存, 组件注册变化时自动失效(见 register_component)。找不到返回 null。
+func field_owner(field: StringName) -> Script:
+	if _field_owner_cache.has(field):
+		return _field_owner_cache[field]
+	for comp in _components:
+		if comp is Script and _script_has_field(comp, field):
+			_field_owner_cache[field] = comp
+			return comp
+	_field_owner_cache[field] = null
+	return null
+
+
+func _script_has_field(s: Script, field: StringName) -> bool:
+	for p in s.get_script_property_list():
+		if p.usage & PROPERTY_USAGE_SCRIPT_VARIABLE and p.name == field:
+			return true
+	return false
 
 # ============================================================
 #  实体
@@ -870,17 +891,16 @@ func _should_parallel() -> bool:
 	return _enabled_system_count() >= parallel_min_systems
 
 ## 记录"当前任务"对某组件的访问(供下一帧冲突检测)。
-## 每个系统任务持有独立的访问目标集: 并行批内先结束的系统清空自己的标记,
-## 不影响其他仍在运行任务的记录。
+## 读+写全在 _access_mutex 内: 并行 worker 即使短暂共享目标集, 字典写入也被串行化,
+## 杜绝"两个线程同时写同一 Dictionary"的内存竞争(C++ 段错误)。归属在极端时序下可能错乱,
+## 但只影响冲突检测精度(可并行度), 不影响正确性 —— 真冲突系统由 declared 声明兜底串行化。
 func _record_access(comp: StringName) -> void:
 	if not _tracking or comp == &"":
 		return
 	_access_mutex.lock()
-	var active := _access_target_active
-	var target := _access_target
+	if _access_target_active:
+		_access_target[comp] = true
 	_access_mutex.unlock()
-	if active:
-		target[comp] = true
 
 ## 帧末把本帧访问并入累积集(供下一帧分批)。
 func _finalize_access() -> void:
@@ -888,7 +908,7 @@ func _finalize_access() -> void:
 		_access_sets[s] = _pending_access[s]
 	_pending_access.clear()
 
-## 开启/关闭某系统的访问记录任务(锁内切换目标集)。
+## 开启/关闭某系统的访问记录任务(锁内切换目标集, 与 _record_access 的锁内读写互斥)。
 func _begin_access(system: ECSSystem) -> void:
 	_access_mutex.lock()
 	if not _pending_access.has(system):

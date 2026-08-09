@@ -1,7 +1,6 @@
 [gd_scene format=3 uid="uid://20r1v7pduo23"]
 
 [ext_resource type="Script" uid="uid://bph6if8vvg1q6" path="res://Scenes/ECS/ECSDemo.gd" id="1_demo"]
-[ext_resource type="Script" uid="uid://b782esqldhxr2" path="res://Scripts/Entity/ECS/ECSPointCloud.gd" id="2_cloud"]
 
 [node name="ECSDemo" type="Control" unique_id=911658987]
 layout_mode = 3
@@ -14,10 +13,6 @@ script = ExtResource("1_demo")
 
 [node name="WorldRoot" type="Node2D" parent="." unique_id=2029077399]
 unique_name_in_owner = true
-
-[node name="Cloud" type="Node2D" parent="." unique_id=1521264640]
-unique_name_in_owner = true
-script = ExtResource("2_cloud")
 
 [node name="ColorRect" type="ColorRect" parent="." unique_id=130206212]
 layout_mode = 0

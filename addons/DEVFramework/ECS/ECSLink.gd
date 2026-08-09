@@ -40,6 +40,14 @@ func has_component(comp) -> bool:
 	return entity_id >= 0 and world != null and world.has_component(entity_id, comp)
 
 
+## 在已注册组件中查找拥有该字段的组件类(用于传统属性路由 _set/_get)。
+## 委托 world.field_owner(带缓存)。找不到返回 null。需 world 已设置。
+func field_owner(field: StringName) -> Script:
+	if world == null:
+		return null
+	return world.field_owner(field)
+
+
 ## 读 ECS 字段(实体不存在返回 null, 不创建)。
 func get_field(comp, field: StringName):
 	if entity_id < 0:

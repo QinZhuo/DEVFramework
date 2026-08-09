@@ -1,10 +1,13 @@
-class_name DemoBallNode
+class_name DemoNodeBall
 extends Node2D
 
-## 普通 Node 实现 —— 传统 OOP 方式对照: 每个小球 = 一个 Node2D, 数据存对象属性,
-## 逻辑写在 _process 里。与三路 ECS 实现做完全相同的逻辑(移动/边界/生命值周期/大小)。
+## 普通 Node 实现的小球节点 —— 纯 OOP 对照: 每个小球 = 一个 Node2D,
+## 数据存对象属性, 逻辑写在 _process, 节点本身即显示(_draw 画色块, 位置 = position)。
+## 与另外两种 ECS 实现做完全相同的逻辑。
 
 const HP_RATE := 2.0
+var max_ball_size: float = 8.0   # 100 hp 时的边长(0 hp 消失)
+var color: Color = Color(0.3, 0.7, 1.0)
 
 var vx: float = 0.0
 var vy: float = 0.0
@@ -38,3 +41,11 @@ func _process(delta: float) -> void:
 		dir = 1
 	# 大小 = hp(0 消失, 100 最大)
 	size = hp
+	queue_redraw()
+
+
+func _draw() -> void:
+	var s := max_ball_size * size / 100.0
+	if s < 0.5:
+		return
+	draw_rect(Rect2(-s * 0.5, -s * 0.5, s, s), color)

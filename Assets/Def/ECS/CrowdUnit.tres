@@ -8,5 +8,6 @@
 script = ExtResource("2_comp")
 
 [resource]
+resource_name = "CrowdUnit"
 script = ExtResource("1_def")
 component_instances = Array[ExtResource("1_cch31")]([SubResource("Resource_move")])
