@@ -75,8 +75,6 @@ var _dirty_schedule := true
 var parallel_enabled: bool = true
 ## 并行线程数。0=自动(硬件核数-1, 上限8)。同一并行批内最多并行这么多系统。
 var parallel_threads: int = 0
-## 至少多少个启用系统才考虑并行(系统太少时线程开销 > 收益)。
-var parallel_min_systems: int = 2
 
 var _tracking := false                    # 本帧是否追踪组件访问(并行打开且系统数达标)
 var _preheated := false                   # 是否已完成首帧串行预热(此后才允许并行)
@@ -767,7 +765,7 @@ func tick(delta: float) -> void:
 	_frame_count += 1
 	_resort()
 	var parallel_now := _should_parallel()
-	_tracking = parallel_enabled and _enabled_system_count() >= parallel_min_systems
+	_tracking = parallel_enabled
 	if parallel_now:
 		_parallel_batch_active = true
 		_parallel_tick(delta)
@@ -881,13 +879,11 @@ func _enabled_system_count() -> int:
 	return n
 
 ## 是否进入并行执行。
-## 条件: 开关打开 + 已过首帧串行预热(采集访问记录) + 系统数达标。
+## 条件: 开关打开 + 已过首帧串行预热(采集访问记录)。单系统也走 worker 线程(不占主线程)。
 func _should_parallel() -> bool:
 	if not parallel_enabled:
 		return false
-	if not _preheated:
-		return false
-	return _enabled_system_count() >= parallel_min_systems
+	return _preheated
 
 ## 记录"当前任务"对某组件的访问(供下一帧冲突检测)。
 ## 读+写全在 _access_mutex 内: 并行 worker 即使短暂共享目标集, 字典写入也被串行化,
@@ -1025,18 +1021,16 @@ func _parallel_tick(delta: float) -> void:
 	for group in groups:
 		_run_group(group, delta, max_par)
 
-## 执行一组系统。组内并行(线程数受 max_par 限制), 超量部分拆成串行子批。
+## 执行一组系统。组内并行(线程数受 max_par 限制), 超量部分拆成子批。
+## 单系统也交给 worker 线程执行(系统逻辑不占主线程, 主线程只等待)。
 func _run_group(group: Array, delta: float, max_par: int) -> void:
-	if group.size() == 1:
-		_run_system(group[0], delta)
-		return
 	var start := 0
 	while start < group.size():
 		var end := mini(start + max_par, group.size())
 		_run_parallel_slice(group.slice(start, end), delta)
 		start = end
 
-## 并行执行一批系统: 主线程跑第一个, 其余交给 C++ 持久 worker 池(免每帧临时建线程)。
+## 并行执行一批系统: 全部交给 C++ 持久 worker 池执行(免每帧临时建线程)。
 func _run_parallel_slice(slice: Array, delta: float) -> void:
 	var tasks := []
 	for s in slice:

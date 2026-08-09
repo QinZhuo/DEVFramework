@@ -113,10 +113,10 @@ void ECSCore::run_systems_parallel(const Array &systems) {
 	if (n <= 0) {
 		return;
 	}
-	// 发布 n-1 个任务给 worker(任务执行完即释放 Callable 引用, 无持久循环)
+	// 全部系统任务交给 worker 池执行(含单系统: 系统逻辑不占用主线程, 主线程只提交+等待)
 	{
 		std::lock_guard<std::mutex> lock(task_mutex_);
-		for (int32_t i = 1; i < n; ++i) {
+		for (int32_t i = 0; i < n; ++i) {
 			++active_tasks_;
 			Variant sys = systems[i];
 			tasks_.emplace_back([sys]() {
@@ -126,12 +126,7 @@ void ECSCore::run_systems_parallel(const Array &systems) {
 		}
 	}
 	task_cv_.notify_all();
-	// 主线程执行第一个系统
-	{
-		Callable cb0 = systems[0];
-		cb0.call();
-	}
-	// 等待 worker 全部完成
+	// 主线程等待 worker 全部完成(系统在独立线程执行, 不阻塞主线程的其他并行工作)
 	{
 		std::unique_lock<std::mutex> lock(task_mutex_);
 		task_cv_.wait(lock, [this]() { return active_tasks_ <= 0; });
