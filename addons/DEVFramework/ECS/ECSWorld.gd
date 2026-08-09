@@ -225,6 +225,10 @@ func add_component(entity: int, component, def_data: Dictionary = {}) -> bool:
 		if inst_script == null:
 			return false
 		component = inst_script
+	# 自动注册: 未注册的脚本组件先注册(用户无需手动 register_component)
+	if component is Script and not _component_registered.get(component, false):
+		if not register_component(component):
+			return false
 	var name := _resolve_component_name(component)
 	if name == &"":
 		return false

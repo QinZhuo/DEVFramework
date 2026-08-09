@@ -13,7 +13,7 @@ extends ECSSystem
 ##
 ## 注意:
 ##   - 本系统处理"ECS → 节点"方向
-##   - "节点 → ECS"(交互写回)由 Component.sync_node_to_ecs() 或业务代码处理
+##   - "节点 → ECS"(交互写回)由 Component.sync_to_ecs() 或业务代码处理
 
 ## 场景根节点(查找 NodeLink.node_path 用)。
 ## 若未设置, 默认取当前场景根。

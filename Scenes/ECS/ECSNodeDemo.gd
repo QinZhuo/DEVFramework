@@ -81,7 +81,6 @@ func _spawn_squad() -> void:
 		view.world = world
 		view.entity_id = ids[i]
 		view.name = "Unit_%d" % i
-		view.bind_pos(ECSDemoMoveComponent, &"pos")
 		# 给关键实体挂 NodeLink(标记为"关键实体", 供读档识别 + SyncSystem 同步)
 		world.add_component(ids[i], NodeLink)
 		# 给关键实体设随机血量(部分低于 50, 便于观察声明规则回血)
@@ -99,7 +98,7 @@ func _spawn_squad() -> void:
 		view.add_child(block)
 		world_root.add_child(view)
 		view.attach_node_link()
-		view.sync_ecs_to_node()
+		ECSBridge.sync_from(view.ecs, ECSDemoMoveComponent, &"pos", view, &"position")
 		views.append(view)
 
 
@@ -147,7 +146,7 @@ func _input(event: InputEvent) -> void:
 			_dragging = null
 	elif event is InputEventMouseMotion and _dragging != null:
 		_dragging.position = event.position
-		_dragging.sync_node_to_ecs()
+		ECSBridge.sync_to(_dragging.ecs, ECSDemoMoveComponent, &"pos", _dragging, &"position")
 
 
 func _pick_at(pos: Vector2) -> Entity2D:
@@ -197,7 +196,7 @@ func _on_load_pressed() -> void:
 		view.add_child(block)
 		world_root.add_child(view)
 		view.attach_node_link()
-		view.sync_ecs_to_node()
+		ECSBridge.sync_from(view.ecs, ECSDemoMoveComponent, &"pos", view, &"position")
 		views.append(view)
 	stats_label.text += "\n[读档] 重建 %d 个关键实体" % views.size()
 

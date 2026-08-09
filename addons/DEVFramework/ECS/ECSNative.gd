@@ -88,26 +88,68 @@ static func refresh() -> void:
 
 
 ## —— 统一字段反射工具 ——
-## 所有"把对象的 @export/脚本变量当作组件数据"的地方(get_schema / register_component /
-## build_prefab / Entity2D.register_to_ecs)都走这里, 保证反射条件一致。
+## 所有"把对象的脚本变量当作组件数据"的地方(get_schema / register_component /
+## build_prefab / Entity2D.register_to_ecs)都走这里, 保证反射规则一致。
+##
+## 清晰规则(Entity 节点脚本):
+##   ① 当前脚本直接声明的 @export 或 @export_storage 纯数据变量 = ECS 数据
+##   ② 若某字段想 @export(在 Inspector 编辑)但不想进 ECS, 用 const ECS_EXCLUDE 排除
+##   ③ 自动排除: 继承基类(Node2D/Entity2D)的原生/桥接属性、非 @export 的显示/内部变量
 
-## 统一反射条件: 脚本变量(SCRIPT_VARIABLE) + 非 getter/setter(纯数据) + 可选 @export。
+## 当前脚本直接声明的字段名(排除继承基类脚本变量): {StringName: true}
+static func _own_script_field_names(instance) -> Dictionary:
+	var own := {}
+	var s: Script = instance.get_script()
+	if s == null:
+		return own
+	var base: Script = s.get_base_script()
+	var base_names := {}
+	if base != null:
+		for p in base.get_script_property_list():
+			base_names[p.name] = true
+	for p in s.get_script_property_list():
+		if not base_names.has(p.name):
+			own[p.name] = true
+	return own
+
+
+## 读取脚本声明的排除表 `const ECS_EXCLUDE := ["field", ...]`。
+## 用于: 字段想 @export(编辑器可调)但不想作为 ECS 数据(如显示配置)。
+static func _excluded_fields(instance) -> Dictionary:
+	var excluded := {}
+	var s: Script = instance.get_script()
+	if s == null:
+		return excluded
+	var consts := s.get_script_constant_map()
+	if consts.has("ECS_EXCLUDE"):
+		for name in consts.get("ECS_EXCLUDE"):
+			excluded[StringName(name)] = true
+	return excluded
+
+
+## 统一反射条件。
+## require_export=true 时只收 @export 或 @export_storage 字段(EDITOR 或 STORAGE);
+## false 收全部脚本纯变量(ECSComponent 子类)。
 static func _is_data_field(p: Dictionary, require_export: bool) -> bool:
 	if not (p.usage & PROPERTY_USAGE_SCRIPT_VARIABLE):
 		return false
 	if p.get("getter", "") != "" or p.get("setter", "") != "":
 		return false
-	if require_export and not (p.usage & PROPERTY_USAGE_EDITOR):
+	if require_export and not (p.usage & (PROPERTY_USAGE_EDITOR | PROPERTY_USAGE_STORAGE)):
 		return false
 	return true
 
 
 ## 收集实例的纯数据字段 schema: {name, fields:[{name, type, default}]}
-## require_export=true 时只收集 @export 字段(普通 Node 脚本用它区分数据字段与显示/配置字段);
-## false 时收集全部脚本纯变量(ECSComponent 子类, 其字段均为数据)。
-static func collect_schema(instance, require_export: bool = false) -> Dictionary:
+static func collect_schema(instance, require_export: bool = false, own_only: bool = true) -> Dictionary:
+	var own := _own_script_field_names(instance)
+	var excluded := _excluded_fields(instance)
 	var fields := []
 	for p in instance.get_property_list():
+		if own_only and not own.has(p.name):
+			continue
+		if excluded.has(p.name):
+			continue
 		if _is_data_field(p, require_export):
 			fields.append({"name": p.name, "type": p.type, "default": instance.get(p.name)})
 	var s: Script = instance.get_script()
@@ -115,9 +157,15 @@ static func collect_schema(instance, require_export: bool = false) -> Dictionary
 
 
 ## 收集实例当前各数据字段的值: {field_name: value}
-static func collect_values(instance, require_export: bool = false) -> Dictionary:
+static func collect_values(instance, require_export: bool = false, own_only: bool = true) -> Dictionary:
+	var own := _own_script_field_names(instance)
+	var excluded := _excluded_fields(instance)
 	var values := {}
 	for p in instance.get_property_list():
+		if own_only and not own.has(p.name):
+			continue
+		if excluded.has(p.name):
+			continue
 		if _is_data_field(p, require_export):
 			values[p.name] = instance.get(p.name)
 	return values

@@ -22,25 +22,21 @@ func setup(count: int, seed: int, parent: Node) -> void:
 	rng.seed = seed
 	for _i in count:
 		# 随机小球初始数据(与另外两种实现同种子同布局)
+		var pos := Vector2(rng.randf_range(20.0, 1140.0), rng.randf_range(20.0, 700.0))
 		var ang := rng.randf() * TAU
 		var spd := rng.randf_range(20.0, 60.0)
-		var x := rng.randf_range(20.0, 1140.0)
-		var y := rng.randf_range(20.0, 700.0)
-		var vx := cos(ang) * spd
-		var vy := sin(ang) * spd
+		var vel := Vector2(cos(ang) * spd, sin(ang) * spd)
 		var hp := rng.randf_range(0.0, 100.0)
 		# 创建继承 Entity2D 的实体节点(数据字段 @export 在节点上声明, 无需单独组件资源)
 		var n := DemoEntityBallNode.new()
 		n.world = world
 		# 传统写法设初值(节点变量)
-		n.x = x
-		n.y = y
-		n.vx = vx
-		n.vy = vy
+		n.pos = pos
+		n.vel = vel
 		n.hp = hp
 		n.max_hp = 100.0
 		n.dir = 1
-		# 桥接: 把本节点作为数据组件注册进 ECS, 当前变量值写入列
+		# 桥接: 把本节点作为数据组件注册进 ECS(自动注册组件 + 写初值 + 绑定位置)
 		n.register_to_ecs()
 		parent.add_child(n)
 		n.set_process(false)   # 每帧逻辑由系统批量驱动
@@ -50,14 +46,13 @@ func setup(count: int, seed: int, parent: Node) -> void:
 func tick(delta: float) -> void:
 	# 每帧高频逻辑由系统列批量处理(ECS 底层加速)
 	world.tick(delta)
-	# 从 ECS 列同步节点位置与显示尺寸(每帧全量, 与另外两种实现同等负载保证公平对比)
-	var xcol: PackedFloat32Array = world.get_column(DemoEntityBallNode, &"x")
-	var ycol: PackedFloat32Array = world.get_column(DemoEntityBallNode, &"y")
+	# 从 ECS 列批量同步节点位置与显示尺寸(Vector2 列直读, 每帧全量保证公平对比)
+	var poscol: PackedVector2Array = world.get_column(DemoEntityBallNode, &"pos")
 	var scol: PackedFloat32Array = world.get_column(DemoEntityBallNode, &"size")
-	var n := mini(nodes.size(), xcol.size())
+	var n := mini(nodes.size(), poscol.size())
 	for i in n:
 		var node: DemoEntityBallNode = nodes[i]
-		node.position = Vector2(xcol[i], ycol[i])
+		node.position = poscol[i]
 		node.set_visual_size(scol[i])
 
 

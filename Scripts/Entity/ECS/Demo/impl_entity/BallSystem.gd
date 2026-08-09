@@ -15,25 +15,24 @@ func required_components() -> Array[Script]:
 
 
 func _run(ctx: ECSSystemContext, delta: float) -> void:
-	ctx.for_each(DemoEntityBallNode).with([&"x", &"y", &"vx", &"vy", &"hp", &"max_hp", &"dir", &"size"]).process(_cb.bind(delta))
+	ctx.for_each(DemoEntityBallNode).with([&"pos", &"vel", &"hp", &"max_hp", &"dir", &"size"]).process(_cb.bind(delta))
 
 
-func _cb(indices: PackedInt32Array, x: PackedFloat32Array, y: PackedFloat32Array,
-		vx: PackedFloat32Array, vy: PackedFloat32Array, hp: PackedFloat32Array,
-		max_hp: PackedFloat32Array, dir: PackedInt32Array, size: PackedFloat32Array, delta: float) -> void:
+func _cb(indices: PackedInt32Array, pos: PackedVector2Array, vel: PackedVector2Array,
+		hp: PackedFloat32Array, max_hp: PackedFloat32Array,
+		dir: PackedInt32Array, size: PackedFloat32Array, delta: float) -> void:
 	processed = indices.size()
 	var rate := HP_RATE * delta * 60.0
 	for r in indices:
-		# 移动
-		x[r] += vx[r] * delta
-		y[r] += vy[r] * delta
+		# 移动(Vector2 列直算)
+		pos[r] += vel[r] * delta
 		# 边界回弹
-		if x[r] < 10.0 or x[r] > 1150.0:
-			vx[r] = -vx[r]
-			x[r] = clampf(x[r], 10.0, 1150.0)
-		if y[r] < 10.0 or y[r] > 710.0:
-			vy[r] = -vy[r]
-			y[r] = clampf(y[r], 10.0, 710.0)
+		if pos[r].x < 10.0 or pos[r].x > 1150.0:
+			vel[r].x = -vel[r].x
+			pos[r].x = clampf(pos[r].x, 10.0, 1150.0)
+		if pos[r].y < 10.0 or pos[r].y > 710.0:
+			vel[r].y = -vel[r].y
+			pos[r].y = clampf(pos[r].y, 10.0, 710.0)
 		# 生命值周期增减: 0 → 100 → 0
 		hp[r] += dir[r] * rate
 		if hp[r] >= max_hp[r]:

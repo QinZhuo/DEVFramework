@@ -50,8 +50,21 @@ func register_to_host() -> bool:
 	var l := _link()
 	if l == null or l.world == null:
 		return false
-	l.world.register_component(get_script())
-	return l.add_component(self)
+	return l.add_component(self)   # add_component 自动注册组件
+
+
+## 便捷: 从宿主 ECS 同步指定字段到本组件属性(组件 = 本组件脚本)。
+func sync_from_host(field: StringName, obj_prop: StringName = field) -> void:
+	var l := _link()
+	if l != null:
+		ECSBridge.sync_from(l, get_script(), field, self, obj_prop)
+
+
+## 便捷: 从本组件属性同步到宿主 ECS 指定字段(组件 = 本组件脚本)。
+func sync_to_host(field: StringName, obj_prop: StringName = field) -> void:
+	var l := _link()
+	if l != null:
+		ECSBridge.sync_to(l, get_script(), field, self, obj_prop)
 
 
 ## 给宿主实体附加 ECS 数据组件(需挂到 Entity2D/Entity3D 下)

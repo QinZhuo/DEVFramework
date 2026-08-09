@@ -74,8 +74,17 @@ func register_to_ecs() -> bool:
 	if ecs.world == null:
 		push_warning("Entity(%s): 未设置 world, 无法注册到 ECS。" % to_string())
 		return false
-	ecs.world.register_component(get_script())
-	return ecs.add_component(self)
+	return ecs.add_component(self)   # add_component 自动注册组件
+
+
+## 便捷: 从实体 ECS 同步指定字段到本对象属性(组件 = 本实体脚本)。
+func sync_from_ecs(field: StringName, obj_prop: StringName = field) -> void:
+	ECSBridge.sync_from(ecs, get_script(), field, self, obj_prop)
+
+
+## 便捷: 从本对象属性同步到实体 ECS 指定字段(组件 = 本实体脚本)。
+func sync_to_ecs(field: StringName, obj_prop: StringName = field) -> void:
+	ECSBridge.sync_to(ecs, get_script(), field, self, obj_prop)
 
 
 func get_desc(data):
