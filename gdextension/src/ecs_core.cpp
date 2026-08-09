@@ -8,9 +8,6 @@
 
 using namespace godot;
 
-// 系统 worker 线程标志: 系统任务在 worker 线程执行时, 其内部 batch 需串行(避免嵌套提交任务卡死)
-static thread_local bool g_in_system_thread = false;
-
 // ---------------------------------------------------------------------------
 // ECSCore 并行线程池 (batch 分片并行)
 // ---------------------------------------------------------------------------
@@ -79,28 +76,49 @@ template <typename F>
 void ECSCore::parallel_for(size_t n, F &&fn, double cost_per_item) {
 	ensure_workers();  // 确保线程池启动 + thread_count_ 就绪
 	// 按工作量估算是否值得并行(而非固定条数): 高成本项(向量/SIMD)更早并行
-	if (g_in_system_thread || double(n) * cost_per_item < 10000.0 || thread_count_ <= 1) {
+	if (double(n) * cost_per_item < 10000.0 || thread_count_ <= 1) {
 		fn(0, n);
 		return;
 	}
 	const size_t slices = size_t(thread_count_);
 	const size_t chunk = (n + slices - 1) / slices;
+	// 协作式并行(参考 Unity Job System / Flecs 无锁调度):
+	//  调用线程执行一个分片(不空等), 其余分片交 worker 池, 局部 pending 计数等待。
+	// 主线程系统/直接 batch 用此路径(列是自管裸内存, 多线程写不同行安全)。
+	std::mutex p_mutex;
+	std::condition_variable p_cv;
+	int pending = 0;
 	{
 		std::lock_guard<std::mutex> lock(task_mutex_);
-		for (size_t s = 0; s < slices; ++s) {
+		for (size_t s = 1; s < slices; ++s) {
 			const size_t begin = s * chunk;
 			const size_t end = std::min(begin + chunk, n);
 			if (begin >= end) {
 				break;
 			}
 			++active_tasks_;
-			tasks_.emplace_back([begin, end, &fn]() { fn(begin, end); });
+			++pending;
+			tasks_.emplace_back([&, begin, end]() {
+				fn(begin, end);
+				{
+					std::lock_guard<std::mutex> pl(p_mutex);
+					--pending;
+					// notify 必须与 --pending 同锁: 保证调用线程 wait 返回(pending==0)时,
+					// 本 worker 已彻底完成(含 notify), 不会在 parallel_for 返回销毁 p_cv 后再访问。
+					if (pending <= 0) {
+						p_cv.notify_all();
+					}
+				}
+			});
 		}
 	}
 	task_cv_.notify_all();
+	if (n > 0) {
+		fn(0, std::min(chunk, n));
+	}
 	{
-		std::unique_lock<std::mutex> lock(task_mutex_);
-		task_cv_.wait(lock, [this]() { return active_tasks_ <= 0; });
+		std::unique_lock<std::mutex> lock(p_mutex);
+		p_cv.wait(lock, [&]() { return pending <= 0; });
 	}
 }
 
@@ -123,10 +141,8 @@ void ECSCore::run_systems_parallel(const Array &systems) {
 			++active_tasks_;
 			Variant sys = systems[i];
 			tasks_.emplace_back([sys]() {
-				g_in_system_thread = true;
 				Callable cb = sys;
 				cb.call();
-				g_in_system_thread = false;
 			});
 		}
 	}
@@ -228,15 +244,43 @@ void ECSColumn::resize(size_t n) {
 
 void ECSColumn::push_default(const Variant &value) {
 	switch (type) {
-		case Variant::INT: i32.push_back(int64_t(value)); break;
-		case Variant::FLOAT: f32.push_back(double(value)); break;
-		case Variant::BOOL: b.push_back(bool(value)); break;
+		case Variant::INT: i32.push_back(int32_t(value)); break;
+		case Variant::FLOAT: f32.push_back(float(value)); break;
+		case Variant::BOOL: b.push_back(bool(value) ? 1 : 0); break;
 		case Variant::VECTOR2: v2.push_back(Vector2(value)); break;
 		case Variant::VECTOR3: v3.push_back(Vector3(value)); break;
 		case Variant::VECTOR4: v4.push_back(Vector4(value)); break;
 		case Variant::COLOR: col.push_back(Color(value)); break;
 		case Variant::STRING: s.push_back(String(value)); break;
 		default: break;
+	}
+}
+
+void *ECSColumn::write_ptr() {
+	switch (type) {
+		case Variant::INT: return i32.empty() ? nullptr : i32.data();
+		case Variant::FLOAT: return f32.empty() ? nullptr : f32.data();
+		case Variant::BOOL: return b.empty() ? nullptr : b.data();
+		case Variant::VECTOR2: return v2.empty() ? nullptr : v2.data();
+		case Variant::VECTOR3: return v3.empty() ? nullptr : v3.data();
+		case Variant::VECTOR4: return v4.empty() ? nullptr : v4.data();
+		case Variant::COLOR: return col.empty() ? nullptr : col.data();
+		case Variant::STRING: return s.empty() ? nullptr : s.data();
+		default: return nullptr;
+	}
+}
+
+const void *ECSColumn::read_ptr() const {
+	switch (type) {
+		case Variant::INT: return i32.empty() ? nullptr : i32.data();
+		case Variant::FLOAT: return f32.empty() ? nullptr : f32.data();
+		case Variant::BOOL: return b.empty() ? nullptr : b.data();
+		case Variant::VECTOR2: return v2.empty() ? nullptr : v2.data();
+		case Variant::VECTOR3: return v3.empty() ? nullptr : v3.data();
+		case Variant::VECTOR4: return v4.empty() ? nullptr : v4.data();
+		case Variant::COLOR: return col.empty() ? nullptr : col.data();
+		case Variant::STRING: return s.empty() ? nullptr : s.data();
+		default: return nullptr;
 	}
 }
 
@@ -323,6 +367,169 @@ size_t ECSColumn::size() const {
 		case Variant::STRING: return size_t(s.size());
 		default: return 0;
 	}
+}
+
+// ---------------------------------------------------------------------------
+// 裸内存列 <-> Godot PackedArray 转换 (get_column/set_column/borrow/return 用)
+// 列内部是自管 std::vector; 与 GDScript 边界处按需拷贝为 PackedArray(非零拷贝)。
+// ---------------------------------------------------------------------------
+static Variant col_to_packed(const ECSColumn &col) {
+	switch (col.type) {
+		case Variant::INT: {
+			PackedInt32Array a;
+			a.resize(int32_t(col.i32.size()));
+			if (!col.i32.empty()) {
+				memcpy(a.ptrw(), col.i32.data(), col.i32.size() * sizeof(int32_t));
+			}
+			return a;
+		}
+		case Variant::FLOAT: {
+			PackedFloat32Array a;
+			a.resize(int32_t(col.f32.size()));
+			if (!col.f32.empty()) {
+				memcpy(a.ptrw(), col.f32.data(), col.f32.size() * sizeof(float));
+			}
+			return a;
+		}
+		case Variant::BOOL: {
+			PackedByteArray a;
+			a.resize(int32_t(col.b.size()));
+			if (!col.b.empty()) {
+				memcpy(a.ptrw(), col.b.data(), col.b.size());
+			}
+			return a;
+		}
+		case Variant::VECTOR2: {
+			PackedVector2Array a;
+			a.resize(int32_t(col.v2.size()));
+			if (!col.v2.empty()) {
+				memcpy(a.ptrw(), col.v2.data(), col.v2.size() * sizeof(Vector2));
+			}
+			return a;
+		}
+		case Variant::VECTOR3: {
+			PackedVector3Array a;
+			a.resize(int32_t(col.v3.size()));
+			if (!col.v3.empty()) {
+				memcpy(a.ptrw(), col.v3.data(), col.v3.size() * sizeof(Vector3));
+			}
+			return a;
+		}
+		case Variant::VECTOR4: {
+			PackedVector4Array a;
+			a.resize(int32_t(col.v4.size()));
+			if (!col.v4.empty()) {
+				memcpy(a.ptrw(), col.v4.data(), col.v4.size() * sizeof(Vector4));
+			}
+			return a;
+		}
+		case Variant::COLOR: {
+			PackedColorArray a;
+			a.resize(int32_t(col.col.size()));
+			if (!col.col.empty()) {
+				memcpy(a.ptrw(), col.col.data(), col.col.size() * sizeof(Color));
+			}
+			return a;
+		}
+		case Variant::STRING: {
+			PackedStringArray a;
+			a.resize(int32_t(col.s.size()));
+			for (size_t i = 0; i < col.s.size(); ++i) {
+				a.set(int32_t(i), col.s[i]);
+			}
+			return a;
+		}
+		default:
+			return Variant();
+	}
+}
+
+static void col_from_packed(ECSColumn &col, const Variant &v) {
+	switch (col.type) {
+		case Variant::INT: {
+			PackedInt32Array a = v;
+			col.i32.resize(int32_t(a.size()));
+			if (a.size() > 0) {
+				memcpy(col.i32.data(), a.ptr(), a.size() * sizeof(int32_t));
+			}
+			break;
+		}
+		case Variant::FLOAT: {
+			PackedFloat32Array a = v;
+			col.f32.resize(int32_t(a.size()));
+			if (a.size() > 0) {
+				memcpy(col.f32.data(), a.ptr(), a.size() * sizeof(float));
+			}
+			break;
+		}
+		case Variant::BOOL: {
+			PackedByteArray a = v;
+			col.b.resize(int32_t(a.size()));
+			if (a.size() > 0) {
+				memcpy(col.b.data(), a.ptr(), a.size());
+			}
+			break;
+		}
+		case Variant::VECTOR2: {
+			PackedVector2Array a = v;
+			col.v2.resize(int32_t(a.size()));
+			if (a.size() > 0) {
+				memcpy(col.v2.data(), a.ptr(), a.size() * sizeof(Vector2));
+			}
+			break;
+		}
+		case Variant::VECTOR3: {
+			PackedVector3Array a = v;
+			col.v3.resize(int32_t(a.size()));
+			if (a.size() > 0) {
+				memcpy(col.v3.data(), a.ptr(), a.size() * sizeof(Vector3));
+			}
+			break;
+		}
+		case Variant::VECTOR4: {
+			PackedVector4Array a = v;
+			col.v4.resize(int32_t(a.size()));
+			if (a.size() > 0) {
+				memcpy(col.v4.data(), a.ptr(), a.size() * sizeof(Vector4));
+			}
+			break;
+		}
+		case Variant::COLOR: {
+			PackedColorArray a = v;
+			col.col.resize(int32_t(a.size()));
+			if (a.size() > 0) {
+				memcpy(col.col.data(), a.ptr(), a.size() * sizeof(Color));
+			}
+			break;
+		}
+		case Variant::STRING: {
+			PackedStringArray a = v;
+			col.s.resize(int32_t(a.size()));
+			for (int32_t i = 0; i < a.size(); ++i) {
+				col.s[i] = a[i];
+			}
+			break;
+		}
+		default:
+			break;
+	}
+}
+
+// 借出: 拷贝成 PackedArray 并清空内部列(独占引用, 回调写 PackedArray 后归还写回)
+static Variant col_borrow_out(ECSColumn &col) {
+	Variant p = col_to_packed(col);
+	switch (col.type) {
+		case Variant::INT: col.i32.clear(); break;
+		case Variant::FLOAT: col.f32.clear(); break;
+		case Variant::BOOL: col.b.clear(); break;
+		case Variant::VECTOR2: col.v2.clear(); break;
+		case Variant::VECTOR3: col.v3.clear(); break;
+		case Variant::VECTOR4: col.v4.clear(); break;
+		case Variant::COLOR: col.col.clear(); break;
+		case Variant::STRING: col.s.clear(); break;
+		default: break;
+	}
+	return p;
 }
 
 // ---------------------------------------------------------------------------
@@ -778,19 +985,9 @@ Variant ECSCore::get_column(const StringName &comp, const StringName &field) con
 	if (fi < 0) {
 		return Variant();
 	}
-	// 直接返回内部 Packed*Array 引用 —— 零拷贝, GDScript 共享同一内存
+	// 内部裸内存列 → PackedArray 拷贝(供 GDScript 访问)
 	const ECSColumn &col = cd.columns[fi];
-	switch (col.type) {
-		case Variant::INT: return col.i32;
-		case Variant::FLOAT: return col.f32;
-		case Variant::BOOL: return col.b;
-		case Variant::VECTOR2: return col.v2;
-		case Variant::VECTOR3: return col.v3;
-		case Variant::VECTOR4: return col.v4;
-		case Variant::COLOR: return col.col;
-		case Variant::STRING: return col.s;
-		default: return Variant();
-	}
+	return col_to_packed(col);
 }
 
 // 一次取多组件多列: 返回 {compName: {fieldName: PackedArray}}, 一次跨语言替代 N 次 get_column。
@@ -811,17 +1008,7 @@ Dictionary ECSCore::get_columns(const Array &comps_fields) const {
 				continue;
 			}
 			const ECSColumn &col = c->columns[fi];
-			switch (col.type) {
-				case Variant::INT: fields_dict[fname] = col.i32; break;
-				case Variant::FLOAT: fields_dict[fname] = col.f32; break;
-				case Variant::BOOL: fields_dict[fname] = col.b; break;
-				case Variant::VECTOR2: fields_dict[fname] = col.v2; break;
-				case Variant::VECTOR3: fields_dict[fname] = col.v3; break;
-				case Variant::VECTOR4: fields_dict[fname] = col.v4; break;
-				case Variant::COLOR: fields_dict[fname] = col.col; break;
-				case Variant::STRING: fields_dict[fname] = col.s; break;
-				default: break;
-			}
+			fields_dict[fname] = col_to_packed(col);
 		}
 		out[c->name] = fields_dict;
 	}
@@ -848,24 +1035,14 @@ Dictionary ECSCore::borrow_columns(const Array &comps_fields) {
 				continue;
 			}
 			ECSColumn &col = c->columns[fi];
-			switch (col.type) {
-				case Variant::INT: { PackedInt32Array a = col.i32; col.i32 = PackedInt32Array(); fields_dict[fname] = a; break; }
-				case Variant::FLOAT: { PackedFloat32Array a = col.f32; col.f32 = PackedFloat32Array(); fields_dict[fname] = a; break; }
-				case Variant::BOOL: { PackedByteArray a = col.b; col.b = PackedByteArray(); fields_dict[fname] = a; break; }
-				case Variant::VECTOR2: { PackedVector2Array a = col.v2; col.v2 = PackedVector2Array(); fields_dict[fname] = a; break; }
-				case Variant::VECTOR3: { PackedVector3Array a = col.v3; col.v3 = PackedVector3Array(); fields_dict[fname] = a; break; }
-				case Variant::VECTOR4: { PackedVector4Array a = col.v4; col.v4 = PackedVector4Array(); fields_dict[fname] = a; break; }
-				case Variant::COLOR: { PackedColorArray a = col.col; col.col = PackedColorArray(); fields_dict[fname] = a; break; }
-				case Variant::STRING: { PackedStringArray a = col.s; col.s = PackedStringArray(); fields_dict[fname] = a; break; }
-				default: break;
-			}
+			fields_dict[fname] = col_borrow_out(col);
 		}
 		out[c->name] = fields_dict;
 	}
 	return out;
 }
 
-// 归还列: 内部列 = 返回数组(指针交换 O(1))。
+// 归还列: 内部列 = 返回数组(拷回)。
 void ECSCore::return_columns(const Dictionary &borrowed) {
 	_borrow_count_.fetch_sub(1);
 	Array keys = borrowed.keys();
@@ -884,18 +1061,7 @@ void ECSCore::return_columns(const Dictionary &borrowed) {
 				continue;
 			}
 			ECSColumn &col = c->columns[fi];
-			const Variant val = fields[fname];
-			switch (col.type) {
-				case Variant::INT: col.i32 = val; break;
-				case Variant::FLOAT: col.f32 = val; break;
-				case Variant::BOOL: col.b = val; break;
-				case Variant::VECTOR2: col.v2 = val; break;
-				case Variant::VECTOR3: col.v3 = val; break;
-				case Variant::VECTOR4: col.v4 = val; break;
-				case Variant::COLOR: col.col = val; break;
-				case Variant::STRING: col.s = val; break;
-				default: break;
-			}
+			col_from_packed(col, fields[fname]);
 		}
 	}
 }
@@ -921,19 +1087,7 @@ void ECSCore::set_columns(const Dictionary &values) {
 				continue;
 			}
 			ECSColumn &col = c->columns[fi];
-			const Variant val = fields[fname];
-			// 引用赋值(指针交换): 无逐元素拷贝
-			switch (col.type) {
-				case Variant::INT: col.i32 = val; break;
-				case Variant::FLOAT: col.f32 = val; break;
-				case Variant::BOOL: col.b = val; break;
-				case Variant::VECTOR2: col.v2 = val; break;
-				case Variant::VECTOR3: col.v3 = val; break;
-				case Variant::VECTOR4: col.v4 = val; break;
-				case Variant::COLOR: col.col = val; break;
-				case Variant::STRING: col.s = val; break;
-				default: break;
-			}
+			col_from_packed(col, fields[fname]);
 		}
 	}
 }
@@ -947,19 +1101,9 @@ void ECSCore::set_column(const StringName &comp, const StringName &field, const 
 	if (fi < 0) {
 		return;
 	}
-	// 引用赋值(指针交换): 无逐元素拷贝
+	// PackedArray → 内部裸内存列(拷贝)
 	ECSColumn &col = cd->columns[fi];
-	switch (col.type) {
-		case Variant::INT: col.i32 = values; break;
-		case Variant::FLOAT: col.f32 = values; break;
-		case Variant::BOOL: col.b = values; break;
-		case Variant::VECTOR2: col.v2 = values; break;
-		case Variant::VECTOR3: col.v3 = values; break;
-		case Variant::VECTOR4: col.v4 = values; break;
-		case Variant::COLOR: col.col = values; break;
-		case Variant::STRING: col.s = values; break;
-		default: break;
-	}
+	col_from_packed(col, values);
 }
 
 // ---------------------------------------------------------------------------
@@ -1149,7 +1293,7 @@ int64_t ECSCore::batch_apply_col(const StringName &anchor, const PackedStringArr
 	if (ocol.type == Variant::FLOAT && (scol.type == Variant::FLOAT || scol.type == Variant::INT)) {
 		// 支持 FLOAT 列 op INT 列(源转 float), 便于 hp += dir*rate 等混型运算
 		const bool src_is_int = (scol.type == Variant::INT);
-		float *w = ocol.f32.ptrw();
+		float *w = ocol.f32.data();
 		parallel_for(size_t(cnt), [&](size_t b, size_t e) {
 			for (size_t i = b; i < e; ++i) {
 				const int32_t erow = rows[i];
@@ -1157,7 +1301,7 @@ int64_t ECSCore::batch_apply_col(const StringName &anchor, const PackedStringArr
 				const int32_t orow = same_comp ? erow : oc->set.row_of(ee);
 				const int32_t srow = src_is_anchor ? erow : sc->set.row_of(ee);
 				if (orow < 0 || srow < 0) continue;
-				const double sv = src_is_int ? double(scol.i32.ptr()[srow]) : double(scol.f32.ptr()[srow]);
+				const double sv = src_is_int ? double(scol.i32.data()[srow]) : double(scol.f32.data()[srow]);
 				const float v = float(sv * factor + addend);
 				switch (op) {
 					case COL_ADD: w[orow] += v; break;
@@ -1171,8 +1315,8 @@ int64_t ECSCore::batch_apply_col(const StringName &anchor, const PackedStringArr
 		}, cost);
 		n = cnt;
 	} else if (ocol.type == Variant::INT && scol.type == Variant::INT) {
-		int32_t *w = ocol.i32.ptrw();
-		const int32_t *src = scol.i32.ptr();
+		int32_t *w = ocol.i32.data();
+		const int32_t *src = scol.i32.data();
 		parallel_for(size_t(cnt), [&](size_t b, size_t e) {
 			for (size_t i = b; i < e; ++i) {
 				const int32_t erow = rows[i];
@@ -1193,8 +1337,8 @@ int64_t ECSCore::batch_apply_col(const StringName &anchor, const PackedStringArr
 		}, cost);
 		n = cnt;
 	} else if (ocol.type == Variant::VECTOR2 && scol.type == Variant::VECTOR2) {
-		Vector2 *w = ocol.v2.ptrw();
-		const Vector2 *src = scol.v2.ptr();
+		Vector2 *w = ocol.v2.data();
+		const Vector2 *src = scol.v2.data();
 		const float f = float(factor);
 		parallel_for(size_t(cnt), [&](size_t b, size_t e) {
 			for (size_t i = b; i < e; ++i) {
@@ -1216,8 +1360,8 @@ int64_t ECSCore::batch_apply_col(const StringName &anchor, const PackedStringArr
 		}, 3.0);
 		n = cnt;
 	} else if (ocol.type == Variant::VECTOR3 && scol.type == Variant::VECTOR3) {
-		Vector3 *w = ocol.v3.ptrw();
-		const Vector3 *src = scol.v3.ptr();
+		Vector3 *w = ocol.v3.data();
+		const Vector3 *src = scol.v3.data();
 		const float f = float(factor);
 		parallel_for(size_t(cnt), [&](size_t b, size_t e) {
 			for (size_t i = b; i < e; ++i) {
@@ -1246,7 +1390,7 @@ int64_t ECSCore::batch_apply_col(const StringName &anchor, const PackedStringArr
 // 优化: 批量收集 + 行集动作
 // ---------------------------------------------------------------------------
 
-// 对预收集的 anchor 行集做标量批量动作(跳过收集)。rows[i] 为 anchor dense 行号。
+// 对预收集的 anchor 行集做标量批量动作(跳过收集)。rows_v[i] 为 anchor dense 行号。
 int64_t ECSCore::batch_apply_rows(const StringName &anchor, const PackedInt32Array &rows,
 		const StringName &op_comp, const StringName &op_field, int64_t op,
 		double factor, double addend) {
@@ -1267,16 +1411,19 @@ int64_t ECSCore::batch_apply_rows(const StringName &anchor, const PackedInt32Arr
 	if (cnt <= 0) {
 		return 0;
 	}
+	// 行号拷到裸内存: 并行 worker 读裸 std::vector, 避免多线程读 Godot PackedInt32Array 的 Variant 竞态
+	std::vector<int32_t> rows_v(cnt);
+	memcpy(rows_v.data(), rows.ptr(), cnt * sizeof(int32_t));
 	const bool same_comp = (op_comp == anchor);
 	const auto &a_dense = a->set.dense;
 	switch (col.type) {
 		case Variant::INT: {
-			int32_t *w = col.i32.ptrw();
+			int32_t *w = col.i32.data();
 			const int32_t add = int32_t(addend);
 			if (same_comp) {
 				parallel_for(size_t(cnt), [&](size_t b, size_t e) {
 					for (size_t i = b; i < e; ++i) {
-						const int32_t row = rows[i];
+						const int32_t row = rows_v[i];
 						switch (op) {
 							case BATCH_ADD: w[row] += add; break;
 							case BATCH_MUL_ADD: w[row] = int32_t(double(w[row]) * factor + addend); break;
@@ -1288,7 +1435,7 @@ int64_t ECSCore::batch_apply_rows(const StringName &anchor, const PackedInt32Arr
 			} else {
 				parallel_for(size_t(cnt), [&](size_t b, size_t e) {
 					for (size_t i = b; i < e; ++i) {
-						const int32_t orow = oc->set.row_of(a_dense[rows[i]]);
+						const int32_t orow = oc->set.row_of(a_dense[rows_v[i]]);
 						if (orow < 0) continue;
 						switch (op) {
 							case BATCH_ADD: w[orow] += add; break;
@@ -1302,11 +1449,11 @@ int64_t ECSCore::batch_apply_rows(const StringName &anchor, const PackedInt32Arr
 			return cnt;
 		}
 		case Variant::FLOAT: {
-			float *w = col.f32.ptrw();
+			float *w = col.f32.data();
 			if (same_comp) {
 				parallel_for(size_t(cnt), [&](size_t b, size_t e) {
 					for (size_t i = b; i < e; ++i) {
-						const int32_t row = rows[i];
+						const int32_t row = rows_v[i];
 						switch (op) {
 							case BATCH_ADD: w[row] += float(addend); break;
 							case BATCH_MUL_ADD: w[row] = float(double(w[row]) * factor + addend); break;
@@ -1318,7 +1465,7 @@ int64_t ECSCore::batch_apply_rows(const StringName &anchor, const PackedInt32Arr
 			} else {
 				parallel_for(size_t(cnt), [&](size_t b, size_t e) {
 					for (size_t i = b; i < e; ++i) {
-						const int32_t orow = oc->set.row_of(a_dense[rows[i]]);
+						const int32_t orow = oc->set.row_of(a_dense[rows_v[i]]);
 						if (orow < 0) continue;
 						switch (op) {
 							case BATCH_ADD: w[orow] += float(addend); break;
@@ -1332,12 +1479,12 @@ int64_t ECSCore::batch_apply_rows(const StringName &anchor, const PackedInt32Arr
 			return cnt;
 		}
 		case Variant::VECTOR2: {
-			Vector2 *w = col.v2.ptrw();
+			Vector2 *w = col.v2.data();
 			if (op_axis >= 0 && op_axis < 2) {
 				if (same_comp) {
 					parallel_for(size_t(cnt), [&](size_t b, size_t e) {
 						for (size_t i = b; i < e; ++i) {
-							const int32_t row = rows[i];
+							const int32_t row = rows_v[i];
 							switch (op) {
 								case BATCH_ADD: w[row][op_axis] += float(addend); break;
 								case BATCH_MUL_ADD: w[row][op_axis] = float(double(w[row][op_axis]) * factor + addend); break;
@@ -1349,7 +1496,7 @@ int64_t ECSCore::batch_apply_rows(const StringName &anchor, const PackedInt32Arr
 				} else {
 					parallel_for(size_t(cnt), [&](size_t b, size_t e) {
 						for (size_t i = b; i < e; ++i) {
-							const int32_t orow = oc->set.row_of(a_dense[rows[i]]);
+							const int32_t orow = oc->set.row_of(a_dense[rows_v[i]]);
 							if (orow < 0) continue;
 							switch (op) {
 								case BATCH_ADD: w[orow][op_axis] += float(addend); break;
@@ -1365,12 +1512,12 @@ int64_t ECSCore::batch_apply_rows(const StringName &anchor, const PackedInt32Arr
 			break;
 		}
 		case Variant::VECTOR3: {
-			Vector3 *w = col.v3.ptrw();
+			Vector3 *w = col.v3.data();
 			if (op_axis >= 0 && op_axis < 3) {
 				if (same_comp) {
 					parallel_for(size_t(cnt), [&](size_t b, size_t e) {
 						for (size_t i = b; i < e; ++i) {
-							const int32_t row = rows[i];
+							const int32_t row = rows_v[i];
 							switch (op) {
 								case BATCH_ADD: w[row][op_axis] += float(addend); break;
 								case BATCH_MUL_ADD: w[row][op_axis] = float(double(w[row][op_axis]) * factor + addend); break;
@@ -1382,7 +1529,7 @@ int64_t ECSCore::batch_apply_rows(const StringName &anchor, const PackedInt32Arr
 				} else {
 					parallel_for(size_t(cnt), [&](size_t b, size_t e) {
 						for (size_t i = b; i < e; ++i) {
-							const int32_t orow = oc->set.row_of(a_dense[rows[i]]);
+							const int32_t orow = oc->set.row_of(a_dense[rows_v[i]]);
 							if (orow < 0) continue;
 							switch (op) {
 								case BATCH_ADD: w[orow][op_axis] += float(addend); break;
@@ -1425,18 +1572,21 @@ int64_t ECSCore::batch_apply_col_rows(const StringName &anchor, const PackedInt3
 	if (cnt <= 0) {
 		return 0;
 	}
+	// 行号拷到裸内存: 并行 worker 读裸 std::vector, 避免多线程读 Godot PackedInt32Array 的 Variant 竞态
+	std::vector<int32_t> rows_v(cnt);
+	memcpy(rows_v.data(), rows.ptr(), cnt * sizeof(int32_t));
 	const bool same_comp = (op_comp == anchor);
 	const bool src_is_anchor = (src_comp == anchor);
 	const auto &a_dense = a->set.dense;
 
 	if (ocol.type == Variant::FLOAT && (scol.type == Variant::FLOAT || scol.type == Variant::INT)) {
 		const bool src_is_int = (scol.type == Variant::INT);
-		float *w = ocol.f32.ptrw();
+		float *w = ocol.f32.data();
 		// 连续全行快路径(SIMD): rows=0..cnt-1 且同列, ADD/SET 可向量化(两循环模型内层直算)
 		bool contiguous = same_comp && src_is_anchor;
 		if (contiguous) {
 			for (int32_t ci = 0; ci < cnt; ++ci) {
-				if (rows[ci] != ci) {
+				if (rows_v[ci] != ci) {
 					contiguous = false;
 					break;
 				}
@@ -1446,7 +1596,7 @@ int64_t ECSCore::batch_apply_col_rows(const StringName &anchor, const PackedInt3
 			const __m128 fv = _mm_set1_ps(float(factor));
 			const __m128 av = _mm_set1_ps(float(addend));
 			if (src_is_int) {
-				const int32_t *si = scol.i32.ptr();
+				const int32_t *si = scol.i32.data();
 				parallel_for(size_t(cnt), [&](size_t b, size_t e) {
 					size_t i = b;
 					for (; i + 4 <= e; i += 4) {
@@ -1457,7 +1607,7 @@ int64_t ECSCore::batch_apply_col_rows(const StringName &anchor, const PackedInt3
 					for (; i < e; ++i) w[i] += float(double(si[i]) * factor + addend);
 				}, 1.5);
 			} else {
-				const float *sf = scol.f32.ptr();
+				const float *sf = scol.f32.data();
 				parallel_for(size_t(cnt), [&](size_t b, size_t e) {
 					size_t i = b;
 					for (; i + 4 <= e; i += 4) {
@@ -1471,7 +1621,7 @@ int64_t ECSCore::batch_apply_col_rows(const StringName &anchor, const PackedInt3
 			return cnt;
 		}
 		if (contiguous && op == COL_SET && !src_is_int) {
-			const float *sf = scol.f32.ptr();
+			const float *sf = scol.f32.data();
 			const __m128 fv = _mm_set1_ps(float(factor));
 			const __m128 av = _mm_set1_ps(float(addend));
 			parallel_for(size_t(cnt), [&](size_t b, size_t e) {
@@ -1486,12 +1636,12 @@ int64_t ECSCore::batch_apply_col_rows(const StringName &anchor, const PackedInt3
 		}
 		parallel_for(size_t(cnt), [&](size_t b, size_t e) {
 			for (size_t i = b; i < e; ++i) {
-				const int32_t erow = rows[i];
+				const int32_t erow = rows_v[i];
 				const int32_t ee = a_dense[erow];
 				const int32_t orow = same_comp ? erow : oc->set.row_of(ee);
 				const int32_t srow = src_is_anchor ? erow : sc->set.row_of(ee);
 				if (orow < 0 || srow < 0) continue;
-				const double sv = src_is_int ? double(scol.i32.ptr()[srow]) : double(scol.f32.ptr()[srow]);
+				const double sv = src_is_int ? double(scol.i32.data()[srow]) : double(scol.f32.data()[srow]);
 				const float v = float(sv * factor + addend);
 				switch (op) {
 					case COL_ADD: w[orow] += v; break;
@@ -1505,11 +1655,11 @@ int64_t ECSCore::batch_apply_col_rows(const StringName &anchor, const PackedInt3
 		}, 1.5);
 		return cnt;
 	} else if (ocol.type == Variant::INT && scol.type == Variant::INT) {
-		int32_t *w = ocol.i32.ptrw();
-		const int32_t *src = scol.i32.ptr();
+		int32_t *w = ocol.i32.data();
+		const int32_t *src = scol.i32.data();
 		parallel_for(size_t(cnt), [&](size_t b, size_t e) {
 			for (size_t i = b; i < e; ++i) {
-				const int32_t erow = rows[i];
+				const int32_t erow = rows_v[i];
 				const int32_t ee = a_dense[erow];
 				const int32_t orow = same_comp ? erow : oc->set.row_of(ee);
 				const int32_t srow = src_is_anchor ? erow : sc->set.row_of(ee);
@@ -1527,14 +1677,14 @@ int64_t ECSCore::batch_apply_col_rows(const StringName &anchor, const PackedInt3
 		}, 1.5);
 		return cnt;
 	} else if (ocol.type == Variant::VECTOR2 && scol.type == Variant::VECTOR2) {
-		Vector2 *w = ocol.v2.ptrw();
-		const Vector2 *src = scol.v2.ptr();
+		Vector2 *w = ocol.v2.data();
+		const Vector2 *src = scol.v2.data();
 		const float f = float(factor);
 		// 连续全行快路径(SIMD): pos += vel*delta 等, 一次处理 2 个 Vector2(4 float)
 		bool contiguous = same_comp && src_is_anchor;
 		if (contiguous) {
 			for (int32_t ci = 0; ci < cnt; ++ci) {
-				if (rows[ci] != ci) {
+				if (rows_v[ci] != ci) {
 					contiguous = false;
 					break;
 				}
@@ -1571,7 +1721,7 @@ int64_t ECSCore::batch_apply_col_rows(const StringName &anchor, const PackedInt3
 		}
 		parallel_for(size_t(cnt), [&](size_t b, size_t e) {
 			for (size_t i = b; i < e; ++i) {
-				const int32_t erow = rows[i];
+				const int32_t erow = rows_v[i];
 				const int32_t ee = a_dense[erow];
 				const int32_t orow = same_comp ? erow : oc->set.row_of(ee);
 				const int32_t srow = src_is_anchor ? erow : sc->set.row_of(ee);
@@ -1589,12 +1739,12 @@ int64_t ECSCore::batch_apply_col_rows(const StringName &anchor, const PackedInt3
 		}, 3.0);
 		return cnt;
 	} else if (ocol.type == Variant::VECTOR3 && scol.type == Variant::VECTOR3) {
-		Vector3 *w = ocol.v3.ptrw();
-		const Vector3 *src = scol.v3.ptr();
+		Vector3 *w = ocol.v3.data();
+		const Vector3 *src = scol.v3.data();
 		const float f = float(factor);
 		parallel_for(size_t(cnt), [&](size_t b, size_t e) {
 			for (size_t i = b; i < e; ++i) {
-				const int32_t erow = rows[i];
+				const int32_t erow = rows_v[i];
 				const int32_t ee = a_dense[erow];
 				const int32_t orow = same_comp ? erow : oc->set.row_of(ee);
 				const int32_t srow = src_is_anchor ? erow : sc->set.row_of(ee);
@@ -1734,7 +1884,7 @@ int64_t ECSCore::batch_clamp_where(const StringName &anchor, const PackedStringA
 		return (c.type == Variant::FLOAT) ? double(c.f32[row]) : double(c.i32[row]);
 	};
 	if (ocol.type == Variant::FLOAT && min_ok && max_ok) {
-		float *w = ocol.f32.ptrw();
+		float *w = ocol.f32.data();
 		parallel_for(size_t(cnt), [&](size_t b, size_t e) {
 			for (size_t i = b; i < e; ++i) {
 				const int32_t erow = rows[i];
@@ -1748,7 +1898,7 @@ int64_t ECSCore::batch_clamp_where(const StringName &anchor, const PackedStringA
 		}, 1.5);
 		return cnt;
 	} else if (ocol.type == Variant::INT && min_ok && max_ok) {
-		int32_t *w = ocol.i32.ptrw();
+		int32_t *w = ocol.i32.data();
 		parallel_for(size_t(cnt), [&](size_t b, size_t e) {
 			for (size_t i = b; i < e; ++i) {
 				const int32_t erow = rows[i];
@@ -1908,7 +2058,7 @@ int64_t ECSCore::batch_apply_where(const StringName &anchor, const PackedStringA
 	const auto &a_dense = a->set.dense;
 	switch (col.type) {
 		case Variant::INT: {
-			int32_t *w = col.i32.ptrw();
+			int32_t *w = col.i32.data();
 			const int32_t add = int32_t(addend);
 			if (same_comp) {
 				parallel_for(rows.size(), [&](size_t b, size_t e) {
@@ -1940,7 +2090,7 @@ int64_t ECSCore::batch_apply_where(const StringName &anchor, const PackedStringA
 			break;
 		}
 		case Variant::FLOAT: {
-			float *w = col.f32.ptrw();
+			float *w = col.f32.data();
 			if (same_comp) {
 				parallel_for(rows.size(), [&](size_t b, size_t e) {
 					for (size_t i = b; i < e; ++i) {
@@ -1971,7 +2121,7 @@ int64_t ECSCore::batch_apply_where(const StringName &anchor, const PackedStringA
 			break;
 		}
 		case Variant::VECTOR2: {
-			Vector2 *w = col.v2.ptrw();
+			Vector2 *w = col.v2.data();
 			// 分量操作(字段名 "pos.x"): 只写该分量
 			if (op_axis >= 0 && op_axis < 2) {
 				parallel_for(rows.size(), [&](size_t b, size_t e) {
@@ -1991,7 +2141,7 @@ int64_t ECSCore::batch_apply_where(const StringName &anchor, const PackedStringA
 			break;
 		}
 		case Variant::VECTOR3: {
-			Vector3 *w = col.v3.ptrw();
+			Vector3 *w = col.v3.data();
 			if (op_axis >= 0 && op_axis < 3) {
 				parallel_for(rows.size(), [&](size_t b, size_t e) {
 					for (size_t i = b; i < e; ++i) {
@@ -2042,7 +2192,7 @@ int64_t ECSCore::batch_apply(const StringName &anchor, const PackedStringArray &
 	const auto &a_dense = a->set.dense;
 	switch (col.type) {
 		case Variant::INT: {
-			int32_t *w = col.i32.ptrw();
+			int32_t *w = col.i32.data();
 			const int32_t add = int32_t(addend);
 			if (same_comp) {
 				// 无 must + 无 prefab → 行号连续, INT 的 ADD/SET 可 SIMD
@@ -2096,7 +2246,7 @@ int64_t ECSCore::batch_apply(const StringName &anchor, const PackedStringArray &
 			break;
 		}
 		case Variant::FLOAT: {
-			float *w = col.f32.ptrw();
+			float *w = col.f32.data();
 			if (same_comp) {
 				// 无 must + 无 prefab → 行号连续 0..n-1, 可 SIMD 连续遍历
 				const bool contiguous = (m == 0) && prefab_indices_.empty();
@@ -2191,9 +2341,9 @@ int64_t ECSCore::batch_clamp(const StringName &anchor, const PackedStringArray &
 	const auto &a_dense = a->set.dense;
 	switch (col.type) {
 		case Variant::INT: {
-			int32_t *w = col.i32.ptrw();
-			const int32_t *mn = mincol.i32.ptr();
-			const int32_t *mx = maxcol.i32.ptr();
+			int32_t *w = col.i32.data();
+			const int32_t *mn = mincol.i32.data();
+			const int32_t *mx = maxcol.i32.data();
 			if (same_comp) {
 				parallel_for(rows.size(), [&](size_t b, size_t e) {
 					for (size_t i = b; i < e; ++i) {
@@ -2214,9 +2364,9 @@ int64_t ECSCore::batch_clamp(const StringName &anchor, const PackedStringArray &
 			break;
 		}
 		case Variant::FLOAT: {
-			float *w = col.f32.ptrw();
-			const float *mn = mincol.f32.ptr();
-			const float *mx = maxcol.f32.ptr();
+			float *w = col.f32.data();
+			const float *mn = mincol.f32.data();
+			const float *mx = maxcol.f32.data();
 			if (same_comp) {
 				parallel_for(rows.size(), [&](size_t b, size_t e) {
 					for (size_t i = b; i < e; ++i) {
@@ -2271,8 +2421,8 @@ int64_t ECSCore::batch_vec_add(const StringName &anchor, const PackedStringArray
 	const bool vel_is_anchor = (vel_comp == anchor);
 	const auto &a_dense = a->set.dense;
 	if (poscol.type == Variant::VECTOR2 && velcol.type == Variant::VECTOR2) {
-		Vector2 *p = poscol.v2.ptrw();
-		const Vector2 *v = velcol.v2.ptr();
+		Vector2 *p = poscol.v2.data();
+		const Vector2 *v = velcol.v2.data();
 		const float d = float(delta);
 		if (pos_is_anchor && vel_is_anchor) {
 			// 无 must + 无 prefab → 行号连续, SIMD 一次处理 2 个 Vector2(4 float)
@@ -2312,8 +2462,8 @@ int64_t ECSCore::batch_vec_add(const StringName &anchor, const PackedStringArray
 		}
 		n = int64_t(rows.size());
 	} else if (poscol.type == Variant::VECTOR3 && velcol.type == Variant::VECTOR3) {
-		Vector3 *p = poscol.v3.ptrw();
-		const Vector3 *v = velcol.v3.ptr();
+		Vector3 *p = poscol.v3.data();
+		const Vector3 *v = velcol.v3.data();
 		const float d = float(delta);
 		if (pos_is_anchor && vel_is_anchor) {
 			parallel_for(rows.size(), [&](size_t b, size_t e) {
@@ -2370,8 +2520,8 @@ int64_t ECSCore::batch_move(const StringName &anchor, const PackedStringArray &m
 	const float xmi = float(x_min), xma = float(x_max), ymi = float(y_min), yma = float(y_max);
 	int64_t n = 0;
 	if (poscol.type == Variant::VECTOR2 && velcol.type == Variant::VECTOR2) {
-		Vector2 *p = poscol.v2.ptrw();
-		Vector2 *v = velcol.v2.ptrw();
+		Vector2 *p = poscol.v2.data();
+		Vector2 *v = velcol.v2.data();
 		parallel_for(rows.size(), [&](size_t b, size_t e) {
 			for (size_t i = b; i < e; ++i) {
 				const int32_t r = rows[i];
@@ -2427,8 +2577,8 @@ int64_t ECSCore::batch_cycle(const StringName &anchor, const PackedStringArray &
 	const float rmin = float(min), rmax = float(max);
 	int64_t n = 0;
 	if (fcol.type == Variant::FLOAT && dcol.type == Variant::INT) {
-		float *f = fcol.f32.ptrw();
-		int32_t *d = dcol.i32.ptrw();
+		float *f = fcol.f32.data();
+		int32_t *d = dcol.i32.data();
 		parallel_for(rows.size(), [&](size_t b, size_t e) {
 			for (size_t i = b; i < e; ++i) {
 				const int32_t r = rows[i];

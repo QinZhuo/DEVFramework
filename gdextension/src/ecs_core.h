@@ -51,23 +51,22 @@ struct ECSSparseSet {
 };
 
 // ---------------------------------------------------------------------------
-// SoA 列存储: 每组件每字段一块连续内存。
-// 用 Godot Packed*Array 直接存储:
-//   - get_column 返回内部引用 (Variant 包装, 共享底层内存, 零拷贝)
-//   - set_column 引用赋值 (指针交换, 无逐元素拷贝)
+// SoA 列存储: 每组件每字段一块连续裸内存 (C++ std::vector)。
+// 用自管裸内存而非 Godot PackedArray —— 多线程并行写不同行天然安全(无共享引用计数),
+// 为"系统级 + 实体级并行"铺路(路径 A)。对外 get_column/set_column 时再转换 PackedArray(拷贝)。
 // 列下标 = dense 行号 (0..拥有该组件的实体数-1, 紧凑连续, 缓存友好)。
 // 实体 ID 需经 sparse[entity] 映射为行号 (O(1)), 由 ECSCore 内部处理。
 // ---------------------------------------------------------------------------
 struct ECSColumn {
 	Variant::Type type = Variant::NIL;
-	PackedInt32Array i32;    // INT
-	PackedFloat32Array f32;  // FLOAT
-	PackedByteArray b;       // BOOL
-	PackedVector2Array v2;   // VECTOR2
-	PackedVector3Array v3;   // VECTOR3
-	PackedVector4Array v4;   // VECTOR4
-	PackedColorArray col;    // COLOR
-	PackedStringArray s;     // STRING
+	std::vector<int32_t> i32;   // INT
+	std::vector<float> f32;     // FLOAT
+	std::vector<uint8_t> b;     // BOOL (bool 位打包不利多线程写, 用 uint8)
+	std::vector<Vector2> v2;    // VECTOR2
+	std::vector<Vector3> v3;    // VECTOR3
+	std::vector<Vector4> v4;    // VECTOR4
+	std::vector<Color> col;     // COLOR
+	std::vector<String> s;      // STRING (引用计数, 列并行写不适用; 低频字段用)
 
 	void resize(size_t n);
 	void push_default(const Variant &value);
@@ -75,6 +74,10 @@ struct ECSColumn {
 	Variant get(size_t row) const;
 	void set(size_t row, const Variant &value);
 	size_t size() const;
+	// 裸写指针(供 batch 并行写不同行; 与 PackedArray 的 ptrw 语义对齐)
+	void *write_ptr();
+	// 裸读指针
+	const void *read_ptr() const;
 };
 
 struct ECSField {
