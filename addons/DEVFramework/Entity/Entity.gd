@@ -18,7 +18,7 @@ var _ecs: ECSLink = null
 var ecs: ECSLink:
 	get:
 		if _ecs == null:
-			_ecs = ECSLink.new()
+			_ecs = ECSLink.new(self)
 		return _ecs
 	set(v):
 		_ecs = v
@@ -79,12 +79,12 @@ func register_to_ecs() -> bool:
 
 ## 便捷: 从实体 ECS 同步指定字段到本对象属性(组件 = 本实体脚本)。
 func sync_from_ecs(field: StringName, obj_prop: StringName = field) -> void:
-	ECSBridge.sync_from(ecs, get_script(), field, self, obj_prop)
+	ecs.sync_from(field, obj_prop)
 
 
 ## 便捷: 从本对象属性同步到实体 ECS 指定字段(组件 = 本实体脚本)。
 func sync_to_ecs(field: StringName, obj_prop: StringName = field) -> void:
-	ECSBridge.sync_to(ecs, get_script(), field, self, obj_prop)
+	ecs.sync_to(field, obj_prop)
 
 
 func get_desc(data):

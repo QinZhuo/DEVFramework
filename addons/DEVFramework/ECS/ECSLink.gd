@@ -15,6 +15,14 @@ class_name ECSLink extends RefCounted
 var world: ECSWorld
 var entity_id: int = -1
 
+## 持有者(Entity2D/Entity/Component/Node 等)。sync 系列默认以持有者为目标对象,
+## 组件 = 持有者脚本(自身组件); 也可用 sync_*_comp 显式指定组件。
+var owner: Object = null
+
+
+func _init(new_owner: Object = null) -> void:
+	owner = new_owner
+
 
 ## 懒创建 ECS 实体(首次使用时绑定), 返回实体 ID。
 func ensure_entity() -> int:
@@ -64,3 +72,36 @@ func destroy() -> void:
 	if entity_id >= 0 and world != null and world.is_alive(entity_id):
 		world.destroy_entity(entity_id)
 	entity_id = -1
+
+
+## —— 通用字段同步(ECS ↔ 持有者, 只传两个字符串) ——
+## 目标对象 = owner(持有者), 组件 = owner 的脚本(自身组件)。用于单实体/低频。
+
+## ECS → 持有者: 把持有者脚本组件 field 字段同步到持有者 obj_prop 属性。
+## 用法: ecs.sync_from(&"pos", &"position")
+func sync_from(field: StringName, obj_prop: StringName = field) -> void:
+	if owner == null:
+		return
+	owner.set(obj_prop, get_field(owner.get_script(), field))
+
+
+## 持有者 → ECS: 把持有者 obj_prop 属性同步到持有者脚本组件 field 字段。
+## 用法: ecs.sync_to(&"position", &"pos")
+func sync_to(field: StringName, obj_prop: StringName = field) -> void:
+	if owner == null:
+		return
+	set_field(owner.get_script(), field, owner.get(obj_prop))
+
+
+## 显式指定组件的版本(组件非持有者自身脚本时, 如 Entity 挂外部组件)。
+## 用法: ecs.sync_from_comp(ECSDemoMoveComponent, &"pos", &"position")
+func sync_from_comp(comp, field: StringName, obj_prop: StringName = field) -> void:
+	if owner == null:
+		return
+	owner.set(obj_prop, get_field(comp, field))
+
+
+func sync_to_comp(comp, field: StringName, obj_prop: StringName = field) -> void:
+	if owner == null:
+		return
+	set_field(comp, field, owner.get(obj_prop))

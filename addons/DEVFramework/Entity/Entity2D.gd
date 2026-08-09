@@ -9,14 +9,14 @@ class_name Entity2D extends Node2D
 ##   e.sync_from_ecs(&"pos", &"position")   # 同步指定字段: ECS pos → 节点 position
 ##   e.sync_to_ecs(&"position", &"pos")     # 反向
 ## 数据字段规则: 当前脚本 @export / @export_storage 纯数据变量 = ECS 数据(可用 ECS_EXCLUDE 排除)。
-## 通用字段同步(任意 Node/对象可用): ECSBridge.sync_from / sync_to。
+## 通用字段同步(任意 Node/对象可用): ecs.sync_from / sync_to。
 
 ## ECS 桥接(数据在 ECS 列, 懒创建 —— 只有用到 ecs 时才实例化)
 var _ecs: ECSLink = null
 var ecs: ECSLink:
 	get:
 		if _ecs == null:
-			_ecs = ECSLink.new()
+			_ecs = ECSLink.new(self)
 		return _ecs
 	set(v):
 		_ecs = v
@@ -78,13 +78,13 @@ func register_to_ecs() -> bool:
 ## 便捷: 从实体 ECS 同步指定字段到本节点属性(组件 = 本节点脚本)。
 ## 用法: e.sync_from_ecs(&"pos", &"position")  —— ECS 的 pos 字段 → 节点 position
 func sync_from_ecs(field: StringName, node_prop: StringName = field) -> void:
-	ECSBridge.sync_from(ecs, get_script(), field, self, node_prop)
+	ecs.sync_from(field, node_prop)
 
 
 ## 便捷: 从本节点属性同步到实体 ECS 指定字段(组件 = 本节点脚本)。
-## 用法: e.sync_to_ecs(&"position", &"pos")    —— 节点 position → ECS 的 pos 字段
+## 参数同 sync_from: (ECS字段, 节点属性)。用法: e.sync_to_ecs(&"pos", &"position")  —— 节点 position → ECS 的 pos 字段
 func sync_to_ecs(field: StringName, node_prop: StringName = field) -> void:
-	ECSBridge.sync_to(ecs, get_script(), field, self, node_prop)
+	ecs.sync_to(field, node_prop)
 
 
 ## 记录 NodeLink(实体↔节点关联, 供 ECSSyncSystem 批量同步位置)。

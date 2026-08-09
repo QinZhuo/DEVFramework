@@ -84,10 +84,10 @@ unit.destroy()
 - **自动注册**：`add_component` / `register_to_ecs` 会自动注册未注册的脚本组件，无需手动 `register_component`。
 - **一参数 `add_component`**：`ecs.add_component(node)` 传实例，自动反射其 `@export` 字段为初值。
 - **位置走类型**：位置字段用 `Vector2`/`Vector3`（单字段），不拆 x/y——系统与同步都直接用 Vector 类型列。
-- **通用字段同步（任何 Node/对象可用）**：
+- **通用字段同步（任何 Node/对象可用，在 ECSLink 上）**：
   ```gdscript
-  ECSBridge.sync_from(link, comp, &"pos", label_node, &"position")  # ECS 字段 → 任意对象属性
-  ECSBridge.sync_to(link, comp, &"pos", label_node, &"position")    # 反向
+  ecs.sync_from(comp, &"pos", label_node, &"position")  # ECS 字段 → 任意对象属性
+  ecs.sync_to(comp, &"pos", label_node, &"position")    # 反向
   ```
   不依赖 Entity 子类，普通 Node/Label 等都能用。
 
@@ -437,7 +437,7 @@ comp.sync_from_host(&"cd", &"cd")   # 宿主 ECS → 组件属性(指定字段)
 comp.sync_to_host(&"cd", &"cd")     # 组件属性 → 宿主 ECS
 ```
 
-`ECSSyncSystem`：批量同步"带 `NodeLink` 的实体"位置到节点（`can_run_parallel()=false`，主线程），适合大量实体统一位置搬运；单个实体/任意字段用 `ECSBridge.sync_from/sync_to`。
+`ECSSyncSystem`：批量同步"带 `NodeLink` 的实体"位置到节点（`can_run_parallel()=false`，主线程），适合大量实体统一位置搬运；单个实体/任意字段用 `ecs.sync_from/sync_to`。
 
 ---
 

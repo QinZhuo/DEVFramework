@@ -98,7 +98,7 @@ func _spawn_squad() -> void:
 		view.add_child(block)
 		world_root.add_child(view)
 		view.attach_node_link(ECSDemoMoveComponent, &"pos")
-		ECSBridge.sync_from(view.ecs, ECSDemoMoveComponent, &"pos", view, &"position")
+		view.ecs.sync_from_comp(ECSDemoMoveComponent, &"pos", &"position")
 		views.append(view)
 
 
@@ -146,7 +146,7 @@ func _input(event: InputEvent) -> void:
 			_dragging = null
 	elif event is InputEventMouseMotion and _dragging != null:
 		_dragging.position = event.position
-		ECSBridge.sync_to(_dragging.ecs, ECSDemoMoveComponent, &"pos", _dragging, &"position")
+		_dragging.ecs.sync_to_comp(ECSDemoMoveComponent, &"pos", &"position")
 
 
 func _pick_at(pos: Vector2) -> Entity2D:
@@ -195,7 +195,7 @@ func _on_load_pressed() -> void:
 		view.add_child(block)
 		world_root.add_child(view)
 		view.attach_node_link(ECSDemoMoveComponent, &"pos")
-		ECSBridge.sync_from(view.ecs, ECSDemoMoveComponent, &"pos", view, &"position")
+		view.ecs.sync_from_comp(ECSDemoMoveComponent, &"pos", &"position")
 		views.append(view)
 	stats_label.text += "\n[读档] 重建 %d 个关键实体" % views.size()
 
