@@ -6,7 +6,7 @@
 
 **定位**（与场景节点配合的三种用法）：
 - **海量实体**（1 万+）：纯 ECS 数据 + 渲染直读列，不建 Node。
-- **关键实体**（玩家/NPC/Boss）：`ECSNode` 桥接实体与场景节点。
+- **关键实体**（玩家/NPC/Boss）：`Component` 桥接实体与场景节点。
 - **数值逻辑**：规则 DSL / `process` 回调在系统内批量执行。
 
 ---
@@ -26,7 +26,7 @@
 11. [生命周期钩子与变化检测](#十一生命周期钩子与变化检测)
 12. [事件](#十二事件)
 13. [Prefab 与序列化](#十三prefab-与序列化)
-14. [ECSNode 场景桥接](#十四ecsnode-场景桥接)
+14. [Component 场景桥接](#十四ecsnode-场景桥接)
 15. [性能架构速览](#十五性能架构速览)
 
 ---
@@ -35,7 +35,7 @@
 
 | 层次 | 章节 | 说明 |
 |---|---|---|
-| **① 入门**（90% 场景） | 快速开始 / 组件定义 / 实体操作 / 系统与查询链 / 规则层 DSL / process 回调 / ECSNode | 定义组件 → 建实体 → 写系统（`for_each` 查询链）→ tick 驱动。**大多数需求到这里就够了** |
+| **① 入门**（90% 场景） | 快速开始 / 组件定义 / 实体操作 / 系统与查询链 / 规则层 DSL / process 回调 / Component | 定义组件 → 建实体 → 写系统（`for_each` 查询链）→ tick 驱动。**大多数需求到这里就够了** |
 | **② 进阶** | 查询 / 批量列访问 / 命令缓冲 / Prefab 与序列化 | 数据查询、批量读写、结构变更、存档 |
 | **③ 高级**（性能/机制） | 系统并行调度 / 生命周期钩子与变化检测 / 事件 | 并行、实体生命周期、事件驱动 |
 
@@ -362,12 +362,12 @@ var restored: Array = world.deserialize(SaveTool.load_data("user://save.dat", Sa
 
 ---
 
-## 十四、ECSNode 场景桥接
+## 十四、Component 场景桥接
 
-关键实体（玩家/NPC）用 `ECSNode` 桥接：
+关键实体（玩家/NPC）用 `Component` 桥接：
 
 ```gdscript
-var view := ECSNode.spawn(world, player_scene, Vector2(100, 200))
+var view := Component.spawn(world, player_scene, Vector2(100, 200))
 view.bind_pos(MoveComponent, &"pos")     # 位置绑定（ECSSyncSystem 批量同步）
 view.add_component(HealthComponent)
 view.set_field(HealthComponent, &"hp", 100)
@@ -397,5 +397,5 @@ world.register_system(ECSSyncSystem.new(), 10)
 **性能实践建议**：
 - 数值热点用规则 DSL（`add/sub/mul/div/add_from/set_from/clamp_where`）→ C++ batch。
 - 高频写路径用 `borrow/return` 避免 COW；复杂逻辑用 `process(fields)` 预拉列 + 自动写回。
-- 海量实体渲染直读列（参考 `ECSPointCloud`），关键实体用 `ECSNode`。
+- 海量实体渲染直读列（参考 `ECSPointCloud`），关键实体用 `Component`。
 - 并行系统声明好 `read/write_components()`，结构变更走 `cmd_*`。

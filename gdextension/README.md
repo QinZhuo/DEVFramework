@@ -62,7 +62,7 @@ cp libdevecs.dll devecs.windows.release.x86_64.dll
 ```
 
 > 构建出的 MinGW DLL 仅依赖 `KERNEL32.dll` / `msvcrt.dll`，无额外运行时依赖，可直接分发。
-> 已实测：本地构建 Windows 版后运行 `Scenes/ECS/ECSNodeDemo.tscn` 正常，原生 ECS 核心
+> 已实测：本地构建 Windows 版后运行 `Scenes/ECS/ComponentDemo.tscn` 正常，原生 ECS 核心
 > （`ECSCore`）加载成功，20000 海量实体 + 10 关键实体全部由 C++ 核心驱动。
 
 ## CI 自动构建 (GitHub Actions)

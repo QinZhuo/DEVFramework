@@ -3,7 +3,7 @@ extends Control
 ## 三层架构 Demo —— ECS 与 Godot 配合的完整方案
 ##
 ##  ① 海量实体(长期方案): 2 万点阵, Prefab 配置生成, ECS 数据直读渲染
-##  ② 关键实体(中期方案): 10 个小兵, ECSNode + NodeLink + ECSSyncSystem
+##  ② 关键实体(中期方案): 10 个小兵, Entity2D + NodeLink + ECSSyncSystem
 ##  ③ 交互(配合逻辑): 拖拽小兵 → 位置写回 ECS
 ##
 ## 全部实体由 ECSPrefabDef 配置(.tres)驱动 —— 改配置不改代码
@@ -26,8 +26,8 @@ extends Control
 @onready var respawn_button: Button = %RespawnButton
 
 var world: ECSWorld
-var views: Array[ECSNode] = []
-var _dragging: ECSNode = null
+var views: Array[Entity2D] = []
+var _dragging: Entity2D = null
 var _frame := 0
 
 
@@ -72,19 +72,18 @@ func _spawn_crowd() -> void:
 	crowd_cloud.set_color(Color(0.35, 0.45, 0.9, 0.8))
 
 
-## ② 关键实体: 从配置生成实体 + ECSNode 桥接 + NodeLink + SyncSystem
+## ② 关键实体: 从配置生成实体 + Entity2D 节点实体 + NodeLink + SyncSystem
 func _spawn_squad() -> void:
 	# 配置 → 批量生成关键实体(含 Health + Move 组件, 值来自 .tres)
 	var ids = world.spawn_from_def(squad_def, squad_count)
 	for i in ids.size():
-		var view := ECSNode.new()
+		var view := Entity2D.new()
 		view.world = world
 		view.entity_id = ids[i]
 		view.name = "Unit_%d" % i
 		view.bind_pos(ECSDemoMoveComponent, &"pos")
 		# 给关键实体挂 NodeLink(标记为"关键实体", 供读档识别 + SyncSystem 同步)
 		world.add_component(ids[i], NodeLink)
-		world.set_field(ids[i], NodeLink, &"node_path", "")  # 节点路径由 ECSNode 持有, 存档主要靠实体 ID
 		# 给关键实体设随机血量(部分低于 50, 便于观察声明规则回血)
 		world.set_field(ids[i], HealthComponent, &"hp", 20 + (i * 13) % 80)
 		# 位置/颜色来自配置或运行时初始化
@@ -92,16 +91,15 @@ func _spawn_squad() -> void:
 				Vector2(randf_range(80.0, 1070.0), randf_range(80.0, 640.0)))
 		var color := Color.from_hsv(randf(), 0.7, 0.9)
 		view.set_field(ECSDemoMoveComponent, &"color", color)
-		# 表现节点: 大号方块
+		# 表现: Entity2D 自身是节点, 挂大号方块子节点
 		var block := ColorRect.new()
 		block.size = Vector2(26, 26)
 		block.color = color
 		block.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		view.node = block
-		view.node.position = Vector2.ZERO
-		world_root.add_child(view.node)
-		view.sync_ecs_to_node()
+		view.add_child(block)
 		world_root.add_child(view)
+		view.attach_node_link()
+		view.sync_ecs_to_node()
 		views.append(view)
 
 
@@ -148,15 +146,15 @@ func _input(event: InputEvent) -> void:
 		else:
 			_dragging = null
 	elif event is InputEventMouseMotion and _dragging != null:
-		_dragging.node.position = event.position
+		_dragging.position = event.position
 		_dragging.sync_node_to_ecs()
 
 
-func _pick_at(pos: Vector2) -> ECSNode:
-	var hit: ECSNode = null
+func _pick_at(pos: Vector2) -> Entity2D:
+	var hit: Entity2D = null
 	var best := 40.0 * 40.0
 	for v in views:
-		if v.node == null or not world.is_alive(v.entity_id):
+		if not world.is_alive(v.entity_id):
 			continue
 		var p: Vector2 = world.get_field(v.entity_id, ECSDemoMoveComponent, &"pos")
 		var d := p.distance_squared_to(pos)
@@ -186,7 +184,7 @@ func _on_load_pressed() -> void:
 	for eid in entity_ids:
 		if not world.has_component(eid, NodeLink):
 			continue
-		var view := ECSNode.new()
+		var view := Entity2D.new()
 		view.world = world
 		view.entity_id = eid
 		view.name = "Unit_%d" % eid
@@ -196,11 +194,10 @@ func _on_load_pressed() -> void:
 		block.size = Vector2(26, 26)
 		block.color = saved_color
 		block.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		view.node = block
-		view.node.position = Vector2.ZERO
-		world_root.add_child(view.node)
-		view.sync_ecs_to_node()
+		view.add_child(block)
 		world_root.add_child(view)
+		view.attach_node_link()
+		view.sync_ecs_to_node()
 		views.append(view)
 	stats_label.text += "\n[读档] 重建 %d 个关键实体" % views.size()
 
@@ -226,5 +223,5 @@ func _update_stats() -> void:
 	for v in views:
 		if world.is_alive(v.entity_id):
 			alive += 1
-	stats_label.text = "ECS 三层架构 Demo\n\n① 海量实体(Prefab 批量生成): %d\n② 关键实体(节点): %d (存活 %d)\n\n🖱 拖拽小兵 → 写回 ECS(双向同步)\n💾 存档 / 📂 读档\n\n[用法] 配置→Prefab→instantiate 批量生成\n       海量用渲染直读, 关键用 ECSNode+SyncSystem" % [
+	stats_label.text = "ECS 三层架构 Demo\n\n① 海量实体(Prefab 批量生成): %d\n② 关键实体(节点): %d (存活 %d)\n\n🖱 拖拽小兵 → 写回 ECS(双向同步)\n💾 存档 / 📂 读档\n\n[用法] 配置→Prefab→instantiate 批量生成\n       海量用渲染直读, 关键用 Entity2D+SyncSystem" % [
 		crowd_count, views.size(), alive]

@@ -1278,7 +1278,7 @@ func serialize() -> Dictionary:
 	return _core.serialize()
 
 ## 反序列化: 重建实体与数据。
-## 返回 Array[int]: 新建实体的真实实体 ID 列表(用它绑定 ECSNode 等)。
+## 返回 Array[int]: 新建实体的真实实体 ID 列表(用它绑定 Component 等)。
 ## 注意: 组件需先 register_component(名称一致)再调用。
 func deserialize(data: Dictionary) -> Array:
 	var ids: Array = _core.deserialize(data)
