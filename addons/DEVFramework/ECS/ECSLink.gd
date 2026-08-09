@@ -25,10 +25,35 @@ func _init(new_owner: Object = null) -> void:
 
 
 ## 懒创建 ECS 实体(首次使用时绑定), 返回实体 ID。
+## owner 是节点(Entity2D/3D)时, 自动附加 NodeLink(实体↔节点关联, 供 ECSSyncSystem 同步)。
 func ensure_entity() -> int:
 	if entity_id < 0 and world != null:
 		entity_id = world.create_entity()
+		_auto_node_link()
 	return entity_id
+
+
+## owner 是节点时自动挂 NodeLink(无需手动 attach_node_link)。
+## node_path 在节点入树后有效, 由持有方 _ready 调 refresh_node_link() 刷新。
+func _auto_node_link() -> void:
+	if owner == null or not (owner is Node) or world == null or entity_id < 0:
+		return
+	world.add_component(entity_id, NodeLink)
+	refresh_node_link()
+
+
+## 刷新 NodeLink.node_path(节点入树后路径有效)。持有方在 _ready 调用。
+## 若实体尚无 NodeLink(如手动设 entity_id 的场景), 这里确保挂载。
+## 节点未入树时跳过(路径无效), 入树后由持有方 _ready 再次调用。
+func refresh_node_link() -> void:
+	if owner == null or not (owner is Node) or world == null or entity_id < 0:
+		return
+	var node := owner as Node
+	if not node.is_inside_tree():
+		return
+	world.add_component(entity_id, NodeLink)
+	if world.has_component(entity_id, NodeLink):
+		world.set_field(entity_id, NodeLink, &"node_path", str(node.get_path()))
 
 
 ## 是否已绑定一个活实体。

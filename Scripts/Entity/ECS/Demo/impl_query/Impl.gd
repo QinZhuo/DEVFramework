@@ -8,6 +8,7 @@ extends DemoImpl
 
 var world: ECSWorld = null
 var ball_system: DemoQueryBallSystem = null
+var sync_sys: ECSSyncSystem = null
 var visuals: Array[DemoQueryBallNode] = []   # 每个实体一个显示节点
 
 
@@ -16,6 +17,11 @@ func setup(count: int, seed: int, parent: Node) -> void:
 	world = ECSWorld.new(false)
 	ball_system = DemoQueryBallSystem.new()
 	world.register_system(ball_system)   # register_system 自动注册 required_components
+	# 同步全部交给 ECSSyncSystem: NodeLink 只存 node_path, 同步字段由 add_field_rule 规则决定
+	sync_sys = ECSSyncSystem.new()
+	sync_sys.add_field_rule(DemoQueryBall, &"pos", &"position")      # 位置
+	sync_sys.add_field_rule(DemoQueryBall, &"size", &"visual_size")  # 大小
+	world.register_system(sync_sys)
 	var rng := RandomNumberGenerator.new()
 	rng.seed = seed
 	for _i in count:
@@ -31,25 +37,21 @@ func setup(count: int, seed: int, parent: Node) -> void:
 		world.set_field(e, DemoQueryBall, &"pos", pos)
 		world.set_field(e, DemoQueryBall, &"vel", vel)
 		world.set_field(e, DemoQueryBall, &"hp", hp)
-		# 显示节点: 位置/大小由系统同步, 节点只做表现
+		# 显示节点: 位置由 ECSSyncSystem 批量同步, 节点只做表现
 		var v := DemoQueryBallNode.new()
 		v.position = pos
 		parent.add_child(v)
 		v.set_process(false)
 		visuals.append(v)
+		# 挂 NodeLink 关联实体↔显示节点(只存 node_path, 同步字段由规则决定)
+		world.add_component(e, NodeLink, {"node_path": str(v.get_path())})
 
 
 func tick(delta: float) -> void:
+	# 数值逻辑(DemoQueryBallSystem) + 位置/字段同步(ECSSyncSystem) 都在 world.tick 内执行
+	if sync_sys:
+		sync_sys.render_enabled = render_enabled
 	world.tick(delta)
-	# 渲染同步(位置/大小 → 显示节点): 屏蔽渲染时跳过, 只做数值逻辑
-	if render_enabled:
-		var poscol: PackedVector2Array = world.get_column(DemoQueryBall, &"pos")
-		var scol: PackedFloat32Array = world.get_column(DemoQueryBall, &"size")
-		var n := mini(visuals.size(), poscol.size())
-		for i in n:
-			var v: DemoQueryBallNode = visuals[i]
-			v.position = poscol[i]
-			v.set_visual_size(scol[i])
 
 
 func teardown() -> void:

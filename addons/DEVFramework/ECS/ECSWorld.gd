@@ -1022,8 +1022,12 @@ func _parallel_tick(delta: float) -> void:
 		_run_group(group, delta, max_par)
 
 ## 执行一组系统。组内并行(线程数受 max_par 限制), 超量部分拆成子批。
-## 单系统也交给 worker 线程执行(系统逻辑不占主线程, 主线程只等待)。
+## 不可并行系统(can_run_parallel=false, 如访问场景树)必须主线程串行;
+## 可并行系统(含单系统)交给 worker 线程执行(系统逻辑不占主线程)。
 func _run_group(group: Array, delta: float, max_par: int) -> void:
+	if group.size() == 1 and not group[0].can_run_parallel():
+		_run_system(group[0], delta)
+		return
 	var start := 0
 	while start < group.size():
 		var end := mini(start + max_par, group.size())

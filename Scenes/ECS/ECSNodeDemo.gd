@@ -47,8 +47,11 @@ func _setup_world() -> void:
 	world.register_component(ECSDemoMoveComponent)
 	world.register_component(HealthComponent)
 	world.register_component(NodeLink)
-	# 中期方案核心: ECSSyncSystem 批量同步位置(一个系统处理全部关键实体)
-	world.register_system(ECSSyncSystem.new(), 10)
+	# 中期方案核心: ECSSyncSystem 批量同步位置(一个系统处理全部关键实体)。
+	# NodeLink 只存 node_path, 同步字段由 add_field_rule 规则决定。
+	var sync_sys := ECSSyncSystem.new()
+	sync_sys.add_field_rule(ECSDemoMoveComponent, &"pos", &"position")
+	world.register_system(sync_sys, 10)
 	# 可选: 移动系统(展示 ECS 驱动)
 	world.register_system(ECSMoveSystem.new(), 20)
 	# 声明规则层: 给 hp<50 的关键实体回血(遍历→条件→动作, C++ 批量执行)
@@ -97,7 +100,6 @@ func _spawn_squad() -> void:
 		block.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		view.add_child(block)
 		world_root.add_child(view)
-		view.attach_node_link(ECSDemoMoveComponent, &"pos")
 		view.ecs.sync_from_comp(ECSDemoMoveComponent, &"pos", &"position")
 		views.append(view)
 
@@ -194,7 +196,6 @@ func _on_load_pressed() -> void:
 		block.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		view.add_child(block)
 		world_root.add_child(view)
-		view.attach_node_link(ECSDemoMoveComponent, &"pos")
 		view.ecs.sync_from_comp(ECSDemoMoveComponent, &"pos", &"position")
 		views.append(view)
 	stats_label.text += "\n[读档] 重建 %d 个关键实体" % views.size()

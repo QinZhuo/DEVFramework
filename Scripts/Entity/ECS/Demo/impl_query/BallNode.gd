@@ -7,12 +7,17 @@ extends Node2D
 
 var color: Color = Color(0.4, 0.9, 0.5)
 var max_ball_size: float = 8.0
-var visual_size: float = 5.0   # 显示边长(缓存自 ECS 列 size, 避免 _draw 逐帧读 ECS)
+var _visual_size: float = 5.0
+var visual_size: float:
+	get:
+		return _visual_size
+	set(v):
+		_visual_size = v
+		queue_redraw()   # 显示边长变化自动重绘(可被 ECSSyncSystem 规则同步)
 
 
 func set_visual_size(v: float) -> void:
 	visual_size = v
-	queue_redraw()
 
 
 func _draw() -> void:
