@@ -6,6 +6,8 @@ extends RefCounted
 
 var world: ECSWorld
 var _pending: Array = []   # 本系统创建的查询(系统 _run 结束后自动执行未显式 execute 的)
+var _query_pool: Array = []  # 查询对象池(复用, 免每帧 new/load ECSQuery)
+var _pool_idx := 0
 
 
 func _init(p_world: ECSWorld) -> void:
@@ -26,8 +28,16 @@ func emit_event(type: StringName, payload = null) -> void:
 ## 声明式写法: 链尾无需 .execute() —— 系统 _run 结束后框架自动执行未执行的查询。
 ## 需要立即结果时仍可显式 .execute()(返回处理实体数)。
 func for_each(anchor, must: Array = [], without: Array = []) -> ECSQuery:
-	var q = load("res://addons/DEVFramework/ECS/ECSQuery.gd").new()
-	q._init_rule(world, anchor, must, without)
+	# 查询对象池复用: 系统 _run 每帧构建的查询链结构固定, 复用对象免 new/load 开销
+	var q: ECSQuery
+	if _pool_idx < _query_pool.size():
+		q = _query_pool[_pool_idx]
+		q._reset(world, anchor, must, without)
+	else:
+		q = load("res://addons/DEVFramework/ECS/ECSQuery.gd").new()
+		q._init_rule(world, anchor, must, without)
+		_query_pool.append(q)
+	_pool_idx += 1
 	_pending.append(q)
 	return q
 
@@ -75,3 +85,4 @@ func _auto_execute() -> void:
 		for i in qs.size():
 			qs[i]._apply_rows(rowsets[i])
 	_pending.clear()
+	_pool_idx = 0

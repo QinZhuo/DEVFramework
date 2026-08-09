@@ -38,6 +38,17 @@ func _init_rule(p_world: ECSWorld, p_anchor, p_must: Array = [], p_without: Arra
 	without = p_without
 	return self
 
+## 查询对象池复用: 重置查询为可重新构建状态(清空动作/条件/遍历字段)。
+func _reset(p_world: ECSWorld, p_anchor, p_must: Array = [], p_without: Array = []) -> void:
+	world = p_world
+	anchor = p_anchor
+	must = p_must
+	without = p_without
+	conditions.clear()
+	actions.clear()
+	_with_fields.clear()
+	_executed = false
+
 
 # ---------- 条件(可多个, AND 语义) ----------
 
