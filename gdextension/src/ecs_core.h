@@ -117,6 +117,7 @@ struct Archetype {
 	std::vector<std::vector<ECSColumn>> cols; // [comp_pos][field]
 	std::vector<int32_t> entities;            // 实体 index
 	std::vector<int32_t> row_map;             // 实体 index -> 行号(-1)
+	std::vector<uint32_t> row_ver;            // 每行写版本(变更检测: 写时递增)
 	uint64_t bits = 0;                        // 组件位集(comp < 64, 参考 Flecs/Bevy 位匹配)
 
 	// 组件位置(升序 comps): 用位集 popcount O(1)(comp<64), 超 64 fallback 二分
@@ -191,6 +192,11 @@ public:
 	int32_t entity_of_row(const StringName &comp, int32_t row) const;
 	// 聚合行号(某组件的 get_column 索引) -> 实体 ID(archetype 下跨块聚合顺序)。
 	int32_t get_entity_at(const StringName &comp, int32_t row) const;
+	// 变更检测: 返回该组件所有"行版本 > since"的聚合行号(增量同步/系统用)。
+	PackedInt32Array get_changed(const StringName &comp, uint32_t since) const;
+	// 变更检测开关(默认关: 避免全量写标记开销; 开启后 batch 写递增行版本, 供 get_changed 增量查询)。
+	void set_change_detection(bool enabled);
+	bool is_change_detection() const;
 
 	// ---- 单实体字段访问 (低频路径) ----
 	Variant get_field(int32_t entity, const StringName &comp, const StringName &field) const;
@@ -380,6 +386,8 @@ private:
 	std::vector<int32_t> entity_arch_;
 	// 查询缓存: 查询签名(anchor+must+without 组件索引) -> 匹配 archetype 列表(结构变更时清空)
 	mutable std::unordered_map<uint64_t, std::vector<int32_t>> _arch_cache;
+	// 变更检测开关
+	bool change_detection_ = false;
 	// prefab 模板实体 index 集合
 	std::vector<int32_t> prefab_indices_;
 	// 列借出计数(borrow_columns 增加、return_columns 减少; 并行多个借出时原子累加)

@@ -301,6 +301,17 @@ func set_field(entity: int, component, field: StringName, value) -> void:
 func get_entity_at(component, row: int) -> int:
 	return _core.get_entity_at(_resolve_component_name(component), row)
 
+## 变更检测: 返回该组件所有"写版本 > since"的聚合行号(增量同步/系统只处理变更实体用)。
+func get_changed(component, since: int) -> PackedInt32Array:
+	return _core.get_changed(_resolve_component_name(component), since)
+
+## 变更检测开关(false 默认: 避免全量写标记开销; 开启后 batch 写递增行版本, get_changed 增量查询有效)。
+var change_detection: bool:
+	get:
+		return _core.is_change_detection()
+	set(v):
+		_core.set_change_detection(v)
+
 ## 查询匹配实体, 直接返回实体 ID 数组(archetype 下最直观: 配 get_field/set_field 使用)。
 ## 例: var ents = world.query_entities(BallComponent); for e in ents: world.get_field(e, BallComponent, &"hp")
 func query_entities(anchor, must: Array = [], without: Array = []) -> PackedInt32Array:

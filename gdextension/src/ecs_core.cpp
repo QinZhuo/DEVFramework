@@ -611,6 +611,7 @@ void ECSCore::remove_from_archetype(int32_t arch, int32_t index) {
 	if (row != last) {
 		a.entities[row] = last_e;
 		a.row_map[last_e] = row;
+		a.row_ver[row] = a.row_ver[last];
 		for (size_t cp = 0; cp < a.comps.size(); ++cp) {
 			const int32_t ci = a.comps[cp];
 			for (size_t f = 0; f < components_[ci].fields.size(); ++f) {
@@ -629,6 +630,7 @@ void ECSCore::remove_from_archetype(int32_t arch, int32_t index) {
 	}
 	a.entities.pop_back();
 	a.row_map[index] = -1;
+	a.row_ver.pop_back();
 }
 
 // 把实体迁移到目标 archetype(拷贝旧组件数据 + 新组件默认值)
@@ -640,6 +642,7 @@ void ECSCore::migrate_entity(int32_t index, int32_t src_arch, int32_t dst_arch) 
 		dst.row_map.resize(index + 1, -1);
 	}
 	dst.row_map[index] = row;
+	dst.row_ver.push_back(0);
 	if (src_arch >= 0) {
 		Archetype &src = archetypes_[src_arch];
 		const int32_t src_row = src.row_of(index);
@@ -1112,6 +1115,38 @@ int32_t ECSCore::row_of_entity(const StringName &comp, int32_t entity) const {
 	return -1;
 }
 
+void ECSCore::set_change_detection(bool enabled) {
+	change_detection_ = enabled;
+}
+bool ECSCore::is_change_detection() const {
+	return change_detection_;
+}
+
+// 变更检测: 返回该组件所有"行版本 > since"的聚合行号
+PackedInt32Array ECSCore::get_changed(const StringName &comp, uint32_t since) const {
+	PackedInt32Array out;
+	const int32_t ci = comp_index(comp);
+	if (ci < 0) {
+		return out;
+	}
+	int32_t grow = 0;
+	for (const auto &a : archetypes_) {
+		if (!a.has_comp(ci)) {
+			continue;
+		}
+		for (int32_t r = 0; r < (int32_t)a.entities.size(); ++r) {
+			if (is_prefab_index(a.entities[r])) {
+				continue;
+			}
+			if (a.row_ver[r] > since) {
+				out.append(grow);
+			}
+			++grow;
+		}
+	}
+	return out;
+}
+
 // 聚合行号 -> 实体 ID(跨块按 archetype 顺序)
 int32_t ECSCore::get_entity_at(const StringName &comp, int32_t row) const {
 	const int32_t ci = comp_index(comp);
@@ -1189,6 +1224,7 @@ void ECSCore::set_field(int32_t entity, const StringName &comp, const StringName
 	if (row < 0) {
 		return;
 	}
+	if (change_detection_) ++a.row_ver[row];
 	a.cols[cp][fi].set(row, value);
 }
 
@@ -1636,6 +1672,7 @@ bool ECSCore::batch_apply_entity(int32_t entity, int32_t oci, int32_t ofi, int32
 	if (cp < 0) {
 		return false;
 	}
+	++archetypes_[earch].row_ver[erow];
 	auto &col = archetypes_[earch].cols[cp][ofi];
 	switch (col.type) {
 		case Variant::INT: {
@@ -1704,6 +1741,7 @@ bool ECSCore::batch_apply_entity_col(int32_t entity, int32_t oci, int32_t ofi, i
 	if (cp < 0 || scp < 0) {
 		return false;
 	}
+	++archetypes_[earch].row_ver[erow];
 	auto &ocol = archetypes_[earch].cols[cp][ofi];
 	const auto &scol = archetypes_[earch].cols[scp][sfi];
 	if (ocol.type == Variant::FLOAT && (scol.type == Variant::FLOAT || scol.type == Variant::INT)) {
@@ -2092,7 +2130,7 @@ int64_t ECSCore::batch_apply_rows(const StringName &anchor, const PackedInt32Arr
 	if (ofi < 0) {
 		return 0;
 	}
-	std::vector<int32_t> agg;
+	static thread_local std::vector<int32_t> agg; agg.clear();
 	for (const auto &a : archetypes_) {
 		if (!a.has_comp(ai)) {
 			continue;
@@ -2233,10 +2271,10 @@ int64_t ECSCore::batch_apply_col_rows(const StringName &anchor, const PackedInt3
 			}
 		}
 	}
-	// 聚合行号 -> (archetype, 块内行) 表(一次 O(N)) + 每块聚合起始
-	std::vector<std::pair<int32_t, int32_t>> agg; // 聚合行号 -> (arch, row)
-	std::vector<int32_t> arch_list;
-	std::vector<int32_t> arch_base;
+	// 聚合行号 -> (archetype, 块内行) 表(一次 O(N)) + 每块聚合起始(thread_local 复用避免每帧分配)
+	static thread_local std::vector<std::pair<int32_t, int32_t>> agg; agg.clear();
+	static thread_local std::vector<int32_t> arch_list; arch_list.clear();
+	static thread_local std::vector<int32_t> arch_base; arch_base.clear();
 	int32_t off = 0;
 	for (int32_t arch = 0; arch < (int32_t)archetypes_.size(); ++arch) {
 		const auto &a = archetypes_[arch];
@@ -2279,6 +2317,7 @@ int64_t ECSCore::batch_apply_col_rows(const StringName &anchor, const PackedInt3
 					break;
 				}
 				const int32_t erow = grow - base; // 块内行(无 prefab 时 == agg[grow].second)
+				if (change_detection_) ++a.row_ver[erow];
 				// 直接列间操作(参考 batch_apply_entity_col, 无 entity_arch_/row_of 间接)
 				if (ocol.type == Variant::FLOAT && (scol.type == Variant::FLOAT || scol.type == Variant::INT)) {
 					const double sv = (scol.type == Variant::INT) ? double(scol.i32[erow]) : double(scol.f32[erow]);
@@ -2614,6 +2653,7 @@ int64_t ECSCore::batch_move(const StringName &anchor, const PackedStringArray &m
 			if (pcol.type != Variant::VECTOR2 || vcol.type != Variant::VECTOR2) {
 				continue;
 			}
+			++archetypes_[earch].row_ver[erow];
 			Vector2 &p = pcol.v2[erow];
 			Vector2 &v = vcol.v2[erow];
 			p += v * float(delta);
@@ -2694,6 +2734,7 @@ int64_t ECSCore::batch_cycle(const StringName &anchor, const PackedStringArray &
 			auto &fcol = archetypes_[earch].cols[ccp][cfi];
 			auto &dcol = archetypes_[earch].cols[dcp][dfi];
 			if (fcol.type == Variant::FLOAT && dcol.type == Variant::INT) {
+				++archetypes_[earch].row_ver[erow];
 				float &f = fcol.f32[erow];
 				f += float(double(dcol.i32[erow]) * rate);
 				if (f > max) {
@@ -2714,6 +2755,7 @@ int64_t ECSCore::batch_cycle(const StringName &anchor, const PackedStringArray &
 					dcol.f32[erow] = -dcol.f32[erow];
 				}
 			} else if (fcol.type == Variant::INT && dcol.type == Variant::INT) {
+				++archetypes_[earch].row_ver[erow];
 				int32_t &f = fcol.i32[erow];
 				f += int32_t(double(dcol.i32[erow]) * rate);
 				if (f > max) {
@@ -3201,6 +3243,9 @@ void ECSCore::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("query_rows_aligned_where", "anchor", "must", "without", "conditions", "comps"), &ECSCore::query_rows_aligned_where);
 	ClassDB::bind_method(D_METHOD("entity_of_row", "comp", "row"), &ECSCore::entity_of_row);
 	ClassDB::bind_method(D_METHOD("get_entity_at", "comp", "row"), &ECSCore::get_entity_at);
+	ClassDB::bind_method(D_METHOD("get_changed", "comp", "since"), &ECSCore::get_changed);
+	ClassDB::bind_method(D_METHOD("set_change_detection", "enabled"), &ECSCore::set_change_detection);
+	ClassDB::bind_method(D_METHOD("is_change_detection"), &ECSCore::is_change_detection);
 	ClassDB::bind_method(D_METHOD("get_field", "entity", "comp", "field"), &ECSCore::get_field);
 	ClassDB::bind_method(D_METHOD("set_field", "entity", "comp", "field", "value"), &ECSCore::set_field);
 	ClassDB::bind_method(D_METHOD("get_column", "comp", "field"), &ECSCore::get_column);
