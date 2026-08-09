@@ -29,7 +29,8 @@ func is_bound() -> bool:
 
 
 ## 给实体附加 ECS 数据组件(数据只在 ECS 列)。
-func add_component(comp: Script, values: Dictionary = {}) -> bool:
+## comp 支持 Script/类名, 或**实例(一参数模式)** —— 传组件实例/节点实例时自动反射其 @export 字段为初值。
+func add_component(comp, values: Dictionary = {}) -> bool:
 	if world == null:
 		push_warning("ECSLink: 未设置 world, 无法附加组件。请先 ecs.world = ...")
 		return false
@@ -38,14 +39,6 @@ func add_component(comp: Script, values: Dictionary = {}) -> bool:
 
 func has_component(comp) -> bool:
 	return entity_id >= 0 and world != null and world.has_component(entity_id, comp)
-
-
-## 在已注册组件中查找拥有该字段的组件类(用于传统属性路由 _set/_get)。
-## 委托 world.field_owner(带缓存)。找不到返回 null。需 world 已设置。
-func field_owner(field: StringName) -> Script:
-	if world == null:
-		return null
-	return world.field_owner(field)
 
 
 ## 读 ECS 字段(实体不存在返回 null, 不创建)。

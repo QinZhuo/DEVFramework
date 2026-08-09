@@ -56,7 +56,7 @@ static func instantiate_script(component_class: Script) -> Variant:
 		script.reload()  # 强制编译: 修复首次加载半编译竞态
 	return script.new()
 
-## 注册组件: 反射 component_class 的 schema。
+## 注册组件: 反射 component_class 的 schema(统一走 collect_schema)。
 ## 成功返回组件类名(StringName), 失败返回空 StringName。
 static func register(component_class: Script) -> StringName:
 	var inst := get_instance()
@@ -65,7 +65,7 @@ static func register(component_class: Script) -> StringName:
 	var probe: Variant = instantiate_script(component_class)
 	if probe == null:
 		return &""
-	var schema: Dictionary = probe.get_schema()
+	var schema: Dictionary = collect_schema(probe)
 	var fields: Array = schema.get("fields", [])
 	var fnames := PackedStringArray()
 	var ftypes := PackedInt32Array()
@@ -85,3 +85,39 @@ static func register(component_class: Script) -> StringName:
 ## 强制重新检测(清空缓存实例)
 static func refresh() -> void:
 	_inst = null
+
+
+## —— 统一字段反射工具 ——
+## 所有"把对象的 @export/脚本变量当作组件数据"的地方(get_schema / register_component /
+## build_prefab / Entity2D.register_to_ecs)都走这里, 保证反射条件一致。
+
+## 统一反射条件: 脚本变量(SCRIPT_VARIABLE) + 非 getter/setter(纯数据) + 可选 @export。
+static func _is_data_field(p: Dictionary, require_export: bool) -> bool:
+	if not (p.usage & PROPERTY_USAGE_SCRIPT_VARIABLE):
+		return false
+	if p.get("getter", "") != "" or p.get("setter", "") != "":
+		return false
+	if require_export and not (p.usage & PROPERTY_USAGE_EDITOR):
+		return false
+	return true
+
+
+## 收集实例的纯数据字段 schema: {name, fields:[{name, type, default}]}
+## require_export=true 时只收集 @export 字段(普通 Node 脚本用它区分数据字段与显示/配置字段);
+## false 时收集全部脚本纯变量(ECSComponent 子类, 其字段均为数据)。
+static func collect_schema(instance, require_export: bool = false) -> Dictionary:
+	var fields := []
+	for p in instance.get_property_list():
+		if _is_data_field(p, require_export):
+			fields.append({"name": p.name, "type": p.type, "default": instance.get(p.name)})
+	var s: Script = instance.get_script()
+	return {"name": s.get_global_name() if s != null else &"", "fields": fields}
+
+
+## 收集实例当前各数据字段的值: {field_name: value}
+static func collect_values(instance, require_export: bool = false) -> Dictionary:
+	var values := {}
+	for p in instance.get_property_list():
+		if _is_data_field(p, require_export):
+			values[p.name] = instance.get(p.name)
+	return values

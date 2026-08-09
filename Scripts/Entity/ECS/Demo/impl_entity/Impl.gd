@@ -1,9 +1,10 @@
 class_name DemoEntityImpl
 extends DemoImpl
 
-## Entity 节点写法实现 —— 传统 OOP 手感 + ECS 底层加速:
-##   · 每个小球一个 DemoEntityBallNode(**继承 Entity2D 的独立脚本**, 自带显示 _draw)
-##   · 初始化/配置用传统写法直接读写 schema 字段(node.hp = 80), 自动路由进 ECS 列
+## Entity 节点写法(ECS↔Node 桥接)实现 —— 定位为"更方便使用的 ECS 逻辑":
+##   · 每个小球一个 DemoEntityBallNode(**继承 Entity2D**), 数据字段 @export 直接在节点上声明
+##     (无需单独的 ECSComponent 组件资源, 节点脚本即 schema)
+##   · 用 register_to_ecs() 把本节点作为数据组件注册进 ECS, 当前变量值自动写入列
 ##   · 每帧高频逻辑交给系统(DemoEntityBallSystem)列批量处理, 再从 ECS 列同步节点 position/尺寸
 ## 完全自包含: 世界创建/初始化/驱动/显示/销毁都在本文件夹内实现。
 
@@ -15,7 +16,6 @@ var nodes: Array[DemoEntityBallNode] = []
 func setup(count: int, seed: int, parent: Node) -> void:
 	impl_name = "Entity节点写法"
 	world = ECSWorld.new(false)
-	world.register_component(DemoEntityBall)
 	attr_system = DemoEntityBallSystem.new()
 	world.register_system(attr_system)
 	var rng := RandomNumberGenerator.new()
@@ -29,17 +29,19 @@ func setup(count: int, seed: int, parent: Node) -> void:
 		var vx := cos(ang) * spd
 		var vy := sin(ang) * spd
 		var hp := rng.randf_range(0.0, 100.0)
-		# 创建继承 Entity2D 的实体节点
+		# 创建继承 Entity2D 的实体节点(数据字段 @export 在节点上声明, 无需单独组件资源)
 		var n := DemoEntityBallNode.new()
 		n.world = world
-		# [实验] 无 _set/_get 时初始化改用显式 set_field(数据进 ECS 列)
-		n.set_field(DemoEntityBall, &"x", x)
-		n.set_field(DemoEntityBall, &"y", y)
-		n.set_field(DemoEntityBall, &"vx", vx)
-		n.set_field(DemoEntityBall, &"vy", vy)
-		n.set_field(DemoEntityBall, &"hp", hp)
-		n.set_field(DemoEntityBall, &"max_hp", 100.0)
-		n.set_field(DemoEntityBall, &"dir", 1)
+		# 传统写法设初值(节点变量)
+		n.x = x
+		n.y = y
+		n.vx = vx
+		n.vy = vy
+		n.hp = hp
+		n.max_hp = 100.0
+		n.dir = 1
+		# 桥接: 把本节点作为数据组件注册进 ECS, 当前变量值写入列
+		n.register_to_ecs()
 		parent.add_child(n)
 		n.set_process(false)   # 每帧逻辑由系统批量驱动
 		nodes.append(n)
@@ -49,9 +51,9 @@ func tick(delta: float) -> void:
 	# 每帧高频逻辑由系统列批量处理(ECS 底层加速)
 	world.tick(delta)
 	# 从 ECS 列同步节点位置与显示尺寸(每帧全量, 与另外两种实现同等负载保证公平对比)
-	var xcol: PackedFloat32Array = world.get_column(DemoEntityBall, &"x")
-	var ycol: PackedFloat32Array = world.get_column(DemoEntityBall, &"y")
-	var scol: PackedFloat32Array = world.get_column(DemoEntityBall, &"size")
+	var xcol: PackedFloat32Array = world.get_column(DemoEntityBallNode, &"x")
+	var ycol: PackedFloat32Array = world.get_column(DemoEntityBallNode, &"y")
+	var scol: PackedFloat32Array = world.get_column(DemoEntityBallNode, &"size")
 	var n := mini(nodes.size(), xcol.size())
 	for i in n:
 		var node: DemoEntityBallNode = nodes[i]

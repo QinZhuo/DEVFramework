@@ -14,19 +14,7 @@ extends Resource
 ## 运行时通过 ECSWorld.add_component(entity, HealthComponent) 附加,
 ## 数据访问用 world.get_field / world.get_column 等。
 
-## 收集本组件 schema 信息(通过实例反射 @export 字段)。
+## 收集本组件 schema 信息(统一走 ECSNative.collect_schema)。
 ## 由 ECSNative.register 调用; 不在此处反射, 因为静态函数无法构造子类实例。
 func get_schema() -> Dictionary:
-	var fields := []
-	for p in get_property_list():
-		# 只收集脚本变量(排除 Object 内建属性)
-		if p.usage & PROPERTY_USAGE_SCRIPT_VARIABLE:
-			fields.append({
-				"name": p.name,
-				"type": p.type,
-				"default": get(p.name),
-			})
-	return {
-		"name": get_script().get_global_name(),
-		"fields": fields,
-	}
+	return ECSNative.collect_schema(self)

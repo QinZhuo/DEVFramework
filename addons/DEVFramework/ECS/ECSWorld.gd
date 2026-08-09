@@ -61,7 +61,6 @@ var _core: Object = null                 # ECSCore 原生实例
 var _component_registered := {}          # Script -> bool (避免重复注册)
 var _component_names := {}               # Script -> StringName
 var _components: Array[Script] = []
-var _field_owner_cache := {}              # 字段名 -> 拥有它的组件类(注册变化时清空)
 
 # ---------------- 系统调度 ----------------
 var _systems: Array[ECSSystem] = []
@@ -141,13 +140,18 @@ func native() -> Object:
 
 ## 注册组件类(ECSComponent 子类)。重复注册幂等。
 ## 通过当前世界自己的 _core 注册(不依赖全局单例)。
+## component_class 支持两类脚本:
+##   · ECSComponent 子类: 反射其全部脚本变量(@export 数据字段)
+##   · 普通脚本(如 Entity2D 子类/任意 Node): 反射其 @export 纯数据变量
+## schema 反射统一走 ECSNative.collect_schema。
 func register_component(component_class: Script) -> bool:
 	if _component_registered.get(component_class, false):
 		return true
 	var probe: Variant = ECSNative.instantiate_script(component_class)
 	if probe == null:
 		return false
-	var schema: Dictionary = probe.get_schema()
+	# 普通脚本(非 ECSComponent)只收 @export 纯数据, ECSComponent 收集全部脚本变量
+	var schema: Dictionary = ECSNative.collect_schema(probe, not probe.has_method("get_schema"))
 	var fields: Array = schema.get("fields", [])
 	var fnames := PackedStringArray()
 	var ftypes := PackedInt32Array()
@@ -164,7 +168,6 @@ func register_component(component_class: Script) -> bool:
 	_component_registered[component_class] = true
 	_component_names[component_class] = name
 	_components.append(component_class)
-	_field_owner_cache.clear()
 	return true
 
 ## 返回组件类名(StringName)
@@ -174,25 +177,6 @@ func component_name(component_class: Script) -> StringName:
 ## 已注册组件类列表
 func registered_components() -> Array[Script]:
 	return _components
-
-## 在已注册组件中查找拥有该字段的组件类(供传统属性路由 _set/_get)。
-## 结果缓存, 组件注册变化时自动失效(见 register_component)。找不到返回 null。
-func field_owner(field: StringName) -> Script:
-	if _field_owner_cache.has(field):
-		return _field_owner_cache[field]
-	for comp in _components:
-		if comp is Script and _script_has_field(comp, field):
-			_field_owner_cache[field] = comp
-			return comp
-	_field_owner_cache[field] = null
-	return null
-
-
-func _script_has_field(s: Script, field: StringName) -> bool:
-	for p in s.get_script_property_list():
-		if p.usage & PROPERTY_USAGE_SCRIPT_VARIABLE and p.name == field:
-			return true
-	return false
 
 # ============================================================
 #  实体
@@ -226,10 +210,21 @@ func destroy_entity(entity: int) -> void:
 		_fire_component_remove(c, entity)
 	_fire_entity_destroyed(entity)
 
-## 给实体附加组件。component 传 ECSComponent 子类或已注册类名。
-## 只失效该组件相关的查询缓存。
-## 成功后触发该组件的 on_component_added 钩子(若有注册)。
+## 给实体附加组件。component 支持三种传法:
+##   · Script(ECSComponent 子类/普通 Node 脚本)
+##   · 类名 StringName/String
+##   · 实例(一参数模式): 传组件实例/节点实例, 自动反射其 @export 数据字段作为初值
+## def_data 可覆盖部分字段初值(其余用 schema 默认值)。
+## 只失效该组件相关的查询缓存。成功后触发该组件的 on_component_added 钩子(若有注册)。
 func add_component(entity: int, component, def_data: Dictionary = {}) -> bool:
+	# 一参数实例模式: 传入实例(非 Script/名字), 自动反射其 @export 数据字段为初值
+	if not (component is Script or component is String or component is StringName):
+		if def_data.is_empty():
+			def_data = ECSNative.collect_values(component, true)
+		var inst_script: Script = component.get_script()
+		if inst_script == null:
+			return false
+		component = inst_script
 	var name := _resolve_component_name(component)
 	if name == &"":
 		return false
@@ -263,10 +258,10 @@ func _resolve_component_name(component) -> StringName:
 		var n: StringName = _component_names.get(component, &"")
 		if n != &"":
 			return n
-		# 未注册: 尝试从 resource_path 稳定获取类名
+		# 未注册: 尝试从 resource_path 稳定获取类名(统一走 ECSNative.collect_schema)
 		var probe: Variant = ECSNative.instantiate_script(component)
 		if probe != null:
-			return probe.get_schema().name
+			return ECSNative.collect_schema(probe).get("name", &"")
 		return &""
 	if component is StringName or component is String:
 		return StringName(component)
@@ -1415,11 +1410,8 @@ func build_prefab(def: ECSPrefabDef) -> int:
 		var comp_script: Script = inst.get_script()
 		if comp_script == null:
 			continue
-		# 提取该组件实例的所有 @export 字段值(与 schema 反射一致)
-		var fields := {}
-		for p in inst.get_property_list():
-			if p.usage & PROPERTY_USAGE_SCRIPT_VARIABLE:
-				fields[p.name] = inst.get(p.name)
+		# 提取该组件实例的所有数据字段值(统一走 ECSNative.collect_values)
+		var fields: Dictionary = ECSNative.collect_values(inst)
 		prefab_add(prefab, comp_script, fields)
 	return prefab
 

@@ -86,7 +86,38 @@ func attach_node_link() -> void:
 			ecs.set_field(NodeLink, &"pos_use_xy", _pos_use_xy)
 
 
+## —— ECS↔Node 桥接: 把本节点作为"数据组件"注册进 ECS ——
+## 反射本节点脚本的 @export 纯数据变量(无 getter/setter)作为组件 schema,
+## 注册组件并把当前变量值写入 ECS 列。之后数据由系统批量管理, 节点变量是"初始配置 + 声明"。
+## 用法: 在 Entity2D 子类里声明 @export 数据字段, 设好初值后调用 register_to_ecs()。
+
+func register_to_ecs() -> bool:
+	if ecs.world == null:
+		push_warning("Entity2D(%s): 未设置 world, 无法注册到 ECS。" % name)
+		return false
+	ecs.world.register_component(get_script())
+	if not ecs.add_component(self):
+		return false
+	_auto_bind_position()
+	return true
+
+
+## 自动绑定位置字段: 若组件 schema 含 x+y(或 Vector2 pos), 记录位置字段供
+## sync_ecs_to_node()/sync_node_to_ecs() 使用 —— 免手动 bind_pos/bind_pos_xy。
+func _auto_bind_position() -> void:
+	var schema: Dictionary = ECSNative.collect_schema(self, true)
+	var has := {}
+	for f in schema.get("fields", []):
+		has[f.name] = true
+	if has.has("x") and has.has("y"):
+		bind_pos_xy(get_script(), &"x", &"y")
+	elif has.has("pos"):
+		bind_pos(get_script(), &"pos")
+
+
 ## —— 位置同步(ECS ↔ 节点) ——
+## 适用于单实体/低频同步(关键实体、交互时)。海量批量请用列直读(get_column)循环赋值,
+## 避免逐实体 get_field/set_field 的跨语言开销。
 
 func bind_pos(component: Script, field: StringName = &"pos") -> void:
 	_pos_comp = component
@@ -105,7 +136,7 @@ func bind_pos_xy(component: Script, x_field: StringName = &"x", y_field: StringN
 func sync_ecs_to_node() -> void:
 	if _pos_comp == null:
 		return
-	position = _ecs_pos2()
+	position = _read_ecs_position()
 
 
 ## 节点 → ECS
@@ -119,7 +150,7 @@ func sync_node_to_ecs() -> void:
 		ecs.set_field(_pos_comp, _pos_field, position)
 
 
-func _ecs_pos2() -> Vector2:
+func _read_ecs_position() -> Vector2:
 	if _pos_use_xy:
 		return Vector2(ecs.get_field(_pos_comp, _x_field), ecs.get_field(_pos_comp, _y_field))
 	var v = ecs.get_field(_pos_comp, _pos_field)

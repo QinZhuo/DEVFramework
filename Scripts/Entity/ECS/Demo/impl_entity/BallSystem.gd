@@ -2,8 +2,8 @@ class_name DemoEntityBallSystem
 extends ECSSystem
 
 ## Entity 节点写法实现的系统: 完整小球逻辑用列批量处理(移动+边界回弹+hp周期+size)。
-## 这就是"Entity 节点写法借助 ECS 底层"的关键 —— 每帧高频逻辑走系统(SoA 列 + 批量),
-## Entity2D 节点的传统写法只用于低频的配置/交互(node.hp = 80), 节点不再逐帧单实体读写。
+## 组件就是 Entity2D 子类脚本(DemoEntityBallNode), 其 @export 数据字段即 schema ——
+## 无需单独的 ECSComponent 组件资源, 系统直接面向节点脚本处理数据列。
 
 const HP_RATE := 2.0   # 每秒 hp 变化(满 100 周期约 50 秒)
 
@@ -11,11 +11,11 @@ const HP_RATE := 2.0   # 每秒 hp 变化(满 100 周期约 50 秒)
 var processed := 0
 
 func required_components() -> Array[Script]:
-	return [DemoEntityBall]
+	return [DemoEntityBallNode]
 
 
 func _run(ctx: ECSSystemContext, delta: float) -> void:
-	ctx.for_each(DemoEntityBall).with([&"x", &"y", &"vx", &"vy", &"hp", &"max_hp", &"dir", &"size"]).process(_cb.bind(delta))
+	ctx.for_each(DemoEntityBallNode).with([&"x", &"y", &"vx", &"vy", &"hp", &"max_hp", &"dir", &"size"]).process(_cb.bind(delta))
 
 
 func _cb(indices: PackedInt32Array, x: PackedFloat32Array, y: PackedFloat32Array,

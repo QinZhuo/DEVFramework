@@ -43,28 +43,15 @@ func _link() -> ECSLink:
 	return l
 
 
-## —— 传统属性路由(路线A): 直接读写 schema 字段自动进宿主 ECS ——
-## 仅当宿主存在且字段属于已注册组件时才接管; 否则走默认逻辑。
-
-func _set(property: StringName, value) -> bool:
+## —— ECS↔Node 桥接: 把本组件作为数据组件注册到宿主实体 ——
+## 反射本组件脚本的 @export 纯数据变量作为 schema, 附加到宿主实体并写入当前值。
+## 需挂到 Entity2D/Entity3D 下(宿主已存在)。
+func register_to_host() -> bool:
 	var l := _link()
-	if l == null:
+	if l == null or l.world == null:
 		return false
-	var owner: Script = l.field_owner(property)
-	if owner == null:
-		return false
-	l.set_field(owner, property, value)
-	return true
-
-
-func _get(property: StringName):
-	var l := _link()
-	if l == null:
-		return null
-	var owner: Script = l.field_owner(property)
-	if owner == null:
-		return null
-	return l.get_field(owner, property)
+	l.world.register_component(get_script())
+	return l.add_component(self)
 
 
 ## 给宿主实体附加 ECS 数据组件(需挂到 Entity2D/Entity3D 下)

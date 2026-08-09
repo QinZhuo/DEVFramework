@@ -67,27 +67,15 @@ func _to_string():
 	return str(hash(self))
 
 
-## —— 传统属性路由(路线A): 直接读写 schema 字段自动进 ECS ——
-## 仅当 ecs 已初始化(world 已设置)且字段属于已注册组件时才接管;
-## 否则走默认逻辑, 保持懒加载(不用 ECS 则零开销、纯 OOP)。
-
-func _set(property: StringName, value) -> bool:
-	if _ecs == null:
+## —— ECS↔对象桥接: 把本实体(脚本)作为数据组件注册进 ECS ——
+## 反射本实体脚本的 @export 纯数据变量作为组件 schema, 注册并写入当前值。
+## 用法: 子类声明 @export 数据字段, 设好初值后 e.register_to_ecs()。
+func register_to_ecs() -> bool:
+	if ecs.world == null:
+		push_warning("Entity(%s): 未设置 world, 无法注册到 ECS。" % to_string())
 		return false
-	var owner: Script = _ecs.field_owner(property)
-	if owner == null:
-		return false
-	_ecs.set_field(owner, property, value)
-	return true
-
-
-func _get(property: StringName):
-	if _ecs == null:
-		return null
-	var owner: Script = _ecs.field_owner(property)
-	if owner == null:
-		return null
-	return _ecs.get_field(owner, property)
+	ecs.world.register_component(get_script())
+	return ecs.add_component(self)
 
 
 func get_desc(data):
