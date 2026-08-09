@@ -23,6 +23,7 @@ var conditions: Array = []   # [{comp, field, op, value}]
 var actions: Array = []      # [{type, ...}]
 var _with_fields: Array = [] # with() 声明的锚组件遍历字段(顺序 = 回调参数顺序)
 var _executed := false
+var _norm_conds := []  # 规范化条件缓存(comp 已 resolve 类名, 免每帧 _normalize_conds; 条件固定时可跨帧复用)
 
 
 func _init(p_world: ECSWorld = null, p_anchor = null) -> void:
@@ -48,6 +49,15 @@ func _reset(p_world: ECSWorld, p_anchor, p_must: Array = [], p_without: Array = 
 	actions.clear()
 	_with_fields.clear()
 	_executed = false
+	# 保留 _norm_conds 缓存(条件结构固定时跨帧复用, 免每帧 _normalize_conds)
+
+## 规范化条件(comp 已 resolve 类名), 供批量收集/执行直接使用(首次构建缓存)。
+func get_norm_conditions() -> Array:
+	if conditions.is_empty():
+		return []
+	if _norm_conds.is_empty():
+		_norm_conds = world._normalize_conds(conditions)
+	return _norm_conds
 
 
 # ---------- 条件(可多个, AND 语义) ----------

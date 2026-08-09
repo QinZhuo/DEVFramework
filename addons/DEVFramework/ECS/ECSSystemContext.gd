@@ -77,11 +77,11 @@ func _auto_execute() -> void:
 		if qs.size() <= 1:
 			qs[0].execute()
 			continue
-		# 多查询同 anchor: 一次批量收集
+		# 多查询同 anchor: 一次批量收集(条件已缓存规范化, 免每帧 _normalize_conds)
 		var conds_groups: Array = []
 		for q in qs:
-			conds_groups.append(q.conditions)
-		var rowsets: Array = world.batch_collect(qs[0].anchor, qs[0].must, qs[0].without, conds_groups)
+			conds_groups.append(q.get_norm_conditions())
+		var rowsets: Array = world.batch_collect_norm(qs[0].anchor, qs[0].must, qs[0].without, conds_groups)
 		for i in qs.size():
 			qs[i]._apply_rows(rowsets[i])
 	_pending.clear()

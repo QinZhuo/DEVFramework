@@ -1420,6 +1420,16 @@ func batch_collect(anchor, must: Array, without: Array, groups: Array) -> Array:
 		norm_groups.append(_normalize_conds(g))
 	return _core.batch_collect(an, _names(must), _names(without), norm_groups)
 
+## 批量收集(条件已规范化, 跳过 _normalize_conds 开销; 查询链合并内部用, 配合 ECSQuery.get_norm_conditions 缓存)。
+func batch_collect_norm(anchor, must: Array, without: Array, norm_groups: Array) -> Array:
+	var an := _resolve_component_name(anchor)
+	_record_access(an)
+	for mn in _names(must):
+		_record_access(mn)
+	for mn in _names(without):
+		_record_access(mn)
+	return _core.batch_collect(an, _names(must), _names(without), norm_groups)
+
 ## 对预收集的行集做标量批量动作(跳过收集, 复用 batch_collect 的行集)。
 ## rows: anchor 行号(PackedInt32Array)。op: ECSWorld.BatchOp。支持向量分量字段(如 &"vel.x")。
 func batch_apply_rows(anchor, rows: PackedInt32Array, op_comp, op_field: StringName,
