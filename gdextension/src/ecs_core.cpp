@@ -2091,47 +2091,30 @@ int64_t ECSCore::batch_apply_col_rows(const StringName &anchor, const PackedInt3
 	if (ofi < 0 || sfi < 0) {
 		return 0;
 	}
-	std::vector<int32_t> agg;
-	for (const auto &a : archetypes_) {
-		if (!a.has_comp(ai)) {
-			continue;
+	const int32_t cnt = int32_t(rows.size());
+	if (cnt <= 0) {
+		return 0;
+	}
+	// SIMD 快路径: 单块 + 全量连续 + 同组件 VECTOR2/FLOAT ADD/SET(参考 Flecs 内循环直算)
+	bool full = (cnt > 0) && rows[0] == 0 && rows[cnt - 1] == cnt - 1;
+	int32_t narch = 0;
+	int32_t only_arch = -1;
+	for (int32_t arch = 0; arch < (int32_t)archetypes_.size(); ++arch) {
+		if (archetypes_[arch].has_comp(ai)) {
+			++narch;
+			only_arch = arch;
 		}
-		for (int32_t r = 0; r < int32_t(a.entities.size()); ++r) {
+	}
+	if (full && narch == 1 && oci == sci && (op == COL_ADD || op == COL_SET)) {
+		auto &a = archetypes_[only_arch];
+		int32_t np = 0;
+		for (int32_t r = 0; r < (int32_t)a.entities.size(); ++r) {
 			if (is_prefab_index(a.entities[r])) {
 				continue;
 			}
-			agg.push_back(a.entities[r]);
+			++np;
 		}
-	}
-	const int32_t cnt = int32_t(rows.size());
-	// 快路径: 单块 + 连续全行(rows=0..cnt-1) + 无 prefab + 同组件 VECTOR2 COL_ADD → SIMD
-	// O(1) 全量连续判断: 无条件查询(rows 首尾 + 大小) → 无需逐项检查; 再确认单块
-	bool full = (cnt > 0) && (cnt == (int32_t)agg.size()) && rows[0] == 0 && rows[cnt - 1] == cnt - 1;
-	bool single = false;
-	int32_t barch = -1;
-	if (full) {
-		for (int32_t arch = 0; arch < (int32_t)archetypes_.size(); ++arch) {
-			if (archetypes_[arch].has_comp(ai)) {
-				if (barch < 0) {
-					barch = arch;
-				} else {
-					barch = -2; // 多块
-					break;
-				}
-			}
-		}
-		single = (barch >= 0);
-	}
-	if (single && (op == COL_ADD || op == COL_SET) && oci == sci) {
-		auto &a = archetypes_[barch];
-		bool has_pref = false;
-		for (int32_t r = 0; r < int32_t(a.entities.size()); ++r) {
-			if (is_prefab_index(a.entities[r])) {
-				has_pref = true;
-				break;
-			}
-		}
-		if (!has_pref) {
+		if (np == cnt) {
 			const int cp = a.comp_pos(oci);
 			const int scp = a.comp_pos(sci);
 			if (cp >= 0 && scp >= 0) {
@@ -2209,18 +2192,106 @@ int64_t ECSCore::batch_apply_col_rows(const StringName &anchor, const PackedInt3
 			}
 		}
 	}
-	parallel_for(size_t(cnt), [&](size_t b, size_t e) {
-		for (size_t i = b; i < e; ++i) {
-			const int32_t grow = rows[i];
-			if (grow < 0 || grow >= (int32_t)agg.size()) {
+	// 聚合行号 -> (archetype, 块内行) 表(一次 O(N)) + 每块聚合起始
+	std::vector<std::pair<int32_t, int32_t>> agg; // 聚合行号 -> (arch, row)
+	std::vector<int32_t> arch_list;
+	std::vector<int32_t> arch_base;
+	int32_t off = 0;
+	for (int32_t arch = 0; arch < (int32_t)archetypes_.size(); ++arch) {
+		const auto &a = archetypes_[arch];
+		if (!a.has_comp(ai)) {
+			continue;
+		}
+		arch_list.push_back(arch);
+		arch_base.push_back(off);
+		for (int32_t r = 0; r < (int32_t)a.entities.size(); ++r) {
+			if (is_prefab_index(a.entities[r])) {
 				continue;
 			}
-			batch_apply_entity_col(agg[grow], oci, ofi, sci, sfi, op, factor, addend);
+			agg.emplace_back(arch, r);
+			++off;
+		}
+	}
+	// 块级并行: 外循环 archetype(每块一个任务), 内循环该块匹配行直接列访问(无实体间接)
+	parallel_for(size_t(arch_list.size()), [&](size_t ab, size_t ae) {
+		for (size_t k = ab; k < ae; ++k) {
+			const int32_t arch = arch_list[k];
+			const int32_t base = arch_base[k];
+			auto &a = archetypes_[arch];
+			const int cp = a.comp_pos(oci);
+			const int scp = a.comp_pos(sci);
+			if (cp < 0 || scp < 0) {
+				continue;
+			}
+			auto &ocol = a.cols[cp][ofi];
+			auto &scol = a.cols[scp][sfi];
+			// 该块聚合行号上界
+			int32_t top = (k + 1 < arch_list.size()) ? arch_base[k + 1] : off;
+			// 收集该块匹配行(rows 单调, 二分起点)
+			int32_t lo = 0;
+			for (int32_t i = 0; i < cnt; ++i) {
+				const int32_t grow = rows[i];
+				if (grow < base) {
+					continue;
+				}
+				if (grow >= top) {
+					break;
+				}
+				const int32_t erow = grow - base; // 块内行(无 prefab 时 == agg[grow].second)
+				// 直接列间操作(参考 batch_apply_entity_col, 无 entity_arch_/row_of 间接)
+				if (ocol.type == Variant::FLOAT && (scol.type == Variant::FLOAT || scol.type == Variant::INT)) {
+					const double sv = (scol.type == Variant::INT) ? double(scol.i32[erow]) : double(scol.f32[erow]);
+					const float v = float(sv * factor + addend);
+					float &w = ocol.f32[erow];
+					switch (op) {
+						case COL_ADD: w += v; break;
+						case COL_SUB: w -= v; break;
+						case COL_MUL: w *= v; break;
+						case COL_DIV: if (v != 0.0f) w /= v; break;
+						case COL_SET: w = v; break;
+						default: break;
+					}
+				} else if (ocol.type == Variant::INT && scol.type == Variant::INT) {
+					const int32_t v = int32_t(double(scol.i32[erow]) * factor + addend);
+					int32_t &w = ocol.i32[erow];
+					switch (op) {
+						case COL_ADD: w += v; break;
+						case COL_SUB: w -= v; break;
+						case COL_MUL: w *= v; break;
+						case COL_DIV: if (v != 0) w /= v; break;
+						case COL_SET: w = v; break;
+						default: break;
+					}
+				} else if (ocol.type == Variant::VECTOR2 && scol.type == Variant::VECTOR2) {
+					const float f = float(factor);
+					Vector2 v = scol.v2[erow] * f;
+					Vector2 &w = ocol.v2[erow];
+					switch (op) {
+						case COL_ADD: w += v; break;
+						case COL_SUB: w -= v; break;
+						case COL_MUL: w *= v; break;
+						case COL_DIV: if (v.x != 0.0f && v.y != 0.0f) w /= v; break;
+						case COL_SET: w = v; break;
+						default: break;
+					}
+				} else if (ocol.type == Variant::VECTOR3 && scol.type == Variant::VECTOR3) {
+					const float f = float(factor);
+					Vector3 v = scol.v3[erow] * f;
+					Vector3 &w = ocol.v3[erow];
+					switch (op) {
+						case COL_ADD: w += v; break;
+						case COL_SUB: w -= v; break;
+						case COL_MUL: w *= v; break;
+						case COL_DIV: if (v.x != 0.0f && v.y != 0.0f && v.z != 0.0f) w /= v; break;
+						case COL_SET: w = v; break;
+						default: break;
+					}
+				}
+			}
 		}
 	}, 1.5);
 	return cnt;
 }
-
 Array ECSCore::batch_collect(const StringName &anchor, const PackedStringArray &must,
 		const PackedStringArray &without, const Array &groups) const {
 	Array out;
