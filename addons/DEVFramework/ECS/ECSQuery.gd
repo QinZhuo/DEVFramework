@@ -167,6 +167,41 @@ func execute() -> int:
 var _last_count := 0
 
 
+## 用预收集的行集执行本查询的全部动作(跳过收集)。rows 为 anchor 行号。
+## 供 ECSSystemContext 自动合并批量查询时调用(同 anchor 多查询一次 batch_collect)。
+## 仅当本查询全部动作可"行集化"(标量/列间)时使用; 含 callback/clamp 类动作时整体回退原 _run。
+func _apply_rows(rows: PackedInt32Array) -> int:
+	if world == null:
+		return 0
+	# 先整体检查: 含 callback/clamp 等不可行集化动作时, 回退完整收集执行(避免部分执行重复)
+	for act in actions:
+		if act.type != "add" and act.type != "sub" and act.type != "mul" \
+				and act.type != "div" and act.type != "set" and act.type != "col":
+			return _run()
+	var total := 0
+	for act in actions:
+		match act.type:
+			"add":
+				total += world.batch_apply_rows(anchor, rows, anchor, act.field,
+						ECSWorld.BatchOp.ADD_VALUE, 0.0, float(act.amount))
+			"sub":
+				total += world.batch_apply_rows(anchor, rows, anchor, act.field,
+						ECSWorld.BatchOp.ADD_VALUE, 0.0, -float(act.amount))
+			"mul":
+				total += world.batch_apply_rows(anchor, rows, anchor, act.field,
+						ECSWorld.BatchOp.MULTIPLY_ADD, float(act.factor), 0.0)
+			"div":
+				total += world.batch_apply_rows(anchor, rows, anchor, act.field,
+						ECSWorld.BatchOp.MULTIPLY_ADD, 1.0 / float(act.divisor), 0.0)
+			"set":
+				total += world.batch_apply_rows(anchor, rows, anchor, act.field,
+						ECSWorld.BatchOp.SET_VALUE, 0.0, float(act.value))
+			"col":
+				total += world.batch_apply_col_rows(anchor, rows, anchor, act.field,
+						act.src, act.src_field, act.op, act.factor, act.addend)
+	return total
+
+
 func _comp_name(c) -> StringName:
 	if c is Script:
 		var n: StringName = world.component_name(c)

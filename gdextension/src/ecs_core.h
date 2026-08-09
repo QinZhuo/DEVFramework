@@ -240,6 +240,24 @@ public:
 			const StringName &dir_comp, const StringName &dir_field,
 			double rate, double min, double max);
 
+	// ---- Tier 0 优化: 批量收集 + 行集动作(一次扫描多组条件, 动作复用行集) ----
+	// 单次遍历匹配签名实体, 同时判定多组条件, 产出多组 anchor 行号(复用 rows 缓冲)。
+	// groups: Array, 每组 = Array[Dictionary](conditions, 同 batch_apply_where 格式, 空=无条件)。
+	// 返回 Array[PackedInt32Array], 第 i 组对应 groups[i] 满足条件的实体 anchor 行号。
+	// 相比逐查询各自 collect, 同一 anchor 的多组条件只需一次遍历(条件解析也只做一次)。
+	Array batch_collect(const StringName &anchor, const PackedStringArray &must,
+			const PackedStringArray &without, const Array &groups) const;
+	// 对预收集的行集做标量批量动作(跳过收集): rows 为 anchor 行号。
+	// 支持向量分量字段(如 "vel.x")。与 batch_apply_where 的 op/factor/addend 语义一致。
+	int64_t batch_apply_rows(const StringName &anchor, const PackedInt32Array &rows,
+			const StringName &op_comp, const StringName &op_field, int64_t op,
+			double factor, double addend);
+	// 对预收集的行集做列间动作(跳过收集): col = col OP (src*factor+addend)。
+	int64_t batch_apply_col_rows(const StringName &anchor, const PackedInt32Array &rows,
+			const StringName &op_comp, const StringName &op_field,
+			const StringName &src_comp, const StringName &src_field,
+			int64_t op, double factor, double addend);
+
 	// 内存统计(调试)
 	Dictionary debug_stats() const;
 

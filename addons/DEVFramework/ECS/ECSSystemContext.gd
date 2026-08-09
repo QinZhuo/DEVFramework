@@ -31,11 +31,47 @@ func for_each(anchor, must: Array = [], without: Array = []) -> ECSQuery:
 	_pending.append(q)
 	return q
 
+## 批量收集便捷: 单次遍历匹配实体同时判定多组条件, 返回各行集(Array[PackedInt32Array])。
+## 适合同一 anchor 多个不同条件的场景: 一次扫描替代 N 次 collect。
+## groups: Array, 每组 = 条件列表(空组 = 全部实体)。常配 apply_rows / apply_col_rows 使用。
+func collect_batch(anchor, groups: Array, must: Array = [], without: Array = []) -> Array:
+	return world.batch_collect(anchor, must, without, groups)
+
+## 对行集做标量动作(跳过收集)。rows 来自 collect_batch(anchor 行号)。
+func apply_rows(anchor, rows: PackedInt32Array, op_comp, op_field: StringName,
+		op: int, factor: float, addend: float) -> int:
+	return world.batch_apply_rows(anchor, rows, op_comp, op_field, op, factor, addend)
+
+## 对行集做列间动作(跳过收集)。rows 来自 collect_batch(anchor 行号)。
+func apply_col_rows(anchor, rows: PackedInt32Array, op_comp, op_field: StringName,
+		src_comp, src_field: StringName, op: int, factor: float, addend: float) -> int:
+	return world.batch_apply_col_rows(anchor, rows, op_comp, op_field, src_comp, src_field, op, factor, addend)
+
 ## 系统 _run 结束后由 ECSWorld 调用: 自动执行本系统未显式 execute 的查询。
+## 优化: 同一 anchor+must+without 的多个查询合并为一次 batch_collect 单遍扫描,
+## 各组条件一次解析判定, 动作复用行集 —— 比逐查询各自 collect(全表/签名多遍)更快。
 func _auto_execute() -> void:
 	if _pending.is_empty():
 		return
+	# 按 (anchor, must, without) 分组
+	var groups := {}
 	for q in _pending:
-		if q != null and not q._executed:
-			q.execute()
+		if q == null or q._executed:
+			continue
+		var key := "%s|%s|%s" % [q._comp_name(q.anchor), str(q.must), str(q.without)]
+		if not groups.has(key):
+			groups[key] = []
+		groups[key].append(q)
+	for key in groups:
+		var qs: Array = groups[key]
+		if qs.size() <= 1:
+			qs[0].execute()
+			continue
+		# 多查询同 anchor: 一次批量收集
+		var conds_groups: Array = []
+		for q in qs:
+			conds_groups.append(q.conditions)
+		var rowsets: Array = world.batch_collect(qs[0].anchor, qs[0].must, qs[0].without, conds_groups)
+		for i in qs.size():
+			qs[i]._apply_rows(rowsets[i])
 	_pending.clear()

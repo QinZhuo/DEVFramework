@@ -1353,6 +1353,47 @@ func batch_count_where(anchor, must: Array, conditions: Array) -> int:
 		_record_access(_resolve_component_name(c.get("comp", &"")))
 	return _core.batch_count(an, _names(must), _normalize_conds(conditions))
 
+## 批量收集: 单次遍历匹配 anchor+must(不含 without)的签名实体, 同时判定多组条件,
+## 产出多组 anchor 行号。比逐查询各自 collect 省去 N 次全表扫描。
+## groups: Array, 每组 = 条件列表(格式同 batch_apply_where, 空组 = 无条件 = 全部实体)。
+## 返回 Array[PackedInt32Array], 第 i 组对应 groups[i] 满足条件的实体 anchor 行号。
+func batch_collect(anchor, must: Array, without: Array, groups: Array) -> Array:
+	var an := _resolve_component_name(anchor)
+	_record_access(an)
+	for mn in _names(must):
+		_record_access(mn)
+	for mn in _names(without):
+		_record_access(mn)
+	var norm_groups: Array = []
+	for g in groups:
+		for c in g:
+			_record_access(_resolve_component_name(c.get("comp", &"")))
+		norm_groups.append(_normalize_conds(g))
+	return _core.batch_collect(an, _names(must), _names(without), norm_groups)
+
+## 对预收集的行集做标量批量动作(跳过收集, 复用 batch_collect 的行集)。
+## rows: anchor 行号(PackedInt32Array)。op: ECSWorld.BatchOp。支持向量分量字段(如 &"vel.x")。
+func batch_apply_rows(anchor, rows: PackedInt32Array, op_comp, op_field: StringName,
+		op: int, factor: float, addend: float) -> int:
+	var an := _resolve_component_name(anchor)
+	var ocn := _resolve_component_name(op_comp)
+	_record_access(an)
+	_record_access(ocn)
+	_mark_dirty(ocn)
+	return _core.batch_apply_rows(an, rows, ocn, op_field, op, factor, addend)
+
+## 对预收集的行集做列间动作(跳过收集): 目标列 = 目标列 OP (src列 * factor + addend)。
+func batch_apply_col_rows(anchor, rows: PackedInt32Array, op_comp, op_field: StringName,
+		src_comp, src_field: StringName, op: int, factor: float, addend: float) -> int:
+	var an := _resolve_component_name(anchor)
+	var ocn := _resolve_component_name(op_comp)
+	var scn := _resolve_component_name(src_comp)
+	_record_access(an)
+	_record_access(ocn)
+	_record_access(scn)
+	_mark_dirty(ocn)
+	return _core.batch_apply_col_rows(an, rows, ocn, op_field, scn, src_field, op, factor, addend)
+
 ## 规范化条件列表: 把 comp(Script/String) → 类名 String, 便于 C++ 解析
 func _normalize_conds(conditions: Array) -> Array:
 	var out: Array = []

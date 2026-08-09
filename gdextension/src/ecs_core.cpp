@@ -1242,6 +1242,454 @@ int64_t ECSCore::batch_apply_col(const StringName &anchor, const PackedStringArr
 	return n;
 }
 
+// ---------------------------------------------------------------------------
+// 优化: 批量收集 + 行集动作
+// ---------------------------------------------------------------------------
+
+// 对预收集的 anchor 行集做标量批量动作(跳过收集)。rows[i] 为 anchor dense 行号。
+int64_t ECSCore::batch_apply_rows(const StringName &anchor, const PackedInt32Array &rows,
+		const StringName &op_comp, const StringName &op_field, int64_t op,
+		double factor, double addend) {
+	ECSComponentData *a = find_comp(anchor);
+	ECSComponentData *oc = find_comp(op_comp);
+	if (a == nullptr || oc == nullptr) {
+		return 0;
+	}
+	String op_fbase;
+	int op_axis;
+	split_field_axis(String(op_field), op_fbase, op_axis);
+	const int fi = oc->field_index(StringName(op_fbase));
+	if (fi < 0) {
+		return 0;
+	}
+	ECSColumn &col = oc->columns[fi];
+	const int32_t cnt = int32_t(rows.size());
+	if (cnt <= 0) {
+		return 0;
+	}
+	const bool same_comp = (op_comp == anchor);
+	const auto &a_dense = a->set.dense;
+	switch (col.type) {
+		case Variant::INT: {
+			int32_t *w = col.i32.ptrw();
+			const int32_t add = int32_t(addend);
+			if (same_comp) {
+				parallel_for(size_t(cnt), [&](size_t b, size_t e) {
+					for (size_t i = b; i < e; ++i) {
+						const int32_t row = rows[i];
+						switch (op) {
+							case BATCH_ADD: w[row] += add; break;
+							case BATCH_MUL_ADD: w[row] = int32_t(double(w[row]) * factor + addend); break;
+							case BATCH_SET: w[row] = add; break;
+							default: break;
+						}
+					}
+				});
+			} else {
+				parallel_for(size_t(cnt), [&](size_t b, size_t e) {
+					for (size_t i = b; i < e; ++i) {
+						const int32_t orow = oc->set.row_of(a_dense[rows[i]]);
+						if (orow < 0) continue;
+						switch (op) {
+							case BATCH_ADD: w[orow] += add; break;
+							case BATCH_MUL_ADD: w[orow] = int32_t(double(w[orow]) * factor + addend); break;
+							case BATCH_SET: w[orow] = add; break;
+							default: break;
+						}
+					}
+				});
+			}
+			return cnt;
+		}
+		case Variant::FLOAT: {
+			float *w = col.f32.ptrw();
+			if (same_comp) {
+				parallel_for(size_t(cnt), [&](size_t b, size_t e) {
+					for (size_t i = b; i < e; ++i) {
+						const int32_t row = rows[i];
+						switch (op) {
+							case BATCH_ADD: w[row] += float(addend); break;
+							case BATCH_MUL_ADD: w[row] = float(double(w[row]) * factor + addend); break;
+							case BATCH_SET: w[row] = float(addend); break;
+							default: break;
+						}
+					}
+				});
+			} else {
+				parallel_for(size_t(cnt), [&](size_t b, size_t e) {
+					for (size_t i = b; i < e; ++i) {
+						const int32_t orow = oc->set.row_of(a_dense[rows[i]]);
+						if (orow < 0) continue;
+						switch (op) {
+							case BATCH_ADD: w[orow] += float(addend); break;
+							case BATCH_MUL_ADD: w[orow] = float(double(w[orow]) * factor + addend); break;
+							case BATCH_SET: w[orow] = float(addend); break;
+							default: break;
+						}
+					}
+				});
+			}
+			return cnt;
+		}
+		case Variant::VECTOR2: {
+			Vector2 *w = col.v2.ptrw();
+			if (op_axis >= 0 && op_axis < 2) {
+				if (same_comp) {
+					parallel_for(size_t(cnt), [&](size_t b, size_t e) {
+						for (size_t i = b; i < e; ++i) {
+							const int32_t row = rows[i];
+							switch (op) {
+								case BATCH_ADD: w[row][op_axis] += float(addend); break;
+								case BATCH_MUL_ADD: w[row][op_axis] = float(double(w[row][op_axis]) * factor + addend); break;
+								case BATCH_SET: w[row][op_axis] = float(addend); break;
+								default: break;
+							}
+						}
+					});
+				} else {
+					parallel_for(size_t(cnt), [&](size_t b, size_t e) {
+						for (size_t i = b; i < e; ++i) {
+							const int32_t orow = oc->set.row_of(a_dense[rows[i]]);
+							if (orow < 0) continue;
+							switch (op) {
+								case BATCH_ADD: w[orow][op_axis] += float(addend); break;
+								case BATCH_MUL_ADD: w[orow][op_axis] = float(double(w[orow][op_axis]) * factor + addend); break;
+								case BATCH_SET: w[orow][op_axis] = float(addend); break;
+								default: break;
+							}
+						}
+					});
+				}
+				return cnt;
+			}
+			break;
+		}
+		case Variant::VECTOR3: {
+			Vector3 *w = col.v3.ptrw();
+			if (op_axis >= 0 && op_axis < 3) {
+				if (same_comp) {
+					parallel_for(size_t(cnt), [&](size_t b, size_t e) {
+						for (size_t i = b; i < e; ++i) {
+							const int32_t row = rows[i];
+							switch (op) {
+								case BATCH_ADD: w[row][op_axis] += float(addend); break;
+								case BATCH_MUL_ADD: w[row][op_axis] = float(double(w[row][op_axis]) * factor + addend); break;
+								case BATCH_SET: w[row][op_axis] = float(addend); break;
+								default: break;
+							}
+						}
+					});
+				} else {
+					parallel_for(size_t(cnt), [&](size_t b, size_t e) {
+						for (size_t i = b; i < e; ++i) {
+							const int32_t orow = oc->set.row_of(a_dense[rows[i]]);
+							if (orow < 0) continue;
+							switch (op) {
+								case BATCH_ADD: w[orow][op_axis] += float(addend); break;
+								case BATCH_MUL_ADD: w[orow][op_axis] = float(double(w[orow][op_axis]) * factor + addend); break;
+								case BATCH_SET: w[orow][op_axis] = float(addend); break;
+								default: break;
+							}
+						}
+					});
+				}
+				return cnt;
+			}
+			break;
+		}
+		default:
+			break;
+	}
+	return 0;
+}
+
+// 对预收集的 anchor 行集做列间动作(跳过收集)。支持 INT/FLOAT(含 addend) 与 VECTOR2/VECTOR3。
+int64_t ECSCore::batch_apply_col_rows(const StringName &anchor, const PackedInt32Array &rows,
+		const StringName &op_comp, const StringName &op_field,
+		const StringName &src_comp, const StringName &src_field,
+		int64_t op, double factor, double addend) {
+	ECSComponentData *a = find_comp(anchor);
+	ECSComponentData *oc = find_comp(op_comp);
+	ECSComponentData *sc = find_comp(src_comp);
+	if (a == nullptr || oc == nullptr || sc == nullptr) {
+		return 0;
+	}
+	const int ofi = oc->field_index(op_field);
+	const int sfi = sc->field_index(src_field);
+	if (ofi < 0 || sfi < 0) {
+		return 0;
+	}
+	ECSColumn &ocol = oc->columns[ofi];
+	const ECSColumn &scol = sc->columns[sfi];
+	const int32_t cnt = int32_t(rows.size());
+	if (cnt <= 0) {
+		return 0;
+	}
+	const bool same_comp = (op_comp == anchor);
+	const bool src_is_anchor = (src_comp == anchor);
+	const auto &a_dense = a->set.dense;
+
+	if (ocol.type == Variant::FLOAT && (scol.type == Variant::FLOAT || scol.type == Variant::INT)) {
+		const bool src_is_int = (scol.type == Variant::INT);
+		float *w = ocol.f32.ptrw();
+		// 连续全行快路径(SIMD): rows=0..cnt-1 且同列, ADD/SET 可向量化(两循环模型内层直算)
+		bool contiguous = same_comp && src_is_anchor;
+		if (contiguous) {
+			for (int32_t ci = 0; ci < cnt; ++ci) {
+				if (rows[ci] != ci) {
+					contiguous = false;
+					break;
+				}
+			}
+		}
+		if (contiguous && op == COL_ADD) {
+			const __m128 fv = _mm_set1_ps(float(factor));
+			const __m128 av = _mm_set1_ps(float(addend));
+			if (src_is_int) {
+				const int32_t *si = scol.i32.ptr();
+				parallel_for(size_t(cnt), [&](size_t b, size_t e) {
+					size_t i = b;
+					for (; i + 4 <= e; i += 4) {
+						const __m128 sv = _mm_cvtepi32_ps(_mm_loadu_si128(reinterpret_cast<const __m128i *>(si + i)));
+						const __m128 val = _mm_add_ps(_mm_mul_ps(sv, fv), av);
+						_mm_storeu_ps(w + i, _mm_add_ps(_mm_loadu_ps(w + i), val));
+					}
+					for (; i < e; ++i) w[i] += float(double(si[i]) * factor + addend);
+				}, 1.5);
+			} else {
+				const float *sf = scol.f32.ptr();
+				parallel_for(size_t(cnt), [&](size_t b, size_t e) {
+					size_t i = b;
+					for (; i + 4 <= e; i += 4) {
+						const __m128 sv = _mm_loadu_ps(sf + i);
+						const __m128 val = _mm_add_ps(_mm_mul_ps(sv, fv), av);
+						_mm_storeu_ps(w + i, _mm_add_ps(_mm_loadu_ps(w + i), val));
+					}
+					for (; i < e; ++i) w[i] += float(double(sf[i]) * factor + addend);
+				}, 1.5);
+			}
+			return cnt;
+		}
+		if (contiguous && op == COL_SET && !src_is_int) {
+			const float *sf = scol.f32.ptr();
+			const __m128 fv = _mm_set1_ps(float(factor));
+			const __m128 av = _mm_set1_ps(float(addend));
+			parallel_for(size_t(cnt), [&](size_t b, size_t e) {
+				size_t i = b;
+				for (; i + 4 <= e; i += 4) {
+					const __m128 sv = _mm_loadu_ps(sf + i);
+					_mm_storeu_ps(w + i, _mm_add_ps(_mm_mul_ps(sv, fv), av));
+				}
+				for (; i < e; ++i) w[i] = float(double(sf[i]) * factor + addend);
+			}, 1.5);
+			return cnt;
+		}
+		parallel_for(size_t(cnt), [&](size_t b, size_t e) {
+			for (size_t i = b; i < e; ++i) {
+				const int32_t erow = rows[i];
+				const int32_t ee = a_dense[erow];
+				const int32_t orow = same_comp ? erow : oc->set.row_of(ee);
+				const int32_t srow = src_is_anchor ? erow : sc->set.row_of(ee);
+				if (orow < 0 || srow < 0) continue;
+				const double sv = src_is_int ? double(scol.i32.ptr()[srow]) : double(scol.f32.ptr()[srow]);
+				const float v = float(sv * factor + addend);
+				switch (op) {
+					case COL_ADD: w[orow] += v; break;
+					case COL_SUB: w[orow] -= v; break;
+					case COL_MUL: w[orow] *= v; break;
+					case COL_DIV: if (v != 0.0f) w[orow] /= v; break;
+					case COL_SET: w[orow] = v; break;
+					default: break;
+				}
+			}
+		}, 1.5);
+		return cnt;
+	} else if (ocol.type == Variant::INT && scol.type == Variant::INT) {
+		int32_t *w = ocol.i32.ptrw();
+		const int32_t *src = scol.i32.ptr();
+		parallel_for(size_t(cnt), [&](size_t b, size_t e) {
+			for (size_t i = b; i < e; ++i) {
+				const int32_t erow = rows[i];
+				const int32_t ee = a_dense[erow];
+				const int32_t orow = same_comp ? erow : oc->set.row_of(ee);
+				const int32_t srow = src_is_anchor ? erow : sc->set.row_of(ee);
+				if (orow < 0 || srow < 0) continue;
+				const int32_t v = int32_t(double(src[srow]) * factor + addend);
+				switch (op) {
+					case COL_ADD: w[orow] += v; break;
+					case COL_SUB: w[orow] -= v; break;
+					case COL_MUL: w[orow] *= v; break;
+					case COL_DIV: if (v != 0) w[orow] /= v; break;
+					case COL_SET: w[orow] = v; break;
+					default: break;
+				}
+			}
+		}, 1.5);
+		return cnt;
+	} else if (ocol.type == Variant::VECTOR2 && scol.type == Variant::VECTOR2) {
+		Vector2 *w = ocol.v2.ptrw();
+		const Vector2 *src = scol.v2.ptr();
+		const float f = float(factor);
+		// 连续全行快路径(SIMD): pos += vel*delta 等, 一次处理 2 个 Vector2(4 float)
+		bool contiguous = same_comp && src_is_anchor;
+		if (contiguous) {
+			for (int32_t ci = 0; ci < cnt; ++ci) {
+				if (rows[ci] != ci) {
+					contiguous = false;
+					break;
+				}
+			}
+		}
+		if (contiguous && op == COL_ADD) {
+			float *wpf = reinterpret_cast<float *>(w);
+			const float *spf = reinterpret_cast<const float *>(src);
+			const __m128 fv = _mm_set1_ps(f);
+			parallel_for(size_t(cnt), [&](size_t b, size_t e) {
+				size_t i = b;
+				for (; i + 2 <= e; i += 2) {
+					const __m128 posv = _mm_loadu_ps(wpf + i * 2);
+					const __m128 velv = _mm_loadu_ps(spf + i * 2);
+					_mm_storeu_ps(wpf + i * 2, _mm_add_ps(posv, _mm_mul_ps(velv, fv)));
+				}
+				for (; i < e; ++i) w[i] += src[i] * f;
+			}, 3.0);
+			return cnt;
+		}
+		if (contiguous && op == COL_SET) {
+			float *wpf = reinterpret_cast<float *>(w);
+			const float *spf = reinterpret_cast<const float *>(src);
+			const __m128 fv = _mm_set1_ps(f);
+			parallel_for(size_t(cnt), [&](size_t b, size_t e) {
+				size_t i = b;
+				for (; i + 2 <= e; i += 2) {
+					const __m128 sv = _mm_loadu_ps(spf + i * 2);
+					_mm_storeu_ps(wpf + i * 2, _mm_mul_ps(sv, fv));
+				}
+				for (; i < e; ++i) w[i] = src[i] * f;
+			}, 3.0);
+			return cnt;
+		}
+		parallel_for(size_t(cnt), [&](size_t b, size_t e) {
+			for (size_t i = b; i < e; ++i) {
+				const int32_t erow = rows[i];
+				const int32_t ee = a_dense[erow];
+				const int32_t orow = same_comp ? erow : oc->set.row_of(ee);
+				const int32_t srow = src_is_anchor ? erow : sc->set.row_of(ee);
+				if (orow < 0 || srow < 0) continue;
+				const Vector2 v = src[srow] * f;
+				switch (op) {
+					case COL_ADD: w[orow] += v; break;
+					case COL_SUB: w[orow] -= v; break;
+					case COL_MUL: w[orow] *= v; break;
+					case COL_DIV: if (v.x != 0.0f && v.y != 0.0f) w[orow] /= v; break;
+					case COL_SET: w[orow] = v; break;
+					default: break;
+				}
+			}
+		}, 3.0);
+		return cnt;
+	} else if (ocol.type == Variant::VECTOR3 && scol.type == Variant::VECTOR3) {
+		Vector3 *w = ocol.v3.ptrw();
+		const Vector3 *src = scol.v3.ptr();
+		const float f = float(factor);
+		parallel_for(size_t(cnt), [&](size_t b, size_t e) {
+			for (size_t i = b; i < e; ++i) {
+				const int32_t erow = rows[i];
+				const int32_t ee = a_dense[erow];
+				const int32_t orow = same_comp ? erow : oc->set.row_of(ee);
+				const int32_t srow = src_is_anchor ? erow : sc->set.row_of(ee);
+				if (orow < 0 || srow < 0) continue;
+				const Vector3 v = src[srow] * f;
+				switch (op) {
+					case COL_ADD: w[orow] += v; break;
+					case COL_SUB: w[orow] -= v; break;
+					case COL_MUL: w[orow] *= v; break;
+					case COL_DIV: if (v.x != 0.0f && v.y != 0.0f && v.z != 0.0f) w[orow] /= v; break;
+					case COL_SET: w[orow] = v; break;
+					default: break;
+				}
+			}
+		}, 3.0);
+		return cnt;
+	}
+	return 0;
+}
+
+// 批量收集: 单次遍历匹配签名实体, 同时判定多组条件, 产出多组 anchor 行号。
+Array ECSCore::batch_collect(const StringName &anchor, const PackedStringArray &must,
+		const PackedStringArray &without, const Array &groups) const {
+	Array out;
+	if (groups.size() <= 0) {
+		return out;
+	}
+	const int32_t ai = comp_index(anchor);
+	if (ai < 0) {
+		return out;
+	}
+	const int32_t m = int32_t(must.size());
+	const int32_t w = int32_t(without.size());
+	if (m > 8 || w > 8) {
+		return out;
+	}
+	int32_t mi[8];
+	int32_t wi[8];
+	for (int32_t i = 0; i < m; ++i) {
+		mi[i] = comp_index(must[i]);
+	}
+	for (int32_t i = 0; i < w; ++i) {
+		wi[i] = comp_index(without[i]);
+	}
+	// 一次性解析全部组条件(避免逐查询重复 parse_conditions)
+	const int32_t ng = int32_t(groups.size());
+	std::vector<std::vector<ECSFilterCond>> all_conds(ng);
+	for (int32_t gi = 0; gi < ng; ++gi) {
+		parse_conditions(this, groups[gi], all_conds[gi], 8);
+	}
+	std::vector<PackedInt32Array> results(ng);
+	const auto &a_col = components_[ai].set;
+	for (const auto &sig : signatures_) {
+		if (!std::binary_search(sig.comps.begin(), sig.comps.end(), ai)) {
+			continue;
+		}
+		bool ok = true;
+		for (int32_t i = 0; i < m; ++i) {
+			if (!std::binary_search(sig.comps.begin(), sig.comps.end(), mi[i])) {
+				ok = false;
+				break;
+			}
+		}
+		if (ok) {
+			for (int32_t i = 0; i < w; ++i) {
+				if (std::binary_search(sig.comps.begin(), sig.comps.end(), wi[i])) {
+					ok = false;
+					break;
+				}
+			}
+		}
+		if (!ok) {
+			continue;
+		}
+		for (int32_t e : sig.entities) {
+			if (is_prefab_index(e)) {
+				continue;
+			}
+			const int32_t row = a_col.row_of(e);
+			if (row < 0) {
+				continue;
+			}
+			for (int32_t gi = 0; gi < ng; ++gi) {
+				if (all_conds[gi].empty() || cond_matches(this, e, all_conds[gi])) {
+					results[gi].append(row);
+				}
+			}
+		}
+	}
+	for (int32_t gi = 0; gi < ng; ++gi) {
+		out.push_back(results[gi]);
+	}
+	return out;
+}
+
 // 带条件过滤的列钳制: col = clamp(col, min, max)(仅满足 conditions 的实体)。
 int64_t ECSCore::batch_clamp_where(const StringName &anchor, const PackedStringArray &must,
 		const StringName &op_comp, const StringName &op_field,
@@ -2380,6 +2828,9 @@ void ECSCore::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("batch_count", "anchor", "must", "conditions"), &ECSCore::batch_count);
 	ClassDB::bind_method(D_METHOD("batch_clamp", "anchor", "must", "op_comp", "op_field", "min_comp", "min_field", "max_comp", "max_field"), &ECSCore::batch_clamp);
 	ClassDB::bind_method(D_METHOD("batch_vec_add", "anchor", "must", "pos_comp", "pos_field", "vel_comp", "vel_field", "delta"), &ECSCore::batch_vec_add);
+	ClassDB::bind_method(D_METHOD("batch_collect", "anchor", "must", "without", "groups"), &ECSCore::batch_collect);
+	ClassDB::bind_method(D_METHOD("batch_apply_rows", "anchor", "rows", "op_comp", "op_field", "op", "factor", "addend"), &ECSCore::batch_apply_rows);
+	ClassDB::bind_method(D_METHOD("batch_apply_col_rows", "anchor", "rows", "op_comp", "op_field", "src_comp", "src_field", "op", "factor", "addend"), &ECSCore::batch_apply_col_rows);
 	ClassDB::bind_method(D_METHOD("debug_stats"), &ECSCore::debug_stats);
 	ClassDB::bind_method(D_METHOD("set_thread_count", "count"), &ECSCore::set_thread_count);
 	ClassDB::bind_method(D_METHOD("run_systems_parallel", "systems"), &ECSCore::run_systems_parallel);
