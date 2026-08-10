@@ -103,6 +103,11 @@ var _parent_children := {}
 ## 写路径(通过框架写 API 的字段修改)会标记对应组件"本帧被写"。
 ## 注意: get_column 返回共享引用后原地修改不经过写 API, 不会被标记。
 var _frame_count := 0                     # 本世界已 tick 帧数
+# ---------------- 调试统计(实体/系统查看器用) ----------------
+var _system_times := {}                        # ECSSystem -> 本帧耗时 ms(并行安全)
+var _system_times_lock := Mutex.new()
+var _component_by_name := {}                   # 组件类名(StringName) -> 脚本
+var _component_schemas := {}                   # 组件类名 -> [{name, type}] 字段列表
 var _dirty_comps := {}                    # compName -> 帧号(该帧被写)
 
 # ---------------- 事件队列 ----------------
@@ -164,6 +169,11 @@ func register_component(component_class: Script) -> bool:
 		return false
 	_component_registered[component_class] = true
 	_component_names[component_class] = name
+	_component_by_name[name] = component_class
+	var sch: Array = []
+	for fi in fnames.size():
+		sch.append({"name": fnames[fi], "type": ftypes[fi]})
+	_component_schemas[name] = sch
 	_components.append(component_class)
 	# 日志: 组件名 + 注册的属性(含类型)
 	var field_desc := PackedStringArray()
@@ -1060,26 +1070,76 @@ func _run_system(system: ECSSystem) -> void:
 	var delta: float = system._frame_delta
 	if delta < 0.0:
 		return
+	var t0 := Time.get_ticks_usec()
 	var ctx := ECSSystemContext.new(self)
 	if not _tracking:
 		system._run(ctx, delta)
 		ctx._auto_execute()
+		_record_system_time(system, t0)
 		return
 	_begin_access(system)
 	system._run(ctx, delta)
 	ctx._auto_execute()
 	_end_access()
+	_record_system_time(system, t0)
 
 ## 并行 worker 入口(在线程中执行系统)。
 func _parallel_worker(system: ECSSystem) -> void:
 	var delta: float = system._frame_delta
 	if delta < 0.0:
 		return
+	var t0 := Time.get_ticks_usec()
 	var ctx := ECSSystemContext.new(self)
 	_begin_access(system)
 	system._run(ctx, delta)
 	ctx._auto_execute()
 	_end_access()
+	_record_system_time(system, t0)
+
+## 记录系统本帧耗时(ms), 线程安全(并行 worker 也调用)。
+func _record_system_time(system: ECSSystem, t0: int) -> void:
+	_system_times_lock.lock()
+	_system_times[system] = (Time.get_ticks_usec() - t0) / 1000.0
+	_system_times_lock.unlock()
+
+## 调试: 各系统本帧耗时(ms), 键为系统类名。
+func get_system_times() -> Dictionary:
+	var out := {}
+	_system_times_lock.lock()
+	for s in _system_times:
+		var nm := "?"
+		if s.get_script() != null:
+			nm = s.get_script().get_global_name()
+		out[nm] = _system_times[s]
+	_system_times_lock.unlock()
+	return out
+
+## 调试: 返回实体的组件字段视图 {组件名: {字段: 值}}(实体/组件查看器用)。
+func get_entity_view(entity: int) -> Dictionary:
+	var view := {}
+	if not is_alive(entity):
+		return view
+	for cn in _core.get_entity_components(entity):
+		var fields := {}
+		var sch: Array = _component_schemas.get(cn, [])
+		for f in sch:
+			fields[f["name"]] = _core.get_field(entity, cn, f["name"])
+		view[cn] = fields
+	return view
+
+## 调试: 设置实体的组件字段值(查看器改值用)。
+func set_entity_field(entity: int, comp, field: StringName, value) -> void:
+	set_field(entity, comp, field, value)
+
+## 调试: 系统拓扑(当前执行顺序 + 是否可并行)。
+func get_topology() -> Dictionary:
+	var order := []
+	for s in _sorted:
+		var nm := "?"
+		if s.get_script() != null:
+			nm = s.get_script().get_global_name()
+		order.append({"name": nm, "parallel": s.can_run_parallel()})
+	return {"order": order}
 
 ## 系统 a(索引)是否依赖 b(索引): b 必须先于 a 执行。
 func _system_depends(a: int, b: int) -> bool:
