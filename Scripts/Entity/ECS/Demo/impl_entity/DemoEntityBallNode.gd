@@ -19,12 +19,13 @@ extends Entity2D
 @export var color: Color = Color(1.0, 0.7, 0.3)
 const ECS_EXCLUDE := ["color"]
 var max_ball_size: float = 8.0
-var visual_size: float = 5.0   # 显示边长(缓存自 ECS 列 size)
-
-
-func set_visual_size(v: float) -> void:
-	visual_size = v
-	queue_redraw()
+var _visual_size: float = 5.0
+var visual_size: float:
+	get:
+		return _visual_size
+	set(v):
+		_visual_size = v
+		queue_redraw()   # 显示边长变化自动重绘(可被 ECSSyncSystem 规则同步)
 
 
 func _draw() -> void:
