@@ -1,30 +1,29 @@
-[gd_scene load_steps=11 format=3]
+[gd_scene load_steps=10 format=3]
 
-[ext_resource type="Script" path="res://addons/DEVFramework/ECS/World.gd" id="1_world"]
-[ext_resource type="Script" path="res://Scripts/Entity/ECS/Demo/impl_query/DemoQuerySpawner.gd" id="2_spawner"]
-[ext_resource type="Script" path="res://Scripts/Entity/ECS/Demo/impl_query/DemoQueryBallSystem.gd" id="3_bsys"]
-[ext_resource type="Script" path="res://Scripts/Entity/ECS/Demo/impl_query/DemoQueryBall.gd" id="4_ball"]
-[ext_resource type="Script" path="res://addons/DEVFramework/ECS/ECSSyncSystem.gd" id="5_sync"]
-[ext_resource type="Script" path="res://addons/DEVFramework/ECS/SyncFieldRule.gd" id="6_rule"]
+[ext_resource type="Script" path="res://Scripts/Entity/ECS/Demo/impl_query/DemoQueryWorld.gd" id="1_world"]
+[ext_resource type="Script" path="res://Scripts/Entity/ECS/Demo/impl_query/DemoQueryBallSystem.gd" id="2_bsys"]
+[ext_resource type="Script" path="res://Scripts/Entity/ECS/Demo/impl_query/DemoQueryBall.gd" id="3_ball"]
+[ext_resource type="Script" path="res://addons/DEVFramework/ECS/ECSSyncSystem.gd" id="4_sync"]
+[ext_resource type="Script" path="res://addons/DEVFramework/ECS/SyncFieldRule.gd" id="5_rule"]
 
 [sub_resource type="Resource" id="sys_ball"]
-script = ExtResource("3_bsys")
+script = ExtResource("2_bsys")
 hp_rate = 2.0
 
 [sub_resource type="Resource" id="rule_pos"]
-script = ExtResource("6_rule")
-comp = ExtResource("4_ball")
+script = ExtResource("5_rule")
+comp = ExtResource("3_ball")
 field = &"pos"
 prop = &"position"
 
 [sub_resource type="Resource" id="rule_size"]
-script = ExtResource("6_rule")
-comp = ExtResource("4_ball")
+script = ExtResource("5_rule")
+comp = ExtResource("3_ball")
 field = &"size"
 prop = &"visual_size"
 
 [sub_resource type="Resource" id="sys_sync"]
-script = ExtResource("5_sync")
+script = ExtResource("4_sync")
 server_direct = true
 field_rules = Array[SyncFieldRule]([SubResource("rule_pos"), SubResource("rule_size")])
 
@@ -32,6 +31,3 @@ field_rules = Array[SyncFieldRule]([SubResource("rule_pos"), SubResource("rule_s
 script = ExtResource("1_world")
 systems = Array[ECSSystem]([SubResource("sys_ball"), SubResource("sys_sync")])
 auto_tick = false
-
-[node name="Spawner" type="Node" parent="."]
-script = ExtResource("2_spawner")

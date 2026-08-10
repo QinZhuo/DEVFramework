@@ -12,7 +12,7 @@ extends Control
 ## 额外能力:
 ##   · 创建耗时: 每次切换/启动记录"创建世界"的耗时(建实体/节点/数据), 表格对比
 ##   · 渲染开关: 屏蔽渲染相关逻辑(位置/显示更新), 只做数值运算, 对比渲染同步的开销
-## 本脚本只做调度: 创建/销毁当前 DemoImpl, 测量耗时, 渲染表格。
+## 本脚本只做调度: 实例化/删除各实现的场景, 测量耗时, 渲染表格。
 
 const IMPL_NAMES := ["普通Node实现", "ECS查询链实现", "ECS回调实现", "Entity节点写法"]
 # 每个实现一个场景(放在对应脚本文件夹下), 切模式 = 实例化/删除对应场景
@@ -53,30 +53,13 @@ func _ready() -> void:
 
 
 func _spawn(idx: int) -> void:
-	var scene_path: String = IMPL_SCENES[idx]
+	# 每个实现 = 一个场景(世界/系统/同步规则都在场景 Inspector 配置), 实例化即完成初始化
 	var t0 := Time.get_ticks_usec()
-	if scene_path != "":
-		# 场景化实现: 实例化场景(世界/系统/同步规则都在场景 Inspector 配置)
-		var scn: PackedScene = load(scene_path)
-		var node := scn.instantiate()
-		%WorldRoot.add_child(node)
-		_impl = node
-		_apply_render(_impl)
-	else:
-		# 代码创建实现
-		var cls: Script = null
-		match idx:
-			0:
-				cls = DemoNodeImpl
-			1:
-				cls = DemoQueryImpl
-			2:
-				cls = DemoCallbackImpl
-			_:
-				cls = DemoEntityImpl
-		_impl = cls.new()
-		_impl.setup(ball_count, INIT_SEED, %WorldRoot)
-		_apply_render(_impl)
+	var scn: PackedScene = load(IMPL_SCENES[idx])
+	var node := scn.instantiate()
+	%WorldRoot.add_child(node)
+	_impl = node
+	_apply_render(_impl)
 	_setup_ms = (Time.get_ticks_usec() - t0) / 1000.0
 
 

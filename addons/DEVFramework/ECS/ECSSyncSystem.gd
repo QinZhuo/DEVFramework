@@ -18,7 +18,7 @@ extends ECSSystem
 ## 场景根节点(查找 NodeLink.node_path 用)。若未设置, 默认取当前场景根。
 var scene_root: Node = null
 
-## 渲染开关: false 时跳过全部同步(纯数值逻辑), 由持有方(如 DemoImpl)控制。
+## 渲染开关: false 时跳过全部同步(纯数值逻辑), 由持有方(如 World 节点 / 渲染对比)控制。
 var render_enabled := true
 
 ## 服务器直连开关(默认 false): true 时 position/transform/modulate/self_modulate/visible/z_index

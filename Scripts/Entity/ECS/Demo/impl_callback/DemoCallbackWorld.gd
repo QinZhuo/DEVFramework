@@ -1,9 +1,11 @@
-class_name DemoCallbackSpawner
-extends Node
+class_name DemoCallbackWorld
+extends World
 
-## ECS 查询链回调实现的球生成脚本(不继承 World): 监听父 World 节点的 world_ready 信号生成球。
-## 世界创建/系统注册/同步规则全部在场景的 World 节点里配置, 本脚本只负责生成实体数据与显示节点。
+## ECS 查询链回调实现的场景化世界 —— 场景根挂本脚本(继承 World)。
+## World 基类负责创建 ECSWorld + 注册场景配置的 systems; 本脚本只负责生成球实体与显示节点。
+## 系统/同步规则在场景 Inspector 配置(根节点 systems + ECSSyncSystem.field_rules)。
 ## 与 impl_query 共用 DemoQueryBall 组件 / DemoQueryBallNode 显示节点 / NodeLink 关联。
+## 场景放在 impl_callback 脚本文件夹下, 由 ECSDemo 实例化/删除来切换实现。
 
 @export var ball_count := 10000
 @export var init_seed := 20260808
@@ -12,12 +14,21 @@ var visuals: Array[DemoQueryBallNode] = []
 
 
 func _ready() -> void:
-	var world_node := get_parent() as World
-	if world_node != null:
-		world_node.world_ready.connect(_on_world_ready)
+	super()          # World: 创建 ECSWorld + 注册场景配置的系统
+	_spawn()
 
 
-func _on_world_ready(ecs: ECSWorld) -> void:
+## 渲染开关: 控制场景内 ECSSyncSystem 的 render_enabled(渲染开/关对比用)。
+func set_render_enabled(on: bool) -> void:
+	if ecs == null:
+		return
+	for s in ecs._systems:
+		if s is ECSSyncSystem:
+			s.render_enabled = on
+
+
+## 生成球实体(ECS 数据) + 显示节点(NodeLink 关联)。
+func _spawn() -> void:
 	var rng := RandomNumberGenerator.new()
 	rng.seed = init_seed
 	for _i in ball_count:
