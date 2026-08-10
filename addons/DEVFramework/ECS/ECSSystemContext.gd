@@ -74,15 +74,24 @@ func _auto_execute() -> void:
 		groups[key].append(q)
 	for key in groups:
 		var qs: Array = groups[key]
-		if qs.size() <= 1:
-			qs[0].execute()
-			continue
-		# 多查询同 anchor: 一次批量收集(条件已缓存规范化, 免每帧 _normalize_conds)
-		var conds_groups: Array = []
+		# 无条件查询(conds 空)用缓存全量行集; 条件查询走 batch_collect 一次收集
+		var uncond: Array = []
+		var cond_qs: Array = []
 		for q in qs:
-			conds_groups.append(q.get_norm_conditions())
-		var rowsets: Array = world.batch_collect_norm(qs[0].anchor, qs[0].must, qs[0].without, conds_groups)
-		for i in qs.size():
-			qs[i]._apply_rows(rowsets[i])
+			if q.conditions.is_empty():
+				uncond.append(q)
+			else:
+				cond_qs.append(q)
+		if not uncond.is_empty():
+			var rows: PackedInt32Array = world.query_all_rows(qs[0].anchor)
+			for q in uncond:
+				q._apply_rows(rows)
+		if not cond_qs.is_empty():
+			var conds_groups: Array = []
+			for q in cond_qs:
+				conds_groups.append(q.get_norm_conditions())
+			var rowsets: Array = world.batch_collect_norm(qs[0].anchor, qs[0].must, qs[0].without, conds_groups)
+			for i in cond_qs.size():
+				cond_qs[i]._apply_rows(rowsets[i])
 	_pending.clear()
 	_pool_idx = 0

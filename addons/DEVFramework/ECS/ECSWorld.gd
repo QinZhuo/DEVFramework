@@ -183,6 +183,7 @@ func registered_components() -> Array[Script]:
 ## 创建实体, 返回实体 id(int32: index|version<<24)
 ## 注意: 新实体无组件, 不影响任何查询结果 → 不失效查询缓存。
 func create_entity() -> int:
+	_all_rows_cache.clear()
 	var e: int = -1
 	_struct_mutex.lock()
 	e = _core.create_entity()
@@ -197,6 +198,7 @@ func is_alive(entity: int) -> bool:
 ## 若注册了组件 remove 钩子, 会在实体真正销毁前枚举组件并触发 remove;
 ## 随后触发 on_entity_destroyed 钩子。
 func destroy_entity(entity: int) -> void:
+	_all_rows_cache.clear()
 	var pending_comps: Array = []
 	if _has_any_component_hooks or not _entity_destroyed_hooks.is_empty():
 		pending_comps = _core.get_entity_components(entity)
@@ -215,6 +217,7 @@ func destroy_entity(entity: int) -> void:
 ## def_data 可覆盖部分字段初值(其余用 schema 默认值)。
 ## 只失效该组件相关的查询缓存。成功后触发该组件的 on_component_added 钩子(若有注册)。
 func add_component(entity: int, component, def_data: Dictionary = {}) -> bool:
+	_all_rows_cache.clear()
 	# 一参数实例模式: 传入实例(非 Script/名字), 自动反射其 @export 数据字段为初值
 	if not (component is Script or component is String or component is StringName):
 		if def_data.is_empty():
@@ -247,6 +250,7 @@ func has_component(entity: int, component) -> bool:
 	return name != &"" and _core.has_component(entity, name)
 
 func remove_component(entity: int, component) -> void:
+	_all_rows_cache.clear()
 	var name := _resolve_component_name(component)
 	if name != &"":
 		_struct_mutex.lock()
@@ -334,6 +338,20 @@ func query_entities(anchor, must: Array = [], without: Array = []) -> PackedInt3
 		without_names.append(wn)
 		_record_access(wn)
 	return _core.query_entities(anchor_name, must_names, without_names)
+
+## 全量聚合行号(无条件查询, 结构不变时缓存复用): 返回该组件所有实体的聚合行号(0..N-1)。
+var _all_rows_cache := {}
+
+func query_all_rows(anchor) -> PackedInt32Array:
+	var cn: StringName = _resolve_component_name(anchor)
+	if cn == &"":
+		return PackedInt32Array()
+	_record_access(cn)
+	if _all_rows_cache.has(cn):
+		return _all_rows_cache[cn]
+	var rows: PackedInt32Array = _core.query_rows(cn, [], [])
+	_all_rows_cache[cn] = rows
+	return rows
 
 ## 带缓存(增量失效): 相同签名查询复用结果, 仅当涉及组件结构变化时才失效。
 func query_rows(anchor, must: Array = [], without: Array = []) -> PackedInt32Array:
