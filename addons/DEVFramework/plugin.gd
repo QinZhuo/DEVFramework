@@ -27,6 +27,7 @@ func _enter_tree() -> void:
 	_register("dev_framework/mcp/enabled", TYPE_BOOL, true)
 	_register("dev_framework/mcp/port", TYPE_INT, 8931)
 	_register("dev_framework/mcp/token", TYPE_STRING, "")
+	_register("dev_framework/mcp/max_output_chars", TYPE_INT, 90000)
 	_register("dev_framework/audio/default_sample_rate", TYPE_INT, 44100)
 	add_tool_menu_item("创建 DEV 项目结构...", Callable(self, "_on_create_structure"))
 	add_tool_menu_item("DEV 音频：生成示例音频定义...", Callable(self, "_on_create_audio_examples"))
