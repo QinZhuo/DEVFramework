@@ -163,6 +163,11 @@ func register_component(component_class: Script) -> bool:
 	_component_registered[component_class] = true
 	_component_names[component_class] = name
 	_components.append(component_class)
+	# 日志: 组件名 + 注册的属性(含类型)
+	var field_desc := PackedStringArray()
+	for fi in fnames.size():
+		field_desc.append("%s(%s)" % [fnames[fi], type_string(ftypes[fi])])
+	LogTool.log("ECS", "注册组件 %s: [%s]" % [name, ", ".join(field_desc)])
 	return true
 
 ## 返回组件类名(StringName)
@@ -801,6 +806,15 @@ func register_system(system: ECSSystem, priority: int = 0, before: Array = [], a
 	_dirty_schedule = true
 	# 系统初始化钩子(场景配置的 field_rules 等在此应用)
 	system._on_registered(self)
+	# 日志: 系统名 + 优先级 + 使用组件
+	var sname := "?"
+	if system.get_script() != null:
+		sname = system.get_script().get_global_name()
+	var used := PackedStringArray()
+	for c in system.required_components():
+		if c != null:
+			used.append(str(c.get_global_name()))
+	LogTool.log("ECS", "注册系统 %s (优先级 %d, 组件: %s)" % [sname, priority, ", ".join(used)])
 
 func remove_system(system: ECSSystem) -> void:
 	var i := _systems.find(system)
