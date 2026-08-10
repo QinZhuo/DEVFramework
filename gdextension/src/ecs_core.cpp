@@ -987,6 +987,34 @@ void ECSCore::remove_component(int32_t entity, const StringName &comp) {
 	++struct_version_;
 }
 
+Array ECSCore::get_archetype_groups() const {
+	Array out;
+	for (const auto &a : archetypes_) {
+		if (a.entities.empty()) {
+			continue;
+		}
+		PackedStringArray comps;
+		for (int32_t ci : a.comps) {
+			comps.append(String(components_[ci].name));
+		}
+		PackedInt32Array ents;
+		for (int32_t e : a.entities) {
+			if (is_prefab_index(e)) {
+				continue;
+			}
+			ents.append(e);
+		}
+		if (ents.is_empty()) {
+			continue;
+		}
+		Dictionary g;
+		g["comps"] = comps;
+		g["entities"] = ents;
+		out.append(g);
+	}
+	return out;
+}
+
 int32_t ECSCore::count_entities(const StringName &comp) const {
 	const int32_t ci = comp_index(comp);
 	if (ci < 0) {
@@ -3333,6 +3361,7 @@ void ECSCore::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("remove_component", "entity", "comp"), &ECSCore::remove_component);
 	ClassDB::bind_method(D_METHOD("count_entities", "comp"), &ECSCore::count_entities);
 	ClassDB::bind_method(D_METHOD("get_entity_components", "entity"), &ECSCore::get_entity_components);
+	ClassDB::bind_method(D_METHOD("get_archetype_groups"), &ECSCore::get_archetype_groups);
 	ClassDB::bind_method(D_METHOD("query_rows", "anchor", "must", "without"), &ECSCore::query_rows);
 	ClassDB::bind_method(D_METHOD("query_entities", "anchor", "must", "without"), &ECSCore::query_entities);
 	ClassDB::bind_method(D_METHOD("query_rows_aligned", "anchor", "must", "without"), &ECSCore::query_rows_aligned);

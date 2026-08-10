@@ -169,6 +169,8 @@ public:
 	int32_t count_entities(const StringName &comp) const;
 	// 枚举实体的全部组件名(低频: destroy 前收集钩子信息用)
 	PackedStringArray get_entity_components(int32_t entity) const;
+	// 按 archetype(组件组合)分组枚举实体(调试/查看器用): Array[Dictionary{comps, entities}]。
+	Array get_archetype_groups() const;
 
 	// ---- 查询 ----
 	// 返回匹配实体的实体 ID 列表(可直接 get_field/set_field, archetype 下最直观的查询)。

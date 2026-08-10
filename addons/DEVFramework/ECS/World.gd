@@ -59,15 +59,16 @@ func _push_debug_view() -> void:
 		"systems": ecs.get_system_stats(),
 		"topology": ecs.get_topology(),
 	}
-	# 实体 ID 列表(前 200 个 NodeLink 实体, 供查看器点选)
-	var rows := ecs.query_rows(NodeLink, [], [])
-	var ids: Array = []
-	var nl_name: StringName = ecs.component_name(NodeLink)
-	for r in rows:
-		ids.append(ecs.native().entity_of_row(nl_name, r))
-		if ids.size() >= 200:
-			break
-	data["entities"] = ids
+	# 实体按 archetype 分组(每组组件名 + 前 100 实体 ID, 供查看器分组点选)
+	var groups := ecs.get_archetype_groups()
+	var glist: Array = []
+	for g in groups:
+		var ents: PackedInt32Array = g["entities"]
+		var gd := {"comps": g["comps"], "count": ents.size(), "entities": []}
+		for i in mini(ents.size(), 100):
+			gd["entities"].append(ents[i])
+		glist.append(gd)
+	data["groups"] = glist
 	EngineDebugger.send_message("ecs_debug:view", [data])
 
 ## 接收编辑器调试面板请求: ["entity", id] 查看实体 / ["set", id, comp, field, value] 改值。

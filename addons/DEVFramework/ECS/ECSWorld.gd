@@ -1133,6 +1133,10 @@ func get_entity_view(entity: int) -> Dictionary:
 func set_entity_field(entity: int, comp, field: StringName, value) -> void:
 	set_field(entity, comp, field, value)
 
+## 调试: 按 archetype(组件组合)分组枚举实体: [{comps, entities}](查看器分组显示用)。
+func get_archetype_groups() -> Array:
+	return _core.get_archetype_groups()
+
 ## 调试: 各系统耗时与累计运行次数 {类名: {ms, runs}}(查看器表格列: 耗时/avg/max/调用)。
 func get_system_stats() -> Dictionary:
 	var out := {}

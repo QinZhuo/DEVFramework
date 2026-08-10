@@ -73,9 +73,7 @@ func _build_ui() -> void:
 	_entity_list = _ui.get_node("%EntityList")
 	_entity_tree = _ui.get_node("%EntityTree")
 	_topo_label = _ui.get_node("%TopoLabel")
-	_type_hint = _ui.get_node("%TypeHint")
 	_entity_edit = _ui.get_node("%EntityEdit")
-	_value_edit = _ui.get_node("%ValueEdit")
 
 	# 列标题/宽度(Tree 列数在场景设, 标题代码设)
 	_sys_tree.set_column_title(0, "系统")
@@ -97,7 +95,6 @@ func _build_ui() -> void:
 		if _session != null:
 			_session.send_message(PREFIX, ["entity", int(_entity_edit.text)])
 	)
-	_ui.get_node("%SetBtn").pressed.connect(func() -> void: _apply_edit())
 	_entity_list.item_activated.connect(func() -> void:
 		var it := _entity_list.get_selected()
 		if it != null and it.has_meta("eid") and _session != null:
@@ -122,8 +119,8 @@ func _apply_data(data: Array) -> void:
 		_update_topology(payload["topology"])
 	if payload.has("view"):
 		_fill_entity_tree(int(payload.get("entity", -1)), payload["view"])
-	if payload.has("entities"):
-		_fill_entity_list(payload["entities"])
+	if payload.has("groups"):
+		_fill_entity_groups(payload["groups"])
 
 
 ## 系统耗时列表(含占比与历史 avg/max, 参考 Profiler)。防御: 值非数值时按 0。
@@ -185,15 +182,21 @@ func _update_topology(topo: Variant) -> void:
 	_topo_label.text = txt
 
 
-## 实体 ID 列表(双击点选查看)。
-func _fill_entity_list(ids: Array) -> void:
+## 实体按 archetype 分组显示(组=组件组合, 双击实体查看详情)。
+func _fill_entity_groups(groups: Array) -> void:
 	_entity_list.clear()
 	var root := _entity_list.create_item()
-	root.set_text(0, "实体列表(%d)" % ids.size())
-	for id in ids:
-		var it := _entity_list.create_item(root)
-		it.set_text(0, "实体 %d" % id)
-		it.set_meta("eid", int(id))
+	root.set_text(0, "实体分组")
+	for g in groups:
+		var comps: PackedStringArray = g["comps"]
+		var cnt: int = int(g.get("count", 0))
+		var gi := root.create_child()
+		gi.set_text(0, "%s  (%d)" % ["+".join(comps), cnt])
+		for id in g.get("entities", []):
+			var ei := gi.create_child()
+			ei.set_text(0, "实体 %d" % int(id))
+			ei.set_meta("eid", int(id))
+	root.collapsed = false
 
 ## 实体组件字段树(组件折叠, 字段带类型)。
 func _fill_entity_tree(entity: int, view: Dictionary) -> void:
@@ -214,44 +217,9 @@ func _fill_entity_tree(entity: int, view: Dictionary) -> void:
 	root.collapsed = false
 
 
-## 改值: 选中字段 + 输入新值(自动解析类型), 发送给游戏。
-func _apply_edit() -> void:
-	var sel := _entity_tree.get_selected()
-	if sel == null or not sel.has_meta("entity") or _session == null:
-		return
-	_session.send_message(PREFIX, [
-		"set", sel.get_meta("entity"), sel.get_meta("comp"), sel.get_meta("field"),
-		_try_parse(_value_edit.text),
-	])
-
 
 ## 字段值类型名(GDScript 值推断, 便于显示)。
 func _type_name(v: Variant) -> String:
 	return type_string(typeof(v))
 
 
-## 解析输入: 数字/向量2/向量3/颜色/布尔/字符串。
-func _try_parse(s: String) -> Variant:
-	if s == "true":
-		return true
-	if s == "false":
-		return false
-	if s.is_valid_int():
-		return int(s)
-	if s.is_valid_float():
-		return float(s)
-	if s.begins_with("(") and s.ends_with(")"):
-		var parts := s.substr(1, s.length() - 2).split(",")
-		if parts.size() in [2, 3]:
-			var ok := true
-			for p in parts:
-				if not p.strip_edges().is_valid_float():
-					ok = false
-					break
-			if ok:
-				match parts.size():
-					2:
-						return Vector2(float(parts[0]), float(parts[1]))
-					3:
-						return Vector3(float(parts[0]), float(parts[1]), float(parts[2]))
-	return s

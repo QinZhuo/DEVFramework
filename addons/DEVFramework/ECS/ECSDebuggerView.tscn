@@ -63,17 +63,3 @@ size_flags_horizontal = 3
 [node name="EntityTree" type="Tree" parent="Split/Right/ESplit/Detail"]
 unique_name_in_owner = true
 size_flags_vertical = 3
-
-[node name="ValueBar" type="HBoxContainer" parent="Split/Right/ESplit/Detail"]
-
-[node name="ValueEdit" type="LineEdit" parent="Split/Right/ESplit/Detail/ValueBar"]
-unique_name_in_owner = true
-size_flags_horizontal = 3
-placeholder_text = "新值"
-
-[node name="SetBtn" type="Button" parent="Split/Right/ESplit/Detail/ValueBar"]
-unique_name_in_owner = true
-text = "设置"
-
-[node name="TypeHint" type="Label" parent="Split/Right/ESplit/Detail"]
-unique_name_in_owner = true
