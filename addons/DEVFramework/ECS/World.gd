@@ -48,7 +48,8 @@ func tick(delta: float) -> void:
 func init_world() -> ECSWorld:
 	if ecs != null:
 		return ecs
-	ecs = ECSWorld.new()
+	# 每世界独立 C++ 核心: 场景切换=实例化/删除场景, 若共享核心会导致旧世界实体残留累积
+	ecs = ECSWorld.new(false)
 	ecs.parallel_threads = parallel_threads
 	for sys in systems:
 		if sys == null:
