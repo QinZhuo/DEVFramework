@@ -53,12 +53,22 @@ func _process(delta: float) -> void:
 func tick(delta: float) -> void:
 	ecs.tick(delta)
 
-## 向编辑器 ECS 调试面板推送摘要(系统耗时 + 拓扑)。
+## 向编辑器 ECS 调试面板推送摘要(系统耗时 + 拓扑 + 实体 ID 列表)。
 func _push_debug_view() -> void:
-	EngineDebugger.send_message("ecs_debug:view", [{
+	var data := {
 		"systems": ecs.get_system_times(),
 		"topology": ecs.get_topology(),
-	}])
+	}
+	# 实体 ID 列表(前 200 个 NodeLink 实体, 供查看器点选)
+	var rows := ecs.query_rows(NodeLink, [], [])
+	var ids: Array = []
+	var nl_name: StringName = ecs.component_name(NodeLink)
+	for r in rows:
+		ids.append(ecs.native().entity_of_row(nl_name, r))
+		if ids.size() >= 200:
+			break
+	data["entities"] = ids
+	EngineDebugger.send_message("ecs_debug:view", [data])
 
 ## 接收编辑器调试面板请求: ["entity", id] 查看实体 / ["set", id, comp, field, value] 改值。
 func _on_debug_req(msg: String, data: Array) -> void:

@@ -1,9 +1,9 @@
 @tool
-## ECS 运行时查看器(EditorDebuggerPlugin) —— 游戏运行时在 Godot Debugger 面板新增 tab 显示:
-##   · 每系统耗时 / 系统拓扑(执行顺序 + 是否可并行)
-##   · 实体组件字段查看 + 改值(输入实体 ID → 展开组件字段 → 选中字段输入新值点"设置")
-## 数据来自 World 节点的 EngineDebugger 推送(ecs_debug:view)与请求(ecs_debug)。
-## 由 plugin.gd 创建并 add_debugger_plugin()。
+## ECS 运行时查看器(EditorDebuggerPlugin) —— 游戏运行时在 Godot Debugger 面板新增 tab。
+## 参考 Godot 内置 Profiler(多列耗时 Tree) 与 远程场景树(分栏 + 组件字段树 + 属性编辑) 设计:
+##   · 左侧: 每系统耗时(多列: 系统/耗时ms/占比%) + 系统拓扑(执行顺序) + 自动刷新开关
+##   · 右侧: 实体查看(输入 ID → 组件折叠树, 字段带类型) + 改值(数值/向量/颜色/布尔)
+## 数据来自 World 节点 EngineDebugger 推送(ecs_debug:view)与请求(ecs_debug)。
 
 class_name ECSDebuggerPlugin
 extends EditorDebuggerPlugin
@@ -12,10 +12,18 @@ const PREFIX := "ecs_debug"
 
 var _ui: Control = null
 var _session: EditorDebuggerSession = null
-var _tree: Tree = null
-var _times_label: Label = null
+
+var _sys_tree: Tree = null        # 系统耗时 3 列
+var _topo_label: Label = null
+var _auto_refresh: CheckBox = null
+var _last_times := {}             # 系统耗时缓存(算占比)
+
 var _entity_edit: LineEdit = null
+var _entity_list: Tree = null
+var _entity_tree: Tree = null
+var _time_hist := {}   # 系统名 -> Array[ms] 历史(算 avg/max)
 var _value_edit: LineEdit = null
+var _type_hint: Label = null
 
 
 func _setup_session(session_id: int) -> void:
@@ -37,57 +45,104 @@ func _has_capture(capture: String) -> bool:
 func _capture(message: String, data: Array, _session_id: int) -> bool:
 	if not message.begins_with(PREFIX):
 		return false
-	_apply_data(data)
+	# 兜底: 确保 UI 已构建(session 回调未触发时)
+	if _ui == null or _sys_tree == null:
+		_build_ui()
+		if _ui != null and _session != null:
+			_session.add_session_tab(_ui)
+	if _ui != null:
+		_apply_data(data)
 	return true
 
 
-## 代码构建查看器 UI(编辑器侧, 调试面板 tab)。
+## 分栏布局: 左(系统/拓扑) + 右(实体查看器)。每次重建, 避免跨会话复用旧控件悬垂。
 func _build_ui() -> void:
 	if _ui != null:
-		return
-	var vb := VBoxContainer.new()
-	vb.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+		_ui.queue_free()
+	_ui = null
+	_sys_tree = null
+	_entity_list = null
+	_entity_tree = null
+	_topo_label = null
+	_type_hint = null
+	var split := HSplitContainer.new()
+	split.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 
-	_times_label = Label.new()
-	_times_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	vb.add_child(_times_label)
+	# ---- 左: 系统耗时 + 拓扑 ----
+	var left := VBoxContainer.new()
+	split.add_child(left)
 
-	# 实体查看: 输入 ID + 按钮
+	var top := HBoxContainer.new()
+	left.add_child(top)
+	var btn := Button.new()
+	btn.text = "刷新"
+	btn.pressed.connect(func() -> void: _request_view())
+	top.add_child(btn)
+	_auto_refresh = CheckBox.new()
+	_auto_refresh.text = "自动"
+	_auto_refresh.button_pressed = true
+	top.add_child(_auto_refresh)
+
+	_sys_tree = Tree.new()
+	_sys_tree.columns = 5
+	_sys_tree.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_sys_tree.set_column_title(0, "系统")
+	_sys_tree.set_column_title(1, "耗时 ms")
+	_sys_tree.set_column_title(2, "占比")
+	_sys_tree.set_column_title(3, "avg")
+	_sys_tree.set_column_title(4, "max")
+	left.add_child(_sys_tree)
+
+	_topo_label = Label.new()
+	_topo_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	left.add_child(_topo_label)
+
+	# ---- 右: 实体查看器 ----
+	var right := VBoxContainer.new()
+	split.add_child(right)
+
 	var hb := HBoxContainer.new()
-	vb.add_child(hb)
+	right.add_child(hb)
 	_entity_edit = LineEdit.new()
 	_entity_edit.placeholder_text = "实体 ID"
 	_entity_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	hb.add_child(_entity_edit)
-	var btn := Button.new()
-	btn.text = "查看实体"
-	btn.pressed.connect(func() -> void:
-		var id: int = int(_entity_edit.text)
+	var b2 := Button.new()
+	b2.text = "查看"
+	b2.pressed.connect(func() -> void:
 		if _session != null:
-			_session.send_message(PREFIX, ["entity", id])
+			_session.send_message(PREFIX, ["entity", int(_entity_edit.text)])
 	)
-	hb.add_child(btn)
+	hb.add_child(b2)
 
-	# 实体组件字段树
-	_tree = Tree.new()
-	_tree.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	vb.add_child(_tree)
+	# 实体 ID 列表(双击点选查看, 免手输 ID)
+	_entity_list = Tree.new()
+	_entity_list.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_entity_list.item_activated.connect(func() -> void:
+		var it := _entity_list.get_selected()
+		if it != null and it.has_meta("eid") and _session != null:
+			_session.send_message(PREFIX, ["entity", it.get_meta("eid")])
+	)
+	right.add_child(_entity_list)
 
-	# 改值: 新值输入 + 设置按钮(作用于选中的字段项)
+	_entity_tree = Tree.new()
+	_entity_tree.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	right.add_child(_entity_tree)
+
 	var hb2 := HBoxContainer.new()
-	vb.add_child(hb2)
+	right.add_child(hb2)
 	_value_edit = LineEdit.new()
-	_value_edit.placeholder_text = "新值(数字/向量/字符串)"
+	_value_edit.placeholder_text = "新值"
 	_value_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	hb2.add_child(_value_edit)
-	var btn2 := Button.new()
-	btn2.text = "设置选中字段"
-	btn2.pressed.connect(func() -> void:
-		_apply_edit()
-	)
-	hb2.add_child(btn2)
+	var b3 := Button.new()
+	b3.text = "设置"
+	b3.pressed.connect(func() -> void: _apply_edit())
+	hb2.add_child(b3)
+	_type_hint = Label.new()
+	right.add_child(_type_hint)
 
-	_ui = vb
+	_ui = split
 
 
 func _request_view() -> void:
@@ -95,43 +150,107 @@ func _request_view() -> void:
 		_session.send_message(PREFIX, ["refresh"])
 
 
-## 应用游戏推送的数据: [payload], payload = {systems, topology} 或 {entity, view}。
+## 应用游戏推送: [payload], {systems, topology} 或 {entity, view}。
 func _apply_data(data: Array) -> void:
 	if data.is_empty() or not (data[0] is Dictionary):
 		return
 	var payload: Dictionary = data[0]
 	if payload.has("systems"):
-		var txt := "每系统耗时(ms):\n"
-		for s in payload["systems"]:
-			txt += "  %s: %.3f\n" % [s, payload["systems"][s]]
-		if payload.has("topology"):
-			txt += "拓扑(执行顺序):\n"
-			for t in payload["topology"]["order"]:
-				txt += "  %s%s\n" % [t["name"], "  (可并行)" if t["parallel"] else ""]
-		_times_label.text = txt
+		_last_times = payload["systems"]
+		_update_systems()
+	if payload.has("topology"):
+		_update_topology(payload["topology"])
 	if payload.has("view"):
 		_fill_entity_tree(int(payload.get("entity", -1)), payload["view"])
+	if payload.has("entities"):
+		_fill_entity_list(payload["entities"])
 
 
-## 填充实体组件字段树(每个字段项带 meta 供改值)。
+## 系统耗时列表(含占比与历史 avg/max, 参考 Profiler)。防御: 值非数值时按 0。
+func _update_systems() -> void:
+	if _time_hist == null:
+		_time_hist = {}
+	if _last_times == null:
+		_last_times = {}
+	var vals := {}
+	for s in _last_times:
+		var x: Variant = _last_times[s]
+		vals[s] = float(x) if (x is float or x is int) else 0.0
+	# 累计历史(最近 60 帧)
+	for s in vals:
+		var arr: Array = _time_hist.get(s, [])
+		arr.append(vals[s])
+		if arr.size() > 60:
+			arr.pop_front()
+		_time_hist[s] = arr
+	_sys_tree.clear()
+	var total := 0.0
+	for s in vals:
+		total += vals[s]
+	var root := _sys_tree.create_item()
+	root.set_text(0, "本帧系统耗时合计: %.3f ms" % total)
+	for s in vals:
+		var it := _sys_tree.create_item(root)
+		it.set_text(0, str(s))
+		it.set_text(1, "%.3f" % vals[s])
+		it.set_text(2, "%.1f%%" % (vals[s] / total * 100.0 if total > 0.0 else 0.0))
+		var hist: Array = _time_hist.get(s, [])
+		if hist.size() > 1:
+			var avg := 0.0
+			var mx := 0.0
+			for m in hist:
+				avg += m
+				mx = maxf(mx, m)
+			avg /= hist.size()
+			it.set_text(3, "%.3f" % avg)
+			it.set_text(4, "%.3f" % mx)
+
+
+## 拓扑文本(执行顺序 + 可并行标记)。防御: 空/类型异常时显示占位。
+func _update_topology(topo: Variant) -> void:
+	var txt := "拓扑(执行顺序):\n"
+	var n := 0
+	if topo != null and (topo is Dictionary):
+		for i in topo.get("order", []):
+			if not (i is Dictionary):
+				continue
+			n += 1
+			txt += "  %d. %s%s\n" % [n, i.get("name", "?"), "  (可并行)" if i.get("parallel", false) else ""]
+	_topo_label.text = txt
+
+
+## 实体 ID 列表(双击点选查看)。
+func _fill_entity_list(ids: Array) -> void:
+	_entity_list.clear()
+	var root := _entity_list.create_item()
+	root.set_text(0, "实体列表(%d)" % ids.size())
+	for id in ids:
+		var it := _entity_list.create_item(root)
+		it.set_text(0, "实体 %d" % id)
+		it.set_meta("eid", int(id))
+
+## 实体组件字段树(组件折叠, 字段带类型)。
 func _fill_entity_tree(entity: int, view: Dictionary) -> void:
-	_tree.clear()
-	var root := _tree.create_item()
+	_entity_tree.clear()
+	_type_hint.text = ""
+	var root := _entity_tree.create_item()
 	root.set_text(0, "实体 %d" % entity)
 	for cn in view:
 		var ci := root.create_child()
 		ci.set_text(0, str(cn))
 		for f in view[cn]:
 			var fi := ci.create_child()
-			fi.set_text(0, "%s = %s" % [f, str(view[cn][f])])
+			var v: Variant = view[cn][f]
+			fi.set_text(0, "%s: %s = %s" % [f, _type_name(v), str(v)])
 			fi.set_meta("entity", entity)
 			fi.set_meta("comp", str(cn))
 			fi.set_meta("field", str(f))
+	root.collapsed = false
 
 
-## 把选中字段的新值发给游戏进程(ecs.set_entity_field)。
+## 改值: 选中字段 + 输入新值(自动解析类型), 发送给游戏。
 func _apply_edit() -> void:
-	var sel := _tree.get_selected()
+	var sel := _entity_tree.get_selected()
 	if sel == null or not sel.has_meta("entity") or _session == null:
 		return
 	_session.send_message(PREFIX, [
@@ -140,14 +259,33 @@ func _apply_edit() -> void:
 	])
 
 
-## 尝试把输入字符串解析为数字/向量/字符串。
+## 字段值类型名(GDScript 值推断, 便于显示)。
+func _type_name(v: Variant) -> String:
+	return type_string(typeof(v))
+
+
+## 解析输入: 数字/向量2/向量3/颜色/布尔/字符串。
 func _try_parse(s: String) -> Variant:
-	if s.is_valid_float():
-		return float(s)
+	if s == "true":
+		return true
+	if s == "false":
+		return false
 	if s.is_valid_int():
 		return int(s)
+	if s.is_valid_float():
+		return float(s)
 	if s.begins_with("(") and s.ends_with(")"):
 		var parts := s.substr(1, s.length() - 2).split(",")
-		if parts.size() == 2 and parts[0].is_valid_float() and parts[1].is_valid_float():
-			return Vector2(float(parts[0]), float(parts[1]))
+		if parts.size() in [2, 3]:
+			var ok := true
+			for p in parts:
+				if not p.strip_edges().is_valid_float():
+					ok = false
+					break
+			if ok:
+				match parts.size():
+					2:
+						return Vector2(float(parts[0]), float(parts[1]))
+					3:
+						return Vector3(float(parts[0]), float(parts[1]), float(parts[2]))
 	return s
