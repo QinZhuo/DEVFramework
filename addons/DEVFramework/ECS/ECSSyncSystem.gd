@@ -37,8 +37,17 @@ var _nl_paths: PackedStringArray = []
 ## [{comp, fields: PackedStringArray, props: PackedStringArray}] — 数组索引替代 dict 查
 var _rule_items: Array = []
 
+## 场景/Inspector 可配置的同步规则列表(Def 风格)。注册到世界时自动应用。
+@export var field_rules: Array[SyncFieldRule] = []
+
 ## 对齐行号缓存: comp -> query_aligned(NodeLink, [comp]) 结果(实体结构变化时清空)
 var _aligned_cache := {}
+
+
+func _on_registered(_world: ECSWorld) -> void:
+	for rule in field_rules:
+		if rule != null and rule.comp != null:
+			add_field_rule(rule.comp, rule.field, rule.prop)
 
 
 ## 注册一条字段同步规则: 把 ECS 组件 comp 的 field 字段同步到关联节点的 node_prop 属性。

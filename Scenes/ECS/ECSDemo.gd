@@ -15,6 +15,8 @@ extends Control
 ## 本脚本只做调度: 创建/销毁当前 DemoImpl, 测量耗时, 渲染表格。
 
 const IMPL_NAMES := ["普通Node实现", "ECS查询链实现", "ECS回调实现", "Entity节点写法"]
+# 场景化实现: 索引 -> 场景路径(空 = 代码创建)。查询链已场景化(世界/系统/规则都在场景配置)
+const IMPL_SCENES := ["", "res://Scenes/ECS/Demo/impl_query.tscn", "", ""]
 const INIT_SEED := 20260808
 
 @export var ball_count: int = 10000
@@ -24,7 +26,7 @@ const INIT_SEED := 20260808
 @onready var switch_button: Button = %SwitchButton
 @onready var render_button: Button = %RenderButton
 
-var _impl: DemoImpl = null
+var _impl = null                            # 当前实现(DemoImpl 或场景化世界节点), 切模式时重建
 var _current := 1                            # 0=普通Node, 1=ECS查询链(默认), 2=ECS回调, 3=Entity节点写法
 var _setup_ms := 0.0                         # 当前实现"创建世界"耗时(ms)
 var _render_on := true                       # 渲染开关
@@ -46,21 +48,39 @@ func _ready() -> void:
 
 
 func _spawn(idx: int) -> void:
-	var cls: Script = null
-	match idx:
-		0:
-			cls = DemoNodeImpl
-		1:
-			cls = DemoQueryImpl
-		2:
-			cls = DemoCallbackImpl
-		_:
-			cls = DemoEntityImpl
+	var scene_path: String = IMPL_SCENES[idx]
 	var t0 := Time.get_ticks_usec()
-	_impl = cls.new()
-	_impl.setup(ball_count, INIT_SEED, %WorldRoot)
-	_impl.render_enabled = _render_on
+	if scene_path != "":
+		# 场景化实现: 实例化场景(世界/系统/同步规则都在场景 Inspector 配置)
+		var scn: PackedScene = load(scene_path)
+		var node := scn.instantiate()
+		%WorldRoot.add_child(node)
+		_impl = node
+		_apply_render(_impl)
+	else:
+		# 代码创建实现
+		var cls: Script = null
+		match idx:
+			0:
+				cls = DemoNodeImpl
+			1:
+				cls = DemoQueryImpl
+			2:
+				cls = DemoCallbackImpl
+			_:
+				cls = DemoEntityImpl
+		_impl = cls.new()
+		_impl.setup(ball_count, INIT_SEED, %WorldRoot)
+		_apply_render(_impl)
 	_setup_ms = (Time.get_ticks_usec() - t0) / 1000.0
+
+
+## 渲染开关应用到当前实现(场景化世界走 set_render_enabled 方法, 代码实现走属性)。
+func _apply_render(impl) -> void:
+	if impl.has_method("set_render_enabled"):
+		impl.set_render_enabled(_render_on)
+	elif "render_enabled" in impl:
+		impl.render_enabled = _render_on
 
 
 func _process(delta: float) -> void:
@@ -89,7 +109,10 @@ func _on_switch_pressed() -> void:
 	_results[_impl.impl_name] = {
 		"ms": _avg_ms(), "fps": 1000.0 / maxf(_avg_ms(), 0.001), "setup_ms": _setup_ms,
 	}
-	_impl.teardown()
+	if _impl.has_method("teardown"):
+		_impl.teardown()
+	else:
+		_impl.queue_free()   # 场景化实现: 删除场景
 	_current = (_current + 1) % IMPL_NAMES.size()
 	_spawn(_current)
 	_ms_window.clear()
@@ -100,7 +123,7 @@ func _on_render_toggled() -> void:
 	# 切换渲染开关: 屏蔽位置/显示同步, 只保留数值运算(对比渲染开销)
 	_render_on = not _render_on
 	if _impl:
-		_impl.render_enabled = _render_on
+		_apply_render(_impl)
 	_refresh_ui()
 
 
