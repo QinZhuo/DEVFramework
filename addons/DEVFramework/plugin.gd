@@ -50,10 +50,12 @@ func _on_create_audio_examples() -> void:
 	LogTool.log("音频", "示例生成完成: ", results)
 
 
-## 插件开关: enable=true 写 autoload 行并启动编辑器服务器, 否则停止并移除 autoload 行。
+## 插件开关: enable=true 写 autoload 单例行并启动编辑器服务器; false 只停止服务器。
+## **单例只添加不自动删除**: 关闭游戏/禁用插件时不动 project.godot, 避免每次关闭游戏产生 git 差异。
 ## 不触碰 dev_framework/mcp/enabled —— 那是独立的项目设置主开关, 由 MCPDevServer 读取。
 func _set_mcp_enabled(enable: bool) -> void:
-	_write_autoload_row(enable)
+	if enable:
+		_write_autoload_row(true)   # 只添加单例; enable=false 不删除(保持 project.godot 稳定)
 	if enable:
 		if _mcp == null:
 			_mcp = MCPDevServer.new()
@@ -76,10 +78,8 @@ func _set_mcp_enabled(enable: bool) -> void:
 		if _ecs_debugger:
 			remove_debugger_plugin(_ecs_debugger)
 			_ecs_debugger = null
-			_debugger_plugin.server = null
-			_debugger_plugin = null
-		_mcp.debugger_plugin = null
 		if _mcp:
+			_mcp.debugger_plugin = null
 			_mcp.stop()
 			_mcp.queue_free()
 			_mcp = null
