@@ -1,18 +1,17 @@
 class_name ECSWorld
-extends Def
+extends RefCounted
 
-## ECS 世界 —— 用户主入口。Def 风格(继承项目 Def/Resource):
-## 在场景/Inspector 配置要注册的系统(systems)与核心选项(use_shared_core)等,
-## 由 World 节点(场景桥接层)实例化为运行时世界。运行时持有 C++ 核心(ECSCore), 提供:
+## ECS 世界 —— 用户主入口。运行时持有 C++ 核心(ECSCore), 提供:
 ##   - 组件注册 / 实体创建与销毁
 ##   - 系统注册与按优先级调度(tick)
 ##   - 系统级并行执行(冲突检测分批, 多线程并行)
 ##   - 批量查询与列访问(高频路径)
 ##   - 批量事件队列(替代信号风暴)
 ##
-## 用法(场景驱动):
-##   场景根挂 World 节点 → @export ecsworld 指定本世界(Def, 可内联或 .tres) →
-##   世界在场景 Inspector 配置 systems(要注册的系统), 运行时由 World 节点自动实例化。
+## 用法(场景驱动, 推荐):
+##   场景里放一个 World 节点, 在 Inspector 配置 systems(要注册的系统)即可自动创建世界并注册,
+##   无需手写 world = ECSWorld.new() / register_system(...)。
+##   代码用法: var world = ECSWorld.new(); world.register_system(HealSystem.new())。
 ##
 ## 系统级并行(默认开启, 无需任何配置即可自动生效):
 ##   - 首帧自动串行预热, 采集各系统实际访问的组件集合
@@ -116,28 +115,15 @@ var _query_cache := {}
 var _comp_versions := {}                  # 组件名 -> 结构版本(该组件实体集合变化的代数)
 var _world_version := 0                   # 全局结构版本(destroy/批量结构变更时 +1)
 
-## 世界配置: 要注册的系统(Def 实例), 由 World 节点实例化时复制为独立副本再注册。
-@export var systems: Array[ECSSystem] = []
-## 是否使用全局共享 C++ 核心(默认 true)。多世界隔离场景(性能对比/沙盒)传 false 建独立核心。
-@export var use_shared_core := true
-
 func _init(p_use_shared_core: bool = true) -> void:
 	# 默认使用全局共享核心(游戏通常只有一个世界);
 	# 需要多个隔离世界(如性能对比/沙盒)时传 false 创建独立核心。
-	use_shared_core = p_use_shared_core
-	if use_shared_core:
+	if p_use_shared_core:
 		_core = ECSNative.get_instance()
 	else:
 		_core = ClassDB.instantiate(&"ECSCore")
 	if _core == null:
 		push_error("ECSWorld: ECSCore 原生库不可用! 请确认 devecs.gdextension 已加载(框架强依赖 C++, 无回退)。")
-
-## 注册 Def 里配置的全部系统(World 节点实例化时调用; 每系统复制为独立实例, 状态互不干扰)。
-func _setup_from_def() -> void:
-	for sys in systems:
-		if sys == null:
-			continue
-		register_system(sys.duplicate(true))
 
 ## 原生实例(高级用法直接调用)
 func native() -> Object:

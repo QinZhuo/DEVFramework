@@ -15,8 +15,13 @@ extends Control
 ## 本脚本只做调度: 创建/销毁当前 DemoImpl, 测量耗时, 渲染表格。
 
 const IMPL_NAMES := ["普通Node实现", "ECS查询链实现", "ECS回调实现", "Entity节点写法"]
-# 场景化实现: 索引 -> 场景路径(空 = 代码创建)。查询链已场景化(世界/系统/规则都在场景配置)
-const IMPL_SCENES := ["", "res://Scenes/ECS/Demo/impl_query.tscn", "", ""]
+# 每个实现一个场景(放在对应脚本文件夹下), 切模式 = 实例化/删除对应场景
+const IMPL_SCENES := [
+	"res://Scripts/Entity/ECS/Demo/impl_node/impl_node.tscn",
+	"res://Scripts/Entity/ECS/Demo/impl_query/impl_query.tscn",
+	"res://Scripts/Entity/ECS/Demo/impl_callback/impl_callback.tscn",
+	"res://Scripts/Entity/ECS/Demo/impl_entity/impl_entity.tscn",
+]
 const INIT_SEED := 20260808
 
 @export var ball_count: int = 10000
@@ -106,7 +111,7 @@ func _avg_ms() -> float:
 
 func _on_switch_pressed() -> void:
 	# 把当前实现结果写入表格, 然后销毁它、重建下一个实现(只保留当前, 减少互相影响)
-	_results[_impl.impl_name] = {
+	_results[IMPL_NAMES[_current]] = {
 		"ms": _avg_ms(), "fps": 1000.0 / maxf(_avg_ms(), 0.001), "setup_ms": _setup_ms,
 	}
 	if _impl.has_method("teardown"):
