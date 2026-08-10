@@ -16,6 +16,7 @@ const AUTOLOAD_PATH := "res://addons/DEVFramework/MCP/MCPDevServer.gd"
 
 var _mcp: MCPDevServer
 var _debugger_plugin: MCPDebuggerPlugin
+var _ecs_debugger: ECSDebuggerPlugin
 
 
 func _enter_tree() -> void:
@@ -62,11 +63,19 @@ func _set_mcp_enabled(enable: bool) -> void:
 			_debugger_plugin = MCPDebuggerPlugin.new()
 			_debugger_plugin.server = _mcp
 			add_debugger_plugin(_debugger_plugin)
+		# ECS 运行时查看器(系统耗时/实体查看/改值), 独立于 MCP
+		if _ecs_debugger == null:
+			_ecs_debugger = ECSDebuggerPlugin.new()
+			add_debugger_plugin(_ecs_debugger)
 		_mcp.debugger_plugin = _debugger_plugin
 		_mcp.start_editor()
 	else:
 		if _debugger_plugin:
 			remove_debugger_plugin(_debugger_plugin)
+			_debugger_plugin = null
+		if _ecs_debugger:
+			remove_debugger_plugin(_ecs_debugger)
+			_ecs_debugger = null
 			_debugger_plugin.server = null
 			_debugger_plugin = null
 		_mcp.debugger_plugin = null

@@ -20,6 +20,10 @@ extends Node
 @export var auto_init := true
 ## _process 时自动 tick 世界(关闭则手动调 tick(delta), 如由外部测耗时)
 @export var auto_tick := true
+## 向编辑器 ECS 调试面板推送查看数据的帧间隔(0 = 关闭自动推送)
+@export var debug_push_interval := 30
+
+var _debug_frame := 0
 
 ## 世界初始化完成信号(ecs 已创建 + 系统已注册)。生成实体等初始化在这里做。
 signal world_ready(ecs: ECSWorld)
@@ -32,16 +36,44 @@ func _ready() -> void:
 	if auto_init:
 		init_world()
 		world_ready.emit(ecs)
+	if EngineDebugger.is_active():
+		EngineDebugger.register_message_capture("ecs_debug", Callable(self, "_on_debug_req"))
 
 
 func _process(delta: float) -> void:
 	if auto_tick and ecs != null:
 		tick(delta)
+	_debug_frame += 1
+	if ecs != null and EngineDebugger.is_active() and debug_push_interval > 0 \
+			and _debug_frame % debug_push_interval == 0:
+		_push_debug_view()
 
 
 ## 每帧驱动世界(手动 tick 用; auto_tick 关闭时调用)。
 func tick(delta: float) -> void:
 	ecs.tick(delta)
+
+## 向编辑器 ECS 调试面板推送摘要(系统耗时 + 拓扑)。
+func _push_debug_view() -> void:
+	EngineDebugger.send_message("ecs_debug:view", [{
+		"systems": ecs.get_system_times(),
+		"topology": ecs.get_topology(),
+	}])
+
+## 接收编辑器调试面板请求: ["entity", id] 查看实体 / ["set", id, comp, field, value] 改值。
+func _on_debug_req(msg: String, data: Array) -> void:
+	if ecs == null or data.is_empty():
+		return
+	match data[0]:
+		"entity":
+			if data.size() >= 2:
+				var e := int(data[1])
+				EngineDebugger.send_message("ecs_debug:view", [{"entity": e, "view": ecs.get_entity_view(e)}])
+		"set":
+			if data.size() >= 5:
+				ecs.set_entity_field(int(data[1]), data[2], data[3], data[4])
+				var e2 := int(data[1])
+				EngineDebugger.send_message("ecs_debug:view", [{"entity": e2, "view": ecs.get_entity_view(e2)}])
 
 
 ## 创建世界并注册配置的系统(每系统复制为独立实例, 状态互不干扰)。重复调用幂等。
