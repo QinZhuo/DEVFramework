@@ -1471,6 +1471,14 @@ func batch_apply_col_rows(anchor, rows: PackedInt32Array, op_comp, op_field: Str
 	_mark_dirty(ocn)
 	return _core.batch_apply_col_rows(an, rows, ocn, op_field, scn, src_field, op, factor, addend)
 
+## 批量执行多个动作(一次跨语言, 免逐动作跨语言调用)。
+## actions: Array[Dictionary], 每项 {t:0=col列间,1=scalar标量, of, sf/sc?, op, f, v/add}。
+func batch_apply_actions(anchor, rows: PackedInt32Array, actions: Array) -> int:
+	var an := _resolve_component_name(anchor)
+	_record_access(an)
+	_mark_dirty(an)
+	return _core.batch_apply_actions(an, rows, actions)
+
 ## 规范化条件列表: 把 comp(Script/String) → 类名 String, 便于 C++ 解析
 func _normalize_conds(conditions: Array) -> Array:
 	var out: Array = []

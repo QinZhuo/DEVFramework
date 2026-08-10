@@ -2361,6 +2361,28 @@ int64_t ECSCore::batch_apply_col_rows(const StringName &anchor, const PackedInt3
 	}, 1.5);
 	return cnt;
 }
+// 批量执行多个动作(一次跨语言, 免逐动作跨语言调用)
+int64_t ECSCore::batch_apply_actions(const StringName &anchor, const PackedInt32Array &rows,
+		const Array &actions) {
+	int64_t total = 0;
+	for (int32_t i = 0; i < actions.size(); ++i) {
+		Dictionary a = actions[i];
+		const int64_t t = int64_t(a["t"]);
+		if (t == 0) {
+			// col 列间
+			const StringName sc = a.has("sc") ? StringName(a["sc"]) : anchor;
+			total += batch_apply_col_rows(anchor, rows, anchor, StringName(a["of"]),
+					sc, StringName(a["sf"]), int64_t(a["op"]),
+					double(a["f"]), double(a["add"]));
+		} else {
+			// scalar 标量
+			total += batch_apply_rows(anchor, rows, anchor, StringName(a["of"]),
+					int64_t(a["op"]), double(a["f"]), double(a["v"]));
+		}
+	}
+	return total;
+}
+
 Array ECSCore::batch_collect(const StringName &anchor, const PackedStringArray &must,
 		const PackedStringArray &without, const Array &groups) const {
 	Array out;
@@ -3219,6 +3241,7 @@ void ECSCore::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("batch_collect", "anchor", "must", "without", "groups"), &ECSCore::batch_collect);
 	ClassDB::bind_method(D_METHOD("batch_apply_rows", "anchor", "rows", "op_comp", "op_field", "op", "factor", "addend"), &ECSCore::batch_apply_rows);
 	ClassDB::bind_method(D_METHOD("batch_apply_col_rows", "anchor", "rows", "op_comp", "op_field", "src_comp", "src_field", "op", "factor", "addend"), &ECSCore::batch_apply_col_rows);
+	ClassDB::bind_method(D_METHOD("batch_apply_actions", "anchor", "rows", "actions"), &ECSCore::batch_apply_actions);
 	ClassDB::bind_method(D_METHOD("debug_stats"), &ECSCore::debug_stats);
 	ClassDB::bind_method(D_METHOD("set_thread_count", "count"), &ECSCore::set_thread_count);
 	ClassDB::bind_method(D_METHOD("run_systems_parallel", "systems"), &ECSCore::run_systems_parallel);

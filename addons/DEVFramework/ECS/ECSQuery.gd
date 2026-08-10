@@ -199,28 +199,27 @@ func _apply_rows(rows: PackedInt32Array) -> int:
 		if act.type != "add" and act.type != "sub" and act.type != "mul" \
 				and act.type != "div" and act.type != "set" and act.type != "col":
 			return _run()
-	var total := 0
+	# 批量下发: 一次跨语言执行全部动作(免逐动作跨语言调用)
+	var acts := []
 	for act in actions:
 		match act.type:
 			"add":
-				total += world.batch_apply_rows(anchor, rows, anchor, act.field,
-						ECSWorld.BatchOp.ADD_VALUE, 0.0, float(act.amount))
+				acts.append({"t": 1, "of": str(act.field), "op": 0, "f": 0.0, "v": float(act.amount)})
 			"sub":
-				total += world.batch_apply_rows(anchor, rows, anchor, act.field,
-						ECSWorld.BatchOp.ADD_VALUE, 0.0, -float(act.amount))
+				acts.append({"t": 1, "of": str(act.field), "op": 0, "f": 0.0, "v": -float(act.amount)})
 			"mul":
-				total += world.batch_apply_rows(anchor, rows, anchor, act.field,
-						ECSWorld.BatchOp.MULTIPLY_ADD, float(act.factor), 0.0)
+				acts.append({"t": 1, "of": str(act.field), "op": 1, "f": float(act.factor), "v": 0.0})
 			"div":
-				total += world.batch_apply_rows(anchor, rows, anchor, act.field,
-						ECSWorld.BatchOp.MULTIPLY_ADD, 1.0 / float(act.divisor), 0.0)
+				acts.append({"t": 1, "of": str(act.field), "op": 1, "f": 1.0 / float(act.divisor), "v": 0.0})
 			"set":
-				total += world.batch_apply_rows(anchor, rows, anchor, act.field,
-						ECSWorld.BatchOp.SET_VALUE, 0.0, float(act.value))
+				acts.append({"t": 1, "of": str(act.field), "op": 2, "f": 0.0, "v": float(act.value)})
 			"col":
-				total += world.batch_apply_col_rows(anchor, rows, anchor, act.field,
-						act.src, act.src_field, act.op, act.factor, act.addend)
-	return total
+				var item := {"t": 0, "of": str(act.field), "sf": str(act.src_field),
+						"op": act.op, "f": act.factor, "add": act.addend}
+				if act.src != anchor:
+					item["sc"] = world.component_name(act.src)
+				acts.append(item)
+	return world.batch_apply_actions(anchor, rows, acts)
 
 
 func _comp_name(c) -> StringName:

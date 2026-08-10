@@ -290,6 +290,10 @@ public:
 			const StringName &op_comp, const StringName &op_field,
 			const StringName &src_comp, const StringName &src_field,
 			int64_t op, double factor, double addend);
+	// 批量执行多个动作(一次跨语言, 免逐动作跨语言调用)。
+	// actions: Array[Dictionary], 每项 {t:0=col,1=scalar, of, sf, sc?, op, f, v/add}。
+	int64_t batch_apply_actions(const StringName &anchor, const PackedInt32Array &rows,
+			const Array &actions);
 
 	// 内存统计(调试)
 	Dictionary debug_stats() const;
