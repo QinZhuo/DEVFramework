@@ -1,12 +1,31 @@
-[gd_scene load_steps=4 format=3]
+[gd_scene load_steps=10 format=3]
 
 [ext_resource type="Script" path="res://Scripts/Entity/ECS/Demo/impl_entity/DemoEntityWorld.gd" id="1_world"]
 [ext_resource type="Script" path="res://Scripts/Entity/ECS/Demo/impl_entity/DemoEntityBallSystem.gd" id="2_esys"]
+[ext_resource type="Script" path="res://Scripts/Entity/ECS/Demo/impl_entity/DemoEntityBallNode.gd" id="3_enode"]
+[ext_resource type="Script" path="res://addons/DEVFramework/ECS/ECSSyncSystem.gd" id="4_sync"]
+[ext_resource type="Script" path="res://addons/DEVFramework/ECS/SyncFieldRule.gd" id="5_rule"]
 
 [sub_resource type="Resource" id="sys_ent"]
 script = ExtResource("2_esys")
 
+[sub_resource type="Resource" id="rule_pos"]
+script = ExtResource("5_rule")
+comp = ExtResource("3_enode")
+field = &"pos"
+prop = &"position"
+
+[sub_resource type="Resource" id="rule_size"]
+script = ExtResource("5_rule")
+comp = ExtResource("3_enode")
+field = &"size"
+prop = &"visual_size"
+
+[sub_resource type="Resource" id="sys_sync"]
+script = ExtResource("4_sync")
+field_rules = Array[SyncFieldRule]([SubResource("rule_pos"), SubResource("rule_size")])
+
 [node name="DemoEntityWorld" type="Node2D"]
 script = ExtResource("1_world")
-systems = Array[ECSSystem]([SubResource("sys_ent")])
+systems = Array[ECSSystem]([SubResource("sys_ent"), SubResource("sys_sync")])
 auto_tick = false
