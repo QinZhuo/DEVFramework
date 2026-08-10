@@ -143,6 +143,7 @@ func _build_ui() -> void:
 	right.add_child(_type_hint)
 
 	_ui = split
+	_ui.name = "ECS 查看器"   # Debugger 面板 tab 显示名
 
 
 func _request_view() -> void:
