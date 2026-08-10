@@ -96,6 +96,8 @@ var _struct_mutex := Mutex.new()          # 立即结构变更(create/destroy/ad
 var _component_hooks := {}
 var _entity_destroyed_hooks: Array = []   # Array[Callable], func(entity: int)
 var _has_any_component_hooks := false     # 快速判断: 是否需要枚举实体组件
+# 父子关系索引: parent实体 -> Array[int] children(由 set_parent 等维护, 实体销毁自动清理)
+var _parent_children := {}
 
 # ---------------- 变化检测 ----------------
 ## 写路径(通过框架写 API 的字段修改)会标记对应组件"本帧被写"。
@@ -201,6 +203,7 @@ func is_alive(entity: int) -> bool:
 ## 随后触发 on_entity_destroyed 钩子。
 func destroy_entity(entity: int) -> void:
 	_all_rows_cache.clear()
+	_cleanup_relations(entity)   # 关系清理: 解除该实体的父/子关联(索引 + 对端 target)
 	var pending_comps: Array = []
 	if _has_any_component_hooks or not _entity_destroyed_hooks.is_empty():
 		pending_comps = _core.get_entity_components(entity)
@@ -211,6 +214,65 @@ func destroy_entity(entity: int) -> void:
 	for c in pending_comps:
 		_fire_component_remove(c, entity)
 	_fire_entity_destroyed(entity)
+
+# ============================================================
+#  关系实体 (entity↔entity 关联: ECSParent{target} + 关系索引)
+# ============================================================
+
+## 设置 child 的父实体为 parent(自动维护关系索引)。child/parent 需存活。
+func set_parent(child: int, parent: int) -> void:
+	if child == parent or not is_alive(child) or not is_alive(parent):
+		return
+	var old := get_parent(child)
+	if old != -1 and old != parent:
+		_remove_child_index(old, child)
+	if has_component(child, ECSParent):
+		set_field(child, ECSParent, &"target", parent)
+	else:
+		add_component(child, ECSParent, {"target": parent})
+	if not _parent_children.has(parent):
+		_parent_children[parent] = []
+	var arr: Array = _parent_children[parent]
+	if child not in arr:
+		arr.append(child)
+
+## 返回 entity 的父实体 ID(-1 = 无父)。
+func get_parent(entity: int) -> int:
+	if not has_component(entity, ECSParent):
+		return -1
+	return int(get_field(entity, ECSParent, &"target"))
+
+## 返回 parent 的所有子实体 ID 列表(副本)。
+func get_children(parent: int) -> Array:
+	var arr: Array = _parent_children.get(parent, [])
+	return arr.duplicate()
+
+## 解除 child 与其父实体的关联(保留 ECSParent 组件, target 置 -1)。
+func clear_parent(child: int) -> void:
+	var old := get_parent(child)
+	if old != -1:
+		_remove_child_index(old, child)
+	if has_component(child, ECSParent):
+		set_field(child, ECSParent, &"target", -1)
+
+## 从关系索引移除 child(parent 的 children 数组)。
+func _remove_child_index(parent: int, child: int) -> void:
+	var arr: Array = _parent_children.get(parent, [])
+	arr.erase(child)
+	if arr.is_empty():
+		_parent_children.erase(parent)
+
+## 实体销毁时的关系清理: 作为子 → 从父索引移除; 作为父 → 清所有子实体的 target。
+func _cleanup_relations(entity: int) -> void:
+	var old := get_parent(entity)
+	if old != -1:
+		_remove_child_index(old, entity)
+	var children: Array = _parent_children.get(entity, [])
+	if not children.is_empty():
+		for c in children:
+			if is_alive(c) and has_component(c, ECSParent):
+				set_field(c, ECSParent, &"target", -1)
+		_parent_children.erase(entity)
 
 ## 给实体附加组件。component 支持三种传法:
 ##   · Script(ECSComponent 子类/普通 Node 脚本)
