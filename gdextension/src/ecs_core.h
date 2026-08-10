@@ -448,8 +448,9 @@ private:
 	// 按组件索引的 sync 缓存(懒建)。
 	std::vector<SyncRuleCache> sync_cache_;
 	// 服务器直连总开关: true 时 position/transform/modulate/visible/z_index 走 RenderingServer 直连
-	// (跳过节点 setter/transform 标记, 更快)。注意直连后对应节点属性不更新, 仅渲染服务器生效。
-	bool sync_direct_ = true;
+	// (跳过节点 setter/transform 标记, 更快)。默认 false: 直连只改渲染, 节点属性不更新,
+	// 会导致碰撞(基于节点 transform)、拾取、依赖属性读取的逻辑拿到旧值而异常。需要时显式开启。
+	bool sync_direct_ = false;
 
 public:
 	~ECSCore();

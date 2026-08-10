@@ -21,6 +21,7 @@ func setup(count: int, seed: int, parent: Node) -> void:
 	sync_sys = ECSSyncSystem.new()
 	sync_sys.add_field_rule(DemoQueryBall, &"pos", &"position")      # 位置
 	sync_sys.add_field_rule(DemoQueryBall, &"size", &"visual_size")  # 大小
+	sync_sys.server_direct = true  # Demo 纯显示(无碰撞/属性读取), 可安全走渲染服务器直连
 	world.register_system(sync_sys)
 	var rng := RandomNumberGenerator.new()
 	rng.seed = seed

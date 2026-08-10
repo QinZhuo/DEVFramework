@@ -21,10 +21,11 @@ var scene_root: Node = null
 ## 渲染开关: false 时跳过全部同步(纯数值逻辑), 由持有方(如 DemoImpl)控制。
 var render_enabled := true
 
-## 服务器直连开关: true 时 position/transform/modulate/self_modulate/visible/z_index
+## 服务器直连开关(默认 false): true 时 position/transform/modulate/self_modulate/visible/z_index
 ## 走 RenderingServer 直连(更快, 跳过节点 setter/transform 标记)。支持 2D CanvasItem 与 3D VisualInstance3D。
-## 注意: 直连后对应节点属性不更新, 仅渲染服务器状态生效。
-@export var server_direct := true
+## 注意: 直连**只改渲染**, 对应节点属性不更新, 会导致碰撞(基于节点 transform)、拾取、
+## 依赖 get_global_transform/属性读取 的逻辑拿到旧值而异常。仅在确认节点不参与碰撞/逻辑读取时开启。
+@export var server_direct := false
 
 ## 节点缓存: NodeLink 行号 -> Node(数组索引 O(1))。NodeLink 实体数变化时重建。
 var _nl_nodes: Array = []
