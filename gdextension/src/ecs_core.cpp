@@ -1,6 +1,8 @@
 #include "ecs_core.h"
 
 #include <godot_cpp/variant/utility_functions.hpp>
+#include <godot_cpp/classes/canvas_item.hpp>
+#include <godot_cpp/classes/rendering_server.hpp>
 
 #include <algorithm>
 #include <emmintrin.h> // SSE2 (SIMD 加速 batch 运算)
@@ -166,26 +168,54 @@ void ECSCore::sync_fields(const PackedInt32Array &nl_rows, const PackedInt32Arra
 	if (n <= 0 || nf <= 0) {
 		return;
 	}
-	// 构建 comp 聚合行号 -> (arch, row) 表(与 get_column 顺序一致)
-	std::vector<std::pair<int32_t, int32_t>> cref; // 聚合行号 -> (arch, row)
-	for (int32_t arch = 0; arch < int32_t(archetypes_.size()); ++arch) {
-		const auto &a = archetypes_[arch];
-		if (!a.has_comp(ci)) {
-			continue;
-		}
-		for (int32_t r = 0; r < int32_t(a.entities.size()); ++r) {
-			if (is_prefab_index(a.entities[r])) {
+	// 缓存(cref 聚合行号 / 节点指针 / 字段索引), 结构版本变化时重建。
+	if (int32_t(sync_cache_.size()) <= ci) {
+		sync_cache_.resize(ci + 1);
+	}
+	auto &sc = sync_cache_[ci];
+	if (sc.version != struct_version_ || sc.comp != ci) {
+		sc.cref.clear();
+		for (int32_t arch = 0; arch < int32_t(archetypes_.size()); ++arch) {
+			const auto &a = archetypes_[arch];
+			if (!a.has_comp(ci)) {
 				continue;
 			}
-			cref.emplace_back(arch, r);
+			for (int32_t r = 0; r < int32_t(a.entities.size()); ++r) {
+				if (is_prefab_index(a.entities[r])) {
+					continue;
+				}
+				sc.cref.emplace_back(arch, r);
+			}
 		}
+		const int64_t nn = nodes.size();
+		sc.nodes.assign(nn, nullptr);
+		for (int64_t i = 0; i < nn; ++i) {
+			sc.nodes[i] = nodes[i].operator Object *();
+		}
+		sc.field_idx.assign(nf, -1);
+		for (int32_t fi = 0; fi < nf; ++fi) {
+			sc.field_idx[fi] = components_[ci].field_index(fields[fi]);
+		}
+		sc.props.assign(nf, StringName());
+		sc.pos_fi = -1;
+		for (int32_t fi = 0; fi < nf; ++fi) {
+			sc.props[fi] = props[fi];
+			if (props[fi] == "position") {
+				sc.pos_fi = fi;
+			}
+		}
+		sc.version = struct_version_;
+		sc.comp = ci;
 	}
+	const auto &cref = sc.cref;
+	const auto &nodes_p = sc.nodes;
+	const auto &fidx = sc.field_idx;
 	for (int32_t i = 0; i < n; ++i) {
 		const int32_t nl_row = nl_rows[i];
-		if (nl_row < 0 || nl_row >= (int32_t)nodes.size()) {
+		if (nl_row < 0 || nl_row >= (int32_t)nodes_p.size()) {
 			continue;
 		}
-		Object *obj = nodes[nl_row].operator Object *();
+		Object *obj = nodes_p[nl_row];
 		if (obj == nullptr) {
 			continue;
 		}
@@ -200,14 +230,39 @@ void ECSCore::sync_fields(const PackedInt32Array &nl_rows, const PackedInt32Arra
 			continue;
 		}
 		for (int32_t fi = 0; fi < nf; ++fi) {
-			const int32_t fi2 = components_[ci].field_index(fields[fi]);
+			const int32_t fi2 = fidx[fi];
 			if (fi2 < 0) {
 				continue;
 			}
 			Variant v = a.cols[cp][fi2].get(cr.second);
-			obj->set(props[fi], v);
+			if (sync_pos_direct_ && fi == sc.pos_fi) {
+				// position 服务器直连: 跳过节点 setter/transform 标记, 直接 RenderingServer 批量 transform
+				CanvasItem *ci = Object::cast_to<CanvasItem>(obj);
+				if (ci != nullptr) {
+					Transform2D t;
+					if (v.get_type() == Variant::VECTOR2) {
+						t.set_origin(v.operator Vector2());
+					} else if (v.get_type() == Variant::TRANSFORM2D) {
+						t = v.operator Transform2D();
+					} else {
+						obj->set(sc.props[fi], v);
+						continue;
+					}
+					RenderingServer::get_singleton()->canvas_item_set_transform(ci->get_canvas_item(), t);
+					continue;
+				}
+			}
+			obj->set(sc.props[fi], v);
 		}
 	}
+}
+
+void ECSCore::set_sync_pos_direct(bool v) {
+	sync_pos_direct_ = v;
+}
+
+bool ECSCore::get_sync_pos_direct() const {
+	return sync_pos_direct_;
 }
 
 // ---------------------------------------------------------------------------
@@ -778,6 +833,7 @@ int32_t ECSCore::create_entity() {
 		entity_arch_.resize(index + 1, -1);
 	}
 	entity_arch_[index] = -1; // 新实体无组件, 不属于任何 archetype
+	++struct_version_;
 	return (int32_t(version) << 24) | index;
 }
 
@@ -801,6 +857,7 @@ void ECSCore::destroy_entity(int32_t entity) {
 	}
 	entity_arch_[index] = -1;
 	_arch_cache.clear();
+	++struct_version_;
 	release_entity_id(index);
 }
 
@@ -826,6 +883,7 @@ bool ECSCore::add_component(int32_t entity, const StringName &comp) {
 	const int32_t dst = find_archetype(comps_new);
 	migrate_entity(index, old_arch, dst);
 	_arch_cache.clear();
+	++struct_version_;
 	return true;
 }
 
@@ -862,6 +920,7 @@ void ECSCore::remove_component(int32_t entity, const StringName &comp) {
 		migrate_entity(index, arch, find_archetype(comps_new));
 	}
 	_arch_cache.clear();
+	++struct_version_;
 }
 
 int32_t ECSCore::count_entities(const StringName &comp) const {
@@ -3246,6 +3305,8 @@ void ECSCore::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_thread_count", "count"), &ECSCore::set_thread_count);
 	ClassDB::bind_method(D_METHOD("run_systems_parallel", "systems"), &ECSCore::run_systems_parallel);
 	ClassDB::bind_method(D_METHOD("sync_fields", "nl_rows", "comp_rows", "nodes", "comp", "fields", "props"), &ECSCore::sync_fields);
+	ClassDB::bind_method(D_METHOD("set_sync_pos_direct", "v"), &ECSCore::set_sync_pos_direct);
+	ClassDB::bind_method(D_METHOD("get_sync_pos_direct"), &ECSCore::get_sync_pos_direct);
 	ClassDB::bind_method(D_METHOD("serialize"), &ECSCore::serialize);
 	ClassDB::bind_method(D_METHOD("deserialize", "data"), &ECSCore::deserialize);
 	ClassDB::bind_method(D_METHOD("create_prefab"), &ECSCore::create_prefab);

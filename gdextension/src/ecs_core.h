@@ -429,6 +429,27 @@ private:
 	void sync_fields(const PackedInt32Array &nl_rows, const PackedInt32Array &comp_rows,
 			const Array &nodes, const StringName &comp,
 			const PackedStringArray &fields, const PackedStringArray &props);
+	// position 直连开关(set_sync_pos_direct)。false 时 position 走节点 setter(节点属性同步)。
+	void set_sync_pos_direct(bool v);
+	bool get_sync_pos_direct() const;
+
+	// sync_fields 缓存: 结构版本变化时重建(cref 聚合行号 / 节点指针 / 字段索引)。
+	struct SyncRuleCache {
+		uint32_t version = 0;
+		int32_t comp = -1;
+		std::vector<std::pair<int32_t, int32_t>> cref;  // comp 聚合行号 -> (arch,row)
+		std::vector<Object *> nodes;                    // nl_row -> Node*(与 nodes Array 对齐)
+		std::vector<int32_t> field_idx;                 // fields -> 组件字段索引
+		std::vector<StringName> props;                  // 写属性名
+		int32_t pos_fi = -1;                            // position 属性对应的 field 索引(-1=无, 走服务器直连)
+	};
+	// 结构版本号: 实体/组件增删时自增, 使结构相关缓存失效。
+	uint32_t struct_version_ = 0;
+	// 按组件索引的 sync 缓存(懒建)。
+	std::vector<SyncRuleCache> sync_cache_;
+	// position 同步是否走 RenderingServer 直连(跳过节点 setter/transform 标记, 更快)。
+	// 直连后节点 position 属性不更新, 仅服务器 transform 生效。
+	bool sync_pos_direct_ = true;
 
 public:
 	~ECSCore();

@@ -21,9 +21,15 @@ var scene_root: Node = null
 ## 渲染开关: false 时跳过全部同步(纯数值逻辑), 由持有方(如 DemoImpl)控制。
 var render_enabled := true
 
+## position 同步是否走 RenderingServer 直连(更快, 跳过节点 setter/transform 标记)。
+## 注意: 直连后节点 position 属性不更新, 仅渲染服务器 transform 生效。
+@export var position_direct := true
+
 ## 节点缓存: NodeLink 行号 -> Node(数组索引 O(1))。NodeLink 实体数变化时重建。
 var _nl_nodes: Array = []
 var _nl_count := -1
+## node_path 列缓存(结构变化时更新, 免每帧 get_column 复制 10000 路径)
+var _nl_paths: PackedStringArray = []
 
 ## 同步规则(预编译为数组, 避免每实体 dict 遍历):
 ## [{comp, fields: PackedStringArray, props: PackedStringArray}] — 数组索引替代 dict 查
@@ -62,6 +68,8 @@ func _run(ctx: ECSSystemContext, _delta: float) -> void:
 	var w := ctx.world
 	if w == null or _rule_items.is_empty():
 		return
+	if position_direct != w.native().get_sync_pos_direct():
+		w.native().set_sync_pos_direct(position_direct)
 	if scene_root == null:
 		var tree := Engine.get_main_loop() as SceneTree
 		scene_root = tree.current_scene if tree else null
@@ -71,15 +79,15 @@ func _run(ctx: ECSSystemContext, _delta: float) -> void:
 	var rows: PackedInt32Array = w.query_rows(NodeLink, [], [])
 	if rows.is_empty():
 		return
-	var paths: PackedStringArray = w.get_column(NodeLink, &"node_path")
 
-	# 节点缓存(行号 -> node), 结构变化(实体数)时重建并清空对齐缓存
+	# 节点缓存(行号 -> node) + node_path 列缓存, 结构变化(实体数)时重建并清空对齐缓存
 	if _nl_count != rows.size():
 		_nl_count = rows.size()
 		_aligned_cache.clear()
 		_nl_nodes.resize(rows.size())
+		_nl_paths = w.get_column(NodeLink, &"node_path")
 		for e in rows:
-			_nl_nodes[e] = scene_root.get_node_or_null(paths[e])
+			_nl_nodes[e] = scene_root.get_node_or_null(_nl_paths[e])
 
 	for item in _rule_items:
 		var comp = item.comp
