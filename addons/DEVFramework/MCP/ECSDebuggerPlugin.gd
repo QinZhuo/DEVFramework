@@ -96,18 +96,20 @@ func _build_ui() -> void:
 	sys_title.add_theme_font_size_override("font_size", 14)
 	left.add_child(sys_title)
 	_sys_tree = Tree.new()
-	_sys_tree.columns = 5
+	_sys_tree.columns = 6
 	_sys_tree.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	_sys_tree.set_column_title(0, "系统")
 	_sys_tree.set_column_title(1, "耗时")
 	_sys_tree.set_column_title(2, "占比")
 	_sys_tree.set_column_title(3, "avg")
 	_sys_tree.set_column_title(4, "max")
-	_sys_tree.set_column_custom_minimum_width(0, 150)
+	_sys_tree.set_column_title(5, "调用")
+	_sys_tree.set_column_custom_minimum_width(0, 140)
 	_sys_tree.set_column_custom_minimum_width(1, 55)
-	_sys_tree.set_column_custom_minimum_width(2, 50)
+	_sys_tree.set_column_custom_minimum_width(2, 45)
 	_sys_tree.set_column_custom_minimum_width(3, 55)
 	_sys_tree.set_column_custom_minimum_width(4, 55)
+	_sys_tree.set_column_custom_minimum_width(5, 45)
 	left.add_child(_sys_tree)
 	_topo_label = Label.new()
 	_topo_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -191,9 +193,14 @@ func _update_systems() -> void:
 	if _last_times == null:
 		_last_times = {}
 	var vals := {}
+	var runs := {}
 	for s in _last_times:
 		var x: Variant = _last_times[s]
-		vals[s] = float(x) if (x is float or x is int) else 0.0
+		if x is Dictionary:
+			vals[s] = float(x.get("ms", 0.0))
+			runs[s] = int(x.get("runs", 0))
+		else:
+			vals[s] = float(x) if (x is float or x is int) else 0.0
 	# 累计历史(最近 60 帧)
 	for s in vals:
 		var arr: Array = _time_hist.get(s, [])
@@ -222,6 +229,7 @@ func _update_systems() -> void:
 			avg /= hist.size()
 			it.set_text(3, "%.3f" % avg)
 			it.set_text(4, "%.3f" % mx)
+			it.set_text(5, "%d" % runs.get(s, 0))
 
 
 ## 拓扑文本(执行顺序 + 可并行标记)。防御: 空/类型异常时显示占位。

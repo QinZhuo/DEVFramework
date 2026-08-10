@@ -105,6 +105,7 @@ var _parent_children := {}
 var _frame_count := 0                     # 本世界已 tick 帧数
 # ---------------- 调试统计(实体/系统查看器用) ----------------
 var _system_times := {}                        # ECSSystem -> 本帧耗时 ms(并行安全)
+var _system_runs := {}                          # ECSSystem -> 累计运行次数
 var _system_times_lock := Mutex.new()
 var _component_by_name := {}                   # 组件类名(StringName) -> 脚本
 var _component_schemas := {}                   # 组件类名 -> [{name, type}] 字段列表
@@ -1100,6 +1101,7 @@ func _parallel_worker(system: ECSSystem) -> void:
 func _record_system_time(system: ECSSystem, t0: int) -> void:
 	_system_times_lock.lock()
 	_system_times[system] = (Time.get_ticks_usec() - t0) / 1000.0
+	_system_runs[system] = int(_system_runs.get(system, 0)) + 1
 	_system_times_lock.unlock()
 
 ## 调试: 各系统本帧耗时(ms), 键为系统类名。
@@ -1130,6 +1132,18 @@ func get_entity_view(entity: int) -> Dictionary:
 ## 调试: 设置实体的组件字段值(查看器改值用)。
 func set_entity_field(entity: int, comp, field: StringName, value) -> void:
 	set_field(entity, comp, field, value)
+
+## 调试: 各系统耗时与累计运行次数 {类名: {ms, runs}}(查看器表格列: 耗时/avg/max/调用)。
+func get_system_stats() -> Dictionary:
+	var out := {}
+	_system_times_lock.lock()
+	for s in _system_times:
+		var nm := "?"
+		if s.get_script() != null:
+			nm = s.get_script().get_global_name()
+		out[nm] = {"ms": _system_times[s], "runs": int(_system_runs.get(s, 0))}
+	_system_times_lock.unlock()
+	return out
 
 ## 调试: 系统拓扑(当前执行顺序 + 是否可并行)。
 func get_topology() -> Dictionary:

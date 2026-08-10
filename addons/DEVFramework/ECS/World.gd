@@ -56,7 +56,7 @@ func tick(delta: float) -> void:
 ## 向编辑器 ECS 调试面板推送摘要(系统耗时 + 拓扑 + 实体 ID 列表)。
 func _push_debug_view() -> void:
 	var data := {
-		"systems": ecs.get_system_times(),
+		"systems": ecs.get_system_stats(),
 		"topology": ecs.get_topology(),
 	}
 	# 实体 ID 列表(前 200 个 NodeLink 实体, 供查看器点选)
