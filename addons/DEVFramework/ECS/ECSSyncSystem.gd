@@ -21,9 +21,10 @@ var scene_root: Node = null
 ## 渲染开关: false 时跳过全部同步(纯数值逻辑), 由持有方(如 DemoImpl)控制。
 var render_enabled := true
 
-## position 同步是否走 RenderingServer 直连(更快, 跳过节点 setter/transform 标记)。
-## 注意: 直连后节点 position 属性不更新, 仅渲染服务器 transform 生效。
-@export var position_direct := true
+## 服务器直连开关: true 时 position/transform/modulate/self_modulate/visible/z_index
+## 走 RenderingServer 直连(更快, 跳过节点 setter/transform 标记)。支持 2D CanvasItem 与 3D VisualInstance3D。
+## 注意: 直连后对应节点属性不更新, 仅渲染服务器状态生效。
+@export var server_direct := true
 
 ## 节点缓存: NodeLink 行号 -> Node(数组索引 O(1))。NodeLink 实体数变化时重建。
 var _nl_nodes: Array = []
@@ -68,8 +69,8 @@ func _run(ctx: ECSSystemContext, _delta: float) -> void:
 	var w := ctx.world
 	if w == null or _rule_items.is_empty():
 		return
-	if position_direct != w.native().get_sync_pos_direct():
-		w.native().set_sync_pos_direct(position_direct)
+	if server_direct != w.native().get_sync_direct():
+		w.native().set_sync_direct(server_direct)
 	if scene_root == null:
 		var tree := Engine.get_main_loop() as SceneTree
 		scene_root = tree.current_scene if tree else null

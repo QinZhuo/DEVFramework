@@ -3,6 +3,7 @@
 #include <godot_cpp/variant/utility_functions.hpp>
 #include <godot_cpp/classes/canvas_item.hpp>
 #include <godot_cpp/classes/rendering_server.hpp>
+#include <godot_cpp/classes/visual_instance3d.hpp>
 
 #include <algorithm>
 #include <emmintrin.h> // SSE2 (SIMD 加速 batch 运算)
@@ -156,6 +157,26 @@ void ECSCore::run_systems_parallel(const Array &systems) {
 	}
 }
 
+// 属性名 -> 服务器直连类型(0=无, 1=变换2D/3D, 2=modulate, 3=self_modulate, 4=visible, 5=z_index)
+static int32_t sync_direct_kind(const StringName &prop) {
+	if (prop == StringName("position") || prop == StringName("transform")) {
+		return 1;
+	}
+	if (prop == StringName("modulate")) {
+		return 2;
+	}
+	if (prop == StringName("self_modulate")) {
+		return 3;
+	}
+	if (prop == StringName("visible")) {
+		return 4;
+	}
+	if (prop == StringName("z_index")) {
+		return 5;
+	}
+	return 0;
+}
+
 void ECSCore::sync_fields(const PackedInt32Array &nl_rows, const PackedInt32Array &comp_rows,
 		const Array &nodes, const StringName &comp,
 		const PackedStringArray &fields, const PackedStringArray &props) {
@@ -197,12 +218,10 @@ void ECSCore::sync_fields(const PackedInt32Array &nl_rows, const PackedInt32Arra
 			sc.field_idx[fi] = components_[ci].field_index(fields[fi]);
 		}
 		sc.props.assign(nf, StringName());
-		sc.pos_fi = -1;
+		sc.direct_kind.assign(nf, 0);
 		for (int32_t fi = 0; fi < nf; ++fi) {
 			sc.props[fi] = props[fi];
-			if (props[fi] == "position") {
-				sc.pos_fi = fi;
-			}
+			sc.direct_kind[fi] = sync_direct_kind(props[fi]);
 		}
 		sc.version = struct_version_;
 		sc.comp = ci;
@@ -235,21 +254,66 @@ void ECSCore::sync_fields(const PackedInt32Array &nl_rows, const PackedInt32Arra
 				continue;
 			}
 			Variant v = a.cols[cp][fi2].get(cr.second);
-			if (sync_pos_direct_ && fi == sc.pos_fi) {
-				// position 服务器直连: 跳过节点 setter/transform 标记, 直接 RenderingServer 批量 transform
-				CanvasItem *ci = Object::cast_to<CanvasItem>(obj);
-				if (ci != nullptr) {
-					Transform2D t;
-					if (v.get_type() == Variant::VECTOR2) {
-						t.set_origin(v.operator Vector2());
-					} else if (v.get_type() == Variant::TRANSFORM2D) {
-						t = v.operator Transform2D();
-					} else {
-						obj->set(sc.props[fi], v);
-						continue;
+			if (sync_direct_) {
+				const int32_t dk = sc.direct_kind[fi];
+				if (dk != 0) {
+					RenderingServer *rs = RenderingServer::get_singleton();
+					if (dk == 1) {
+						// 变换: 2D CanvasItem / 3D VisualInstance3D
+						if (v.get_type() == Variant::VECTOR2) {
+							CanvasItem *ci = Object::cast_to<CanvasItem>(obj);
+							if (ci != nullptr) {
+								Transform2D t;
+								t.set_origin(v.operator Vector2());
+								rs->canvas_item_set_transform(ci->get_canvas_item(), t);
+								continue;
+							}
+						} else if (v.get_type() == Variant::TRANSFORM2D) {
+							CanvasItem *ci = Object::cast_to<CanvasItem>(obj);
+							if (ci != nullptr) {
+								rs->canvas_item_set_transform(ci->get_canvas_item(), v.operator Transform2D());
+								continue;
+							}
+						} else if (v.get_type() == Variant::VECTOR3) {
+							VisualInstance3D *vi = Object::cast_to<VisualInstance3D>(obj);
+							if (vi != nullptr) {
+								Transform3D t;
+								t.origin = v.operator Vector3();
+								rs->instance_set_transform(vi->get_instance(), t);
+								continue;
+							}
+						} else if (v.get_type() == Variant::TRANSFORM3D) {
+							VisualInstance3D *vi = Object::cast_to<VisualInstance3D>(obj);
+							if (vi != nullptr) {
+								rs->instance_set_transform(vi->get_instance(), v.operator Transform3D());
+								continue;
+							}
+						}
+					} else if (dk == 2 && v.get_type() == Variant::COLOR) {
+						CanvasItem *ci = Object::cast_to<CanvasItem>(obj);
+						if (ci != nullptr) {
+							rs->canvas_item_set_modulate(ci->get_canvas_item(), v.operator Color());
+							continue;
+						}
+					} else if (dk == 3 && v.get_type() == Variant::COLOR) {
+						CanvasItem *ci = Object::cast_to<CanvasItem>(obj);
+						if (ci != nullptr) {
+							rs->canvas_item_set_self_modulate(ci->get_canvas_item(), v.operator Color());
+							continue;
+						}
+					} else if (dk == 4 && v.get_type() == Variant::BOOL) {
+						CanvasItem *ci = Object::cast_to<CanvasItem>(obj);
+						if (ci != nullptr) {
+							rs->canvas_item_set_visible(ci->get_canvas_item(), v.operator bool());
+							continue;
+						}
+					} else if (dk == 5 && v.get_type() == Variant::INT) {
+						CanvasItem *ci = Object::cast_to<CanvasItem>(obj);
+						if (ci != nullptr) {
+							rs->canvas_item_set_z_index(ci->get_canvas_item(), v.operator int64_t());
+							continue;
+						}
 					}
-					RenderingServer::get_singleton()->canvas_item_set_transform(ci->get_canvas_item(), t);
-					continue;
 				}
 			}
 			obj->set(sc.props[fi], v);
@@ -257,12 +321,12 @@ void ECSCore::sync_fields(const PackedInt32Array &nl_rows, const PackedInt32Arra
 	}
 }
 
-void ECSCore::set_sync_pos_direct(bool v) {
-	sync_pos_direct_ = v;
+void ECSCore::set_sync_direct(bool v) {
+	sync_direct_ = v;
 }
 
-bool ECSCore::get_sync_pos_direct() const {
-	return sync_pos_direct_;
+bool ECSCore::get_sync_direct() const {
+	return sync_direct_;
 }
 
 // ---------------------------------------------------------------------------
@@ -3305,8 +3369,8 @@ void ECSCore::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_thread_count", "count"), &ECSCore::set_thread_count);
 	ClassDB::bind_method(D_METHOD("run_systems_parallel", "systems"), &ECSCore::run_systems_parallel);
 	ClassDB::bind_method(D_METHOD("sync_fields", "nl_rows", "comp_rows", "nodes", "comp", "fields", "props"), &ECSCore::sync_fields);
-	ClassDB::bind_method(D_METHOD("set_sync_pos_direct", "v"), &ECSCore::set_sync_pos_direct);
-	ClassDB::bind_method(D_METHOD("get_sync_pos_direct"), &ECSCore::get_sync_pos_direct);
+	ClassDB::bind_method(D_METHOD("set_sync_direct", "v"), &ECSCore::set_sync_direct);
+	ClassDB::bind_method(D_METHOD("get_sync_direct"), &ECSCore::get_sync_direct);
 	ClassDB::bind_method(D_METHOD("serialize"), &ECSCore::serialize);
 	ClassDB::bind_method(D_METHOD("deserialize", "data"), &ECSCore::deserialize);
 	ClassDB::bind_method(D_METHOD("create_prefab"), &ECSCore::create_prefab);
