@@ -55,7 +55,7 @@ func _capture(message: String, data: Array, _session_id: int) -> bool:
 	return true
 
 
-## 布局: 顶部工具栏 + 主区左右分栏(左=系统耗时宽表格+拓扑, 右=实体列表/详情/改值)。
+## 加载 UI 场景(ECS 查看器布局/属性在 Inspector 可直接调整)。
 func _build_ui() -> void:
 	# 每次重建(避免跨会话复用旧控件悬垂)
 	if _ui != null:
@@ -67,37 +67,17 @@ func _build_ui() -> void:
 	_topo_label = null
 	_type_hint = null
 
-	var root := VBoxContainer.new()
-	root.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_ui = (load("res://addons/DEVFramework/MCP/ECSDebuggerView.tscn") as PackedScene).instantiate()
+	_ui.name = "ECS 查看器"
+	_sys_tree = _ui.get_node("%SysTree")
+	_entity_list = _ui.get_node("%EntityList")
+	_entity_tree = _ui.get_node("%EntityTree")
+	_topo_label = _ui.get_node("%TopoLabel")
+	_type_hint = _ui.get_node("%TypeHint")
+	_entity_edit = _ui.get_node("%EntityEdit")
+	_value_edit = _ui.get_node("%ValueEdit")
 
-	# 顶部工具栏
-	var top := HBoxContainer.new()
-	root.add_child(top)
-	var btn := Button.new()
-	btn.text = "刷新"
-	btn.pressed.connect(func() -> void: _request_view())
-	top.add_child(btn)
-	_auto_refresh = CheckBox.new()
-	_auto_refresh.text = "自动"
-	_auto_refresh.button_pressed = true
-	top.add_child(_auto_refresh)
-
-	# 主区左右分栏
-	var split := HSplitContainer.new()
-	split.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	root.add_child(split)
-
-	# ---- 左: 系统耗时(宽表格) + 拓扑 ----
-	var left := VBoxContainer.new()
-	left.custom_minimum_size.x = 430
-	split.add_child(left)
-	var sys_title := Label.new()
-	sys_title.text = "每系统耗时 (ms)"
-	sys_title.add_theme_font_size_override("font_size", 14)
-	left.add_child(sys_title)
-	_sys_tree = Tree.new()
-	_sys_tree.columns = 6
-	_sys_tree.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	# 列标题/宽度(Tree 列数在场景设, 标题代码设)
 	_sys_tree.set_column_title(0, "系统")
 	_sys_tree.set_column_title(1, "耗时")
 	_sys_tree.set_column_title(2, "占比")
@@ -110,59 +90,19 @@ func _build_ui() -> void:
 	_sys_tree.set_column_custom_minimum_width(3, 55)
 	_sys_tree.set_column_custom_minimum_width(4, 55)
 	_sys_tree.set_column_custom_minimum_width(5, 45)
-	left.add_child(_sys_tree)
-	_topo_label = Label.new()
-	_topo_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	left.add_child(_topo_label)
 
-	# ---- 右: 实体查看器 ----
-	var right := VBoxContainer.new()
-	split.add_child(right)
-	var hb := HBoxContainer.new()
-	right.add_child(hb)
-	_entity_edit = LineEdit.new()
-	_entity_edit.placeholder_text = "实体 ID"
-	_entity_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	hb.add_child(_entity_edit)
-	var b2 := Button.new()
-	b2.text = "查看"
-	b2.pressed.connect(func() -> void:
+	# 信号连接
+	_ui.get_node("%RefreshBtn").pressed.connect(func() -> void: _request_view())
+	_ui.get_node("%ViewBtn").pressed.connect(func() -> void:
 		if _session != null:
 			_session.send_message(PREFIX, ["entity", int(_entity_edit.text)])
 	)
-	hb.add_child(b2)
-
-	# 实体区: 列表(左) + 详情/改值(右)
-	var esplit := HSplitContainer.new()
-	esplit.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	right.add_child(esplit)
-	_entity_list = Tree.new()
+	_ui.get_node("%SetBtn").pressed.connect(func() -> void: _apply_edit())
 	_entity_list.item_activated.connect(func() -> void:
 		var it := _entity_list.get_selected()
 		if it != null and it.has_meta("eid") and _session != null:
 			_session.send_message(PREFIX, ["entity", it.get_meta("eid")])
 	)
-	esplit.add_child(_entity_list)
-	var detail := VBoxContainer.new()
-	esplit.add_child(detail)
-	_entity_tree = Tree.new()
-	_entity_tree.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	detail.add_child(_entity_tree)
-	var hb2 := HBoxContainer.new()
-	detail.add_child(hb2)
-	_value_edit = LineEdit.new()
-	_value_edit.placeholder_text = "新值"
-	_value_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	hb2.add_child(_value_edit)
-	var b3 := Button.new()
-	b3.text = "设置"
-	b3.pressed.connect(func() -> void: _apply_edit())
-	hb2.add_child(b3)
-	_type_hint = Label.new()
-	detail.add_child(_type_hint)
-
-	_ui = root
-	_ui.name = "ECS 查看器"   # Debugger 面板 tab 显示名
 
 
 func _request_view() -> void:
