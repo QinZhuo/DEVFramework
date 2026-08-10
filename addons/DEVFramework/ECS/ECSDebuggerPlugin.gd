@@ -67,7 +67,7 @@ func _build_ui() -> void:
 	_topo_label = null
 	_type_hint = null
 
-	_ui = (load("res://addons/DEVFramework/MCP/ECSDebuggerView.tscn") as PackedScene).instantiate()
+	_ui = (load("res://addons/DEVFramework/ECS/ECSDebuggerView.tscn") as PackedScene).instantiate()
 	_ui.name = "ECS 查看器"
 	_sys_tree = _ui.get_node("%SysTree")
 	_entity_list = _ui.get_node("%EntityList")
