@@ -1,0 +1,13 @@
+[gd_resource type="Resource" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://addons/DEVFramework/PCG/Def/ContentGenDef.gd" id="1_script"]
+
+[resource]
+script = ExtResource("1_script")
+mode = 3
+count = 16
+affix_bases = PackedStringArray("长剑", "法杖", "战弓", "盾牌", "护符", "戒指", "匕首", "战锤")
+affix_prefixes = PackedStringArray("锋利", "燃烧", "冰霜", "雷霆", "暗影", "神圣", "剧毒", "迅捷", "碎裂")
+affix_suffixes = PackedStringArray("之贪婪", "之毁灭", "之守护", "之祝福", "之诅咒", "之狂怒", "之坚毅")
+affix_prefix_chance = 0.6
+affix_suffix_chance = 0.5

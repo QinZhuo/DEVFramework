@@ -1,0 +1,13 @@
+[gd_resource type="Resource" load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://addons/DEVFramework/PCG/Def/NoiseLayerDef.gd" id="1_script"]
+
+[sub_resource type="FastNoiseLite" id="FastNoiseLite_moist"]
+noise_type = 0
+frequency = 0.05
+fractal_type = 1
+fractal_octaves = 4
+
+[resource]
+script = ExtResource("1_script")
+noise = SubResource("FastNoiseLite_moist")

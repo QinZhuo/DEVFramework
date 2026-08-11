@@ -1,0 +1,10 @@
+[gd_resource type="Resource" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://addons/DEVFramework/PCG/Def/PlacementDef.gd" id="1_script"]
+
+[resource]
+script = ExtResource("1_script")
+mode = 1
+count = 200
+region_size = Vector2(256, 256)
+jitter = 0.4

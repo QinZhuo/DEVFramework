@@ -1,0 +1,10 @@
+[gd_resource type="Resource" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://addons/DEVFramework/PCG/Def/ContentGenDef.gd" id="1_script"]
+
+[resource]
+script = ExtResource("1_script")
+mode = 1
+count = 16
+prefixes = PackedStringArray("银", "暗", "星", "风", "霜", "雷", "影", "雾", "火", "冰")
+suffixes = PackedStringArray("之刃", "之心", "之歌", "之眼", "之翼", "之语", "之环", "之王", "之印")

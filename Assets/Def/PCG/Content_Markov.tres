@@ -1,0 +1,11 @@
+[gd_resource type="Resource" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://addons/DEVFramework/PCG/Def/ContentGenDef.gd" id="1_script"]
+
+[resource]
+script = ExtResource("1_script")
+mode = 2
+count = 5
+markov_order = 2
+markov_words = 20
+corpus = PackedStringArray("勇士 挥剑 击败 巨龙", "巫师 吟唱 古老 咒语", "森林 深处 藏着 古老 遗迹", "河流 静静 流过 村庄", "天空 飘过 白色 云朵", "猎人 在 林间 穿行", "冒险者 踏上 未知 旅途", "月光 洒在 银色 湖面", "城堡 的 大门 缓缓 打开", "商人 在 集市 吆喝")

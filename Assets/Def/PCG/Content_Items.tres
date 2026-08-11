@@ -1,0 +1,30 @@
+[gd_resource type="Resource" load_steps=4 format=3]
+
+[ext_resource type="Script" path="res://addons/DEVFramework/PCG/Def/ContentGenDef.gd" id="1_script"]
+[ext_resource type="Script" path="res://addons/DEVFramework/PCG/Def/ContentEntryDef.gd" id="2_entry"]
+
+[sub_resource type="Resource" id="ContentEntry_potion"]
+script = ExtResource("2_entry")
+name = "治疗药水"
+weight = 5.0
+
+[sub_resource type="Resource" id="ContentEntry_sword"]
+script = ExtResource("2_entry")
+name = "钢剑"
+weight = 3.0
+
+[sub_resource type="Resource" id="ContentEntry_shield"]
+script = ExtResource("2_entry")
+name = "铁盾"
+weight = 2.0
+
+[sub_resource type="Resource" id="ContentEntry_gem"]
+script = ExtResource("2_entry")
+name = "红宝石"
+weight = 1.0
+
+[resource]
+script = ExtResource("1_script")
+mode = 0
+count = 12
+entries = Array[ContentEntryDef]([SubResource("ContentEntry_potion"), SubResource("ContentEntry_sword"), SubResource("ContentEntry_shield"), SubResource("ContentEntry_gem")])

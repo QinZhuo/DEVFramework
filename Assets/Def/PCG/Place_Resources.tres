@@ -1,0 +1,14 @@
+[gd_resource type="Resource" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://addons/DEVFramework/PCG/Def/PlacementDef.gd" id="1_script"]
+
+[resource]
+script = ExtResource("1_script")
+mode = 0
+count = 120
+region_size = Vector2(96, 96)
+min_distance = 3.0
+max_attempts = 30
+output_key = "resources"
+exclude_grid_key = "terrain"
+exclude_values = PackedInt32Array(1)

@@ -1,0 +1,14 @@
+[gd_resource type="Resource" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://addons/DEVFramework/PCG/Def/ContentGenDef.gd" id="1_script"]
+
+[resource]
+script = ExtResource("1_script")
+mode = 3
+count = 8
+output_key = "loot"
+affix_bases = PackedStringArray("铁矿石", "草药", "魔法卷轴", "金币袋", "水晶", "兽皮", "药剂", "宝石")
+affix_prefixes = PackedStringArray("富", "精炼", "附魔", "远古", "稀有", "闪闪发光")
+affix_suffixes = PackedStringArray("之碎屑", "之精华", "的残片", "之尘", "的结晶")
+affix_prefix_chance = 0.5
+affix_suffix_chance = 0.5

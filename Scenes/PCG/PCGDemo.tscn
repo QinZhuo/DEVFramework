@@ -1,0 +1,185 @@
+[gd_scene load_steps=20 format=3]
+
+[ext_resource type="Script" path="res://Scenes/PCG/PCGDemo.gd" id="1_demo"]
+[ext_resource type="Resource" path="res://Assets/Def/PCG/Noise_Perlin.tres" id="n1"]
+[ext_resource type="Resource" path="res://Assets/Def/PCG/Noise_Cellular.tres" id="n2"]
+[ext_resource type="Resource" path="res://Assets/Def/PCG/Noise_Ridged.tres" id="n3"]
+[ext_resource type="Resource" path="res://Assets/Def/PCG/Grid_NoiseTerrain.tres" id="g1"]
+[ext_resource type="Resource" path="res://Assets/Def/PCG/Grid_Cave.tres" id="g2"]
+[ext_resource type="Resource" path="res://Assets/Def/PCG/Grid_Maze.tres" id="g3"]
+[ext_resource type="Resource" path="res://Assets/Def/PCG/Grid_RandomWalk.tres" id="g4"]
+[ext_resource type="Resource" path="res://Assets/Def/PCG/Grid_BSPRooms.tres" id="g5"]
+[ext_resource type="Resource" path="res://Assets/Def/PCG/Grid_WFC.tres" id="g6"]
+[ext_resource type="Resource" path="res://Assets/Def/PCG/Placement_Poisson.tres" id="p1"]
+[ext_resource type="Resource" path="res://Assets/Def/PCG/Placement_JitterGrid.tres" id="p2"]
+[ext_resource type="Resource" path="res://Assets/Def/PCG/Content_Items.tres" id="c1"]
+[ext_resource type="Resource" path="res://Assets/Def/PCG/Content_Names.tres" id="c2"]
+[ext_resource type="Resource" path="res://Assets/Def/PCG/Content_Markov.tres" id="c3"]
+[ext_resource type="Resource" path="res://Assets/Def/PCG/Content_Affix.tres" id="c4"]
+[ext_resource type="Resource" path="res://Assets/Def/PCG/Biome_World.tres" id="b1"]
+[ext_resource type="Resource" path="res://Assets/Def/PCG/Pipeline_World.tres" id="pl1"]
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_panel"]
+content_margin_left = 12.0
+content_margin_top = 10.0
+content_margin_right = 12.0
+content_margin_bottom = 10.0
+bg_color = Color(0.08, 0.1, 0.13, 0.92)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(0.3, 0.5, 0.75, 1)
+corner_radius_top_left = 8
+corner_radius_top_right = 8
+corner_radius_bottom_right = 8
+corner_radius_bottom_left = 8
+
+[node name="PCGDemo" type="Control"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("1_demo")
+noise_defs = Array[Resource]([ExtResource("n1"), ExtResource("n2"), ExtResource("n3")])
+grid_defs = Array[Resource]([ExtResource("g1"), ExtResource("g2"), ExtResource("g3"), ExtResource("g4"), ExtResource("g5"), ExtResource("g6")])
+placement_defs = Array[Resource]([ExtResource("p1"), ExtResource("p2")])
+content_defs = Array[Resource]([ExtResource("c1"), ExtResource("c2"), ExtResource("c3"), ExtResource("c4")])
+biome_defs = Array[Resource]([ExtResource("b1")])
+pipeline_defs = Array[Resource]([ExtResource("pl1")])
+
+[node name="TextureRect" type="TextureRect" parent="."]
+unique_name_in_owner = true
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 0
+expand_mode = 1
+stretch_mode = 1
+
+[node name="UI" type="PanelContainer" parent="."]
+layout_mode = 1
+anchor_left = 1.0
+anchor_right = 1.0
+offset_left = -340.0
+offset_top = 20.0
+offset_right = -20.0
+grow_horizontal = 0
+grow_vertical = 1
+theme_override_styles/panel = SubResource("StyleBoxFlat_panel")
+
+[node name="VBox" type="VBoxContainer" parent="UI"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="Title" type="Label" parent="UI/VBox"]
+layout_mode = 2
+text = "PCG 演示 · 程序化生成"
+horizontal_alignment = 1
+
+[node name="RowMode" type="HBoxContainer" parent="UI/VBox"]
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="ModeLabel" type="Label" parent="UI/VBox/RowMode"]
+layout_mode = 2
+custom_minimum_size = Vector2(48, 0)
+text = "类别"
+
+[node name="ModeOption" type="OptionButton" parent="UI/VBox/RowMode"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="RowSub" type="HBoxContainer" parent="UI/VBox"]
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="SubLabel" type="Label" parent="UI/VBox/RowSub"]
+layout_mode = 2
+custom_minimum_size = Vector2(48, 0)
+text = "配置"
+
+[node name="SubOption" type="OptionButton" parent="UI/VBox/RowSub"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="RowBrush" type="HBoxContainer" parent="UI/VBox"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="BrushLabel" type="Label" parent="UI/VBox/RowBrush"]
+layout_mode = 2
+custom_minimum_size = Vector2(48, 0)
+text = "刷子"
+
+[node name="BrushOption" type="OptionButton" parent="UI/VBox/RowBrush"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="ClearButton" type="Button" parent="UI/VBox/RowBrush"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "清空"
+
+[node name="RowAnim" type="HBoxContainer" parent="UI/VBox"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="AnimLabel" type="Label" parent="UI/VBox/RowAnim"]
+layout_mode = 2
+custom_minimum_size = Vector2(48, 0)
+text = "动画"
+
+[node name="AnimCheck" type="CheckButton" parent="UI/VBox/RowAnim"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+text = "生成过程"
+
+[node name="AnimReset" type="Button" parent="UI/VBox/RowAnim"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "重置"
+
+[node name="RowSeed" type="HBoxContainer" parent="UI/VBox"]
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="SeedLabel" type="Label" parent="UI/VBox/RowSeed"]
+layout_mode = 2
+custom_minimum_size = Vector2(48, 0)
+text = "种子"
+
+[node name="SeedSpin" type="SpinBox" parent="UI/VBox/RowSeed"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+min_value = 0.0
+max_value = 2147483647.0
+step = 1.0
+value = 20260811.0
+
+[node name="RegenerateButton" type="Button" parent="UI/VBox/RowSeed"]
+layout_mode = 2
+text = "重新生成"
+
+[node name="LogBox" type="RichTextLabel" parent="UI/VBox"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(0, 150)
+layout_mode = 2
+size_flags_vertical = 3
+bbcode_enabled = true
+scroll_active = true
+
+[connection signal="item_selected" from="UI/VBox/RowMode/ModeOption" to="." method="_on_mode_selected"]
+[connection signal="pressed" from="UI/VBox/RowSeed/RegenerateButton" to="." method="_on_regenerate_pressed"]

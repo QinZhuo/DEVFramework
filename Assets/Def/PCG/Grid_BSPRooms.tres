@@ -1,0 +1,13 @@
+[gd_resource type="Resource" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://addons/DEVFramework/PCG/Def/GridGenDef.gd" id="1_script"]
+
+[resource]
+script = ExtResource("1_script")
+type = 4
+width = 96
+height = 96
+bsp_depth = 5
+room_min_size = 5
+room_max_size = 12
+corridor_width = 1

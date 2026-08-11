@@ -1,0 +1,52 @@
+[gd_resource type="Resource" load_steps=9 format=3]
+
+[ext_resource type="Script" path="res://addons/DEVFramework/PCG/Def/BiomeMapDef.gd" id="1_script"]
+[ext_resource type="Resource" path="res://Assets/Def/PCG/Biome_Elevation.tres" id="2_elev"]
+[ext_resource type="Resource" path="res://Assets/Def/PCG/Biome_Moisture.tres" id="3_moist"]
+[ext_resource type="Script" path="res://addons/DEVFramework/PCG/Def/BiomeEntryDef.gd" id="4_entry"]
+
+[sub_resource type="Resource" id="Biome_ocean"]
+script = ExtResource("4_entry")
+name = "海洋"
+color = Color(0.2, 0.4, 0.8, 1)
+height_max = 0.35
+
+[sub_resource type="Resource" id="Biome_desert"]
+script = ExtResource("4_entry")
+name = "沙漠"
+color = Color(0.9, 0.8, 0.4, 1)
+height_min = 0.35
+height_max = 0.6
+moisture_max = 0.3
+
+[sub_resource type="Resource" id="Biome_plain"]
+script = ExtResource("4_entry")
+name = "草原"
+color = Color(0.4, 0.7, 0.3, 1)
+height_min = 0.35
+height_max = 0.6
+moisture_min = 0.3
+moisture_max = 0.7
+
+[sub_resource type="Resource" id="Biome_forest"]
+script = ExtResource("4_entry")
+name = "森林"
+color = Color(0.2, 0.5, 0.2, 1)
+height_min = 0.35
+height_max = 0.6
+moisture_min = 0.7
+
+[sub_resource type="Resource" id="Biome_mountain"]
+script = ExtResource("4_entry")
+name = "山地"
+color = Color(0.6, 0.6, 0.6, 1)
+height_min = 0.6
+
+[resource]
+script = ExtResource("1_script")
+width = 96
+height = 96
+elevation_layer = ExtResource("2_elev")
+moisture_layer = ExtResource("3_moist")
+output_key = "biomes"
+biomes = Array[BiomeEntryDef]([SubResource("Biome_ocean"), SubResource("Biome_desert"), SubResource("Biome_plain"), SubResource("Biome_forest"), SubResource("Biome_mountain")])

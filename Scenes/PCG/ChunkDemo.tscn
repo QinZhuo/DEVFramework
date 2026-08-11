@@ -1,0 +1,147 @@
+[gd_scene load_steps=6 format=3]
+
+[ext_resource type="Script" path="res://Scenes/PCG/ChunkDemo.gd" id="1_demo"]
+[ext_resource type="Resource" path="res://Assets/Def/PCG/Grid_NoiseTerrain.tres" id="g1"]
+[ext_resource type="Resource" path="res://Assets/Def/PCG/Grid_Cave.tres" id="g2"]
+[ext_resource type="Resource" path="res://Assets/Def/PCG/Grid_WFC.tres" id="g6"]
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_panel"]
+content_margin_left = 12.0
+content_margin_top = 10.0
+content_margin_right = 12.0
+content_margin_bottom = 10.0
+bg_color = Color(0.08, 0.1, 0.13, 0.92)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(0.4, 0.6, 0.4, 1)
+corner_radius_top_left = 8
+corner_radius_top_right = 8
+corner_radius_bottom_right = 8
+corner_radius_bottom_left = 8
+
+[node name="ChunkDemo" type="Control"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("1_demo")
+grid_defs = Array[Resource]([ExtResource("g1"), ExtResource("g2"), ExtResource("g6")])
+
+[node name="TextureRect" type="TextureRect" parent="."]
+unique_name_in_owner = true
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+expand_mode = 1
+stretch_mode = 1
+
+[node name="UI" type="PanelContainer" parent="."]
+layout_mode = 1
+anchor_left = 1.0
+anchor_right = 1.0
+offset_left = -340.0
+offset_top = 20.0
+offset_right = -20.0
+grow_horizontal = 0
+grow_vertical = 1
+theme_override_styles/panel = SubResource("StyleBoxFlat_panel")
+
+[node name="VBox" type="VBoxContainer" parent="UI"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="Title" type="Label" parent="UI/VBox"]
+layout_mode = 2
+text = "分块世界 · ChunkedWorld"
+horizontal_alignment = 1
+
+[node name="RowAlgo" type="HBoxContainer" parent="UI/VBox"]
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="AlgoLabel" type="Label" parent="UI/VBox/RowAlgo"]
+layout_mode = 2
+custom_minimum_size = Vector2(48, 0)
+text = "算法"
+
+[node name="AlgoOption" type="OptionButton" parent="UI/VBox/RowAlgo"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="RowRadius" type="HBoxContainer" parent="UI/VBox"]
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="RadiusLabel" type="Label" parent="UI/VBox/RowRadius"]
+layout_mode = 2
+custom_minimum_size = Vector2(48, 0)
+text = "半径"
+
+[node name="RadiusSpin" type="SpinBox" parent="UI/VBox/RowRadius"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+min_value = 1.0
+max_value = 6.0
+step = 1.0
+value = 3.0
+
+[node name="RowSeed" type="HBoxContainer" parent="UI/VBox"]
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="SeedLabel" type="Label" parent="UI/VBox/RowSeed"]
+layout_mode = 2
+custom_minimum_size = Vector2(48, 0)
+text = "种子"
+
+[node name="SeedSpin" type="SpinBox" parent="UI/VBox/RowSeed"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+min_value = 0.0
+max_value = 2147483647.0
+step = 1.0
+value = 20260811.0
+
+[node name="AsyncCheck" type="CheckButton" parent="UI/VBox"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "异步生成（后台线程）"
+
+[node name="RowBtns" type="HBoxContainer" parent="UI/VBox"]
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="RegenerateButton" type="Button" parent="UI/VBox/RowBtns"]
+layout_mode = 2
+size_flags_horizontal = 3
+text = "重新生成"
+
+[node name="SaveButton" type="Button" parent="UI/VBox/RowBtns"]
+layout_mode = 2
+text = "存种子"
+
+[node name="LoadButton" type="Button" parent="UI/VBox/RowBtns"]
+layout_mode = 2
+text = "读种子"
+
+[node name="LogBox" type="RichTextLabel" parent="UI/VBox"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(0, 120)
+layout_mode = 2
+size_flags_vertical = 3
+bbcode_enabled = true
+scroll_active = true
+
+[connection signal="pressed" from="UI/VBox/RowBtns/RegenerateButton" to="." method="_on_regenerate_pressed"]
+[connection signal="pressed" from="UI/VBox/RowBtns/SaveButton" to="." method="_on_save_pressed"]
+[connection signal="pressed" from="UI/VBox/RowBtns/LoadButton" to="." method="_on_load_pressed"]
