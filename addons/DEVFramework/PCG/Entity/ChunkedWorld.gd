@@ -15,9 +15,11 @@ var chunk_size := 16
 var seed_base := 0
 ## 每 chunk 的生成定义（width/height 会被 chunk_size 覆写，不污染原 Def）
 var grid_def: GridGenDef
-
 var _chunks := {}  # Vector2i → GeneratedGrid
 var _chunk_count := 0
+## 玩家修改记录：{"x,y" → 值}，存档只存 seed + 改动，加载后重新生成并应用
+var _modified := {}
+
 
 ## 获取 chunk（不存在则按种子确定性生成并缓存）
 func get_chunk(cx: int, cy: int) -> GeneratedGrid:
@@ -59,14 +61,54 @@ func clear_chunks() -> void:
 	_chunks.clear()
 	_chunk_count = 0
 
-## 按世界坐标取格值（越界返回 out_of_bounds；自动懒生成所在 chunk）
+## 按世界坐标取格值（越界返回 out_of_bounds；自动懒生成所在 chunk；玩家修改优先）
 func get_cell(world_x: int, world_y: int, out_of_bounds := -1) -> int:
+	var mkey := "%d,%d" % [world_x, world_y]
+	if _modified.has(mkey):
+		return _modified[mkey]
 	var cx := floori(world_x / float(chunk_size))
 	var cy := floori(world_y / float(chunk_size))
 	var lx := world_x - cx * chunk_size
 	var ly := world_y - cy * chunk_size
 	var g := get_chunk(cx, cy)
 	return g.get_cell(lx, ly, out_of_bounds)
+
+
+## 修改世界格值（记录进增量存档，下次读档后重新生成并应用）
+func set_cell(world_x: int, world_y: int, v: int) -> void:
+	_modified["%d,%d" % [world_x, world_y]] = v
+
+
+## 全部玩家改动（Dictionary "x,y" → int）
+func get_modified() -> Dictionary:
+	return _modified
+
+
+func clear_modified() -> void:
+	_modified.clear()
+
+
+## —— 存档（seed + 增量改动，世界本身由 seed 确定性重建） ——
+
+func save_data() -> Dictionary:
+	return {
+		"seed": seed_base,
+		"chunk_size": chunk_size,
+		"grid_def": grid_def.save_data() if grid_def else "",
+		"modified": _modified,
+	}
+
+
+func load_data(data: Dictionary) -> void:
+	seed_base = int(data.get("seed", seed_base))
+	chunk_size = int(data.get("chunk_size", chunk_size))
+	var def_path: String = data.get("grid_def", "")
+	if not def_path.is_empty():
+		var d: Def = GridGenDef.load_data(def_path)
+		if d is GridGenDef:
+			grid_def = d as GridGenDef
+	_modified = data.get("modified", {})
+	clear_chunks()
 
 func _generate_chunk(cx: int, cy: int) -> GeneratedGrid:
 	var d: GridGenDef = grid_def.duplicate() as GridGenDef if grid_def else null

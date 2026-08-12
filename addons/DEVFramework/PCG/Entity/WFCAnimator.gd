@@ -51,9 +51,20 @@ func setup(p_def: GridGenDef, p_rng: RandomNumberGenerator, p_fixed: Dictionary 
 	for key in fixed:
 		merged[key] = fixed[key]
 	for key in merged:
-		var idx := _fixed_index(key)
 		var tile_idx := int(merged[key])
-		if idx >= 0 and tile_idx >= 0 and tile_idx < n:
+		if tile_idx < 0 or tile_idx >= n:
+			continue
+		# 区域约束：Rect2i 键 = 区域内所有格固定为该瓦片
+		if key is Rect2i:
+			var r := key as Rect2i
+			for ry in range(maxi(0, r.position.y), mini(height, r.end.y)):
+				for rx in range(maxi(0, r.position.x), mini(width, r.end.x)):
+					var ri := ry * width + rx
+					wave[ri] = 1 << tile_idx
+					_queue.append(ri)
+			continue
+		var idx := _fixed_index(key)
+		if idx >= 0:
 			wave[idx] = 1 << tile_idx
 			_queue.append(idx)
 	_propagate()

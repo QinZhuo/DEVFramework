@@ -11,19 +11,28 @@ DEV Framework 的**程序化内容生成**模块。遵循框架 **Def（静态�
 addons/DEVFramework/PCG/
 ├── Def/                       # 生成配置（.tres 资源）
 │   ├── PCGGeneratorDef.gd     # 生成器基类（管线单元，结果写入 ctx.output[key]）
-│   ├── NoiseLayerDef.gd       # 噪声层（包装 Godot 内置 FastNoiseLite）
-│   ├── GridGenDef.gd          # 网格生成器（噪声地形/细胞洞穴/迷宫/随机游走/BSP/WFC）
+│   ├── NoiseLayerDef.gd       # 噪声层（包装 Godot 内置 FastNoiseLite，含 2D/3D 采样）
+│   ├── GridGenDef.gd          # 2D 网格生成器（噪声地形/细胞洞穴/迷宫/随机游走/BSP/WFC/Voronoi）
+│   ├── Grid3DGenDef.gd        # 3D 体素生成器（地表高度图 / 3D 细胞洞穴 / 3D WFC / 3D 噪声洞穴）
+│   ├── TileDef3D / TileSetDef3D  # 3D WFC 六面 socket 瓦片与瓦片集
+│   ├── CityDef.gd             # 城市街区生成（道路网格 + 建筑/公园）
 │   ├── PlacementDef.gd        # 散布放置器（泊松圆盘/抖动网格/均匀随机，可按网格剔除）
+│   ├── PlacementDef3D.gd      # 3D 散布放置器（3D 泊松/网格/随机，可按 3D 网格剔除）
 │   ├── ContentEntryDef.gd     # 加权表项（物品/事件/怪物等条目）
 │   ├── ContentGenDef.gd       # 内容生成器（加权表/名字/马尔可夫/词缀）
+│   ├── ContentEvolveDef.gd    # 内容进化生成器（遗传算法进化出高适应度组合）
 │   ├── TileDef / TileSetDef   # WFC 瓦片与瓦片集
 │   ├── BiomeEntryDef.gd       # 生物群系条目（高度/湿度/温度区间）
 │   ├── BiomeMapDef.gd         # 生物群系图生成器（多层噪声映射）
+│   ├── TemplateDef / TemplateStitchDef  # 手作模板 + 拼接
+│   ├── RiverDef / RoadDef     # 河流（梯度下降）/ 道路（MST 走廊）
 │   └── PCGDef.gd              # 生成管线（组合多个生成器 + 共享 seed）
 ├── Entity/                    # 生成结果（运行时数据）
-│   ├── GeneratedGrid.gd       # 2D 整数栅格（邻居/连通域/BFS 查询）
+│   ├── GeneratedGrid.gd       # 2D 整数栅格（邻居/连通域/BFS 查询，可序列化）
+│   ├── GeneratedGrid3D.gd     # 3D 整数栅格（体素，邻居/连通域，可序列化）
 │   ├── BiomeMap.gd            # 群系图结果（格子索引 + 群系表）
-│   ├── ChunkedWorld.gd        # 分块世界（seed+chunk 坐标确定性懒生成）
+│   ├── ChunkedWorld.gd        # 2D 分块世界（seed+chunk 坐标确定性懒生成，seed+增量存档）
+│   ├── ChunkedWorld3D.gd      # 3D 分块世界（统一噪声种子 + 世界坐标偏移，地表跨块连续，seed+增量存档）
 │   ├── WFCAnimator.gd         # WFC 过程动画器（分步观测-传播 + 波函数渲染）
 │   └── PCGContext.gd          # 管线上下文（rng / 结果字典）
 └── Tool/
@@ -61,6 +70,29 @@ grid.get_cell(x, y)                    # 取格值（越界返回 -1）
 | `RANDOM_WALK` | 随机游走洞穴 |
 | `BSP_ROOMS` | BSP 分区房间 + 走廊（`bsp_depth`/房间尺寸/走廊宽） |
 | `WFC` | 波函数坍缩瓦片生成（配 `tile_set`，见下） |
+| `VORONOI` | Voronoi 地块地形（随机种子点划分区域，每区域采样一次噪声，可选区域边界画墙） |
+
+**连通性后处理**（`GridGenDef.connectivity`）：生成后保证"空地"全部连通（洞穴/地牢可玩性关键）：
+- `KEEP_LARGEST`：保留最大空连通域，孤立小区域填成实体
+- `CONNECT_ALL`：Dijkstra 随机扰动代价寻路，从每个孤立区挖出**有机蜿蜒隧道**连到主区域（走空便宜、穿墙贵，隧道自然弯曲像洞穴通道；保留全部空间且全连通）
+- 默认 `NONE` 不处理（保持算法原始输出）；WFC 瓦片语义除外
+
+### 2.5 模板拼接（手作模板组合）
+
+`TemplateStitchDef` 随机放置多个 `TemplateDef`（字符串行模板，`#`→墙、`.`→空地、`G`→出入口等），模板间用走廊连通：
+
+```gdscript
+var tmpl := TemplateDef.new()
+tmpl.lines = PackedStringArray(["#####", "#.G.#", "#...#", "#####"])
+var stitch := TemplateStitchDef.new()
+stitch.width = 96
+stitch.height = 96
+stitch.templates = [tmpl]
+stitch.count = 8
+var grid := PCGTool.generate_template_stitch(stitch, PCGTool.make_rng(seed))
+```
+
+适合做地牢房间组合 / 建筑群 / 基地布局。
 
 ### 3. WFC 瓦片生成
 
@@ -86,6 +118,8 @@ var grid := PCGTool.generate_grid(wfc, PCGTool.make_rng(seed))
 # 玩家手绘：固定几个水格，其余自动补全
 var fixed := {Vector2i(10, 10): 2, Vector2i(20, 20): 2}
 var grid := PCGTool.generate_grid(wfc, PCGTool.make_rng(seed), fixed)
+# 区域约束：整块矩形区域强制为某瓦片（key 用 Rect2i）
+var fixed2 := {Rect2i(0, 0, 16, 16): 0, Vector2i(30, 30): 2}
 ```
 
 **过程动画**（观测-传播可视化）：`WFCAnimator` 分步推进 WFC，随时渲染当前波函数
@@ -126,6 +160,88 @@ var items: Array = PCGTool.generate_content(def, PCGTool.make_rng(seed))
 | `MARKOV` | 词级马尔可夫文本（`corpus` 句子语料，`markov_order`） |
 | `AFFIX` | 词缀组合（`affix_bases` + 随机 `affix_prefixes/suffixes`，概率控制） |
 
+### 5.5 河流与道路（路径生成）
+
+```gdscript
+var river_def: RiverDef = load("res://Assets/Def/PCG/River_Terrain.tres")
+var rivers: PackedVector2Array = PCGTool.generate_river(river_def, PCGTool.make_rng(seed))
+var road_def: RoadDef = load("res://Assets/Def/PCG/Road_Network.tres")
+var roads: PackedVector2Array = PCGTool.generate_road(road_def, PCGTool.make_rng(seed))
+```
+
+- **RiverDef**：从高地沿高度场梯度（8 邻域最低）一路下降直到入海，`wander` 加随机扰动更自然
+- **RoadDef**：生成枢纽点（可自随机或从管线 `hubs_key` 取），用 L 型走廊连接；`mst_only` 用最小生成树避免道路冗余
+- 两者都可设 `terrain_key` 把路径印进地形栅格（`PCGTool.stamp_path`），适合叠加进世界管线
+
+### 5.6 3D 体素生成（3D 基石）
+
+`GeneratedGrid3D` 是 3D 整数栅格（体素），配合 `Grid3DGenDef` 生成：
+- `NOISE_SURFACE`：每 (x,z) 列按 2D 噪声高度填充实体（Minecraft 式地表）
+- `CAVE_3D`：3D 细胞自动机洞穴（26 邻域平滑，空连通域=1 全连通）
+- `WFC_3D`：3D 波函数坍缩（六面 socket 瓦片，`TileDef3D` / `TileSetDef3D`）
+- `CAVE_NOISE_3D`：3D 噪声洞穴（3D 噪声阈值，`offset` 世界坐标 → 分块世界跨块**完全连续**）
+
+```gdscript
+var def: Grid3DGenDef = load("res://Assets/Def/PCG/Grid3D_Surface.tres")
+var voxels: GeneratedGrid3D = PCGTool.generate_grid_3d(def, PCGTool.make_rng(seed))
+voxels.get_cell(x, y, z)         # 体素取值
+voxels.components(0)             # 3D 空腔连通域（洞穴可通行性）
+voxels.neighbors(x, y, z, 1)     # 26 邻域统计
+```
+
+**3D WFC**：`TileDef3D` 用六面 socket（0=+x,1=-x,2=+y,3=-y,4=+z,5=-z）描述体素连接，
+与 2D WFC 同样支持回溯（`wfc_max_backtracks`）、整体重试（`wfc_retries`）与**固定格**：
+`fixed` 键支持 `Vector3i`(单格) / int(线性索引) / `"x,y,z"` / `AABB`(区域)，value 为瓦片索引。
+参考瓦片集 `Assets/Def/PCG/TileSet3D_Checker.tres`（A/B 垂直交替棋盘）。
+
+```gdscript
+# 手绘部分：固定几个体素，3D WFC 自动补全其余
+var fixed := {Vector3i(2, 2, 2): 0, Vector3i(3, 3, 3): 1, AABB(Vector3(10, 10, 10), Vector3(3, 3, 3)): 0}
+var voxels := PCGTool.generate_grid_3d(wfc3d_def, PCGTool.make_rng(seed), fixed)
+```
+
+### 5.8 城市与内容进化
+
+**CityDef**（城市街区）：道路网格划分街区，街区填充建筑/公园：
+
+```gdscript
+var city: CityDef = load("res://Assets/Def/PCG/City_Grid.tres")
+var city_grid := PCGTool.generate_city(city, PCGTool.make_rng(seed))
+# 值语义：road_value=道路 / building_value=建筑 / park_value=公园 / empty=街道
+```
+
+**ContentEvolveDef**（遗传算法进化）：进化出高适应度的组合（如词缀装备），
+个体 = 基础名 + N 个基因，适应度 = 基因数值(`ContentEntryDef.weight`)之和：
+
+```gdscript
+var evolve: ContentEvolveDef = load("res://Assets/Def/PCG/Evolve_Equipment.tres")
+var result: Array = PCGTool.evolve_content(evolve, PCGTool.make_rng(seed))
+# [{name: "战弓·雷霆·雷霆", fitness: 18.0}, ...]  按适应度降序
+```
+
+`NoiseLayerDef` 提供 `sample_3d` / `get_value_3d`，可直接做 3D 噪声体素。3D 生成结果仍是纯数据，交给游戏侧渲染（demo 用 MultiMesh 体素化 + 相机拖拽查看）。
+
+### 5.7 3D 分块世界与 3D 散布
+
+**ChunkedWorld3D**：3D 无限分块世界。地表模式用**统一种子 + 世界坐标偏移**采样噪声，相邻 chunk 地形无缝衔接；洞穴模式每 chunk 独立生成。
+
+```gdscript
+var world := ChunkedWorld3D.new()
+world.seed_base = 20260811
+world.grid3d_def = grid3d_def           # 任意 Grid3DGenDef
+world.chunk_size = 8
+var vox := world.get_chunk(1, 0, -1)    # 懒生成并缓存（同 seed 必复现）
+var v := world.get_cell(50, 20, 30)     # 按世界坐标取值
+world.generate_chunk_async(cx, cy, cz)  # 后台线程生成
+```
+
+**PlacementDef3D**：3D 空间散布（泊松圆盘 / 抖动网格 / 均匀随机），可指定 `exclude_grid3d_key` 剔除实体格内的点：
+
+```gdscript
+var def: PlacementDef3D = load("res://Assets/Def/PCG/Place_3D_Nature.tres")
+var pts: PackedVector3Array = PCGTool.place_3d(def, PCGTool.make_rng(seed))
+```
+
 ### 6. 生物群系图
 
 ```gdscript
@@ -136,6 +252,7 @@ var img := PCGTool.biome_to_image(bm)   # 按群系颜色渲染
 ```
 
 `BiomeMapDef` 用 高度/湿度/温度 三层噪声采样，映射到 `biomes`（`BiomeEntryDef` 定义各群系的数值区间，顺序即优先级）。
+`BiomeMapDef.smoothing_passes` 做群系过渡平滑（3×3 邻域多数投票），消除硬边界的碎斑。
 
 ### 7. 分块世界（确定性无限世界）
 
@@ -174,17 +291,32 @@ var resources: PackedVector2Array = out["resources"]
 - 生物群系（`BiomeMapDef`）、网格（`GridGenDef`）、散布（`PlacementDef`）、内容（`ContentGenDef`）都是 `PCGGeneratorDef`，可任意组合进同一管线。
 
 **完整管线示例**：`Assets/Def/PCG/Pipeline_World.tres` 一条管线生成一个小世界 ——
-地形(岛屿) → 群系(海洋/沙漠/草原/森林/山地) → 资源点(自动避开地形实体格) → 战利品(词缀命名)。
-在 PCGDemo 的「综合」类别可查看总览合成图（群系色底 + 地形加深 + 资源点高亮）。
+地形(岛屿) → 群系(海洋/沙漠/草原/森林/山地，带过渡平滑) → 河流(梯度下降) → 道路(最小生成树连接枢纽) → 资源点(自动避开地形实体格) → 战利品(词缀命名)。
+在 PCGDemo 的「综合」类别可查看总览合成图（群系色底 + 地形加深 + 河流蓝线 + 道路灰线 + 资源点高亮）。
 
-### 10. 存档
+### 10. 存档（序列化 + seed 增量）
 
-seed 即世界的"钥匙"，配合 `SaveTool` 一行存读（demo 见 ChunkDemo 的「存种子/读种子」）：
+世界由 seed 确定性生成，存档只存 **seed + 玩家改动格**，加载时重新生成并应用改动，体积极小：
 
 ```gdscript
-SaveTool.save_data("user://world.json", {"seed": seed, "radius": 2}, SaveTool.Mode.JSON)
-var data = SaveTool.load_data("user://world.json", SaveTool.Mode.JSON)
+# GeneratedGrid / GeneratedGrid3D 可整体序列化
+var data := grid.to_data()
+var restored := GeneratedGrid.from_data(data)
+
+# ChunkedWorld / ChunkedWorld3D：seed + 增量改动
+var world := ChunkedWorld.new()
+world.seed_base = 20260811
+world.grid_def = grid_gen_def
+world.set_cell(50, 30, 9)               # 玩家改动（记录进增量）
+SaveTool.save_data("user://world.json", world.save_data(), SaveTool.Mode.JSON)
+
+var w2 := ChunkedWorld.new()
+w2.load_data(SaveTool.load_data("user://world.json", SaveTool.Mode.JSON))
+w2.get_cell(50, 30)                     # == 9，改动恢复
+w2.get_cell(5, 5)                       # 未改动格由 seed 复现
 ```
+
+3D 版 `ChunkedWorld3D` 同样支持（键 "x,y,z"）。demo 见 ChunkDemo 的「存档/读档」按钮。
 
 ## 设计要点
 
@@ -198,12 +330,58 @@ var data = SaveTool.load_data("user://world.json", SaveTool.Mode.JSON)
 
 ## 演示
 
-- `res://Scenes/PCG/PCGDemo.tscn` — 基础生成展示：噪声层 / 网格（含 WFC 固定格涂色补全 + 过程动画）/ 散布 / 内容（含词缀）/ 生物群系 / 综合管线（地形→群系→资源点→战利品）
-- `res://Scenes/PCG/ChunkDemo.tscn` — 分块世界：确定性无限世界、同步/异步生成、seed 存读取档
+- `res://Scenes/PCG/PCGDemo.tscn` — 2D 生成展示：噪声层 / 网格（WFC 固定格涂色 + 过程动画、Voronoi、模板拼接）/ 散布 / 内容（含词缀）/ 生物群系 / 综合管线
+- `res://Scenes/PCG/PCGDemo3D.tscn` — 3D 体素展示：地表高度图 / 3D 细胞洞穴 / 3D WFC，鼠标拖拽旋转查看
+- `res://Scenes/PCG/ChunkDemo.tscn` — 2D 分块世界：确定性无限世界、同步/异步生成、seed 增量存档
+- `res://Scenes/PCG/ChunkDemo3D.tscn` — 3D 分块世界（地表跨块连续）/ 3D 散布，鼠标拖拽旋转查看
+- `res://Scenes/PCG/DungeonGame.tscn` — **地牢小游戏**：PCG 随机生成地牢（BSP/模板/洞穴/迷宫），回合制打怪（普通/精英/首领三色怪，属性随层数）、装备掉落（词缀命名+攻击加成换武器）、经验/等级成长、金币/药水、多层递增、seed 复现；勾选 **「AI 自动游玩」** 可自动寻路捡物/打怪/下楼（BFS 寻路，可观赏）
 
 WFC 演示小贴士：切到「网格」选 WFC 配置，左侧选「刷子」瓦片，在图上**左键点击涂格**（固定该格）、**右键擦除**已固定的格，点「重新生成」即可看到 WFC 在保持你手绘格子的前提下自动补全整张地图（固定格带亮色边框）。勾选「生成过程」可逐帧观看观测-传播动画，点「重置」回到未生成状态重放。
 
 预置配置资源位于 `res://Assets/Def/PCG/`。
+
+## 数据消费约定（重要）
+
+**本模块是"数据生成器"，只产出纯数据**（`GeneratedGrid` / `GeneratedGrid3D` / `BiomeMap` / 点集 / 内容数组），
+**不实现** 栅格→`TileMapLayer` 填充、3D 体素→Mesh、点集→场景实例化、碰撞/物理等"消费数据"的环节。
+
+如何把数据变成可玩内容，由**具体项目自己实现**，或使用**第三方插件**（如 TileMap 编辑器 / 体素地形插件 / 地形 Mesh 工具）完成。这样本模块保持纯净通用，不绑定任何渲染方案。
+
+**数据语义约定**（消费方按此对接）：
+
+| 数据 | 语义 | 消费示例 |
+|---|---|---|
+| `GeneratedGrid` | `cells` 每个格一个 int：`empty_value`(通常 0)=可走/空地，`solid_value`(通常 1)=墙/实体，WFC 为瓦片索引 | `TileMapLayer.set_cell(coords, source_id, atlas)` 逐格填；`WFC` 用瓦片索引映射到瓦片源 |
+| `GeneratedGrid3D` | 体素栅格，同样 0/1 或瓦片索引 | 逐格放 BoxMesh / 用 `MultiMesh` / 交给体素渲染插件 |
+| `BiomeMap` | 每格群系索引（`biomes[idx]`） | 按群系色/贴图渲染，或驱动群系规则 |
+| `PackedVector2Array` | 散布/河流/道路点（单位=格，区域坐标） | `for p in pts: 实例化场景`；与 grid 映射用 `p/region_size*grid.width` |
+| `Array[ContentEntryDef]` / 字符串 | 抽取内容 / 生成文本 | 直接消费为物品/事件/名字 |
+
+**坐标约定**：栅格与点集坐标均为**格坐标**（0..width/height），乘 `tile_size` 即得像素/世界坐标；
+`ChunkedWorld.get_cell(世界坐标)` 直接按世界坐标取值，chunk 边界由内部自动处理。
+存档用 `seed + 增量改动`（见[存档](#10-存档序列化--seed-增量)）。
+
+> 示例参考：`Scenes/PCG/DungeonGame.tscn` 演示了"消费 `GeneratedGrid` 做撞墙寻路"，
+> `PCGDemo3D.tscn` 演示了"用 MultiMesh 消费 `GeneratedGrid3D`"——这些是消费范例，不是本模块内置功能。
+
+## 测试与基准
+
+`res://Tests/PCG/` 提供确定性 / 约束 / 性能三套自检（`class_name XXTest extends RefCounted`，`static run()`）：
+
+| 脚本 | 验证内容 |
+|---|---|
+| `PCTDeterminismTest` | 全部 2D/3D 算法 + WFC 固定格 + 管线 同 seed 复现、不同 seed 不同 |
+| `PCTConstraintTest` | 迷宫/BSP/模板/3D 洞穴连通域=1、3D WFC 交替无违规、泊松最小间距、序列化往返、增量存档 |
+| `PCTBenchmarkTest` | 各算法耗时基准（GDScript 参考值） |
+
+运行方式（在编辑器执行，结果打印到日志）：
+```gdscript
+PCTDeterminismTest.run()
+PCTConstraintTest.run()
+PCTBenchmarkTest.run()
+```
+
+**当前基准参考**（64 位桌面）：2D 网格 96×96 多数 <20ms（WFC 64×64 ≈1.9s 需后台线程）；3D 地表 8ms、3D 洞穴 1.3s、3D WFC 16³ 176ms；分块世界 49 chunk 269ms；综合管线 112ms。
 
 ## 扩展
 

@@ -1,0 +1,18 @@
+[gd_resource type="Resource" load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://addons/DEVFramework/PCG/Def/RiverDef.gd" id="1_script"]
+[ext_resource type="Resource" path="res://Assets/Def/PCG/Biome_Elevation.tres" id="2_elev"]
+
+[resource]
+script = ExtResource("1_script")
+map_width = 96
+map_height = 96
+elevation_layer = ExtResource("2_elev")
+river_count = 4
+width = 1
+sea_level = 0.3
+max_steps = 500
+wander = 0.2
+output_key = "river"
+terrain_key = "terrain"
+river_value = 2

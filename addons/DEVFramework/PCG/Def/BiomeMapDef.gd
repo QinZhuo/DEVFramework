@@ -16,6 +16,8 @@ class_name BiomeMapDef extends PCGGeneratorDef
 @export var temperature_layer: NoiseLayerDef
 ## 群系表（顺序即优先级，最后放兜底）
 @export var biomes: Array[BiomeEntryDef] = []
+## 群系过渡平滑次数（0=硬边界；越大边界越柔和、小斑块被吸收）
+@export_range(0, 10, 1) var smoothing_passes := 0
 
 func generate(ctx: PCGContext) -> void:
 	var biome_map := PCGTool.generate_biome(self, ctx.rng)

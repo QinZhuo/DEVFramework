@@ -32,9 +32,21 @@ func sample(n: FastNoiseLite, x: float, y: float) -> float:
 	v = clampf(v * contrast + offset, 0.0, 1.0) * weight
 	return clampf(v, 0.0, 1.0)
 
+## 3D 采样（体素地形用），输出 0..1
+func sample_3d(n: FastNoiseLite, x: float, y: float, z: float) -> float:
+	var v := (n.get_noise_3d(x, y, z) + 1.0) * 0.5
+	if invert:
+		v = 1.0 - v
+	v = clampf(v * contrast + offset, 0.0, 1.0) * weight
+	return clampf(v, 0.0, 1.0)
+
 ## 直接采样（内部自动构建噪声；大量采样请用 build_noise + sample 复用）
 func get_value(x: float, y: float, seed := 0) -> float:
 	return sample(build_noise(seed), x, y)
+
+## 直接 3D 采样
+func get_value_3d(x: float, y: float, z: float, seed := 0) -> float:
+	return sample_3d(build_noise(seed), x, y, z)
 
 ## FastNoiseLite 原生枚举无法在类型上取 keys()，这里手动映射名称
 const NOISE_TYPE_NAMES := ["SIMPLEX", "SIMPLEX_SMOOTH", "CELLULAR", "PERLIN", "VALUE_CUBIC", "VALUE"]

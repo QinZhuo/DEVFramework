@@ -1,0 +1,50 @@
+[gd_resource type="Resource" load_steps=9 format=3]
+
+[ext_resource type="Script" path="res://addons/DEVFramework/PCG/Def/ContentEvolveDef.gd" id="1_script"]
+[ext_resource type="Script" path="res://addons/DEVFramework/PCG/Def/ContentEntryDef.gd" id="2_entry"]
+
+[sub_resource type="Resource" id="Gene_sharp"]
+script = ExtResource("2_entry")
+name = "锋利"
+weight = 5.0
+
+[sub_resource type="Resource" id="Gene_burn"]
+script = ExtResource("2_entry")
+name = "燃烧"
+weight = 8.0
+
+[sub_resource type="Resource" id="Gene_frost"]
+script = ExtResource("2_entry")
+name = "冰霜"
+weight = 6.0
+
+[sub_resource type="Resource" id="Gene_thunder"]
+script = ExtResource("2_entry")
+name = "雷霆"
+weight = 9.0
+
+[sub_resource type="Resource" id="Gene_shadow"]
+script = ExtResource("2_entry")
+name = "暗影"
+weight = 7.0
+
+[sub_resource type="Resource" id="Gene_holy"]
+script = ExtResource("2_entry")
+name = "神圣"
+weight = 4.0
+
+[sub_resource type="Resource" id="Gene_venom"]
+script = ExtResource("2_entry")
+name = "剧毒"
+weight = 3.0
+
+[resource]
+script = ExtResource("1_script")
+count = 8
+generations = 40
+population = 30
+mutation_rate = 0.2
+gene_count = 2
+output_key = "evolved"
+bases = PackedStringArray("长剑", "法杖", "战弓", "匕首")
+genes = Array[ContentEntryDef]([SubResource("Gene_sharp"), SubResource("Gene_burn"), SubResource("Gene_frost"), SubResource("Gene_thunder"), SubResource("Gene_shadow"), SubResource("Gene_holy"), SubResource("Gene_venom")])

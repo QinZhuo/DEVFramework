@@ -9,5 +9,5 @@ width = 96
 height = 96
 bsp_depth = 5
 room_min_size = 5
-room_max_size = 12
-corridor_width = 1
+room_max_size = 16
+corridor_width = 2

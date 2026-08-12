@@ -1,0 +1,29 @@
+[gd_resource type="Resource" load_steps=6 format=3]
+
+[ext_resource type="Script" path="res://addons/DEVFramework/PCG/Def/TemplateStitchDef.gd" id="1_script"]
+[ext_resource type="Script" path="res://addons/DEVFramework/PCG/Def/TemplateDef.gd" id="2_tmpl"]
+
+[sub_resource type="Resource" id="Template_room"]
+script = ExtResource("2_tmpl")
+weight = 1.0
+lines = PackedStringArray("##########", "#........#", "#..GG....#", "#........#", "##########")
+
+[sub_resource type="Resource" id="Template_hall"]
+script = ExtResource("2_tmpl")
+weight = 0.8
+lines = PackedStringArray("############", "#..........#", "#....GG....#", "#..........#", "#..........#", "############")
+
+[sub_resource type="Resource" id="Template_treasure"]
+script = ExtResource("2_tmpl")
+weight = 0.5
+lines = PackedStringArray("#########", "#.......#", "#..GG...#", "#.......#", "#.......#", "#########")
+
+[resource]
+script = ExtResource("1_script")
+width = 96
+height = 96
+count = 5
+min_gap = 2
+connect = true
+corridor_width = 3
+templates = Array[TemplateDef]([SubResource("Template_room"), SubResource("Template_hall"), SubResource("Template_treasure")])

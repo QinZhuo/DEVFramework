@@ -68,7 +68,7 @@ func _process(_delta: float) -> void:
 			return  # 已完成，回调内已重建静态图
 	var img := _animator.render_image()
 	_draw_fixed_highlight(img, _selected_def(grid_defs) as GridGenDef)
-	texture_rect.texture = ImageTexture.create_from_image(img)
+	texture_rect.texture = ImageTexture.create_from_image(_scale_up(img))
 
 
 func _on_mode_selected(idx: int) -> void:
@@ -145,14 +145,21 @@ func _gen_noise(seed: int) -> void:
 		_log("请配置 noise_defs（参考 Scenes/PCG/PCGDemo.tscn）")
 		return
 	var img := PCGTool.noise_image(def, 256, 256, seed)
-	texture_rect.texture = ImageTexture.create_from_image(img)
+	texture_rect.texture = ImageTexture.create_from_image(_scale_up(img))
 	_log("噪声层: %s\nseed=%d  type=%s" % [def.name, seed, def.get_desc(null)])
 
 
 ## —— 网格生成 ——
 
 func _gen_grid(seed: int) -> void:
-	var def := _selected_def(grid_defs) as GridGenDef
+	var res := _selected_def(grid_defs)
+	if res is TemplateStitchDef:
+		_gen_stitch(res as TemplateStitchDef, seed)
+		return
+	if res is CityDef:
+		_gen_city(res as CityDef, seed)
+		return
+	var def := res as GridGenDef
 	if def == null:
 		_log("请配置 grid_defs")
 		return
@@ -173,10 +180,10 @@ func _gen_grid(seed: int) -> void:
 		_draw_fixed_highlight(img, def)
 	else:
 		img = PCGTool.grid_to_image(grid, {
-			def.solid_value: Color(0.92, 0.95, 0.98),
-			def.empty_value: Color(0.13, 0.15, 0.18),
+			def.solid_value: Color(0.16, 0.18, 0.22),
+			def.empty_value: Color(0.88, 0.9, 0.93),
 		})
-	texture_rect.texture = ImageTexture.create_from_image(img)
+	texture_rect.texture = ImageTexture.create_from_image(_scale_up(img))
 	if is_wfc:
 		var counts := {}
 		for c in grid.cells:
@@ -186,9 +193,11 @@ func _gen_grid(seed: int) -> void:
 		])
 	else:
 		var comps := grid.components(def.solid_value)
-		_log("网格: %s\n%d x %d  solid=%d  empty=%d  实体连通域=%d" % [
+		var empty_comps := grid.components(def.empty_value)
+		_log("网格: %s\n%d x %d  solid=%d  empty=%d  实体连通域=%d  空地连通域=%d" % [
 			def.name, grid.width, grid.height,
-			grid.count(def.solid_value), grid.count(def.empty_value), comps.size(),
+			grid.count(def.solid_value), grid.count(def.empty_value),
+			comps.size(), empty_comps.size(),
 		])
 
 
@@ -302,6 +311,14 @@ func _draw_fixed_highlight(img: Image, def: GridGenDef) -> void:
 				img.set_pixel(gx + 1, j, border)
 
 
+## 把生成的小图用最近邻放大到清晰尺寸（避免 1px 格被插值模糊）
+func _scale_up(img: Image) -> Image:
+	if img.get_width() < 512:
+		var s := 768.0 / img.get_width()
+		img.resize(int(img.get_width() * s), int(img.get_height() * s), Image.INTERPOLATE_NEAREST)
+	return img
+
+
 ## 把 TextureRect 上的点击坐标映射回网格格坐标（考虑居中留白）
 func _texture_to_grid(pos: Vector2, def: GridGenDef) -> Vector2i:
 	if texture_rect.texture == null:
@@ -322,6 +339,41 @@ func _texture_to_grid(pos: Vector2, def: GridGenDef) -> Vector2i:
 	return Vector2i(tx, ty)
 
 
+## —— 模板拼接 ——
+
+func _gen_stitch(def: TemplateStitchDef, seed: int) -> void:
+	brush_row.visible = false
+	anim_row.visible = false
+	var grid := PCGTool.generate_template_stitch(def, PCGTool.make_rng(seed))
+	var img := PCGTool.grid_to_image(grid, {
+		def.solid_value: Color(0.16, 0.18, 0.22),
+		def.empty_value: Color(0.88, 0.9, 0.93),
+	})
+	texture_rect.texture = ImageTexture.create_from_image(_scale_up(img))
+	var comps := grid.components(def.empty_value)
+	_log("模板拼接: %s\n%d 模板 %d x %d  空地连通域=%d" % [
+		def.name, def.count, grid.width, grid.height, comps.size(),
+	])
+
+
+## —— 城市 ——
+
+func _gen_city(def: CityDef, seed: int) -> void:
+	brush_row.visible = false
+	anim_row.visible = false
+	var grid := PCGTool.generate_city(def, PCGTool.make_rng(seed))
+	var img := PCGTool.grid_to_image(grid, {
+		def.road_value: Color(0.35, 0.38, 0.42),
+		def.building_value: Color(0.55, 0.6, 0.68),
+		def.park_value: Color(0.3, 0.6, 0.35),
+		def.empty_value: Color(0.15, 0.16, 0.2),
+	})
+	texture_rect.texture = ImageTexture.create_from_image(_scale_up(img))
+	_log("城市: %s\n建筑 %d ｜ 道路 %d ｜ 公园 %d" % [
+		def.name, grid.count(def.building_value), grid.count(def.road_value), grid.count(def.park_value),
+	])
+
+
 ## —— 生物群系 ——
 
 func _gen_biome(seed: int) -> void:
@@ -331,7 +383,7 @@ func _gen_biome(seed: int) -> void:
 		return
 	var bm := PCGTool.generate_biome(def, PCGTool.make_rng(seed))
 	var img := PCGTool.biome_to_image(bm)
-	texture_rect.texture = ImageTexture.create_from_image(img)
+	texture_rect.texture = ImageTexture.create_from_image(_scale_up(img))
 	var counts := {}
 	for i in bm.indices:
 		if i >= 0 and i < bm.biomes.size():
@@ -352,6 +404,8 @@ func _gen_pipeline(seed: int) -> void:
 	var biome_map: BiomeMap = out.get("biomes")
 	var resources: PackedVector2Array = out.get("resources", PackedVector2Array())
 	var loot: Array = out.get("loot", [])
+	var river: PackedVector2Array = out.get("river", PackedVector2Array())
+	var road: PackedVector2Array = out.get("road", PackedVector2Array())
 	# 从管线定义里找 terrain 生成器取 solid/empty 值（GeneratedGrid 本身不携带）
 	var terrain_def: GridGenDef = null
 	for g in def.generators:
@@ -360,7 +414,7 @@ func _gen_pipeline(seed: int) -> void:
 			break
 	var solid_val := terrain_def.solid_value if terrain_def else 1
 	var empty_val := terrain_def.empty_value if terrain_def else 0
-	# 合成总览：群系色为底 + 地形实体加深 + 资源点高亮
+	# 合成总览：群系色为底 + 地形实体加深 + 河流/道路 + 资源点高亮
 	var img: Image
 	if biome_map:
 		img = PCGTool.biome_to_image(biome_map)
@@ -372,6 +426,8 @@ func _gen_pipeline(seed: int) -> void:
 			if terrain.cells[i] == solid_val:
 				var c: Color = img.get_pixel(i % terrain.width, i / terrain.width)
 				img.set_pixel(i % terrain.width, i / terrain.width, c.darkened(0.45))
+	_draw_path(img, river, Color(0.25, 0.55, 1.0), 1)
+	_draw_path(img, road, Color(0.7, 0.7, 0.75), 1)
 	# 资源点（黄色 2px 点）
 	var dot := Color(1.0, 0.85, 0.2)
 	for p in resources:
@@ -383,7 +439,7 @@ func _gen_pipeline(seed: int) -> void:
 				var y := py + dy
 				if x >= 0 and y >= 0 and x < img.get_width() and y < img.get_height():
 					img.set_pixel(x, y, dot)
-	texture_rect.texture = ImageTexture.create_from_image(img)
+	texture_rect.texture = ImageTexture.create_from_image(_scale_up(img))
 	# 日志
 	var lines: Array[String] = []
 	lines.append("管线: %s  seed=%d  （%d 个生成器）" % [def.name, seed, def.generators.size()])
@@ -395,6 +451,10 @@ func _gen_pipeline(seed: int) -> void:
 			if i >= 0 and i < biome_map.biomes.size():
 				bc[biome_map.biomes[i].name] = bc.get(biome_map.biomes[i].name, 0) + 1
 		lines.append("群系: %s" % [bc])
+	if not river.is_empty():
+		lines.append("河流: %d 段路径（沿梯度入海）" % river.size())
+	if not road.is_empty():
+		lines.append("道路: %d 段路径（最小生成树连接枢纽）" % road.size())
 	lines.append("资源点: %d 个（自动避开地形实体格）" % resources.size())
 	var loot_lines: Array[String] = []
 	for it in loot:
@@ -402,6 +462,19 @@ func _gen_pipeline(seed: int) -> void:
 	if not loot_lines.is_empty():
 		lines.append("战利品: %s" % ["、".join(loot_lines)])
 	_log("\n".join(lines))
+
+
+## 把路径点画到图上（用于河流/道路合成图）
+func _draw_path(img: Image, path: PackedVector2Array, color: Color, radius: int) -> void:
+	for p in path:
+		var px := int(p.x)
+		var py := int(p.y)
+		for dy in range(-radius, radius + 1):
+			for dx in range(-radius, radius + 1):
+				var x := px + dx
+				var y := py + dy
+				if x >= 0 and y >= 0 and x < img.get_width() and y < img.get_height():
+					img.set_pixel(x, y, color)
 
 
 ## —— 散布放置 ——
@@ -413,14 +486,18 @@ func _gen_place(seed: int) -> void:
 		return
 	var pts := PCGTool.place(def, PCGTool.make_rng(seed))
 	var img := PCGTool.points_to_image(pts, Vector2i(int(def.region_size.x), int(def.region_size.y)))
-	texture_rect.texture = ImageTexture.create_from_image(img)
+	texture_rect.texture = ImageTexture.create_from_image(_scale_up(img))
 	_log("散布: %s\n模式=%s  生成 %d 点" % [def.name, PlacementDef.Mode.keys()[def.mode], pts.size()])
 
 
 ## —— 内容生成 ——
 
 func _gen_content(seed: int) -> void:
-	var def := _selected_def(content_defs) as ContentGenDef
+	var res := _selected_def(content_defs)
+	if res is ContentEvolveDef:
+		_gen_evolve(res as ContentEvolveDef, seed)
+		return
+	var def := res as ContentGenDef
 	if def == null:
 		_log("请配置 content_defs")
 		return
@@ -430,6 +507,18 @@ func _gen_content(seed: int) -> void:
 	for it in items:
 		lines.append(str(it))
 	_log("内容生成: %s（%d 条）\n\n%s" % [def.name, items.size(), "\n".join(lines)])
+
+
+## —— 内容进化（遗传算法） ——
+
+func _gen_evolve(def: ContentEvolveDef, seed: int) -> void:
+	var evo := PCGTool.evolve_content(def, PCGTool.make_rng(seed))
+	texture_rect.texture = null
+	var lines: Array[String] = []
+	lines.append("内容进化: %s（%d 代 遗传算法）\n进化出高适应度组合：" % [def.name, def.generations])
+	for item in evo:
+		lines.append("  %s  → 强度 %.1f" % [item.name, item.fitness])
+	_log("\n".join(lines))
 
 
 ## —— 日志 ——

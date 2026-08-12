@@ -48,12 +48,126 @@ static func generate_grid(def: GridGenDef, rng: RandomNumberGenerator, fixed: Di
 			_gen_bsp_rooms(grid, def, rng)
 		GridGenDef.Type.WFC:
 			_gen_wfc(grid, def, rng, fixed)
+		GridGenDef.Type.VORONOI:
+			_gen_voronoi(grid, def, rng)
+	if def.connectivity != GridGenDef.Connectivity.NONE:
+		_apply_connectivity(grid, def, rng)
+	return grid
+
+## —— 连通性后处理 ——
+
+## 空区域连通性保证：KEEP_LARGEST=保留最大空区填墙，CONNECT_ALL=隧道连接全部空区
+static func _apply_connectivity(grid: GeneratedGrid, def: GridGenDef, rng: RandomNumberGenerator) -> void:
+	if grid.width <= 0 or grid.height <= 0:
+		return
+	var comps := grid.components(def.empty_value)
+	if def.connectivity == GridGenDef.Connectivity.KEEP_LARGEST:
+		_keep_largest(grid, def, comps)
+	elif def.connectivity == GridGenDef.Connectivity.CONNECT_ALL:
+		_connect_all(grid, def, comps, rng)
+
+## 保留最大空连通域，其余填为实体
+static func _keep_largest(grid: GeneratedGrid, def: GridGenDef, comps: Array[PackedInt32Array]) -> void:
+	if comps.size() <= 1:
+		return
+	var main_idx := 0
+	for i in comps.size():
+		if comps[i].size() > comps[main_idx].size():
+			main_idx = i
+	for i in comps.size():
+		if i == main_idx:
+			continue
+		for idx in comps[i]:
+			grid.cells[idx] = def.solid_value
+
+## 隧道连接所有空区域到主区域（有机蜿蜒：Dijkstra + 随机扰动代价，走空便宜走墙贵）
+static func _connect_all(grid: GeneratedGrid, def: GridGenDef, comps: Array[PackedInt32Array], rng: RandomNumberGenerator) -> void:
+	if comps.size() <= 1:
+		return
+	var main_idx := 0
+	for i in comps.size():
+		if comps[i].size() > comps[main_idx].size():
+			main_idx = i
+	var main_set := {}
+	for idx in comps[main_idx]:
+		main_set[idx] = true
+	for ci in comps.size():
+		if ci == main_idx:
+			continue
+		_connect_region(grid, def, comps[ci][0], main_set, rng)
+
+## 从孤立区起点做带随机扰动的代价寻路，挖出有机隧道到最近主区格
+static func _connect_region(grid: GeneratedGrid, def: GridGenDef, start_idx: int, main_set: Dictionary, rng: RandomNumberGenerator) -> void:
+	var w := grid.width
+	var start := Vector2i(start_idx % w, start_idx / w)
+	var dist := {}
+	dist[start] = 0.0
+	var prev := {}
+	prev[start] = Vector2i(-1, -1)
+	var open_list := [start]
+	var end := Vector2i(-1, -1)
+	var guard := 0
+	while not open_list.is_empty() and guard < w * grid.height * 3:
+		guard += 1
+		# 取代价最小格（Dijkstra）
+		var cur: Vector2i = open_list[0]
+		var cur_d: float = dist[cur]
+		for p in open_list:
+			if dist[p] < cur_d:
+				cur_d = dist[p]
+				cur = p
+		open_list.erase(cur)
+		if main_set.has(cur.y * w + cur.x):
+			end = cur
+			break
+		for d in _DIR4:
+			var np: Vector2i = cur + d
+			if not grid.in_bounds(np.x, np.y):
+				continue
+			# 走空代价低(1)、穿墙代价高(2.5)，加随机扰动 → 隧道自然蜿蜒且尽量借道已有洞穴
+			var is_wall := grid.get_cell(np.x, np.y) == def.solid_value
+			var cost := (2.5 if is_wall else 1.0) + rng.randf_range(-0.3, 0.3)
+			var nd: float = dist[cur] + cost
+			if not dist.has(np) or nd < dist[np]:
+				dist[np] = nd
+				prev[np] = cur
+				open_list.append(np)
+	if end.x < 0:
+		return
+	var cur2 := end
+	while cur2 != start:
+		grid.set_cell(cur2.x, cur2.y, def.empty_value)
+		main_set[cur2.y * w + cur2.x] = true
+		cur2 = prev[cur2]
+	grid.set_cell(start.x, start.y, def.empty_value)
+	main_set[start.y * w + start.x] = true
+
+## —— 3D 网格 ——
+
+static func generate_grid_3d(def: Grid3DGenDef, rng: RandomNumberGenerator, fixed: Dictionary = {}) -> GeneratedGrid3D:
+	var grid := GeneratedGrid3D.create(def.width, def.height, def.depth, def.empty_value)
+	match def.type:
+		Grid3DGenDef.Type.NOISE_SURFACE:
+			_gen3d_surface(grid, def, rng)
+		Grid3DGenDef.Type.CAVE_3D:
+			_gen3d_cave(grid, def, rng)
+		Grid3DGenDef.Type.WFC_3D:
+			_gen3d_wfc(grid, def, rng, fixed)
+		Grid3DGenDef.Type.CAVE_NOISE_3D:
+			_gen3d_noise_cave(grid, def, rng)
 	return grid
 
 ## 后台线程生成网格（大图不卡主线程；GeneratedGrid 是纯数据，线程安全）
 static func generate_grid_async(def: GridGenDef, seed: int) -> GeneratedGrid:
 	var grid: GeneratedGrid = await AsyncTool.thread_call(func() -> GeneratedGrid:
 		return generate_grid(def, make_rng(seed))
+	)
+	return grid
+
+## 后台线程生成 3D 栅格（大体积不卡主线程）
+static func generate_grid_3d_async(def: Grid3DGenDef, seed: int) -> GeneratedGrid3D:
+	var grid: GeneratedGrid3D = await AsyncTool.thread_call(func() -> GeneratedGrid3D:
+		return generate_grid_3d(def, make_rng(seed))
 	)
 	return grid
 
@@ -82,7 +196,33 @@ static func generate_biome(def: BiomeMapDef, rng: RandomNumberGenerator) -> Biom
 			var m := def.moisture_layer.sample(moist, x, y) if moist else 0.5
 			var t := def.temperature_layer.sample(temp, x, y) if temp else 0.5
 			result.indices[y * def.width + x] = _biome_pick(def.biomes, h, m, t)
+	if def.smoothing_passes > 0:
+		_smooth_biome(result, def)
 	return result
+
+## 群系过渡平滑：每格取 3x3 邻域中出现最多的群系（含自身），边界趋于柔和
+static func _smooth_biome(bm: BiomeMap, def: BiomeMapDef) -> void:
+	for _p in def.smoothing_passes:
+		var next := bm.indices.duplicate()
+		for y in bm.height:
+			for x in bm.width:
+				var counts := {}
+				for dy in range(-1, 2):
+					for dx in range(-1, 2):
+						var nx := x + dx
+						var ny := y + dy
+						if not bm.in_bounds(nx, ny):
+							continue
+						var idx := bm.indices[ny * bm.width + nx]
+						counts[idx] = counts.get(idx, 0) + 1
+				var best_idx := bm.indices[y * bm.width + x]
+				var best_n := -1
+				for idx in counts:
+					if counts[idx] > best_n:
+						best_n = counts[idx]
+						best_idx = idx
+				next[y * bm.width + x] = best_idx
+		bm.indices = next
 
 ## 按群系颜色渲染成图
 static func biome_to_image(biome_map: BiomeMap) -> Image:
@@ -127,6 +267,400 @@ static func points_to_image(points: PackedVector2Array, image_size: Vector2i, co
 					img.set_pixel(x, y, color)
 	return img
 
+## —— 3D 散布 ——
+
+static func place_3d(def: PlacementDef3D, rng: RandomNumberGenerator) -> PackedVector3Array:
+	match def.mode:
+		PlacementDef3D.Mode.POISSON_3D:
+			return _place_poisson_3d(def, rng)
+		PlacementDef3D.Mode.JITTER_GRID_3D:
+			return _place_jitter_grid_3d(def, rng)
+		PlacementDef3D.Mode.RANDOM_3D:
+			return _place_random_3d(def, rng)
+	return PackedVector3Array()
+
+## 3D 泊松圆盘（Bridson 3D）
+static func _place_poisson_3d(def: PlacementDef3D, rng: RandomNumberGenerator) -> PackedVector3Array:
+	var r := maxf(def.min_distance, 0.001)
+	var cell := r / sqrt(3.0)
+	var gw := ceili(def.region_size.x / cell)
+	var gh := ceili(def.region_size.y / cell)
+	var gd := ceili(def.region_size.z / cell)
+	var occupancy := {}
+	var result := PackedVector3Array()
+	var active := PackedVector3Array()
+	var start := Vector3(
+		rng.randf_range(0.0, def.region_size.x),
+		rng.randf_range(0.0, def.region_size.y),
+		rng.randf_range(0.0, def.region_size.z))
+	result.append(start)
+	active.append(start)
+	occupancy[_cell_key(start, cell)] = start
+	while not active.is_empty() and result.size() < def.count:
+		var idx := rng.randi_range(0, active.size() - 1)
+		var center: Vector3 = active[idx]
+		var placed := false
+		for i in def.max_attempts:
+			var dir := Vector3(rng.randf() * 2.0 - 1.0, rng.randf() * 2.0 - 1.0, rng.randf() * 2.0 - 1.0).normalized()
+			var cand := center + dir * rng.randf_range(r, r * 2.0)
+			if cand.x < 0.0 or cand.y < 0.0 or cand.z < 0.0 or cand.x >= def.region_size.x or cand.y >= def.region_size.y or cand.z >= def.region_size.z:
+				continue
+			if not _poisson_ok_3d(occupancy, gw, gh, gd, _cell_key(cand, cell), cell, r, cand):
+				continue
+			result.append(cand)
+			active.append(cand)
+			occupancy[_cell_key(cand, cell)] = cand
+			placed = true
+			break
+		if not placed:
+			active.remove_at(idx)
+	return result
+
+static func _cell_key(p: Vector3, cell: float) -> Vector3i:
+	return Vector3i(int(p.x / cell), int(p.y / cell), int(p.z / cell))
+
+static func _poisson_ok_3d(occupancy: Dictionary, gw: int, gh: int, gd: int, gi: Vector3i, cell: float, r: float, cand: Vector3) -> bool:
+	for dz in range(-2, 3):
+		for dy in range(-2, 3):
+			for dx in range(-2, 3):
+				var gx := gi.x + dx
+				var gy := gi.y + dy
+				var gz := gi.z + dz
+				if gx < 0 or gy < 0 or gz < 0 or gx >= gw or gy >= gh or gz >= gd:
+					continue
+				var other: Variant = occupancy.get(Vector3i(gx, gy, gz))
+				if other != null and (other as Vector3).distance_to(cand) < r:
+					return false
+	return true
+
+## 3D 抖动网格
+static func _place_jitter_grid_3d(def: PlacementDef3D, rng: RandomNumberGenerator) -> PackedVector3Array:
+	var n := ceili(pow(float(def.count), 1.0 / 3.0))
+	var out := PackedVector3Array()
+	for i in n:
+		for j in n:
+			for k in n:
+				if out.size() >= def.count:
+					break
+				var base := Vector3(
+					def.region_size.x * (i + 0.5) / n,
+					def.region_size.y * (j + 0.5) / n,
+					def.region_size.z * (k + 0.5) / n)
+				var jx := (rng.randf() - 0.5) * (def.region_size.x / n) * def.jitter
+				var jy := (rng.randf() - 0.5) * (def.region_size.y / n) * def.jitter
+				var jz := (rng.randf() - 0.5) * (def.region_size.z / n) * def.jitter
+				out.append(base + Vector3(jx, jy, jz))
+	return out
+
+## 3D 均匀随机
+static func _place_random_3d(def: PlacementDef3D, rng: RandomNumberGenerator) -> PackedVector3Array:
+	var out := PackedVector3Array()
+	for i in def.count:
+		out.append(Vector3(
+			rng.randf() * def.region_size.x,
+			rng.randf() * def.region_size.y,
+			rng.randf() * def.region_size.z))
+	return out
+
+## —— 城市 ——
+
+## 城市街区生成：道路网格分割街区，街区填充建筑/公园
+static func generate_city(def: CityDef, rng: RandomNumberGenerator) -> GeneratedGrid:
+	var grid := GeneratedGrid.create(def.width, def.height, def.empty_value)
+	for x in def.width:
+		if x % def.block_size < def.road_width:
+			for y in def.height:
+				grid.set_cell(x, y, def.road_value)
+	for y in def.height:
+		if y % def.block_size < def.road_width:
+			for x in def.width:
+				grid.set_cell(x, y, def.road_value)
+	var blocks := Vector2i(ceili(def.width / float(def.block_size)), ceili(def.height / float(def.block_size)))
+	var inner := def.block_size - def.road_width
+	if inner <= def.building_gap * 2:
+		return grid
+	for by in blocks.y:
+		for bx in blocks.x:
+			var ox := bx * def.block_size + def.road_width
+			var oy := by * def.block_size + def.road_width
+			var is_park := rng.randf() < def.park_ratio
+			var fill := def.park_value if is_park else def.building_value
+			for y in range(oy + def.building_gap, mini(oy + inner - def.building_gap, def.height)):
+				for x in range(ox + def.building_gap, mini(ox + inner - def.building_gap, def.width)):
+					grid.set_cell(x, y, fill)
+	return grid
+
+## —— 路径（河流 / 道路） ——
+
+## 把路径点以指定宽度印到栅格上（用于把河/路叠加进地形）
+static func stamp_path(grid: GeneratedGrid, path: PackedVector2Array, value: int, width := 1) -> void:
+	var hw := (width - 1) / 2
+	for p in path:
+		var px := int(p.x)
+		var py := int(p.y)
+		for dy in range(-hw, hw + 1):
+			for dx in range(-hw, hw + 1):
+				grid.set_cell(px + dx, py + dy, value)
+
+## 河流：从高地沿梯度下降流向低处（输出路径点合并集）
+static func generate_river(def: RiverDef, rng: RandomNumberGenerator) -> PackedVector2Array:
+	var all := PackedVector2Array()
+	if def.elevation_layer == null:
+		return all
+	var noise: FastNoiseLite = def.elevation_layer.build_noise(rng.seed)
+	for i in def.river_count:
+		var start := _river_start(def, noise, rng)
+		var path := _walk_downhill(def, noise, start, rng)
+		all.append_array(path)
+	return all
+
+## 道路：连接枢纽点（自生成或传入）成网，输出走廊路径点合并集
+static func generate_road(def: RoadDef, rng: RandomNumberGenerator, hubs := PackedVector2Array()) -> PackedVector2Array:
+	if hubs.is_empty():
+		for i in def.hub_count:
+			hubs.append(Vector2(rng.randf() * def.region_size.x, rng.randf() * def.region_size.y))
+	var all := PackedVector2Array()
+	if def.mst_only:
+		var edges := _mst_edges(hubs, rng)
+		for e in edges:
+			all.append_array(_carve_l_path(e[0], e[1], rng))
+	else:
+		for i in range(1, hubs.size()):
+			all.append_array(_carve_l_path(hubs[i - 1], hubs[i], rng))
+	return all
+
+static func _river_start(def: RiverDef, noise: FastNoiseLite, rng: RandomNumberGenerator) -> Vector2:
+	var best := Vector2.ZERO
+	var best_h := -1.0
+	for attempt in 20:
+		var x := rng.randi_range(1, def.map_width - 2)
+		var y := rng.randi_range(1, def.map_height - 2)
+		var h := (noise.get_noise_2d(x, y) + 1.0) * 0.5
+		if h > best_h:
+			best_h = h
+			best = Vector2(x, y)
+	return best
+
+static func _walk_downhill(def: RiverDef, noise: FastNoiseLite, start: Vector2, rng: RandomNumberGenerator) -> PackedVector2Array:
+	var pts := PackedVector2Array()
+	var x := int(start.x)
+	var y := int(start.y)
+	for step in def.max_steps:
+		pts.append(Vector2(x, y))
+		if x < 0 or y < 0 or x >= def.map_width or y >= def.map_height:
+			break
+		var h := (noise.get_noise_2d(x, y) + 1.0) * 0.5
+		if h <= def.sea_level:
+			break
+		var best := Vector2(x, y)
+		var best_h := h
+		for d in _DIR8:
+			var nx := x + d.x
+			var ny := y + d.y
+			if nx < 0 or ny < 0 or nx >= def.map_width or ny >= def.map_height:
+				continue
+			var nh := (noise.get_noise_2d(nx, ny) + 1.0) * 0.5
+			if nh < best_h:
+				best_h = nh
+				best = Vector2(nx, ny)
+		if rng.randf() < def.wander:
+			var d: Vector2i = _DIR8[rng.randi_range(0, _DIR8.size() - 1)]
+			best = Vector2(clampi(x + d.x, 0, def.map_width - 1), clampi(y + d.y, 0, def.map_height - 1))
+		if best == Vector2(x, y):
+			break
+		x = int(best.x)
+		y = int(best.y)
+	return pts
+
+static func _carve_l_path(a: Vector2, b: Vector2, rng: RandomNumberGenerator) -> PackedVector2Array:
+	var pts := PackedVector2Array()
+	var x := int(a.x)
+	var y := int(a.y)
+	pts.append(a)
+	if rng.randf() < 0.5:
+		while x != int(b.x):
+			x += signi(int(b.x) - x)
+			pts.append(Vector2(x, y))
+		while y != int(b.y):
+			y += signi(int(b.y) - y)
+			pts.append(Vector2(x, y))
+	else:
+		while y != int(b.y):
+			y += signi(int(b.y) - y)
+			pts.append(Vector2(x, y))
+		while x != int(b.x):
+			x += signi(int(b.x) - x)
+			pts.append(Vector2(x, y))
+	return pts
+
+static func _mst_edges(hubs: PackedVector2Array, rng: RandomNumberGenerator) -> Array:
+	var n := hubs.size()
+	var in_tree := []
+	for i in n:
+		in_tree.append(false)
+	if n == 0:
+		return []
+	in_tree[0] = true
+	var edges: Array = []
+	for k in range(n - 1):
+		var best_i := -1
+		var best_j := -1
+		var best_d := INF
+		for i in n:
+			if not in_tree[i]:
+				continue
+			for j in n:
+				if in_tree[j]:
+					continue
+				var d := hubs[i].distance_squared_to(hubs[j])
+				if d < best_d:
+					best_d = d
+					best_i = i
+					best_j = j
+		if best_j == -1:
+			break
+		in_tree[best_j] = true
+		edges.append([hubs[best_i], hubs[best_j]])
+	return edges
+
+## —— 模板拼接 ——
+
+## 随机放置多个模板（不重叠）并用走廊连接，返回拼合栅格
+static func generate_template_stitch(def: TemplateStitchDef, rng: RandomNumberGenerator) -> GeneratedGrid:
+	var grid := GeneratedGrid.create(def.width, def.height, def.solid_value)
+	if def.templates.is_empty():
+		return grid
+	var placed: Array = []
+	for i in def.count:
+		var tmpl := _pick_template(def.templates, rng)
+		if tmpl == null:
+			continue
+		var rect := _try_place_template(def, tmpl, placed, rng)
+		if rect.size == Vector2i.ZERO:
+			continue
+		tmpl.stamp(grid, rect.position.x, rect.position.y)
+		placed.append(rect)
+	if def.connect and placed.size() > 1:
+		for i in range(1, placed.size()):
+			_carve_stitch(grid, (placed[i - 1] as Rect2i).get_center(), (placed[i] as Rect2i).get_center(), def, rng)
+	return grid
+
+## 模板走廊（L 型，按 corridor_width 挖空）
+static func _carve_stitch(grid: GeneratedGrid, a: Vector2i, b: Vector2i, def: TemplateStitchDef, rng: RandomNumberGenerator) -> void:
+	var path := _carve_l_path(Vector2(a), Vector2(b), rng)
+	var hw := (def.corridor_width - 1) / 2
+	var range_w := def.corridor_width - hw
+	for p in path:
+		for dy in range(-hw, range_w):
+			for dx in range(-hw, range_w):
+				grid.set_cell(int(p.x) + dx, int(p.y) + dy, def.empty_value)
+
+## 按权重抽模板
+static func _pick_template(templates: Array[TemplateDef], rng: RandomNumberGenerator) -> TemplateDef:
+	var total := 0.0
+	for t in templates:
+		total += maxf(t.weight, 0.0)
+	if total <= 0.0:
+		return templates[rng.randi_range(0, templates.size() - 1)] if not templates.is_empty() else null
+	var r := rng.randf() * total
+	for t in templates:
+		r -= maxf(t.weight, 0.0)
+		if r <= 0.0:
+			return t
+	return templates[templates.size() - 1]
+
+## 尝试随机放置模板（与已放置模板保持 min_gap 间距），失败返回空 Rect2i
+static func _try_place_template(def: TemplateStitchDef, tmpl: TemplateDef, placed: Array, rng: RandomNumberGenerator) -> Rect2i:
+	var size := tmpl.get_size()
+	if size.x >= def.width - 2 or size.y >= def.height - 2:
+		return Rect2i()
+	for attempt in 40:
+		var ox := rng.randi_range(1, maxi(1, def.width - size.x - 1))
+		var oy := rng.randi_range(1, maxi(1, def.height - size.y - 1))
+		var rect := Rect2i(ox, oy, size.x, size.y)
+		var ok := true
+		for other in placed:
+			var gap := def.min_gap
+			var expanded := Rect2i((other as Rect2i).position - Vector2i(gap, gap), (other as Rect2i).size + Vector2i(gap * 2, gap * 2))
+			if expanded.intersects(rect):
+				ok = false
+				break
+		if ok:
+			return rect
+	return Rect2i()
+
+## —— 内容进化（遗传算法） ——
+
+## 进化内容：个体 = base + gene_count 个基因，适应度 = 基因数值(weight)之和（越高越好）
+## 返回 top count 个 [{name, fitness}]，每代 选择→交叉→变异
+static func evolve_content(def: ContentEvolveDef, rng: RandomNumberGenerator) -> Array:
+	var bases := def.bases
+	var genes := def.genes
+	if genes.is_empty():
+		return []
+	if bases.is_empty():
+		bases = PackedStringArray(["装备"])
+	var population: Array = []
+	for i in def.population:
+		population.append(_evolve_random_individual(def, bases.size(), genes.size(), rng))
+	for gen in def.generations:
+		var scored: Array = []
+		for ind in population:
+			scored.append({"ind": ind, "fitness": _evolve_fitness(ind, genes)})
+		scored.sort_custom(func(a, b): return a.fitness > b.fitness)
+		var half := maxi(2, scored.size() / 2)
+		var next_pop: Array = []
+		for i in half:
+			next_pop.append(scored[i].ind)
+		while next_pop.size() < def.population:
+			var a: Dictionary = scored[rng.randi_range(0, half - 1)].ind
+			var b: Dictionary = scored[rng.randi_range(0, half - 1)].ind
+			var child := _evolve_crossover(a, b, rng)
+			_evolve_mutate(child, def, bases.size(), genes.size(), rng)
+			next_pop.append(child)
+		population = next_pop
+	var final_scored: Array = []
+	for ind in population:
+		final_scored.append({"ind": ind, "fitness": _evolve_fitness(ind, genes)})
+	final_scored.sort_custom(func(a, b): return a.fitness > b.fitness)
+	var out: Array = []
+	for i in mini(def.count, final_scored.size()):
+		var ind: Dictionary = final_scored[i].ind
+		var name := bases[ind.base]
+		for gi in ind.genes:
+			name += "·" + genes[gi].name
+		out.append({"name": name, "fitness": final_scored[i].fitness})
+	return out
+
+static func _evolve_random_individual(def: ContentEvolveDef, n_base: int, n_gene: int, rng: RandomNumberGenerator) -> Dictionary:
+	var genes := PackedInt32Array()
+	for i in def.gene_count:
+		genes.append(rng.randi_range(0, n_gene - 1))
+	return {"base": rng.randi_range(0, n_base - 1), "genes": genes}
+
+static func _evolve_fitness(ind: Dictionary, genes: Array) -> float:
+	var total := 0.0
+	for gi in ind.genes:
+		total += genes[gi].weight
+	return total
+
+static func _evolve_crossover(a: Dictionary, b: Dictionary, rng: RandomNumberGenerator) -> Dictionary:
+	var child_genes := PackedInt32Array()
+	var ga: PackedInt32Array = a.genes
+	var gb: PackedInt32Array = b.genes
+	for i in ga.size():
+		child_genes.append(ga[i] if rng.randf() < 0.5 else gb[i])
+	return {"base": a.base if rng.randf() < 0.5 else b.base, "genes": child_genes}
+
+static func _evolve_mutate(ind: Dictionary, def: ContentEvolveDef, n_base: int, n_gene: int, rng: RandomNumberGenerator) -> void:
+	if rng.randf() < def.mutation_rate:
+		ind.base = rng.randi_range(0, n_base - 1)
+	var genes_arr: PackedInt32Array = ind.genes
+	for i in genes_arr.size():
+		if rng.randf() < def.mutation_rate:
+			genes_arr[i] = rng.randi_range(0, n_gene - 1)
+	ind.genes = genes_arr
+
 ## —— 内容 ——
 
 static func generate_content(def: ContentGenDef, rng: RandomNumberGenerator) -> Array:
@@ -155,6 +689,20 @@ static func generate_content(def: ContentGenDef, rng: RandomNumberGenerator) -> 
 			return out
 	return []
 
+## 加权抽取一个条目（按 weight 概率）
+static func pick_weighted(rng: RandomNumberGenerator, entries: Array[ContentEntryDef]) -> ContentEntryDef:
+	var total := 0.0
+	for e in entries:
+		total += maxf(e.weight, 0.0)
+	if total <= 0.0:
+		return entries[0] if not entries.is_empty() else null
+	var r := rng.randf() * total
+	for e in entries:
+		r -= maxf(e.weight, 0.0)
+		if r <= 0.0:
+			return e
+	return entries[entries.size() - 1]
+
 ## 词缀组合（基础词 + 随机前缀/后缀；未配置时用默认表）
 static func generate_affix(def: ContentGenDef, rng: RandomNumberGenerator) -> String:
 	var bases := def.affix_bases
@@ -172,20 +720,6 @@ static func generate_affix(def: ContentGenDef, rng: RandomNumberGenerator) -> St
 	if not suffixes.is_empty() and rng.randf() < def.affix_suffix_chance:
 		out += suffixes[rng.randi_range(0, suffixes.size() - 1)]
 	return out
-
-## 加权抽取一个条目（按 weight 概率）
-static func pick_weighted(rng: RandomNumberGenerator, entries: Array[ContentEntryDef]) -> ContentEntryDef:
-	var total := 0.0
-	for e in entries:
-		total += maxf(e.weight, 0.0)
-	if total <= 0.0:
-		return entries[0] if not entries.is_empty() else null
-	var r := rng.randf() * total
-	for e in entries:
-		r -= maxf(e.weight, 0.0)
-		if r <= 0.0:
-			return e
-	return entries[entries.size() - 1]
 
 ## 名字合成（前缀 + 后缀；未配置时用默认音节表）
 static func generate_name(def: ContentGenDef, rng: RandomNumberGenerator) -> String:
@@ -208,14 +742,13 @@ static func generate_markov(def: ContentGenDef, rng: RandomNumberGenerator) -> S
 		return ""
 	if def.markov_order >= words.size():
 		return " ".join(words)
-	var table := {}  # PackedStringArray(前缀) → Array(后继词)
+	var table := {}
 	for i in range(words.size() - def.markov_order):
 		var key := PackedStringArray()
 		for j in def.markov_order:
 			key.append(words[i + j])
 		table.get_or_add(key, []).append(words[i + def.markov_order])
 	var keys: Array = table.keys()
-	# 从训练好的前缀中随机起始，保证有后继
 	var key: PackedStringArray = keys[rng.randi_range(0, keys.size() - 1)]
 	var out: Array[String] = []
 	for i in def.markov_words:
@@ -244,7 +777,7 @@ static func generate(def: PCGDef, seed := 0) -> Dictionary:
 		slot += 1
 	return ctx.output
 
-## —— 网格算法实现 ——
+## —— 2D 网格算法实现 ——
 
 static func _gen_noise_terrain(grid: GeneratedGrid, def: GridGenDef, rng: RandomNumberGenerator) -> void:
 	var noise: FastNoiseLite = def.noise_layer.build_noise(rng.seed) if def.noise_layer else null
@@ -273,7 +806,7 @@ static func _gen_cellular(grid: GeneratedGrid, def: GridGenDef, rng: RandomNumbe
 						var ov := grid.get_cell(x + dx, y + dy, def.solid_value if def.border_solid else def.empty_value)
 						if ov == def.solid_value:
 							walls += 1
-				new_cells[y * grid.width + x] = def.solid_value if walls >= 5 else def.empty_value
+				new_cells[y * grid.width + x] = def.solid_value if walls >= 4 else def.empty_value
 		grid.cells = new_cells
 
 static func _gen_maze(grid: GeneratedGrid, def: GridGenDef, rng: RandomNumberGenerator) -> void:
@@ -285,7 +818,6 @@ static func _gen_maze(grid: GeneratedGrid, def: GridGenDef, rng: RandomNumberGen
 	var start := Vector2i(1, 1)
 	grid.set_cell(start.x, start.y, def.empty_value)
 	in_tree[_key(start)] = true
-	# 起点视为已生成，把其候选节点加入 frontier
 	for d in dirs:
 		var nb := start + d
 		if _inside(grid, nb) and not added.has(_key(nb)):
@@ -314,7 +846,6 @@ static func _gen_maze(grid: GeneratedGrid, def: GridGenDef, rng: RandomNumberGen
 			if _inside(grid, nb2) and not added.has(_key(nb2)):
 				active.append(nb2)
 				added[_key(nb2)] = true
-	# 环路度：随机打通内部墙（两侧都是通道的墙）
 	if def.maze_loopiness > 0.0:
 		var extra := int(grid.width * grid.height * def.maze_loopiness * 0.02)
 		for i in extra:
@@ -340,6 +871,44 @@ static func _gen_random_walk(grid: GeneratedGrid, def: GridGenDef, rng: RandomNu
 		x = clampi(x + d.x, 1, grid.width - 2)
 		y = clampi(y + d.y, 1, grid.height - 2)
 		grid.set_cell(x, y, def.empty_value)
+
+## Voronoi 地块地形：随机种子点划分区域，每区域采样一次噪声 → 整块实体/空地
+static func _gen_voronoi(grid: GeneratedGrid, def: GridGenDef, rng: RandomNumberGenerator) -> void:
+	var seeds := PackedVector2Array()
+	for i in def.voronoi_cells:
+		seeds.append(Vector2(rng.randf() * def.width, rng.randf() * def.height))
+	var noise: FastNoiseLite = def.noise_layer.build_noise(rng.seed) if def.noise_layer else null
+	var cell_solid := {}
+	for i in seeds.size():
+		var h := def.noise_layer.sample(noise, seeds[i].x, seeds[i].y) if noise else rng.randf()
+		cell_solid[i] = h >= def.threshold
+	var owner := PackedInt32Array()
+	owner.resize(grid.width * grid.height)
+	for y in grid.height:
+		for x in grid.width:
+			var best := 0
+			var best_d := INF
+			for i in seeds.size():
+				var d := seeds[i].distance_squared_to(Vector2(x, y))
+				if d < best_d:
+					best_d = d
+					best = i
+			owner[y * grid.width + x] = best
+	for i in grid.cells.size():
+		grid.cells[i] = def.solid_value if cell_solid[owner[i]] else def.empty_value
+	if def.voronoi_border:
+		for i in grid.cells.size():
+			var x := i % grid.width
+			var y := i / grid.width
+			var si: int = owner[i]
+			for d in _DIR4:
+				var nx := x + d.x
+				var ny := y + d.y
+				if nx < 0 or nx >= grid.width or ny < 0 or ny >= grid.height:
+					continue
+				if owner[ny * grid.width + nx] != si:
+					grid.cells[i] = def.solid_value
+					break
 
 class _BSPLeaf:
 	var rect := Rect2i()
@@ -402,7 +971,6 @@ static func _make_rooms(leaf: _BSPLeaf, grid: GeneratedGrid, def: GridGenDef, rn
 	else:
 		_make_rooms(leaf.left, grid, def, rng)
 		_make_rooms(leaf.right, grid, def, rng)
-		# 内部节点用左右子树中的任意房间作为代表连接，保证全部房间连通
 		var ra := _find_room(leaf.left)
 		var rb := _find_room(leaf.right)
 		if ra.size != Vector2i.ZERO and rb.size != Vector2i.ZERO:
@@ -463,7 +1031,7 @@ static func _place_poisson(def: PlacementDef, rng: RandomNumberGenerator) -> Pac
 	var cell := r / sqrt(2.0)
 	var gw := ceili(def.region_size.x / cell)
 	var gh := ceili(def.region_size.y / cell)
-	var occupancy := {}  # Vector2i → Vector2
+	var occupancy := {}
 	var result := PackedVector2Array()
 	var active := PackedVector2Array()
 	var start := Vector2(rng.randf_range(0.0, def.region_size.x), rng.randf_range(0.0, def.region_size.y))
@@ -526,6 +1094,228 @@ static func _place_random(def: PlacementDef, rng: RandomNumberGenerator) -> Pack
 		out.append(Vector2(rng.randf() * def.region_size.x, rng.randf() * def.region_size.y))
 	return out
 
+## —— 3D 网格算法实现 ——
+
+## 3D 地表：每 (x,z) 列按 2D 噪声高度填充实体（offset 使分块世界全局连续）
+static func _gen3d_surface(grid: GeneratedGrid3D, def: Grid3DGenDef, rng: RandomNumberGenerator) -> void:
+	var nseed := def.noise_seed if def.noise_seed != 0 else rng.seed
+	var noise: FastNoiseLite = def.noise_layer.build_noise(nseed) if def.noise_layer else null
+	var base_h := def.base_height * def.height
+	for x in grid.width:
+		for z in grid.depth:
+			var h := base_h
+			if noise:
+				var n := def.noise_layer.sample(noise, x + def.offset.x, z + def.offset.z)
+				h += (n - 0.5) * 2.0 * def.height_amp
+			h = clampi(roundi(h), 1, grid.height - 1)
+			for y in h:
+				grid.set_cell(x, y, z, def.solid_value)
+
+## 3D 细胞洞穴：26 邻域平滑（经典 Rogue 扩展，阈值 ~13）
+static func _gen3d_cave(grid: GeneratedGrid3D, def: Grid3DGenDef, rng: RandomNumberGenerator) -> void:
+	for i in grid.cells.size():
+		grid.cells[i] = def.solid_value if rng.randf() < def.cave_ratio else def.empty_value
+	for _p in def.smooth_passes:
+		var next := grid.cells.duplicate()
+		for z in grid.depth:
+			for y in grid.height:
+				for x in grid.width:
+					var walls := 0
+					for dz in range(-1, 2):
+						for dy in range(-1, 2):
+							for dx in range(-1, 2):
+								if dx == 0 and dy == 0 and dz == 0:
+									continue
+								if grid.get_cell(x + dx, y + dy, z + dz, def.solid_value if def.border_solid else def.empty_value) == def.solid_value:
+									walls += 1
+					next[grid._index(x, y, z)] = def.solid_value if walls >= 13 else def.empty_value
+		grid.cells = next
+
+## 3D 噪声洞穴：3D 噪声阈值挖空（offset 世界坐标 → 分块世界跨块连续）
+static func _gen3d_noise_cave(grid: GeneratedGrid3D, def: Grid3DGenDef, rng: RandomNumberGenerator) -> void:
+	var nseed := def.noise_seed if def.noise_seed != 0 else rng.seed
+	var noise: FastNoiseLite = def.noise_layer.build_noise(nseed) if def.noise_layer else null
+	for z in grid.depth:
+		for y in grid.height:
+			for x in grid.width:
+				var v := def.noise_layer.sample_3d(noise, x + def.offset.x, y, z + def.offset.z) if noise else 0.5
+				grid.cells[grid._index(x, y, z)] = def.empty_value if v > def.cave_threshold else def.solid_value
+
+## 3D WFC：六面 socket 瓦片约束坍缩（观测→传播→回溯→重试）
+## fixed 支持 Vector3i(单格) / int(线性索引) / String("x,y,z") / AABB(区域) 键，value 为瓦片索引
+static func _gen3d_wfc(grid: GeneratedGrid3D, def: Grid3DGenDef, rng: RandomNumberGenerator, fixed: Dictionary = {}) -> void:
+	var tiles := def.tile_set3d.tiles if def.tile_set3d else []
+	var n := tiles.size()
+	if n <= 0 or n >= 30:
+		grid.fill(def.solid_value)
+		return
+	var cell_count := grid.width * grid.height * grid.depth
+	if cell_count > 20000:
+		LogTool.warn("PCG", "3D WFC 体积过大(%d 格)，已降级为加权随机填充" % cell_count)
+		var all_mask := (1 << n) - 1
+		for i in cell_count:
+			grid.cells[i] = _wfc_weighted_choice(tiles, _wfc_bits(all_mask), rng)
+		_apply_wfc_fixed_3d(grid, def, fixed)
+		return
+	for retry in def.wfc_retries + 1:
+		if _wfc3d_generate_pass(grid, def, rng, fixed, cell_count, n):
+			return
+		LogTool.warn("PCG", "3D WFC 生成冲突，重试 %d/%d" % [retry + 1, def.wfc_retries])
+	LogTool.warn("PCG", "3D WFC 重试耗尽，降级为加权随机填充")
+	var all_mask := (1 << n) - 1
+	for i in cell_count:
+		grid.cells[i] = _wfc_weighted_choice(tiles, _wfc_bits(all_mask), rng)
+	_apply_wfc_fixed_3d(grid, def, fixed)
+
+## 降级随机填充后重新应用固定格（保证约束不丢失）
+static func _apply_wfc_fixed_3d(grid: GeneratedGrid3D, def: Grid3DGenDef, fixed: Dictionary) -> void:
+	var tiles := def.tile_set3d.tiles if def.tile_set3d else []
+	var n := tiles.size()
+	var merged := {}
+	for key in def.wfc_fixed_cells:
+		merged[key] = def.wfc_fixed_cells[key]
+	for key in fixed:
+		merged[key] = fixed[key]
+	for key in merged:
+		var tile_idx := int(merged[key])
+		if tile_idx < 0 or tile_idx >= n:
+			continue
+		if key is AABB:
+			var bb := key as AABB
+			for k in range(int(bb.position.z), int(bb.end.z)):
+				for j in range(int(bb.position.y), int(bb.end.y)):
+					for i in range(int(bb.position.x), int(bb.end.x)):
+						grid.set_cell(i, j, k, tile_idx)
+			continue
+		var idx := _wfc3d_fixed_index(grid, key)
+		if idx >= 0:
+			grid.cells[idx] = tile_idx
+
+## 单遍 3D WFC：成功写入 grid 返回 true
+static func _wfc3d_generate_pass(grid: GeneratedGrid3D, def: Grid3DGenDef, rng: RandomNumberGenerator, fixed: Dictionary, cell_count: int, n: int) -> bool:
+	var tiles := def.tile_set3d.tiles
+	var all_mask := (1 << n) - 1
+	var wave := PackedInt32Array()
+	wave.resize(cell_count)
+	wave.fill(all_mask)
+	var queue: Array[int] = []
+	var fixed_indices := {}
+	var merged := {}
+	for key in def.wfc_fixed_cells:
+		merged[key] = def.wfc_fixed_cells[key]
+	for key in fixed:
+		merged[key] = fixed[key]
+	for key in merged:
+		var tile_idx := int(merged[key])
+		if tile_idx < 0 or tile_idx >= n:
+			continue
+		if key is AABB:
+			var bb := key as AABB
+			for k in range(int(bb.position.z), int(bb.end.z)):
+				for j in range(int(bb.position.y), int(bb.end.y)):
+					for i in range(int(bb.position.x), int(bb.end.x)):
+						if grid.in_bounds(i, j, k):
+							var idx := grid._index(i, j, k)
+							wave[idx] = 1 << tile_idx
+							queue.append(idx)
+							fixed_indices[idx] = true
+			continue
+		var idx := _wfc3d_fixed_index(grid, key)
+		if idx >= 0:
+			wave[idx] = 1 << tile_idx
+			queue.append(idx)
+			fixed_indices[idx] = true
+	var propagations := 0
+	propagations = _wfc3d_propagate(wave, grid, def, queue, propagations, fixed_indices)
+	var history: Array = []
+	var backtracks := 0
+	while true:
+		var cell := _wfc_pick_lowest_entropy(wave)
+		if cell == -1:
+			break
+		var opts := _wfc_bits(wave[cell])
+		if opts.is_empty():
+			if def.wfc_max_backtracks > 0 and backtracks < def.wfc_max_backtracks and not history.is_empty():
+				backtracks += 1
+				var h: Dictionary = history.pop_back()
+				wave = h.wave_copy.duplicate()
+				wave[h.cell] &= ~h.bad
+				queue.append(h.cell)
+				propagations = _wfc3d_propagate(wave, grid, def, queue, propagations, fixed_indices)
+				continue
+			return false
+		var chosen := _wfc_weighted_choice(tiles, opts, rng)
+		if def.wfc_max_backtracks > 0:
+			history.append({"cell": cell, "wave_copy": wave.duplicate(), "bad": 1 << chosen})
+		wave[cell] = 1 << chosen
+		queue.append(cell)
+		propagations = _wfc3d_propagate(wave, grid, def, queue, propagations, fixed_indices)
+	for i in cell_count:
+		if wave[i] == 0:
+			return false
+	for i in cell_count:
+		var m := wave[i]
+		if m != 0 and (m & (m - 1)) == 0:
+			grid.cells[i] = _wfc_bit_index(m)
+		else:
+			grid.cells[i] = def.solid_value
+	return true
+
+## 解析 3D 固定格 key 为线性索引（支持 Vector3i / int / "x,y,z"）
+static func _wfc3d_fixed_index(grid: GeneratedGrid3D, key) -> int:
+	if key is Vector3i:
+		return grid._index(key.x, key.y, key.z) if grid.in_bounds(key.x, key.y, key.z) else -1
+	if key is int:
+		return key if key >= 0 and key < grid.cells.size() else -1
+	if key is String:
+		var parts := String(key).split(",")
+		if parts.size() == 3:
+			var x := int(parts[0])
+			var y := int(parts[1])
+			var z := int(parts[2])
+			if grid.in_bounds(x, y, z):
+				return grid._index(x, y, z)
+	return -1
+
+## 3D 邻接约束传播（6 方向）
+static func _wfc3d_propagate(wave: PackedInt32Array, grid: GeneratedGrid3D, def: Grid3DGenDef, queue: Array[int], propagations: int, fixed_indices: Dictionary = {}) -> int:
+	var tiles := def.tile_set3d.tiles
+	while not queue.is_empty():
+		var cur: int = queue.pop_back()
+		propagations += 1
+		var x := cur % grid.width
+		var y := (cur / grid.width) % grid.height
+		var z := cur / (grid.width * grid.height)
+		for dir_idx in 6:
+			var d: Vector3i = _DIR6_3D[dir_idx]
+			var nx := x + d.x
+			var ny := y + d.y
+			var nz := z + d.z
+			if not grid.in_bounds(nx, ny, nz):
+				continue
+			var ni := grid._index(nx, ny, nz)
+			if fixed_indices.has(ni):
+				continue
+			if wave[ni] == 0:
+				continue
+			var allowed := 0
+			for a in _wfc_bits(wave[cur]):
+				for b in _wfc_bits(wave[ni]):
+					if _wfc3d_compatible(tiles, a, b, dir_idx):
+						allowed |= 1 << b
+			if allowed == 0:
+				wave[ni] = 0
+				queue.append(ni)
+				continue
+			if (wave[ni] & allowed) != wave[ni]:
+				wave[ni] &= allowed
+				queue.append(ni)
+	return propagations
+
+static func _wfc3d_compatible(tiles: Array, a: int, b: int, dir_idx: int) -> bool:
+	var opp := _OPP3D[dir_idx]
+	return tiles[a].socket(dir_idx) == tiles[b].socket(opp)
+
 ## —— WFC 算法实现（简单瓦片模型 + 固定格 / 回溯 / 重试） ——
 
 ## 每格候选集用 bitmask（瓦片索引位），波函数坍缩 = 选格 → 加权随机坍缩 → 邻接约束传播。
@@ -538,11 +1328,11 @@ static func _gen_wfc(grid: GeneratedGrid, def: GridGenDef, rng: RandomNumberGene
 		grid.fill(def.solid_value)
 		return
 	var cell_count := grid.width * grid.height
-	# GDScript 版 WFC 选格是 O(n²)，大网格降级为加权随机填充并提示
 	if cell_count > 20000:
 		LogTool.warn("PCG", "WFC 网格过大(%d 格)，已降级为加权随机填充" % cell_count)
 		for i in cell_count:
 			grid.cells[i] = _wfc_weighted_choice(tiles, _wfc_bits((1 << n) - 1), rng)
+		_apply_wfc_fixed_2d(grid, def, fixed)
 		return
 	for retry in def.wfc_retries + 1:
 		if _wfc_generate_pass(grid, def, rng, fixed, cell_count, n):
@@ -551,6 +1341,30 @@ static func _gen_wfc(grid: GeneratedGrid, def: GridGenDef, rng: RandomNumberGene
 	LogTool.warn("PCG", "WFC 重试耗尽，降级为加权随机填充")
 	for i in cell_count:
 		grid.cells[i] = _wfc_weighted_choice(tiles, _wfc_bits((1 << n) - 1), rng)
+	_apply_wfc_fixed_2d(grid, def, fixed)
+
+## 降级随机填充后重新应用固定格（保证约束不丢失）
+static func _apply_wfc_fixed_2d(grid: GeneratedGrid, def: GridGenDef, fixed: Dictionary) -> void:
+	var tiles := def.tile_set.tiles if def.tile_set else []
+	var n := tiles.size()
+	var merged := {}
+	for key in def.wfc_fixed_cells:
+		merged[key] = def.wfc_fixed_cells[key]
+	for key in fixed:
+		merged[key] = fixed[key]
+	for key in merged:
+		var tile_idx := int(merged[key])
+		if tile_idx < 0 or tile_idx >= n:
+			continue
+		if key is Rect2i:
+			var r := key as Rect2i
+			for y in range(maxi(0, r.position.y), mini(grid.height, r.end.y)):
+				for x in range(maxi(0, r.position.x), mini(grid.width, r.end.x)):
+					grid.set_cell(x, y, tile_idx)
+			continue
+		var idx := _wfc_fixed_index(grid, key)
+		if idx >= 0:
+			grid.cells[idx] = tile_idx
 
 ## 单遍 WFC：返回是否无矛盾（成功则写入 grid）
 static func _wfc_generate_pass(grid: GeneratedGrid, def: GridGenDef, rng: RandomNumberGenerator, fixed: Dictionary, cell_count: int, n: int) -> bool:
@@ -560,50 +1374,58 @@ static func _wfc_generate_pass(grid: GeneratedGrid, def: GridGenDef, rng: Random
 	wave.resize(cell_count)
 	wave.fill(all_mask)
 	var queue: Array[int] = []
-	# 应用固定格（运行时 fixed 优先于资源内 wfc_fixed_cells）
+	var fixed_indices := {}
 	var merged := {}
 	for key in def.wfc_fixed_cells:
 		merged[key] = def.wfc_fixed_cells[key]
 	for key in fixed:
 		merged[key] = fixed[key]
 	for key in merged:
-		var idx := _wfc_fixed_index(grid, key)
 		var tile_idx := int(merged[key])
-		if idx >= 0 and tile_idx >= 0 and tile_idx < n:
+		if tile_idx < 0 or tile_idx >= n:
+			continue
+		if key is Rect2i:
+			var r := key as Rect2i
+			for ry in range(maxi(0, r.position.y), mini(grid.height, r.end.y)):
+				for rx in range(maxi(0, r.position.x), mini(grid.width, r.end.x)):
+					var ri := ry * grid.width + rx
+					wave[ri] = 1 << tile_idx
+					queue.append(ri)
+					fixed_indices[ri] = true
+			continue
+		var idx := _wfc_fixed_index(grid, key)
+		if idx >= 0:
 			wave[idx] = 1 << tile_idx
 			queue.append(idx)
+			fixed_indices[idx] = true
 	var propagations := 0
-	propagations = _wfc_propagate(wave, grid, def, queue, propagations)
-	# 观测-传播循环，冲突时回溯
-	var history: Array = []  # 每项 {cell, wave_copy, bad}
+	propagations = _wfc_propagate(wave, grid, def, queue, propagations, fixed_indices)
+	var history: Array = []
 	var backtracks := 0
 	while true:
 		var cell := _wfc_pick_lowest_entropy(wave)
 		if cell == -1:
-			break  # 全部坍缩完成
+			break
 		var opts := _wfc_bits(wave[cell])
 		if opts.is_empty():
-			# 矛盾 → 回溯到上一次观测，排除已失败的瓦片
 			if def.wfc_max_backtracks > 0 and backtracks < def.wfc_max_backtracks and not history.is_empty():
 				backtracks += 1
 				var h: Dictionary = history.pop_back()
 				wave = h.wave_copy.duplicate()
 				wave[h.cell] &= ~h.bad
 				queue.append(h.cell)
-				propagations = _wfc_propagate(wave, grid, def, queue, propagations)
+				propagations = _wfc_propagate(wave, grid, def, queue, propagations, fixed_indices)
 				continue
-			return false  # 无法回溯，本次失败
+			return false
 		var chosen := _wfc_weighted_choice(tiles, opts, rng)
 		if def.wfc_max_backtracks > 0:
 			history.append({"cell": cell, "wave_copy": wave.duplicate(), "bad": 1 << chosen})
 		wave[cell] = 1 << chosen
 		queue.append(cell)
-		propagations = _wfc_propagate(wave, grid, def, queue, propagations)
-	# 有任何矛盾格（候选为空）视为失败
+		propagations = _wfc_propagate(wave, grid, def, queue, propagations, fixed_indices)
 	for i in cell_count:
 		if wave[i] == 0:
 			return false
-	# 写入结果：单 bit 的格写瓦片索引，其余（失败格）写 solid_value
 	for i in cell_count:
 		var m := wave[i]
 		if m != 0 and (m & (m - 1)) == 0:
@@ -646,7 +1468,7 @@ static func _wfc_pick_lowest_entropy(wave: PackedInt32Array) -> int:
 	return best
 
 ## 邻接约束传播（BFS），返回累计传播次数
-static func _wfc_propagate(wave: PackedInt32Array, grid: GeneratedGrid, def: GridGenDef, queue: Array[int], propagations: int) -> int:
+static func _wfc_propagate(wave: PackedInt32Array, grid: GeneratedGrid, def: GridGenDef, queue: Array[int], propagations: int, fixed_indices: Dictionary = {}) -> int:
 	var tiles := def.tile_set.tiles
 	while not queue.is_empty():
 		if def.wfc_max_propagations > 0 and propagations >= def.wfc_max_propagations:
@@ -662,6 +1484,8 @@ static func _wfc_propagate(wave: PackedInt32Array, grid: GeneratedGrid, def: Gri
 			if not grid.in_bounds(nx, ny):
 				continue
 			var ni := ny * grid.width + nx
+			if fixed_indices.has(ni):
+				continue
 			if wave[ni] == 0:
 				continue
 			var allowed := 0
@@ -670,7 +1494,7 @@ static func _wfc_propagate(wave: PackedInt32Array, grid: GeneratedGrid, def: Gri
 					if _wfc_compatible(tiles, a, b, dir_idx):
 						allowed |= 1 << b
 			if allowed == 0:
-				wave[ni] = 0  # 矛盾
+				wave[ni] = 0
 				queue.append(ni)
 				continue
 			if (wave[ni] & allowed) != wave[ni]:
@@ -713,3 +1537,13 @@ static func _wfc_bit_index(mask: int) -> int:
 	return i
 
 const _DIR4: Array[Vector2i] = [Vector2i(0, -1), Vector2i(1, 0), Vector2i(0, 1), Vector2i(-1, 0)]
+const _DIR8: Array[Vector2i] = [
+	Vector2i(0, -1), Vector2i(1, -1), Vector2i(1, 0), Vector2i(1, 1),
+	Vector2i(0, 1), Vector2i(-1, 1), Vector2i(-1, 0), Vector2i(-1, -1),
+]
+const _DIR6_3D: Array[Vector3i] = [
+	Vector3i(1, 0, 0), Vector3i(-1, 0, 0),
+	Vector3i(0, 1, 0), Vector3i(0, -1, 0),
+	Vector3i(0, 0, 1), Vector3i(0, 0, -1),
+]
+const _OPP3D: Array[int] = [1, 0, 3, 2, 5, 4]

@@ -1,12 +1,14 @@
-[gd_resource type="Resource" load_steps=6 format=3]
+[gd_resource type="Resource" load_steps=8 format=3]
 
 [ext_resource type="Script" path="res://addons/DEVFramework/PCG/Def/PCGDef.gd" id="1_script"]
 [ext_resource type="Resource" path="res://Assets/Def/PCG/Terrain_Island.tres" id="2_terrain"]
 [ext_resource type="Resource" path="res://Assets/Def/PCG/Biome_World.tres" id="3_biome"]
-[ext_resource type="Resource" path="res://Assets/Def/PCG/Place_Resources.tres" id="4_place"]
-[ext_resource type="Resource" path="res://Assets/Def/PCG/Content_Loot.tres" id="5_loot"]
+[ext_resource type="Resource" path="res://Assets/Def/PCG/River_Terrain.tres" id="4_river"]
+[ext_resource type="Resource" path="res://Assets/Def/PCG/Road_Network.tres" id="5_road"]
+[ext_resource type="Resource" path="res://Assets/Def/PCG/Place_Resources.tres" id="6_place"]
+[ext_resource type="Resource" path="res://Assets/Def/PCG/Content_Loot.tres" id="7_loot"]
 
 [resource]
 script = ExtResource("1_script")
 seed = 20260811
-generators = Array[PCGGeneratorDef]([ExtResource("2_terrain"), ExtResource("3_biome"), ExtResource("4_place"), ExtResource("5_loot")])
+generators = Array[PCGGeneratorDef]([ExtResource("2_terrain"), ExtResource("3_biome"), ExtResource("4_river"), ExtResource("5_road"), ExtResource("6_place"), ExtResource("7_loot")])

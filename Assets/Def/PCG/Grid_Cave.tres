@@ -10,3 +10,4 @@ height = 96
 cave_ratio = 0.42
 smooth_passes = 4
 border_solid = true
+connectivity = 2

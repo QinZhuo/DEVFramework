@@ -1,0 +1,15 @@
+[gd_resource type="Resource" load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://addons/DEVFramework/PCG/Def/Grid3DGenDef.gd" id="1_script"]
+[ext_resource type="Resource" path="res://Assets/Def/PCG/TileSet3D_Checker.tres" id="2_tileset"]
+
+[resource]
+script = ExtResource("1_script")
+type = 2
+width = 16
+height = 16
+depth = 16
+wfc_max_backtracks = 8
+wfc_retries = 3
+output_key = "wfc3d"
+tile_set3d = ExtResource("2_tileset")

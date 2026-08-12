@@ -1,0 +1,14 @@
+[gd_resource type="Resource" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://addons/DEVFramework/PCG/Def/Grid3DGenDef.gd" id="1_script"]
+
+[resource]
+script = ExtResource("1_script")
+type = 1
+width = 32
+height = 24
+depth = 32
+cave_ratio = 0.42
+smooth_passes = 3
+border_solid = true
+output_key = "cave3d"

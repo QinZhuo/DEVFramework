@@ -81,3 +81,16 @@ func components(value := 1, diagonal := false) -> Array[PackedInt32Array]:
 						stack.append(_index(nx, ny))
 			comps.append(comp)
 	return comps
+
+## —— 序列化 ——
+
+## 转为可存档字典（与 SaveTool 的 JSON/GZIP 兼容）
+func to_data() -> Dictionary:
+	return {"w": width, "h": height, "cells": cells}
+
+## 从存档字典还原
+static func from_data(data: Dictionary) -> GeneratedGrid:
+	var g := create(int(data.get("w", 0)), int(data.get("h", 0)))
+	var raw = data.get("cells", [])
+	g.cells = PackedInt32Array(raw) if raw is Array else (raw as PackedInt32Array)
+	return g

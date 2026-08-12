@@ -18,6 +18,8 @@ enum Type {
 	BSP_ROOMS,
 	## WFC 波函数坍缩（瓦片级，需配置 tile_set）
 	WFC,
+	## Voronoi 地块地形（随机种子点划分区域，每区域采样一次噪声）
+	VORONOI,
 }
 
 @export var type: Type = Type.NOISE_TERRAIN
@@ -67,6 +69,24 @@ enum Type {
 @export_range(0, 20, 1) var wfc_retries := 3
 ## WFC: 静态固定格（"x,y" → 瓦片索引），生成时自动遵守；运行时可用 PCGTool.generate_grid 的 fixed 参数叠加
 @export var wfc_fixed_cells: Dictionary = {}
+
+## VORONOI: 区域数量（种子点数）
+@export_range(2, 200, 1) var voronoi_cells := 24
+## VORONOI: 是否把区域边界画成实体（策略地图感）
+@export var voronoi_border := false
+
+## —— 连通性后处理 ——
+## 生成后保证空区域连通（洞穴/地牢等"实体=墙/空地=可走"类算法适用，WFC 瓦片语义除外）
+enum Connectivity {
+	## 不处理（保持算法原始结果）
+	NONE,
+	## 保留最大空连通域，孤立小区域填成实体（可玩性优先）
+	KEEP_LARGEST,
+	## 隧道连接所有空区域到主区域（保留全部空间且全连通）
+	CONNECT_ALL,
+}
+## 连通性后处理模式
+@export var connectivity: Connectivity = Connectivity.NONE
 
 func generate(ctx: PCGContext) -> void:
 	var grid := PCGTool.generate_grid(self, ctx.rng)

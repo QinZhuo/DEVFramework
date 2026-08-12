@@ -36,6 +36,14 @@ func _selected_def() -> GridGenDef:
 	return grid_defs[algo_option.selected] as GridGenDef
 
 
+## 把小图用最近邻放大到清晰尺寸
+func _scale_up(img: Image) -> Image:
+	if img.get_width() < 512:
+		var s := 768.0 / img.get_width()
+		img.resize(int(img.get_width() * s), int(img.get_height() * s), Image.INTERPOLATE_NEAREST)
+	return img
+
+
 func _on_regenerate_pressed() -> void:
 	_rebuild()
 
@@ -45,16 +53,22 @@ func _rebuild() -> void:
 	_build_async()
 
 
-func _build_async() -> void:
+func _build_async(world_override: ChunkedWorld = null) -> void:
 	var def := _selected_def()
 	if def == null:
 		_log("请配置 grid_defs")
 		return
 	var radius := int(radius_spin.value)
 	var use_async := async_check.button_pressed
-	_world = ChunkedWorld.new()
-	_world.seed_base = int(seed_spin.value)
-	_world.grid_def = def
+	if world_override:
+		# 读档场景：复用已 load_data 的 world（保留 seed/grid_def/修改记录）
+		_world = world_override
+		if _world.grid_def == null:
+			_world.grid_def = def
+	else:
+		_world = ChunkedWorld.new()
+		_world.seed_base = int(seed_spin.value)
+		_world.grid_def = def
 	_world.chunk_size = 16
 	var t := Time.get_ticks_msec()
 	if use_async:
@@ -73,7 +87,7 @@ func _build_async() -> void:
 	var img := _render_world(_world, def, -radius, -radius, radius, radius)
 	if not is_inside_tree():
 		return
-	texture_rect.texture = ImageTexture.create_from_image(img)
+	texture_rect.texture = ImageTexture.create_from_image(_scale_up(img))
 	var n := (radius * 2 + 1) * (radius * 2 + 1)
 	_log("分块世界: %d 个 chunk（%d x %d 像素，chunk=16）  耗时 %d ms\nseed=%d  %s" % [
 		n, img.get_width(), img.get_height(), ms, _world.seed_base,
@@ -92,8 +106,8 @@ func _render_world(world: ChunkedWorld, def: GridGenDef, cx0: int, cy0: int, cx1
 		for i in def.tile_set.tiles.size():
 			palette[i] = def.tile_set.tiles[i].color
 	else:
-		palette[def.solid_value] = Color(0.92, 0.95, 0.98)
-		palette[def.empty_value] = Color(0.13, 0.15, 0.18)
+		palette[def.solid_value] = Color(0.16, 0.18, 0.22)
+		palette[def.empty_value] = Color(0.88, 0.9, 0.93)
 	for cy in range(cy0, cy1 + 1):
 		for cx in range(cx0, cx1 + 1):
 			var g := world.get_chunk(cx, cy)
@@ -111,11 +125,15 @@ func _render_world(world: ChunkedWorld, def: GridGenDef, cx0: int, cy0: int, cx1
 	return img
 
 
-## —— 存档 ——
+## —— 存档（seed + 增量改动） ——
 
 func _on_save_pressed() -> void:
-	var err := SaveTool.save_data(SAVE_PATH, {"seed": int(seed_spin.value), "radius": int(radius_spin.value)}, SaveTool.Mode.JSON)
-	_log("已保存: seed=%d radius=%d  err=%d" % [int(seed_spin.value), int(radius_spin.value), err])
+	var data := _world.save_data()
+	data["radius"] = int(radius_spin.value)
+	var err := SaveTool.save_data(SAVE_PATH, data, SaveTool.Mode.JSON)
+	_log("已存档: seed=%d 半径=%d 改动格=%d  err=%d" % [
+		data.get("seed", 0), data.get("radius", 2), data.get("modified", {}).size(), err,
+	])
 
 
 func _on_load_pressed() -> void:
@@ -123,9 +141,27 @@ func _on_load_pressed() -> void:
 	if data == null or data.is_empty():
 		_log("无存档（%s）" % SAVE_PATH)
 		return
-	seed_spin.value = data.get("seed", 0)
+	_world.load_data(data)
+	# 设置 UI（block_signals 避免触发自动重建覆盖存档）
+	seed_spin.set_block_signals(true)
+	seed_spin.value = _world.seed_base
+	seed_spin.set_block_signals(false)
+	radius_spin.set_block_signals(true)
 	radius_spin.value = data.get("radius", 2)
-	_log("已加载存档: seed=%d radius=%d" % [int(seed_spin.value), int(radius_spin.value)])
+	radius_spin.set_block_signals(false)
+	var def_path: String = data.get("grid_def", "")
+	if not def_path.is_empty():
+		for i in grid_defs.size():
+			var d: Resource = grid_defs[i]
+			if d is GridGenDef and (d as GridGenDef).save_data() == def_path:
+				algo_option.set_block_signals(true)
+				algo_option.select(i)
+				algo_option.set_block_signals(false)
+				break
+	_build_async(_world)
+	_log("已读档: seed=%d 半径=%d 改动格=%d（重新生成后应用）" % [
+		_world.seed_base, int(radius_spin.value), _world.get_modified().size(),
+	])
 
 
 func _log(msg: String) -> void:

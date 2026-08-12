@@ -1,4 +1,4 @@
-[gd_scene load_steps=20 format=3]
+[gd_scene load_steps=24 format=3]
 
 [ext_resource type="Script" path="res://Scenes/PCG/PCGDemo.gd" id="1_demo"]
 [ext_resource type="Resource" path="res://Assets/Def/PCG/Noise_Perlin.tres" id="n1"]
@@ -10,12 +10,16 @@
 [ext_resource type="Resource" path="res://Assets/Def/PCG/Grid_RandomWalk.tres" id="g4"]
 [ext_resource type="Resource" path="res://Assets/Def/PCG/Grid_BSPRooms.tres" id="g5"]
 [ext_resource type="Resource" path="res://Assets/Def/PCG/Grid_WFC.tres" id="g6"]
+[ext_resource type="Resource" path="res://Assets/Def/PCG/Grid_Voronoi.tres" id="g7"]
+[ext_resource type="Resource" path="res://Assets/Def/PCG/Stitch_Dungeon.tres" id="g8"]
+[ext_resource type="Resource" path="res://Assets/Def/PCG/City_Grid.tres" id="g9"]
 [ext_resource type="Resource" path="res://Assets/Def/PCG/Placement_Poisson.tres" id="p1"]
 [ext_resource type="Resource" path="res://Assets/Def/PCG/Placement_JitterGrid.tres" id="p2"]
 [ext_resource type="Resource" path="res://Assets/Def/PCG/Content_Items.tres" id="c1"]
 [ext_resource type="Resource" path="res://Assets/Def/PCG/Content_Names.tres" id="c2"]
 [ext_resource type="Resource" path="res://Assets/Def/PCG/Content_Markov.tres" id="c3"]
 [ext_resource type="Resource" path="res://Assets/Def/PCG/Content_Affix.tres" id="c4"]
+[ext_resource type="Resource" path="res://Assets/Def/PCG/Evolve_Equipment.tres" id="c5"]
 [ext_resource type="Resource" path="res://Assets/Def/PCG/Biome_World.tres" id="b1"]
 [ext_resource type="Resource" path="res://Assets/Def/PCG/Pipeline_World.tres" id="pl1"]
 
@@ -44,9 +48,9 @@ grow_horizontal = 2
 grow_vertical = 2
 script = ExtResource("1_demo")
 noise_defs = Array[Resource]([ExtResource("n1"), ExtResource("n2"), ExtResource("n3")])
-grid_defs = Array[Resource]([ExtResource("g1"), ExtResource("g2"), ExtResource("g3"), ExtResource("g4"), ExtResource("g5"), ExtResource("g6")])
+grid_defs = Array[Resource]([ExtResource("g1"), ExtResource("g2"), ExtResource("g3"), ExtResource("g4"), ExtResource("g5"), ExtResource("g6"), ExtResource("g7"), ExtResource("g8"), ExtResource("g9")])
 placement_defs = Array[Resource]([ExtResource("p1"), ExtResource("p2")])
-content_defs = Array[Resource]([ExtResource("c1"), ExtResource("c2"), ExtResource("c3"), ExtResource("c4")])
+content_defs = Array[Resource]([ExtResource("c1"), ExtResource("c2"), ExtResource("c3"), ExtResource("c4"), ExtResource("c5")])
 biome_defs = Array[Resource]([ExtResource("b1")])
 pipeline_defs = Array[Resource]([ExtResource("pl1")])
 
@@ -59,6 +63,7 @@ anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
 mouse_filter = 0
+texture_filter = 1
 expand_mode = 1
 stretch_mode = 1
 

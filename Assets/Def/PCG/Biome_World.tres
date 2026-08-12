@@ -48,5 +48,6 @@ width = 96
 height = 96
 elevation_layer = ExtResource("2_elev")
 moisture_layer = ExtResource("3_moist")
+smoothing_passes = 2
 output_key = "biomes"
 biomes = Array[BiomeEntryDef]([SubResource("Biome_ocean"), SubResource("Biome_desert"), SubResource("Biome_plain"), SubResource("Biome_forest"), SubResource("Biome_mountain")])

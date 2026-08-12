@@ -1,0 +1,13 @@
+[gd_resource type="Resource" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://addons/DEVFramework/PCG/Def/RoadDef.gd" id="1_script"]
+
+[resource]
+script = ExtResource("1_script")
+region_size = Vector2(96, 96)
+hub_count = 6
+road_width = 1
+output_key = "road"
+terrain_key = "terrain"
+road_value = 3
+mst_only = true

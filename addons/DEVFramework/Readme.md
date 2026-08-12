@@ -256,6 +256,26 @@ world.tick(delta)
 
 **完整使用说明见 [`ECS/Readme.md`](ECS/Readme.md)**。
 
+### 4.7 PCG 程序化内容生成（`PCG/`）
+
+框架内置一套 **程序化内容生成** 模块，遵循 Def → Entity → Tool 三层模式：
+所有生成参数都是 `.tres` 资源（策划可配），同一 `seed` 必然复现，支持 2D/3D、配置管线与 seed 增量存档。
+
+```gdscript
+# 单步：网格生成
+var def: GridGenDef = load("res://Assets/Def/PCG/Grid_Cave.tres")
+var grid := PCGTool.generate_grid(def, PCGTool.make_rng(seed))
+
+# 管线：地形→群系→河流→道路→资源点→战利品 一条龙
+var out: Dictionary = PCGTool.generate(pipeline_def, seed)
+```
+
+**能力一览**：8 种 2D 网格算法（噪声地形/细胞洞穴/迷宫/随机游走/BSP/WFC/Voronoi/模板拼接）、
+3D 体素（地表/3D 洞穴/3D WFC）、生物群系、河流/道路、散布（2D/3D）、内容生成（加权/名字/马尔可夫/词缀）、
+2D/3D 分块世界、WFC 高级（固定格/回溯/重试/过程动画）、异步生成、seed+增量存档。
+
+**完整使用说明见 [`PCG/Readme.md`](PCG/Readme.md)**。
+
 ---
 
 ## 五、Tool 工具层
@@ -417,6 +437,7 @@ AudioTool.list_examples()                      # 列出全部示例
 | `CSVDataAccess` | CSV 读写（`get_csv_value` / `set_csv_value` 等） |
 | `ArrayViewTool` | 数组视图通用逻辑：`get_item_name` / `create_view` / `free_view`（配合对象池） |
 | `TweenViewTool` | Tween 显隐控制与释放：`update_visible` / `finish_and_free` |
+| `PCGTool` | PCG 统一入口：噪声/网格(2D/3D)/群系/散布/内容/河流道路/分块世界/管线/异步/序列化 |
 | `DevProjectSetup` | 一键创建项目目录结构（编辑器菜单触发） |
 | `SpriteFramesToAnimationLibrary` | `EditorScript`：将选中的 SpriteFrames 生成 AnimationLibrary |
 
@@ -642,6 +663,7 @@ claude mcp list        # 查看已配置
 - 代码按类目放到 `Scripts/Def/`、`Scripts/Entity/`、`Scripts/View/`，不要把所有脚本塞进单个场景脚本。
 - **UI 等可显示内容一律用场景（.tscn）搭建，不要用代码 `new`**（见框架 `View/*` 与 `UITool`）。改动 UI 优先在场景里调整节点属性，而非写代码生成。
 - 优先**配置驱动**：能通过 `.tres` 资源配置的数据（数值、效果、标签、GOAP 行动/目标）就用资源，不硬编码在脚本里。
+- **程序化生成走 PCG 模块**：涉及地形/地牢/内容/群系等生成，一律用 `addons/DEVFramework/PCG/`（`PCGTool` + `*Def` 资源 + seed 可复现），不要手写生成算法；参数放 `.tres`，见 [`PCG/Readme.md`](PCG/Readme.md)。
 - 写脚本时使用显式类型标注（`func foo(x: int) -> void`）、`@onready` 获取节点引用、`@export` 暴露可调参数，与 `Scenes/AI/GoapDemo.gd` 等示例风格一致。
 
 **MCP 工具使用规范**

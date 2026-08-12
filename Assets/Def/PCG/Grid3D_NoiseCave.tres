@@ -1,0 +1,14 @@
+[gd_resource type="Resource" load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://addons/DEVFramework/PCG/Def/Grid3DGenDef.gd" id="1_script"]
+[ext_resource type="Resource" path="res://Assets/Def/PCG/Biome_Elevation.tres" id="2_noise"]
+
+[resource]
+script = ExtResource("1_script")
+type = 3
+width = 32
+height = 24
+depth = 32
+cave_threshold = 0.55
+output_key = "noisecave3d"
+noise_layer = ExtResource("2_noise")

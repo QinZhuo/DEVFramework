@@ -1,0 +1,13 @@
+[gd_resource type="Resource" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://addons/DEVFramework/PCG/Def/CityDef.gd" id="1_script"]
+
+[resource]
+script = ExtResource("1_script")
+width = 96
+height = 96
+block_size = 12
+road_width = 2
+building_gap = 1
+park_ratio = 0.15
+output_key = "city"

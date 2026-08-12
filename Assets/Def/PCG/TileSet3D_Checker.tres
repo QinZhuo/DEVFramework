@@ -1,0 +1,32 @@
+[gd_resource type="Resource" load_steps=4 format=3]
+
+[ext_resource type="Script" path="res://addons/DEVFramework/PCG/Def/TileSetDef3D.gd" id="1_script"]
+[ext_resource type="Script" path="res://addons/DEVFramework/PCG/Def/TileDef3D.gd" id="2_tile"]
+
+[sub_resource type="Resource" id="Tile_A"]
+script = ExtResource("2_tile")
+name = "A"
+color = Color(0.35, 0.55, 0.85, 1)
+east = "c"
+west = "c"
+up = "a"
+down = "b"
+south = "d"
+north = "d"
+weight = 1.0
+
+[sub_resource type="Resource" id="Tile_B"]
+script = ExtResource("2_tile")
+name = "B"
+color = Color(0.85, 0.55, 0.35, 1)
+east = "c"
+west = "c"
+up = "b"
+down = "a"
+south = "d"
+north = "d"
+weight = 1.0
+
+[resource]
+script = ExtResource("1_script")
+tiles = Array[TileDef3D]([SubResource("Tile_A"), SubResource("Tile_B")])
