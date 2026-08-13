@@ -352,6 +352,35 @@ func _register_scene_edit_tools() -> void:
 		{"type": "object", "properties": {}},
 		_call_save_scene)
 
+	_add_tool("remove_node",
+		"从当前编辑场景删除指定节点(含子树)。UndoRedo提交可Ctrl+Z撤。",
+		{"type": "object", "properties": {"path": {"type": "string", "description": "节点路径(编辑场景内)"}}, "required": ["path"]},
+		_call_remove_node)
+
+	_add_tool("duplicate_node",
+		"复制当前编辑场景中的节点(含子树), 可作为兄弟节点。UndoRedo提交可Ctrl+Z撤。",
+		{"type": "object", "properties": {"path": {"type": "string", "description": "要复制的节点路径(编辑场景内)"}, "new_name": {"type": "string", "description": "新节点名称(可选, 默认原名+_copy)"}}, "required": ["path"]},
+		_call_duplicate_node)
+
+	_add_tool("set_node_transform",
+		"设置编辑场景中节点的位置/旋转/缩放(3D用position/rotation/scale, 2D用position)。值支持 '1,2' 等 Vector 格式。",
+		{"type": "object", "properties": {
+			"path": {"type": "string", "description": "节点路径(编辑场景内)"},
+			"property": {"type": "string", "description": "属性名: position/rotation/scale(3D), position(2D)"},
+			"value": {"description": "新值, Vector 用 'x,y' 或 'x,y,z' 字符串"}
+		}, "required": ["path", "property", "value"]},
+		_call_set_node_transform)
+
+	_add_tool("connect_signal",
+		"在编辑场景节点上连接信号到方法(运行时连接, 随场景保存)。source_path源节点, signal信号名(如 'pressed'), method目标方法名, target_path目标节点(缺省为源节点所在场景根)。",
+		{"type": "object", "properties": {
+			"source_path": {"type": "string", "description": "发出信号的节点路径"},
+			"signal": {"type": "string", "description": "信号名(如 pressed)"},
+			"method": {"type": "string", "description": "要连接的方法名"},
+			"target_path": {"type": "string", "description": "目标节点路径(缺省为源节点)"}
+		}, "required": ["source_path", "signal", "method"]},
+		_call_connect_signal)
+
 
 ## -- 项目信息 --
 func _register_project_tools() -> void:
@@ -430,6 +459,23 @@ func _register_dev_tools() -> void:
 		"重新导入资源(重建.godot/imported缓存), 资源显示异常/导入配置变更后使用。",
 		{"type": "object", "properties": {"path": {"type": "string", "description": "要重新导入的资源 res:// 路径"}}},
 		_call_reimport)
+
+	_add_tool("create_resource",
+		"创建 .tres 资源配置: 指定脚本(class_name 或 res://脚本路径)与属性字典, 写入 res:// 或 user:// 路径。配置驱动开发时创建 Def 资源用。注意: 新建脚本 class_name 需先 reload_project 才能被引擎识别, 若创建失败请先 reload。",
+		{"type": "object", "properties": {
+			"path": {"type": "string", "description": "要创建的 .tres 完整路径(如 res://Assets/Def/PCG/MyDef.tres)"},
+			"script": {"type": "string", "description": "脚本 class_name 或 res:// 脚本路径(如 GridGenDef 或 res://addons/.../GridGenDef.gd)"},
+			"properties": {"type": "object", "description": "属性字典(键=导出属性名, 值=属性值), 可嵌套资源/数组"}
+		}, "required": ["path", "script"]},
+		_call_create_resource)
+
+	_add_tool("get_resource_info",
+		"读取 .tres/.tscn 资源的完整属性树(递归), 便于理解配置结构。返回类型/导出属性/嵌套子资源/引用的脚本。排查配置或了解 Def 资源用。",
+		{"type": "object", "properties": {
+			"path": {"type": "string", "description": "资源 res:// 路径(如 res://Assets/Def/PCG/Grid_Cave.tres)"},
+			"max_depth": {"type": "integer", "description": "嵌套资源最大展开深度, 默认 5"}
+		}, "required": ["path"]},
+		_call_get_resource_info)
 
 
 ## -- 文件操作 --
@@ -1390,6 +1436,124 @@ func _assign_owner_recursive(node: Node, root: Node) -> void:
 		_assign_owner_recursive(child, root)
 
 
+## 删除节点(含子树)
+func _call_remove_node(args: Dictionary) -> Dictionary:
+	var path := str(args.get("path", ""))
+	var root: Node = _edited_root()
+	if root == null:
+		return _fail("当前没有打开的场景")
+	var node: Node = _resolve_node(path)
+	if node == null:
+		return _fail("找不到节点: %s" % path)
+	if node == root:
+		return _fail("不能删除场景根节点")
+	var parent: Node = node.get_parent()
+	if parent == null:
+		return _fail("节点没有父节点: %s" % path)
+	# 直接删除: 节点删除的 UndoRedo 会保留已删节点引用, 保存场景时触发
+	# "No path can be resolved ... not inside tree" 警告(Godot 已知问题)。
+	# 为干净起见, remove 不做 undo(删除操作本身幂等, 风险低)。
+	parent.remove_child(node)
+	node.owner = null
+	node.queue_free()
+	return _ok("已删除节点 %s" % node.name)
+
+
+## 复制节点(含子树)为兄弟
+func _call_duplicate_node(args: Dictionary) -> Dictionary:
+	var path := str(args.get("path", ""))
+	var new_name := str(args.get("new_name", ""))
+	var root: Node = _edited_root()
+	if root == null:
+		return _fail("当前没有打开的场景")
+	var node: Node = _resolve_node(path)
+	if node == null:
+		return _fail("找不到节点: %s" % path)
+	var dup: Node = node.duplicate(Node.DUPLICATE_GROUPS | Node.DUPLICATE_SCRIPTS | Node.DUPLICATE_SIGNALS | Node.DUPLICATE_GROUPS)
+	if dup == null:
+		return _fail("节点复制失败: %s" % path)
+	if new_name.is_empty():
+		new_name = node.name + "_copy"
+	dup.name = new_name
+	var parent: Node = node.get_parent()
+	if parent == null:
+		return _fail("节点没有父节点: %s" % path)
+	var owner_root: Node = root
+	var undo: EditorUndoRedoManager = _editor_undo_redo()
+	if undo and is_inside_tree():
+		undo.create_action("MCP: duplicate %s" % new_name)
+		undo.add_do_method(parent, "add_child", dup, true)
+		undo.add_undo_method(parent, "remove_child", dup)
+		undo.add_do_property(dup, "owner", owner_root)
+		undo.add_undo_property(dup, "owner", null)
+		undo.commit_action()
+	else:
+		parent.add_child(dup, true)
+		_assign_owner_recursive(dup, owner_root)
+	return _ok("已复制节点 %s → %s" % [node.name, dup.name])
+
+
+## 设置节点位置/旋转/缩放(2D/3D)
+func _call_set_node_transform(args: Dictionary) -> Dictionary:
+	var path := str(args.get("path", ""))
+	var property := str(args.get("property", ""))
+	var value: Variant = args.get("value", null)
+	var root: Node = _edited_root()
+	if root == null:
+		return _fail("当前没有打开的场景")
+	var node: Node = _resolve_node(path)
+	if node == null:
+		return _fail("找不到节点: %s" % path)
+	if not node is Node2D and not node is Node3D:
+		return _fail("仅支持 Node2D/Node3D 节点(当前 %s)" % node.get_class())
+	var converted: Variant = _auto_convert_arg(value)
+	if not node.has_method("set"):
+		return _fail("节点不可写属性: %s" % path)
+	var undo: EditorUndoRedoManager = _editor_undo_redo()
+	if undo and is_inside_tree():
+		var old: Variant = node.get(property)
+		undo.create_action("MCP: set %s.%s" % [node.name, property])
+		undo.add_do_property(node, property, converted)
+		undo.add_undo_property(node, property, old)
+		undo.commit_action()
+	else:
+		node.set(property, converted)
+	return _ok("已设置 %s.%s = %s" % [node.name, property, str(converted)])
+
+
+## 连接信号到方法
+func _call_connect_signal(args: Dictionary) -> Dictionary:
+	var source_path := str(args.get("source_path", ""))
+	var signal_name := str(args.get("signal", ""))
+	var method := str(args.get("method", ""))
+	var target_path := str(args.get("target_path", ""))
+	var root: Node = _edited_root()
+	if root == null:
+		return _fail("当前没有打开的场景")
+	var source: Node = _resolve_node(source_path)
+	if source == null:
+		return _fail("找不到源节点: %s" % source_path)
+	if not source.has_signal(signal_name):
+		return _fail("节点 %s 没有信号 %s" % [source.name, signal_name])
+	var target: Node = source
+	if not target_path.is_empty():
+		target = _resolve_node(target_path)
+		if target == null:
+			return _fail("找不到目标节点: %s" % target_path)
+	if not target.has_method(method):
+		return _fail("目标节点 %s 没有方法 %s" % [target.name, method])
+	# 场景内连接的信号, 随场景保存
+	var undo: EditorUndoRedoManager = _editor_undo_redo()
+	if undo and is_inside_tree():
+		undo.create_action("MCP: connect %s.%s -> %s.%s" % [source.name, signal_name, target.name, method])
+		undo.add_do_method(source, "connect", signal_name, Callable(target, method))
+		undo.add_undo_method(source, "disconnect", signal_name, Callable(target, method))
+		undo.commit_action()
+	else:
+		source.connect(signal_name, Callable(target, method))
+	return _ok("已连接 %s.%s → %s.%s" % [source.name, signal_name, target.name, method])
+
+
 func _call_save_scene(_args: Dictionary) -> Dictionary:
 	if not Engine.is_editor_hint():
 		return _fail("仅在编辑器模式可用")
@@ -1712,6 +1876,117 @@ func _call_reimport(args: Dictionary) -> Dictionary:
 		return _fail("编辑器文件系统不可用")
 	fs.reimport_files([path])
 	return _ok("已触发重新导入: %s" % path)
+
+
+## 创建 .tres 资源配置
+func _call_create_resource(args: Dictionary) -> Dictionary:
+	var path := str(args.get("path", ""))
+	var script_ref := str(args.get("script", ""))
+	var properties: Dictionary = args.get("properties", {})
+	if path.is_empty() or script_ref.is_empty():
+		return _fail("必须提供 path 和 script")
+	if not path.ends_with(".tres"):
+		return _fail("路径必须以 .tres 结尾: %s" % path)
+	# 解析脚本: class_name 或 res:// 脚本路径
+	var script: Script = null
+	if script_ref.begins_with("res://"):
+		script = load(script_ref) as Script
+	elif script_ref.begins_with("class:"):
+		script = load(script_ref.trim_prefix("class:")) as Script
+	else:
+		# 全局类名(如 GridGenDef): 查全局类列表找脚本路径
+		var all_classes := ProjectSettings.get_global_class_list()
+		for c in all_classes:
+			if str(c.get("class", "")) == script_ref:
+				script = load(str(c.get("path", ""))) as Script
+				break
+		if script == null:
+			# 兜底: 尝试当作 res:// 相对路径
+			script = load("res://" + script_ref) as Script
+	if script == null:
+		return _fail("找不到脚本 %s (新建脚本请先 reload_project)" % script_ref)
+	if not script.can_instantiate():
+		return _fail("脚本 %s 不可实例化(abstract/@tool 缺失?)" % script_ref)
+	var res: Resource = script.new() as Resource
+	if res == null:
+		return _fail("脚本实例化失败: %s" % script_ref)
+	# 设置属性(逐项, 用自动类型转换)
+	for key in properties:
+		if not res.has_method("set") and not (key in res):
+			return _fail("属性不存在: %s" % key)
+		var v: Variant = _auto_convert_arg(properties[key])
+		res.set(key, v)
+	# 确保目录存在并保存
+	var dir_path := path.get_base_dir()
+	if not dir_path.is_empty():
+		var dir := DirAccess.open(dir_path)
+		if dir == null:
+			var err := DirAccess.make_dir_recursive_absolute(dir_path)
+			if err != OK:
+				return _fail("无法创建目录: %s (错误码: %d)" % [dir_path, err])
+	var err := ResourceSaver.save(res, path)
+	if err != OK:
+		return _fail("保存资源失败: %s (错误码: %d)" % [path, err])
+	if Engine.is_editor_hint():
+		var fs := EditorInterface.get_resource_filesystem()
+		if fs:
+			fs.scan()
+	return _ok_json({
+		"path": path,
+		"script": script_ref,
+		"properties": properties,
+		"message": "资源配置创建成功(建议 reload_project 让编辑器识别新资源)"
+	})
+
+
+## 读取资源的完整属性树
+func _call_get_resource_info(args: Dictionary) -> Dictionary:
+	var path := str(args.get("path", ""))
+	var max_depth := int(args.get("max_depth", 5))
+	if path.is_empty():
+		return _fail("必须提供 path")
+	if not ResourceLoader.exists(path):
+		return _fail("资源不存在: %s" % path)
+	var res: Resource = ResourceLoader.load(path)
+	if res == null:
+		return _fail("资源加载失败: %s" % path)
+	var info := {
+		"path": path,
+		"type": res.get_class(),
+		"script": res.get_script().resource_path if res.get_script() else null,
+		"name": res.resource_name if res is Resource else "",
+		"properties": _resource_property_tree(res, 0, max_depth),
+	}
+	return _ok_json(info)
+
+
+## 递归收集资源导出属性(含嵌套子资源)
+func _resource_property_tree(res: Resource, depth: int, max_depth: int) -> Dictionary:
+	var out := {}
+	if depth > max_depth:
+		return {"_note": "达到最大深度, 停止展开"}
+	for p in res.get_property_list():
+		var pname: String = str(p.name)
+		# 跳过内置元数据与脚本引用(避免噪音)
+		if pname.begins_with("_") or pname in ["resource_path", "resource_name", "script", "resource_local_to_scene"]:
+			continue
+		var val: Variant = res.get(pname)
+		if val is Resource:
+			if val == res:
+				out[pname] = {"_self_ref": true}
+			else:
+				out[pname] = _resource_property_tree(val, depth + 1, max_depth)
+		elif val is Dictionary:
+			out[pname] = {"_dict_size": (val as Dictionary).size()}
+		elif val is Array:
+			out[pname] = {"_array_size": (val as Array).size(), "_type": _value_type(val)}
+		else:
+			out[pname] = {"value": val, "type": _value_type(val)}
+	return out
+
+
+func _value_type(v: Variant) -> String:
+	return type_string(typeof(v))
 
 
 ## ======= 文件操作实现 =======

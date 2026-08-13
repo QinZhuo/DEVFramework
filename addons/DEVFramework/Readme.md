@@ -650,6 +650,12 @@ claude mcp list        # 查看已配置
 | `get_node_info` | 读取编辑场景中指定节点属性列表及当前值 |
 | `set_node_property` | 修改编辑场景中节点属性（经 UndoRedo 提交，可 Ctrl+Z 撤销；保存才写回 .tscn）|
 | `call_node_method` | 触发编辑场景中节点方法 |
+| `add_node` | 向编辑场景添加节点/实例化子场景（UndoRedo 可撤销）|
+| `remove_node` / `duplicate_node` | 删除 / 复制场景节点（含子树，UndoRedo 可撤销）|
+| `set_node_transform` | 设置节点位置/旋转/缩放（2D/3D）|
+| `connect_signal` | 连接场景节点信号到方法（随场景保存）|
+| `create_resource` | 创建 .tres 资源配置（指定脚本 + 属性字典，配置驱动开发用）|
+| `get_resource_info` | 读取 .tres/.tscn 资源完整属性树（递归，理解配置结构）|
 | `get_editor_activity` | 感知编辑器当前状态（打开场景/选中节点/运行中游戏），用于 AI 与人类协作不踩踏 |
 | `get_project_info` | 项目/版本/当前编辑场景等环境信息 |
 | `get_project_settings` | 主场景/autoload/输入映射/图层命名等关键配置 |
