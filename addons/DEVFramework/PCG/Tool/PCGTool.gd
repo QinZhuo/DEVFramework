@@ -158,18 +158,77 @@ static func generate_grid_3d(def: Grid3DGenDef, rng: RandomNumberGenerator, fixe
 	return grid
 
 ## 后台线程生成网格（大图不卡主线程；GeneratedGrid 是纯数据，线程安全）
+## C++ 原生类在主线程预热（首次 instantiate 线程亲和），worker 线程只调用纯函数方法
 static func generate_grid_async(def: GridGenDef, seed: int) -> GeneratedGrid:
+	if def.type == GridGenDef.Type.WFC:
+		FrameworkNative.get_native(&"PCGWFC", [&"generate"])  # 预热(主线程)
 	var grid: GeneratedGrid = await AsyncTool.thread_call(func() -> GeneratedGrid:
 		return generate_grid(def, make_rng(seed))
 	)
 	return grid
 
+## 后台线程生成网格 + 实时进度回调（大 WFC 不卡帧，UI 可显示进度）
+## on_progress: func(p: float)，主线程每帧回调 0..1
+## WFC 进度由 C++ 静态量(PCGWFC.get_last_progress)记录, 主线程每帧轮询
+static func generate_grid_async_progress(def: GridGenDef, seed: int, on_progress: Callable = func(_p: float): pass) -> GeneratedGrid:
+	var native: Object = null
+	if def.type == GridGenDef.Type.WFC:
+		native = FrameworkNative.get_native(&"PCGWFC", [&"generate", &"get_last_progress"])  # 预热(主线程)
+	var data := {}
+	var task_id := WorkerThreadPool.add_task(func():
+		data.result = _async_grid_work(def, seed)
+	)
+	while not WorkerThreadPool.is_task_completed(task_id):
+		if native != null:
+			on_progress.call(native.call(&"get_last_progress"))
+		await Engine.get_main_loop().process_frame
+	on_progress.call(1.0)
+	return data.get("result") as GeneratedGrid
+
+
+## async 工作函数：WFC 走 C++（进度写 C++ 静态量，主线程读）；其他算法直接生成
+static func _async_grid_work(def: GridGenDef, seed: int) -> GeneratedGrid:
+	if def.type == GridGenDef.Type.WFC:
+		return generate_grid_wfc_cpp(def, make_rng(seed))
+	return generate_grid(def, make_rng(seed))
+
+## WFC 走 C++ 并回报进度（供 generate_grid_async_progress 使用）
+static func generate_grid_wfc_cpp(def: GridGenDef, rng: RandomNumberGenerator, progress: Dictionary = {}) -> GeneratedGrid:
+	var grid := GeneratedGrid.create(def.width, def.height, def.empty_value)
+	_gen_wfc(grid, def, rng, {}, progress)
+	return grid
+
 ## 后台线程生成 3D 栅格（大体积不卡主线程）
 static func generate_grid_3d_async(def: Grid3DGenDef, seed: int) -> GeneratedGrid3D:
+	if def.type == Grid3DGenDef.Type.WFC_3D:
+		FrameworkNative.get_native(&"PCGWFC3D", [&"generate"])  # 预热(主线程)
 	var grid: GeneratedGrid3D = await AsyncTool.thread_call(func() -> GeneratedGrid3D:
 		return generate_grid_3d(def, make_rng(seed))
 	)
 	return grid
+
+## 后台线程生成 3D 栅格 + 实时进度回调（大 3D WFC 不卡帧，UI 可显示进度）
+## on_progress: func(p: float)，主线程每帧回调 0..1
+## 3D WFC 进度由 C++ 静态量(PCGWFC3D.get_last_progress)记录, 主线程每帧轮询
+static func generate_grid_3d_async_progress(def: Grid3DGenDef, seed: int, on_progress: Callable = func(_p: float): pass) -> GeneratedGrid3D:
+	var native: Object = null
+	if def.type == Grid3DGenDef.Type.WFC_3D:
+		native = FrameworkNative.get_native(&"PCGWFC3D", [&"generate", &"get_last_progress"])  # 预热(主线程)
+	var data := {}
+	var task_id := WorkerThreadPool.add_task(func():
+		data.result = _async_grid3d_work(def, seed)
+	)
+	while not WorkerThreadPool.is_task_completed(task_id):
+		if native != null:
+			on_progress.call(native.call(&"get_last_progress"))
+		await Engine.get_main_loop().process_frame
+	on_progress.call(1.0)
+	return data.get("result") as GeneratedGrid3D
+
+
+## async 3D 工作函数：3D WFC 走 C++（进度写 C++ 静态量）；其他算法直接生成
+static func _async_grid3d_work(def: Grid3DGenDef, seed: int) -> GeneratedGrid3D:
+	return generate_grid_3d(def, make_rng(seed))
 
 ## 把栅格渲染成图（palette: 格值 → 颜色）
 static func grid_to_image(grid: GeneratedGrid, palette: Dictionary = {}) -> Image:
@@ -1369,25 +1428,18 @@ static func _gen3d_surface(grid: GeneratedGrid3D, def: Grid3DGenDef, rng: Random
 			for y in h:
 				grid.set_cell(x, y, z, def.solid_value)
 
-## 3D 细胞洞穴：26 邻域平滑（经典 Rogue 扩展，阈值 ~13）
+## 3D 细胞洞穴：26 邻域平滑（经典 Rogue 扩展，阈值 ~13）— 纯 C++ 实现（框架强依赖 PCGCave3D）
 static func _gen3d_cave(grid: GeneratedGrid3D, def: Grid3DGenDef, rng: RandomNumberGenerator) -> void:
-	for i in grid.cells.size():
-		grid.cells[i] = def.solid_value if rng.randf() < def.cave_ratio else def.empty_value
-	for _p in def.smooth_passes:
-		var next := grid.cells.duplicate()
-		for z in grid.depth:
-			for y in grid.height:
-				for x in grid.width:
-					var walls := 0
-					for dz in range(-1, 2):
-						for dy in range(-1, 2):
-							for dx in range(-1, 2):
-								if dx == 0 and dy == 0 and dz == 0:
-									continue
-								if grid.get_cell(x + dx, y + dy, z + dz, def.solid_value if def.border_solid else def.empty_value) == def.solid_value:
-									walls += 1
-					next[grid._index(x, y, z)] = def.solid_value if walls >= 13 else def.empty_value
-		grid.cells = next
+	var native := FrameworkNative.get_native(&"PCGCave3D", [&"generate"])
+	if native == null:
+		push_error("PCGTool.generate_grid_3d: 原生库 PCGCave3D 不可用! 请确认 Native/devecs.gdextension 已加载。")
+		return
+	var out: PackedInt32Array = native.call(&"generate",
+		grid.width, grid.height, grid.depth,
+		rng.seed, def.cave_ratio, def.smooth_passes, def.border_solid,
+		def.solid_value, def.empty_value)
+	if out.size() == grid.cells.size():
+		grid.cells = out
 
 ## 3D 噪声洞穴：3D 噪声阈值挖空（offset 世界坐标 → 分块世界跨块连续）
 static func _gen3d_noise_cave(grid: GeneratedGrid3D, def: Grid3DGenDef, rng: RandomNumberGenerator) -> void:
@@ -1506,7 +1558,7 @@ static func _wfc3d_fixed_index(grid: GeneratedGrid3D, key) -> int:
 
 ## fixed 支持 key 为 Vector2i / int(线性索引) / String("x,y")，value 为瓦片索引。
 ## 冲突时优先回溯到上一次观测重选；仍失败则整体重试（wfc_retries 次），全部失败报错。
-static func _gen_wfc(grid: GeneratedGrid, def: GridGenDef, rng: RandomNumberGenerator, fixed: Dictionary = {}) -> void:
+static func _gen_wfc(grid: GeneratedGrid, def: GridGenDef, rng: RandomNumberGenerator, fixed: Dictionary = {}, progress: Dictionary = {}) -> void:
 	var tiles := def.tile_set.tiles if def.tile_set else []
 	var n := tiles.size()
 	if n <= 0 or n >= 30:
@@ -1559,7 +1611,7 @@ static func _gen_wfc(grid: GeneratedGrid, def: GridGenDef, rng: RandomNumberGene
 	var out: PackedInt32Array = native.call(&"generate",
 		grid.width, grid.height, sockets, weights,
 		def.wfc_max_backtracks, def.wfc_retries, def.wfc_max_propagations,
-		fixed_idx, fixed_tile, rng.seed)
+		fixed_idx, fixed_tile, rng.seed, progress)
 	if out.size() != cell_count:
 		push_error("PCGTool.generate_grid: PCGWFC 生成失败(重试耗尽)! 请调整 wfc_retries 或瓦片约束。")
 		grid.fill(def.solid_value)

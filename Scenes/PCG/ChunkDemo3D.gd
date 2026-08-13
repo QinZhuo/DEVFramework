@@ -20,6 +20,8 @@ enum Mode {
 @onready var seed_spin: SpinBox = %SeedSpin
 @onready var log_box: RichTextLabel = %LogBox
 @onready var nav_region: NavigationRegion3D = %NavRegion3D
+@onready var async_check: CheckButton = %AsyncCheck
+@onready var progress_bar: ProgressBar = %ProgressBar
 
 var _yaw := 0.7
 var _pitch := 0.25
@@ -83,19 +85,49 @@ func _gen_chunks() -> void:
 	world_obj.seed_base = int(seed_spin.value)
 	world_obj.grid3d_def = def
 	world_obj.chunk_size = 8
-	var t := Time.get_ticks_msec()
 	var size := (radius * 2 + 1) * 8
 	var center := Vector3(size / 2.0, size / 2.0, size / 2.0)
-	var pts := PackedVector3Array()
+	if async_check.button_pressed:
+		_gen_chunks_async(world_obj, def, radius, size, center)
+	else:
+		var t := Time.get_ticks_msec()
+		var pts := PackedVector3Array()
+		for cz in range(-radius, radius + 1):
+			for cy in range(-radius, radius + 1):
+				for cx in range(-radius, radius + 1):
+					var g := world_obj.get_chunk(cx, cy, cz)
+					_collect_pts(pts, g, def, Vector3(cx * 8, cy * 8, cz * 8), center)
+		var ms := Time.get_ticks_msec() - t
+		_render_voxels(pts, def)
+		_build_navigation(world_obj, def)
+		_log("3D 分块世界(同步): %d 个 chunk（%d³ 体素） 耗时 %d ms\nseed=%d  鼠标左键拖拽旋转" % [
+			world_obj.get_chunk_count(), size, ms, world_obj.seed_base,
+		])
+
+
+## 异步分块生成：批量后台生成 + 进度条实时显示
+func _gen_chunks_async(world_obj: ChunkedWorld3D, def: Grid3DGenDef, radius: int, size: int, center: Vector3) -> void:
+	_log("3D 分块世界(异步): 正在后台生成 %d 个 chunk..." % ((radius * 2 + 1) ** 3))
+	progress_bar.visible = true
+	progress_bar.value = 0
+	var keys := []
 	for cz in range(-radius, radius + 1):
 		for cy in range(-radius, radius + 1):
 			for cx in range(-radius, radius + 1):
-				var g := world_obj.get_chunk(cx, cy, cz)
-				_collect_pts(pts, g, def, Vector3(cx * 8, cy * 8, cz * 8), center)
+				keys.append(Vector3i(cx, cy, cz))
+	var t := Time.get_ticks_msec()
+	await world_obj.generate_chunks_async(keys, func(p: float): progress_bar.value = p * 100)
 	var ms := Time.get_ticks_msec() - t
+	progress_bar.visible = false
+	# 收集并渲染全部 chunk 体素
+	var loaded := world_obj.get_loaded_chunks()
+	var pts := PackedVector3Array()
+	for key in loaded:
+		var g: GeneratedGrid3D = loaded[key]
+		_collect_pts(pts, g, def, Vector3(key.x * 8, key.y * 8, key.z * 8), center)
 	_render_voxels(pts, def)
 	_build_navigation(world_obj, def)
-	_log("3D 分块世界: %d 个 chunk（%d³ 体素） 耗时 %d ms\nseed=%d  鼠标左键拖拽旋转" % [
+	_log("3D 分块世界(异步): %d 个 chunk（%d³ 体素） 耗时 %d ms\nseed=%d  进度条为后台生成过程  鼠标左键拖拽旋转" % [
 		world_obj.get_chunk_count(), size, ms, world_obj.seed_base,
 	])
 

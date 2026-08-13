@@ -10,6 +10,13 @@ void PCGWFC3D::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("generate", "width", "height", "depth", "sockets", "weights",
 			"backtracks", "retries", "max_propagations", "fixed_idx", "fixed_tile", "seed"),
 			&PCGWFC3D::generate);
+	ClassDB::bind_method(D_METHOD("get_last_progress"), &PCGWFC3D::get_last_progress);
+}
+
+std::atomic<double> PCGWFC3D::_last_progress(0.0);
+
+double PCGWFC3D::get_last_progress() const {
+	return _last_progress.load(std::memory_order_relaxed);
 }
 
 static inline int popcount32(uint32_t v) {
@@ -65,6 +72,9 @@ PackedInt32Array PCGWFC3D::generate(int p_width, int p_height, int p_depth,
 	history.reserve(1024);
 
 	for (int retry = 0; retry <= retries; ++retry) {
+		// 进度: 每轮 retry 写 0..1 (主线程轮询静态量)
+		_last_progress.store((retries <= 0) ? 1.0 : (double)(retry + 1) / (double)(retries + 1),
+				std::memory_order_relaxed);
 		for (int i = 0; i < cell_count; ++i) wave[i] = (uint32_t)all_mask;
 		for (int k = 0; k < fixed_idx.size() && k < fixed_tile.size(); ++k) {
 			int fi = (int)fixed_idx[k];

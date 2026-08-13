@@ -204,7 +204,8 @@ var fixed2 := {Rect2i(0, 0, 16, 16): 0, Vector2i(30, 30): 2}
 ```
 
 **过程动画**（观测-传播可视化）：`WFCAnimator` 分步推进 WFC，随时渲染当前波函数
-（未坍缩格 = 候选瓦片平均色，已确定格 = 瓦片色，矛盾格 = 红色）：
+（未坍缩格 = 候选瓦片平均色，已确定格 = 瓦片色，矛盾格 = 红色）。
+核心由 C++（`PCGWFCAnimator`，有状态逐步推进）驱动，渲染（数据→Image）留在 GDScript：
 
 ```gdscript
 var anim := WFCAnimator.new()
@@ -315,6 +316,7 @@ world.chunk_size = 8
 var vox := world.get_chunk(1, 0, -1)    # 懒生成并缓存（同 seed 必复现）
 var v := world.get_cell(50, 20, 30)     # 按世界坐标取值
 world.generate_chunk_async(cx, cy, cz)  # 后台线程生成
+await world.generate_chunks_async(keys, func(p: float): print("chunk 进度 ", p))  # 批量后台生成 + 进度
 ```
 
 **PlacementDef3D**：3D 空间散布（泊松圆盘 / 抖动网格 / 均匀随机），可指定 `exclude_grid3d_key` 剔除实体格内的点：
@@ -354,9 +356,18 @@ world.clear_chunks()                   # 释放内存，重新取按同一种子
 
 ```gdscript
 var grid: GeneratedGrid = await PCGTool.generate_grid_async(wfc_def, seed)
+# 带实时进度回调（WFC 每 cell 细分进度 0..1，大图采样细腻）
+var grid2: GeneratedGrid = await PCGTool.generate_grid_async_progress(wfc_def, seed,
+    func(p: float): print("进度 ", p))
+# 3D WFC 同样支持进度
+var g3d: GeneratedGrid3D = await PCGTool.generate_grid_3d_async_progress(wfc3d_def, seed,
+    func(p: float): print("3D 进度 ", p))
+# 分块世界批量后台生成 + 整体进度（2D/3D 均有）
+await world2d.generate_chunks_async(keys, func(p: float): print("2D chunk 进度 ", p))
+await world3d.generate_chunks_async(keys, func(p: float): print("3D chunk 进度 ", p))
 ```
 
-基于 `AsyncTool.thread_call`，`GeneratedGrid` 是纯数据，线程安全；大图生成不卡主线程（demo 见 ChunkDemo 的「异步生成」开关）。
+基于 `AsyncTool.thread_call` + WorkerThreadPool，C++ 原生类在主线程预热后、worker 线程只调纯函数方法；`GeneratedGrid` 是纯数据，线程安全。大图生成不卡主线程且可实时回报进度：**2D WFC 进度细化为每 cell**（192×192 约 632 帧采样），分块世界按 chunk 完成数回报（demo 见 ChunkDemo 的「异步生成」开关）。
 
 ### 9. 生成管线（组合多步）
 
@@ -415,7 +426,7 @@ w2.get_cell(5, 5)                       # 未改动格由 seed 复现
 - `res://Scenes/PCG/PCGDemo.tscn` — 2D 生成展示：噪声层 / 程序化纹理（云/木纹/砖墙/水面）/ 网格（WFC 固定格涂色 + 过程动画、Voronoi、模板拼接）/ 高度图（岛屿/大陆伪彩渲染+侵蚀）/ L-System（分形植物/树）/ 散布 / 内容（含词缀）/ 生物群系 / 综合管线
 - `res://Scenes/PCG/PCGDemo3D.tscn` — 3D 体素展示：地表高度图 / 3D 细胞洞穴 / 3D WFC，鼠标拖拽旋转查看；已接入导航网格（切换地形即可看到导航统计与寻路实测）
 - `res://Scenes/PCG/ChunkDemo.tscn` — 2D 分块世界：确定性无限世界、同步/异步生成、seed 增量存档
-- `res://Scenes/PCG/ChunkDemo3D.tscn` — 3D 分块世界（地表跨块连续）/ 3D 散布，鼠标拖拽旋转查看；已接入跨 chunk 合并导航网格
+- `res://Scenes/PCG/ChunkDemo3D.tscn` — 3D 分块世界（地表跨块连续）/ 3D 散布，鼠标拖拽旋转查看；已接入跨 chunk 合并导航网格 + **异步生成开关（勾选后后台并行生成 + 进度条实时显示）**
 - `res://Scenes/PCG/NavPatrolDemo.tscn` — **NPC 三态 AI + RVO 避障演示**：PCG 地表/洞穴地形 + `NavigationAgent3D` NPC 自动巡逻/追逐玩家/近距离逃跑（引擎原生连续寻路，洞穴多层经斜坡上下连通）；黄色球是 `NavigationObstacle3D` 动态障碍，方向键移动，NPC 用 RVO 实时避让；绿色玩家 WASD 控制
 - `res://Scenes/PCG/DungeonGame.tscn` — **地牢小游戏**：PCG 随机生成地牢（BSP/模板/洞穴/迷宫），回合制打怪（普通/精英/首领三色怪，属性随层数）、装备掉落（词缀命名+攻击加成换武器）、经验/等级成长、金币/药水、多层递增、seed 复现；勾选 **「AI 自动游玩」** 可自动寻路捡物/打怪/下楼（用 **Godot 自带 AStarGrid2D** 寻路，可观赏）
 
@@ -463,15 +474,17 @@ WFC 演示小贴士：切到「网格」选 WFC 配置，左侧选「刷子」�
 | `PCTDeterminismTest` | 全部 2D/3D 算法 + WFC 固定格 + 管线 同 seed 复现、不同 seed 不同 |
 | `PCTConstraintTest` | 迷宫/BSP/模板/3D 洞穴连通域=1、3D WFC 交替无违规、泊松最小间距、序列化往返、增量存档 |
 | `PCTBenchmarkTest` | 各算法耗时基准（GDScript 参考值） |
+| `PCGNativeTest` | **框架级共享原生库**：7 个原生类加载+方法校验、侵蚀/热侵蚀/2D/3D WFC/动画器/L-System/洞穴功能正确性、同 seed 可复现、缺库报错路径 |
 
 运行方式（在编辑器执行，结果打印到日志）：
 ```gdscript
 PCTDeterminismTest.run()
 PCTConstraintTest.run()
 PCTBenchmarkTest.run()
+PCGNativeTest.run()
 ```
 
-**当前基准参考**（64 位桌面）：2D 网格 96×96 多数 <20ms（WFC 64×64 ≈1.9s 需后台线程）；3D 地表 8ms、3D 洞穴 1.3s、3D WFC 16³ 176ms；分块世界 49 chunk 269ms；综合管线 112ms。
+**当前基准参考**（64 位桌面，C++ 版）：WFC 64×64 约 72ms、200×200 约 6.5s；3D 地表 8ms、3D 洞穴 3ms、3D WFC 16³ 75ms；侵蚀 5 万液滴+热侵蚀 96×96 约 59ms；分块世界 49 chunk 269ms；综合管线 112ms。
 
 ## 扩展
 

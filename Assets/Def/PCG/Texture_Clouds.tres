@@ -1,7 +1,7 @@
-[gd_resource type="Resource" load_steps=4 format=3]
+[gd_resource type="Resource" script_class="TextureGenDef" format=3 uid="uid://bu7k0ma743ndg"]
 
-[ext_resource type="Script" path="res://addons/DEVFramework/PCG/Def/TextureGenDef.gd" id="1_script"]
-[ext_resource type="Resource" path="res://Assets/Def/PCG/Height_Base.tres" id="2_noise"]
+[ext_resource type="Script" uid="uid://cwwvgxcvtybf7" path="res://addons/DEVFramework/PCG/Def/TextureGenDef.gd" id="1_script"]
+[ext_resource type="Resource" uid="uid://cc712f4jofy3l" path="res://Assets/Def/PCG/Height_Base.tres" id="2_noise"]
 
 [sub_resource type="Gradient" id="Gradient_cloud"]
 offsets = PackedFloat32Array(0, 0.45, 1)
@@ -10,8 +10,6 @@ colors = PackedColorArray(0.42, 0.48, 0.58, 1, 0.72, 0.78, 0.85, 1, 0.98, 0.99, 
 [resource]
 script = ExtResource("1_script")
 type = 1
-width = 256
-height = 256
 noise_layer = ExtResource("2_noise")
 gradient = SubResource("Gradient_cloud")
 threshold = 0.52

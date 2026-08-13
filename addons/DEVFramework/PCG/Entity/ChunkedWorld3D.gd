@@ -65,6 +65,59 @@ func generate_chunk_async(cx: int, cy: int, cz: int) -> GeneratedGrid3D:
 	return await PCGTool.generate_grid_3d_async(d, seed)
 
 
+## 批量后台生成一批 chunk 并实时回报整体进度，完成后全部缓存。
+## chunk_keys: Array[Vector3i]；on_progress: func(p: float) 主线程每帧回调 0..1。
+## 在调用前会预热 C++ 原生类(主线程)，worker 线程只调纯函数方法，保证线程安全。
+func generate_chunks_async(chunk_keys: Array, on_progress: Callable = func(_p: float): pass) -> void:
+	if chunk_keys.is_empty():
+		return
+	# 主线程预热 C++ 原生类(worker 线程只调纯函数方法, 保证线程安全)
+	if grid3d_def and grid3d_def.type == Grid3DGenDef.Type.WFC_3D:
+		FrameworkNative.get_native(&"PCGWFC3D", [&"generate"])
+	var total := chunk_keys.size()
+	var defs := []  # 与 chunk_keys 一一对应: {key, def, seed}
+	for key in chunk_keys:
+		var v3: Vector3i = key
+		var d: Grid3DGenDef = grid3d_def.duplicate() as Grid3DGenDef if grid3d_def else null
+		if d != null:
+			d.width = chunk_size
+			d.height = chunk_size
+			d.depth = chunk_size
+			if d.type == Grid3DGenDef.Type.NOISE_SURFACE or d.type == Grid3DGenDef.Type.CAVE_NOISE_3D:
+				d.offset = Vector3i(v3.x * chunk_size, 0, v3.z * chunk_size)
+				d.noise_seed = seed_base
+		defs.append({"key": v3, "def": d, "seed": _chunk_seed(seed_base, v3.x, v3.y, v3.z)})
+	# 并行后台生成(worker 线程只调 PCGTool.generate_grid_3d 纯函数)
+	var results := {}
+	var task_ids := []
+	for item in defs:
+		task_ids.append(WorkerThreadPool.add_task(_chunk_worker.bind(item, results)))
+	# 主线程轮询完成数报进度
+	while not WorkerThreadPool.is_task_completed(task_ids[task_ids.size() - 1]):
+		var completed := 0
+		for tid in task_ids:
+			if WorkerThreadPool.is_task_completed(tid):
+				completed += 1
+		on_progress.call(float(completed) / float(total))
+		await Engine.get_main_loop().process_frame
+	on_progress.call(1.0)
+	# 全部完成后缓存
+	for key in results:
+		var v3: Vector3i = key
+		add_chunk(v3.x, v3.y, v3.z, results[key])
+
+
+## worker 线程生成单个 chunk(接收预构建的 def 副本, 不碰 self)
+func _chunk_worker(item: Dictionary, results: Dictionary) -> void:
+	var d: Grid3DGenDef = item.def
+	var g: GeneratedGrid3D
+	if d == null:
+		g = GeneratedGrid3D.create(chunk_size, chunk_size, chunk_size, 1)
+	else:
+		g = PCGTool.generate_grid_3d(d, PCGTool.make_rng(item.seed))
+	results[item.key] = g
+
+
 ## 清空已缓存 chunk（重新取会按同一种子重建）
 func clear_chunks() -> void:
 	_chunks.clear()

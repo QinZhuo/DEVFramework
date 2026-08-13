@@ -1,7 +1,7 @@
-[gd_resource type="Resource" load_steps=4 format=3]
+[gd_resource type="Resource" script_class="TextureGenDef" format=3 uid="uid://dspgtdybvwaa5"]
 
-[ext_resource type="Script" path="res://addons/DEVFramework/PCG/Def/TextureGenDef.gd" id="1_script"]
-[ext_resource type="Resource" path="res://Assets/Def/PCG/Height_Ridge.tres" id="2_noise"]
+[ext_resource type="Script" uid="uid://cwwvgxcvtybf7" path="res://addons/DEVFramework/PCG/Def/TextureGenDef.gd" id="1_script"]
+[ext_resource type="Resource" uid="uid://cnl3qe0teti7o" path="res://Assets/Def/PCG/Height_Ridge.tres" id="2_noise"]
 
 [sub_resource type="Gradient" id="Gradient_wood"]
 offsets = PackedFloat32Array(0, 0.5, 1)
@@ -10,9 +10,6 @@ colors = PackedColorArray(0.18, 0.1, 0.05, 1, 0.42, 0.27, 0.14, 1, 0.68, 0.48, 0
 [resource]
 script = ExtResource("1_script")
 type = 2
-width = 256
-height = 256
 noise_layer = ExtResource("2_noise")
 gradient = SubResource("Gradient_wood")
-ring_density = 4.0
 output_key = "tex_wood"

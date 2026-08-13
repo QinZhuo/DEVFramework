@@ -5,6 +5,7 @@
 #include <godot_cpp/variant/packed_int32_array.hpp>
 #include <godot_cpp/variant/packed_float32_array.hpp>
 #include <godot_cpp/variant/string_name.hpp>
+#include <atomic>
 #include <random>
 #include <vector>
 #include <cstdint>
@@ -39,6 +40,10 @@ public:
 			int backtracks, int retries, int max_propagations,
 			const PackedInt32Array &fixed_idx, const PackedInt32Array &fixed_tile,
 			int seed);
+	double get_last_progress() const;
+
+private:
+	static std::atomic<double> _last_progress;
 };
 
 } // namespace godot

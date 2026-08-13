@@ -38,6 +38,10 @@ func add_chunk(cx: int, cy: int, grid: GeneratedGrid) -> void:
 	_chunks[key] = grid
 	_chunk_count += 1
 
+## 已加载 chunk 列表（Vector2i → GeneratedGrid），供渲染/导航构建遍历
+func get_loaded_chunks() -> Dictionary:
+	return _chunks.duplicate()
+
 ## 后台线程生成 chunk（按 chunk_size 覆写定义尺寸，与 _generate_chunk 同种子逻辑）
 func generate_chunk_async(cx: int, cy: int) -> GeneratedGrid:
 	var d: GridGenDef = grid_def.duplicate() as GridGenDef if grid_def else null
@@ -47,6 +51,54 @@ func generate_chunk_async(cx: int, cy: int) -> GeneratedGrid:
 	d.height = chunk_size
 	var seed := _chunk_seed(seed_base, cx, cy)
 	return await PCGTool.generate_grid_async(d, seed)
+
+## 批量后台生成一批 chunk 并实时回报整体进度，完成后全部缓存。
+## chunk_keys: Array[Vector2i]；on_progress: func(p: float) 主线程每帧回调 0..1。
+## 调用前主线程预热 C++ 原生类，worker 线程只调纯函数方法，保证线程安全。
+func generate_chunks_async(chunk_keys: Array, on_progress: Callable = func(_p: float): pass) -> void:
+	if chunk_keys.is_empty():
+		return
+	# 主线程预热 C++ 原生类(worker 线程只调纯函数方法)
+	if grid_def and grid_def.type == GridGenDef.Type.WFC:
+		FrameworkNative.get_native(&"PCGWFC", [&"generate"])
+	var total := chunk_keys.size()
+	var defs := []  # 与 chunk_keys 一一对应: {key, def, seed}
+	for key in chunk_keys:
+		var v2: Vector2i = key
+		var d: GridGenDef = grid_def.duplicate() as GridGenDef if grid_def else null
+		if d != null:
+			d.width = chunk_size
+			d.height = chunk_size
+		defs.append({"key": v2, "def": d, "seed": _chunk_seed(seed_base, v2.x, v2.y)})
+	# 并行后台生成(worker 线程只调 PCGTool.generate_grid 纯函数)
+	var results := {}
+	var task_ids := []
+	for item in defs:
+		task_ids.append(WorkerThreadPool.add_task(_chunk_worker.bind(item, results)))
+	# 主线程轮询完成数报进度
+	while not WorkerThreadPool.is_task_completed(task_ids[task_ids.size() - 1]):
+		var completed := 0
+		for tid in task_ids:
+			if WorkerThreadPool.is_task_completed(tid):
+				completed += 1
+		on_progress.call(float(completed) / float(total))
+		await Engine.get_main_loop().process_frame
+	on_progress.call(1.0)
+	# 全部完成后缓存
+	for key in results:
+		var v2: Vector2i = key
+		add_chunk(v2.x, v2.y, results[key])
+
+
+## worker 线程生成单个 chunk(接收预构建的 def 副本, 不碰 self)
+func _chunk_worker(item: Dictionary, results: Dictionary) -> void:
+	var d: GridGenDef = item.def
+	var g: GeneratedGrid
+	if d == null:
+		g = GeneratedGrid.create(chunk_size, chunk_size, 1)
+	else:
+		g = PCGTool.generate_grid(d, PCGTool.make_rng(item.seed))
+	results[item.key] = g
 
 ## 是否已生成过该 chunk
 func has_chunk(cx: int, cy: int) -> bool:

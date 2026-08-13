@@ -23,7 +23,9 @@ add_library(devecs SHARED
     src/pcg_erode.cpp
     src/pcg_wfc.cpp
     src/pcg_wfc3d.cpp
+    src/pcg_wfc_animator.cpp
     src/pcg_lsystem.cpp
+    src/pcg_cave3d.cpp
 )
 
 target_link_libraries(devecs PRIVATE godot-cpp)

@@ -8,8 +8,16 @@ using namespace godot;
 
 void PCGWFC::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("generate", "width", "height", "sockets", "weights",
-			"backtracks", "retries", "max_propagations", "fixed_idx", "fixed_tile", "seed"),
+			"backtracks", "retries", "max_propagations", "fixed_idx", "fixed_tile", "seed",
+			"progress_dict"),
 			&PCGWFC::generate);
+	ClassDB::bind_method(D_METHOD("get_last_progress"), &PCGWFC::get_last_progress);
+}
+
+std::atomic<double> PCGWFC::_last_progress(0.0);
+
+double PCGWFC::get_last_progress() const {
+	return _last_progress.load(std::memory_order_relaxed);
 }
 
 static inline int popcount32(uint32_t v) {
@@ -34,7 +42,7 @@ PackedInt32Array PCGWFC::generate(int p_width, int p_height,
 		const PackedInt32Array &sockets, const PackedFloat32Array &weights,
 		int backtracks, int retries, int max_propagations,
 		const PackedInt32Array &fixed_idx, const PackedInt32Array &fixed_tile,
-		int seed) {
+		int seed, const Variant &progress_dict) {
 	PackedInt32Array result;
 	int n = (int)(sockets.size() / 4);
 	int cell_count = p_width * p_height;
@@ -81,6 +89,13 @@ PackedInt32Array PCGWFC::generate(int p_width, int p_height,
 	// 应用固定格
 	std::vector<uint32_t> wave_snapshot; // 用于回溯恢复
 	for (int retry = 0; retry <= retries; ++retry) {
+		// 进度: 每轮 retry 写 0..1 (主线程轮询共享 Dictionary 浅拷贝 / 静态量)
+		double p = (retries <= 0) ? 1.0 : (double)(retry + 1) / (double)(retries + 1);
+		_last_progress.store(p, std::memory_order_relaxed);
+		if (progress_dict.get_type() == Variant::DICTIONARY) {
+			Dictionary pd = progress_dict;
+			pd["p"] = p;
+		}
 		// 重置 wave(固定格除外)
 		for (int i = 0; i < cell_count; ++i) wave[i] = (uint32_t)all_mask;
 		for (int k = 0; k < fixed_idx.size() && k < fixed_tile.size(); ++k) {
@@ -100,6 +115,7 @@ PackedInt32Array PCGWFC::generate(int p_width, int p_height,
 		int backtracks_used = 0;
 		int propagations = 0;
 		bool failed = false;
+		long observed = 0;
 
 		auto propagate = [&](std::vector<int> &q) -> void {
 			while (!q.empty()) {
@@ -202,6 +218,17 @@ PackedInt32Array PCGWFC::generate(int p_width, int p_height,
 				queue.push_back(best);
 				in_queue[best] = 1;
 				propagate(queue);
+				// 每 cell 粒度进度: 本轮已完成观测数 / 总格数, 叠加 retry 基础进度
+				++observed;
+				if ((observed & 0x3F) == 0) {  // 每 64 个 cell 写一次, 减少跨线程开销
+					double base_p = (retries <= 0) ? 0.0 : (double)retry / (double)(retries + 1);
+					double cell_p = (double)observed / (double)cell_count / (double)(retries + 1);
+					_last_progress.store(base_p + cell_p, std::memory_order_relaxed);
+					if (progress_dict.get_type() == Variant::DICTIONARY) {
+						Dictionary pd = progress_dict;
+						pd["p"] = base_p + cell_p;
+					}
+				}
 			}
 			continue;
 		contradiction:

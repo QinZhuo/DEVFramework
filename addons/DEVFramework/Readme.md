@@ -263,7 +263,9 @@ world.tick(delta)
 - `ECSCore` — ECS 高性能实体组件系统
 - `PCGErode` — PCG 高度图侵蚀加速（C++ 水力粒子液滴含悬崖/沉积参数 + 热侵蚀平滑坡面）
 - `PCGWFC` / `PCGWFC3D` — PCG 2D/3D 波函数坍缩加速（大图快 ~30 倍）
+- `PCGWFCAnimator` — PCG WFC 过程动画器（有状态逐步推进，可视化生成过程）
 - `PCGLSystem` — PCG L-System 生长展开加速（大迭代快数十倍）
+- `PCGCave3D` — PCG 3D 细胞洞穴加速（26 邻域平滑，快数百倍）
 
 由 **`FrameworkNative`**（`Native/FrameworkNative.gd`）统一懒加载与校验：
 - `FrameworkNative.get_native(&"ECSCore", required_methods)` — 按类名取共享实例（缓存 + 方法集版本校验）

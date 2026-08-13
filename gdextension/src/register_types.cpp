@@ -9,7 +9,9 @@
 #include "pcg_erode.h"
 #include "pcg_wfc.h"
 #include "pcg_wfc3d.h"
+#include "pcg_wfc_animator.h"
 #include "pcg_lsystem.h"
+#include "pcg_cave3d.h"
 
 using namespace godot;
 
@@ -21,7 +23,9 @@ void initialize_devecs_module(ModuleInitializationLevel p_level) {
 	GDREGISTER_CLASS(PCGErode);
 	GDREGISTER_CLASS(PCGWFC);
 	GDREGISTER_CLASS(PCGWFC3D);
+	GDREGISTER_CLASS(PCGWFCAnimator);
 	GDREGISTER_CLASS(PCGLSystem);
+	GDREGISTER_CLASS(PCGCave3D);
 }
 
 void uninitialize_devecs_module(ModuleInitializationLevel p_level) {
