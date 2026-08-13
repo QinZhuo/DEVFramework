@@ -256,6 +256,18 @@ world.tick(delta)
 
 **完整使用说明见 [`ECS/Readme.md`](ECS/Readme.md)**。
 
+### 4.6b 框架级共享原生库（`Native/`）
+
+整个 DEVFramework 的 C++ 原生能力集中在**唯一一个共享扩展**：
+`res://addons/DEVFramework/Native/devecs.gdextension`（编译产物也在该目录）。任何模块（ECS 的 `ECSCore`、未来 PCG 侵蚀加速等）的原生类都注册在这一个库里，共用一份二进制。
+
+由 **`FrameworkNative`**（`Native/FrameworkNative.gd`）统一懒加载与校验：
+- `FrameworkNative.get_native(&"ECSCore", required_methods)` — 按类名取共享实例（缓存 + 方法集版本校验）
+- `FrameworkNative.instantiate_script(script)` — 稳定的脚本实例化（规避全局类注册时序问题）
+- `FrameworkNative.refresh(...)` — 清缓存（库热重载/测试）
+
+新增模块原生能力时：把 C++ 类注册进 `devecs.gdextension`（需源码重编译），GDScript 侧通过 `FrameworkNative.get_native(&"你的类名", [...])` 访问，不要各自维护一份 ClassDB 检测逻辑。
+
 ### 4.7 PCG 程序化内容生成（`PCG/`）
 
 框架内置一套 **程序化内容生成** 模块，遵循 Def → Entity → Tool 三层模式：

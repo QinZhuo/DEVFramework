@@ -1,7 +1,8 @@
 cmake_minimum_required(VERSION 3.17)
 
-# DevECS 原生核心 (GDExtension)
-# 独立 ECS 底层: 实体/组件/系统/查询, 与 DEVFramework 原有逻辑完全隔离。
+# DevECS 原生核心 (GDExtension) — DEVFramework 框架级共享原生库
+# 整个框架的 C++ 能力(ECS 的 ECSCore、未来 PCG 侵蚀加速等)都注册在这一个扩展里,
+# 编译产物统一输出到 addons/DEVFramework/Native/。
 # 多平台构建: godot-cpp 官方模板同款 CMake 方案
 # 用法:
 #   cmake -S . -B build -DGODOTCPP_API_VERSION=4.7 -DCMAKE_BUILD_TYPE=Release
@@ -36,9 +37,9 @@ if(APPLE)
     set_target_properties(devecs PROPERTIES MACOSX_RPATH ON)
 endif()
 
-# 编译产物直接输出到插件分发目录 addons/DEVFramework/ECS/Native/
+# 编译产物直接输出到框架级共享原生库目录 addons/DEVFramework/Native/
 set_target_properties(devecs PROPERTIES
-    LIBRARY_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/../addons/DEVFramework/ECS/Native
-    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/../addons/DEVFramework/ECS/Native
-    ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/../addons/DEVFramework/ECS/Native
+    LIBRARY_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/../addons/DEVFramework/Native
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/../addons/DEVFramework/Native
+    ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/../addons/DEVFramework/Native
 )
