@@ -1,0 +1,27 @@
+[gd_resource type="Resource" load_steps=4 format=3]
+
+[ext_resource type="Script" path="res://addons/DEVFramework/PCG/Def/HeightMapDef.gd" id="1_script"]
+[ext_resource type="Resource" path="res://Assets/Def/PCG/Height_Base.tres" id="2_base"]
+[ext_resource type="Resource" path="res://Assets/Def/PCG/Height_Detail.tres" id="3_detail"]
+
+[resource]
+script = ExtResource("1_script")
+width = 96
+height = 96
+base_layer = ExtResource("2_base")
+detail_layer = ExtResource("3_detail")
+island_strength = 0.7
+island_shape = 2
+min_height = 0.1
+max_height = 0.95
+height_curve = 1.1
+base_weight = 1.0
+detail_weight = 0.35
+ridge_weight = 0.0
+erosion_droplets = 3000
+erosion_inertia = 0.1
+erosion_power = 0.15
+erosion_radius = 3
+erosion_min_slope = 0.005
+erosion_evaporate = 0.02
+output_key = "heightmap"

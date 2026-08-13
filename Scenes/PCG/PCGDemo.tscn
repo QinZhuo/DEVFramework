@@ -1,9 +1,14 @@
-[gd_scene load_steps=24 format=3]
+[gd_scene load_steps=33 format=3]
 
 [ext_resource type="Script" path="res://Scenes/PCG/PCGDemo.gd" id="1_demo"]
 [ext_resource type="Resource" path="res://Assets/Def/PCG/Noise_Perlin.tres" id="n1"]
 [ext_resource type="Resource" path="res://Assets/Def/PCG/Noise_Cellular.tres" id="n2"]
 [ext_resource type="Resource" path="res://Assets/Def/PCG/Noise_Ridged.tres" id="n3"]
+[ext_resource type="Resource" path="res://Assets/Def/PCG/Texture_Clouds.tres" id="t1"]
+[ext_resource type="Resource" path="res://Assets/Def/PCG/Texture_Wood.tres" id="t2"]
+[ext_resource type="Resource" path="res://Assets/Def/PCG/Texture_Brick.tres" id="t3"]
+[ext_resource type="Resource" path="res://Assets/Def/PCG/Texture_Water.tres" id="t4"]
+[ext_resource type="Resource" path="res://Assets/Def/PCG/Texture_Noise.tres" id="t5"]
 [ext_resource type="Resource" path="res://Assets/Def/PCG/Grid_NoiseTerrain.tres" id="g1"]
 [ext_resource type="Resource" path="res://Assets/Def/PCG/Grid_Cave.tres" id="g2"]
 [ext_resource type="Resource" path="res://Assets/Def/PCG/Grid_Maze.tres" id="g3"]
@@ -13,6 +18,10 @@
 [ext_resource type="Resource" path="res://Assets/Def/PCG/Grid_Voronoi.tres" id="g7"]
 [ext_resource type="Resource" path="res://Assets/Def/PCG/Stitch_Dungeon.tres" id="g8"]
 [ext_resource type="Resource" path="res://Assets/Def/PCG/City_Grid.tres" id="g9"]
+[ext_resource type="Resource" path="res://Assets/Def/PCG/HeightMap_Island.tres" id="h1"]
+[ext_resource type="Resource" path="res://Assets/Def/PCG/HeightMap_Mountain.tres" id="h2"]
+[ext_resource type="Resource" path="res://Assets/Def/PCG/LSystem_Plant.tres" id="l1"]
+[ext_resource type="Resource" path="res://Assets/Def/PCG/LSystem_Tree.tres" id="l2"]
 [ext_resource type="Resource" path="res://Assets/Def/PCG/Placement_Poisson.tres" id="p1"]
 [ext_resource type="Resource" path="res://Assets/Def/PCG/Placement_JitterGrid.tres" id="p2"]
 [ext_resource type="Resource" path="res://Assets/Def/PCG/Content_Items.tres" id="c1"]
@@ -47,8 +56,8 @@ anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
 script = ExtResource("1_demo")
-noise_defs = Array[Resource]([ExtResource("n1"), ExtResource("n2"), ExtResource("n3")])
-grid_defs = Array[Resource]([ExtResource("g1"), ExtResource("g2"), ExtResource("g3"), ExtResource("g4"), ExtResource("g5"), ExtResource("g6"), ExtResource("g7"), ExtResource("g8"), ExtResource("g9")])
+noise_defs = Array[Resource]([ExtResource("n1"), ExtResource("n2"), ExtResource("n3"), ExtResource("t1"), ExtResource("t2"), ExtResource("t3"), ExtResource("t4"), ExtResource("t5")])
+grid_defs = Array[Resource]([ExtResource("g1"), ExtResource("g2"), ExtResource("g3"), ExtResource("g4"), ExtResource("g5"), ExtResource("g6"), ExtResource("g7"), ExtResource("g8"), ExtResource("g9"), ExtResource("h1"), ExtResource("h2"), ExtResource("l1"), ExtResource("l2")])
 placement_defs = Array[Resource]([ExtResource("p1"), ExtResource("p2")])
 content_defs = Array[Resource]([ExtResource("c1"), ExtResource("c2"), ExtResource("c3"), ExtResource("c4"), ExtResource("c5")])
 biome_defs = Array[Resource]([ExtResource("b1")])

@@ -14,6 +14,9 @@ addons/DEVFramework/PCG/
 │   ├── NoiseLayerDef.gd       # 噪声层（包装 Godot 内置 FastNoiseLite，含 2D/3D 采样）
 │   ├── GridGenDef.gd          # 2D 网格生成器（噪声地形/细胞洞穴/迷宫/随机游走/BSP/WFC/Voronoi）
 │   ├── Grid3DGenDef.gd        # 3D 体素生成器（地表高度图 / 3D 细胞洞穴 / 3D WFC / 3D 噪声洞穴）
+│   ├── HeightMapDef.gd        # 高度图生成器（多层噪声 + 岛屿掩膜 + 高度映射 + 水力侵蚀，连续高度场）
+│   ├── TextureGenDef.gd       # 程序化纹理生成器（噪声/云/木纹/砖墙/水面，色带映射）
+│   ├── LSystemDef.gd          # L-System 生长生成器（重写规则 turtle 绘制，线段集输出）
 │   ├── TileDef3D / TileSetDef3D  # 3D WFC 六面 socket 瓦片与瓦片集
 │   ├── CityDef.gd             # 城市街区生成（道路网格 + 建筑/公园）
 │   ├── PlacementDef.gd        # 散布放置器（泊松圆盘/抖动网格/均匀随机，可按网格剔除）
@@ -30,6 +33,7 @@ addons/DEVFramework/PCG/
 ├── Entity/                    # 生成结果（运行时数据）
 │   ├── GeneratedGrid.gd       # 2D 整数栅格（邻居/连通域/BFS 查询，可序列化）
 │   ├── GeneratedGrid3D.gd     # 3D 整数栅格（体素，邻居/连通域，可序列化）
+│   ├── HeightMap.gd           # 高度图（连续高度场，采样/坡度/海陆/直方图/序列化）
 │   ├── BiomeMap.gd            # 群系图结果（格子索引 + 群系表）
 │   ├── ChunkedWorld.gd        # 2D 分块世界（seed+chunk 坐标确定性懒生成，seed+增量存档）
 │   ├── ChunkedWorld3D.gd      # 3D 分块世界（统一噪声种子 + 世界坐标偏移，地表跨块连续，seed+增量存档）
@@ -93,6 +97,73 @@ var grid := PCGTool.generate_template_stitch(stitch, PCGTool.make_rng(seed))
 ```
 
 适合做地牢房间组合 / 建筑群 / 基地布局。
+
+### 2.6 高度图（连续高度场，地形的"地基"）
+
+`HeightMapDef` 用**多层噪声叠加**（基形 + 细节 + 山峰）生成连续高度场（每格 0..1），
+支持**岛屿/大陆掩膜**（边缘沉入海）和**高度曲线映射**：
+
+```gdscript
+var def: HeightMapDef = load("res://Assets/Def/PCG/HeightMap_Island.tres")
+var hm := PCGTool.generate_heightmap(def, PCGTool.make_rng(seed))
+hm.get_height(x, y)          # 取高度 (0..1)
+hm.sample(fx, fy)            # 双线性插值采样（浮点坐标）
+hm.slope(x, y)               # 坡度（悬崖/斜坡查询）
+hm.is_land(x, y, 0.5)        # 海陆判定
+hm.histogram(5)              # 高度分层统计（水位/植被分层）
+```
+
+高度图是 2D 栅格 / 3D 体素的连续地基，可自由离散化：
+
+```gdscript
+var grid := PCGTool.heightmap_to_grid(hm, 0.5)      # → 2D 栅格（阈值分割海陆）
+var voxels := GeneratedGrid3D.create(96, 16, 96)
+PCGTool.heightmap_to_grid3d(hm, voxels, 1, 15.0)    # → 3D 体素（Minecraft 式按高度填充）
+var img := PCGTool.heightmap_to_image(hm)           # → 灰度图
+```
+
+`HeightMapDef` 也是 `PCGGeneratorDef`，可直接接入管线（output key 取高度图）。
+预置资源：`HeightMap_Island.tres`（岛屿）/ `HeightMap_Mountain.tres`（大陆+山脊）。
+
+**水力侵蚀**（`erosion_droplets > 0` 开启）：粒子液滴模拟（Sebastian Lague 风格）——
+每滴从随机高点沿最陡下降移动，沿途侵蚀/沉积，形成河道与峡谷，地形更真实。
+参数：`erosion_droplets`（液滴数，建议 ≤5000）/ `erosion_inertia`（惯性）/ `erosion_power`（强度）/
+`erosion_radius`（河道宽）/ `erosion_min_slope` / `erosion_evaporate`（蒸发）。GDScript 下液滴数请克制。
+
+### 2.7 程序化纹理（可复现贴图）
+
+`TextureGenDef` 用噪声 + 色带（Gradient）生成可复现纹理：
+
+```gdscript
+var def: TextureGenDef = load("res://Assets/Def/PCG/Texture_Wood.tres")
+var img := PCGTool.generate_texture(def, PCGTool.make_rng(seed))   # → Image
+```
+
+| 类型 | 说明 |
+|---|---|
+| `NOISE` | 噪声灰度/色带 |
+| `CLOUDS` | 分形噪声阈值云（配亮色带） |
+| `WOOD` | 环形噪声木纹（`ring_density` 年轮密度） |
+| `BRICK` | 砖墙（`brick_width/height` + `mortar_thickness` 灰浆缝 + 噪声扰动） |
+| `WATER` | 低频大波 + 高频波纹（`ripple_strength`） |
+
+`TextureGenDef` 是 `PCGGeneratorDef`，可接入管线（output key 取 Image）。
+预置资源：`Texture_Noise/Clouds/Wood/Brick/Water.tres`。
+
+### 2.8 L-System 生长（分形结构）
+
+`LSystemDef` 用重写规则 + turtle 绘制生成线段集（枝干/藤蔓/血管/闪电/道路）：
+
+```gdscript
+var def: LSystemDef = load("res://Assets/Def/PCG/LSystem_Plant.tres")
+var segs := PCGTool.generate_lsystem(def, PCGTool.make_rng(seed))   # PackedVector2Array（每对点=一线段）
+var img := PCGTool.lsystem_to_image(segs)                          # 预览图
+```
+
+turtle 语义：`F`=前进画线、`G`=前进不画线、`+/-`=转向、`[`入栈 `]`出栈（分支）。
+配置：`axiom`（公理）/ `rules`（重写规则字典）/ `iterations` / `angle_deg` / `step_length` /
+`angle_jitter`（角度抖动，seed 可复现）/ `max_segments`（爆炸式增长保护）。
+预置资源：`LSystem_Plant.tres`（F[+F]F[-F]F 分形）、`LSystem_Tree.tres`（经典树）。
 
 ### 3. WFC 瓦片生成
 
@@ -330,11 +401,12 @@ w2.get_cell(5, 5)                       # 未改动格由 seed 复现
 
 ## 演示
 
-- `res://Scenes/PCG/PCGDemo.tscn` — 2D 生成展示：噪声层 / 网格（WFC 固定格涂色 + 过程动画、Voronoi、模板拼接）/ 散布 / 内容（含词缀）/ 生物群系 / 综合管线
-- `res://Scenes/PCG/PCGDemo3D.tscn` — 3D 体素展示：地表高度图 / 3D 细胞洞穴 / 3D WFC，鼠标拖拽旋转查看
+- `res://Scenes/PCG/PCGDemo.tscn` — 2D 生成展示：噪声层 / 程序化纹理（云/木纹/砖墙/水面）/ 网格（WFC 固定格涂色 + 过程动画、Voronoi、模板拼接）/ 高度图（岛屿/大陆伪彩渲染+侵蚀）/ L-System（分形植物/树）/ 散布 / 内容（含词缀）/ 生物群系 / 综合管线
+- `res://Scenes/PCG/PCGDemo3D.tscn` — 3D 体素展示：地表高度图 / 3D 细胞洞穴 / 3D WFC，鼠标拖拽旋转查看；已接入导航网格（切换地形即可看到导航统计与寻路实测）
 - `res://Scenes/PCG/ChunkDemo.tscn` — 2D 分块世界：确定性无限世界、同步/异步生成、seed 增量存档
-- `res://Scenes/PCG/ChunkDemo3D.tscn` — 3D 分块世界（地表跨块连续）/ 3D 散布，鼠标拖拽旋转查看
-- `res://Scenes/PCG/DungeonGame.tscn` — **地牢小游戏**：PCG 随机生成地牢（BSP/模板/洞穴/迷宫），回合制打怪（普通/精英/首领三色怪，属性随层数）、装备掉落（词缀命名+攻击加成换武器）、经验/等级成长、金币/药水、多层递增、seed 复现；勾选 **「AI 自动游玩」** 可自动寻路捡物/打怪/下楼（BFS 寻路，可观赏）
+- `res://Scenes/PCG/ChunkDemo3D.tscn` — 3D 分块世界（地表跨块连续）/ 3D 散布，鼠标拖拽旋转查看；已接入跨 chunk 合并导航网格
+- `res://Scenes/PCG/NavPatrolDemo.tscn` — **NPC 三态 AI + RVO 避障演示**：PCG 地表/洞穴地形 + `NavigationAgent3D` NPC 自动巡逻/追逐玩家/近距离逃跑（引擎原生连续寻路，洞穴多层经斜坡上下连通）；黄色球是 `NavigationObstacle3D` 动态障碍，方向键移动，NPC 用 RVO 实时避让；绿色玩家 WASD 控制
+- `res://Scenes/PCG/DungeonGame.tscn` — **地牢小游戏**：PCG 随机生成地牢（BSP/模板/洞穴/迷宫），回合制打怪（普通/精英/首领三色怪，属性随层数）、装备掉落（词缀命名+攻击加成换武器）、经验/等级成长、金币/药水、多层递增、seed 复现；勾选 **「AI 自动游玩」** 可自动寻路捡物/打怪/下楼（用 **Godot 自带 AStarGrid2D** 寻路，可观赏）
 
 WFC 演示小贴士：切到「网格」选 WFC 配置，左侧选「刷子」瓦片，在图上**左键点击涂格**（固定该格）、**右键擦除**已固定的格，点「重新生成」即可看到 WFC 在保持你手绘格子的前提下自动补全整张地图（固定格带亮色边框）。勾选「生成过程」可逐帧观看观测-传播动画，点「重置」回到未生成状态重放。
 
@@ -361,8 +433,15 @@ WFC 演示小贴士：切到「网格」选 WFC 配置，左侧选「刷子」�
 `ChunkedWorld.get_cell(世界坐标)` 直接按世界坐标取值，chunk 边界由内部自动处理。
 存档用 `seed + 增量改动`（见[存档](#10-存档序列化--seed-增量)）。
 
-> 示例参考：`Scenes/PCG/DungeonGame.tscn` 演示了"消费 `GeneratedGrid` 做撞墙寻路"，
-> `PCGDemo3D.tscn` 演示了"用 MultiMesh 消费 `GeneratedGrid3D`"——这些是消费范例，不是本模块内置功能。
+> 示例参考：`Scenes/PCG/DungeonGame.tscn` 演示了"消费 `GeneratedGrid` 做寻路"。
+> 导航网格/mesh 等**消费数据**的桥接（栅格 → AStarGrid2D / NavigationPolygon / NavigationMesh）**不由 PCG 提供**，
+> 由项目侧实现（本项目参考工具：`Scenes/PCG/NavBridgeTool.gd`）。其中 3D 导航网格**直接复用 Godot 引擎自带烘焙**
+> （`NavigationServer3D.bake_from_source_geometry_data`：体素地表 → 源几何 → 引擎按 cell_size / agent_radius / 斜坡规则烘焙，不手写多边形算法）：
+> - **回合制/格游**：`NavBridgeTool.grid_to_astar_grid(grid, empty, cell_size)` → 原生 `AStarGrid2D`，`get_id_path` 逐格寻路
+> - **连续移动/NPC**：`NavBridgeTool.setup_navigation_2d(region, grid, ...)` 一步配置 `NavigationRegion2D`，配 `NavigationAgent2D`
+> - **3D**：`NavBridgeTool.setup_navigation_3d(region, grid3d, ...)` / `bake_navigation_3d` → 引擎烘焙 `NavigationMesh` 挂到 `NavigationRegion3D`（连通/斜坡/悬崖/边缘收缩全由引擎处理）
+> - **分块世界**：`NavBridgeTool.bake_navigation_3d_chunks(chunks, chunk_size, ...)` 合并已加载 chunk 源几何 → 整体烘焙（跨 chunk 连续寻路）
+> 演示场景：`PCGDemo3D.tscn`（3D 导航网格+寻路实测）、`ChunkDemo3D.tscn`（分块世界导航）、`NavPatrolDemo.tscn`（NavigationAgent3D NPC 三态 AI：巡逻/追逐/逃跑 + NavigationObstacle3D RVO 动态避障）、`DungeonGame.tscn`（AStarGrid2D 回合制寻路）、`PCGDemo3D.tscn` 还演示 MultiMesh 消费 `GeneratedGrid3D`。
 
 ## 测试与基准
 

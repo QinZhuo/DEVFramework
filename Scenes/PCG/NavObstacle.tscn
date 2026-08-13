@@ -1,0 +1,6 @@
+[gd_scene format=3 uid="uid://cgb6os5n4k3r2"]
+
+[ext_resource type="Script" path="res://Scenes/PCG/NavObstacle.gd" id="1_obs"]
+
+[node name="NavObstacle" type="Node3D"]
+script = ExtResource("1_obs")

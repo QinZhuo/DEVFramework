@@ -11,6 +11,7 @@ extends Node3D
 @onready var algo_option: OptionButton = %AlgoOption
 @onready var seed_spin: SpinBox = %SeedSpin
 @onready var log_box: RichTextLabel = %LogBox
+@onready var nav_region: NavigationRegion3D = %NavRegion3D
 
 var _yaw := 0.7
 var _pitch := 0.25
@@ -86,6 +87,7 @@ func _generate() -> void:
 	_log("3D %s:  %dx%dx%d\n实体 %d ／ 空 %d%s\n鼠标左键拖拽旋转" % [
 		def.name, grid.width, grid.height, grid.depth, solid, empty, tail,
 	])
+	_build_navigation(grid, def)
 
 
 func _render(grid: GeneratedGrid3D, def: Grid3DGenDef) -> void:
@@ -165,6 +167,34 @@ func _add_mesh(pts: PackedVector3Array, color: Color, transparent: bool) -> void
 func _log_tail(tail: String) -> void:
 	if log_box:
 		log_box.text += "\n" + tail
+
+
+## 桥接 PCG 栅格 → Godot 自带 3D 导航（NavBridgeTool 生成源几何 → 引擎烘焙 NavigationMesh）
+func _build_navigation(grid: GeneratedGrid3D, def: Grid3DGenDef) -> void:
+	# 地图以中心为原点，世界坐标偏移 = -(width/2, height/2, depth/2)
+	var origin := Vector3(-grid.width / 2.0, -grid.height / 2.0, -grid.depth / 2.0)
+	NavBridgeTool.setup_navigation_3d(nav_region, grid, def.solid_value, origin, 0.5, 0.25)
+	# 导航地图需同步后才能查询路径，延迟到下一物理帧实测
+	_test_navigation(grid)
+
+
+func _test_navigation(grid: GeneratedGrid3D) -> void:
+	# 烘焙与 region 注册到 NavigationServer 需要时间，延迟后重取 map 再实测寻路
+	await get_tree().create_timer(0.6).timeout
+	if not is_inside_tree():
+		return
+	var map := nav_region.get_navigation_map()
+	var mesh := nav_region.navigation_mesh
+	if mesh.get_vertices().size() < 3 or mesh.get_polygon_count() < 1:
+		_log_tail("导航网格为空（无可走面）")
+		return
+	# 用 closest_point 取两个确定在导航面内的点测路径
+	var a := NavigationServer3D.map_get_closest_point(map, Vector3(-grid.width / 4.0, 5, -grid.depth / 4.0))
+	var b := NavigationServer3D.map_get_closest_point(map, Vector3(grid.width / 4.0, 5, grid.depth / 4.0))
+	var path := NavigationServer3D.map_get_path(map, a, b, true)
+	_log_tail("导航网格（引擎烘焙）：顶点 %d ／ 多边形 %d ／ 路径测试 %s" % [
+		mesh.get_vertices().size(), mesh.get_polygon_count(), "OK(%d 点)" % path.size() if not path.is_empty() else "空",
+	])
 
 
 const _DIR6: Array[Vector3i] = [

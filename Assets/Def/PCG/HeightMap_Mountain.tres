@@ -1,0 +1,23 @@
+[gd_resource type="Resource" load_steps=5 format=3]
+
+[ext_resource type="Script" path="res://addons/DEVFramework/PCG/Def/HeightMapDef.gd" id="1_script"]
+[ext_resource type="Resource" path="res://Assets/Def/PCG/Height_Base.tres" id="2_base"]
+[ext_resource type="Resource" path="res://Assets/Def/PCG/Height_Detail.tres" id="3_detail"]
+[ext_resource type="Resource" path="res://Assets/Def/PCG/Height_Ridge.tres" id="4_ridge"]
+
+[resource]
+script = ExtResource("1_script")
+width = 96
+height = 96
+base_layer = ExtResource("2_base")
+detail_layer = ExtResource("3_detail")
+ridge_layer = ExtResource("4_ridge")
+island_strength = 0.2
+island_shape = 1
+min_height = 0.05
+max_height = 1.0
+height_curve = 0.9
+base_weight = 1.0
+detail_weight = 0.3
+ridge_weight = 0.5
+output_key = "heightmap_mountain"

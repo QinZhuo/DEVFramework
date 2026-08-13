@@ -1,7 +1,7 @@
-[gd_resource type="Resource" load_steps=9 format=3]
+[gd_resource type="Resource" script_class="ContentEvolveDef" format=3 uid="uid://f4kyttp7fvj1"]
 
-[ext_resource type="Script" path="res://addons/DEVFramework/PCG/Def/ContentEvolveDef.gd" id="1_script"]
-[ext_resource type="Script" path="res://addons/DEVFramework/PCG/Def/ContentEntryDef.gd" id="2_entry"]
+[ext_resource type="Script" uid="uid://dpq8h58tkdlak" path="res://addons/DEVFramework/PCG/Def/ContentEvolveDef.gd" id="1_script"]
+[ext_resource type="Script" uid="uid://bps5nm1r0q7nv" path="res://addons/DEVFramework/PCG/Def/ContentEntryDef.gd" id="2_entry"]
 
 [sub_resource type="Resource" id="Gene_sharp"]
 script = ExtResource("2_entry")
@@ -40,11 +40,6 @@ weight = 3.0
 
 [resource]
 script = ExtResource("1_script")
-count = 8
-generations = 40
-population = 30
-mutation_rate = 0.2
-gene_count = 2
-output_key = "evolved"
 bases = PackedStringArray("长剑", "法杖", "战弓", "匕首")
-genes = Array[ContentEntryDef]([SubResource("Gene_sharp"), SubResource("Gene_burn"), SubResource("Gene_frost"), SubResource("Gene_thunder"), SubResource("Gene_shadow"), SubResource("Gene_holy"), SubResource("Gene_venom")])
+genes = Array[ExtResource("2_entry")]([SubResource("Gene_sharp"), SubResource("Gene_burn"), SubResource("Gene_frost"), SubResource("Gene_thunder"), SubResource("Gene_shadow"), SubResource("Gene_holy"), SubResource("Gene_venom")])
+output_key = "evolved"

@@ -18,6 +18,7 @@ extends Node2D
 enum MonsterKind { NORMAL, ELITE, BOSS }
 
 @onready var map_sprite: Sprite2D = %MapSprite
+@onready var nav_region: NavigationRegion2D = %NavRegion
 @onready var player_rect: ColorRect = %Player
 @onready var items_layer: Node2D = %Items
 @onready var hud_label: Label = %HudLabel
@@ -28,6 +29,7 @@ enum MonsterKind { NORMAL, ELITE, BOSS }
 
 var grid: GeneratedGrid
 var grid_def: GridGenDef
+var _astar: AStarGrid2D
 ## 当前地形配置（GridGenDef 或 TemplateStitchDef，统一取 solid/empty）
 var cur_terrain: Resource
 var player_pos := Vector2i.ZERO
@@ -172,6 +174,7 @@ func _generate() -> void:
 	potions.clear()
 	game_over = false
 	_show_map()
+	_build_navigation()
 	_place_entities()
 	player_rect.visible = true
 	_gold_ui()
@@ -328,6 +331,45 @@ func _grid_to_world(p: Vector2i) -> Vector2:
 	return map_origin + Vector2(p.x * tile_size, p.y * tile_size)
 
 
+func _world_to_grid(pos: Vector2) -> Vector2i:
+	var local := pos - map_origin
+	return Vector2i(floori(local.x / tile_size), floori(local.y / tile_size))
+
+
+## NavigationServer 路径点是连续坐标，落在格边界时取整会偏到相邻墙格，
+## 统一校正到最近的合法可走格（导航网格边缘防越界）
+func _snap_walkable(p: Vector2i) -> Vector2i:
+	if grid.in_bounds(p.x, p.y) and grid.get_cell(p.x, p.y, -1) != _solid():
+		return p
+	var best := p
+	var best_d := INF
+	for dy in range(-1, 2):
+		for dx in range(-1, 2):
+			var np := p + Vector2i(dx, dy)
+			if grid.in_bounds(np.x, np.y) and grid.get_cell(np.x, np.y, -1) != _solid():
+				var d := Vector2(dx, dy).length_squared()
+				if d < best_d:
+					best_d = d
+					best = np
+	return best
+
+
+## 用 Godot 自带 Navigation 构建导航网格（项目侧 NavBridgeTool 桥接 PCG 栅格 → NavigationServer 寻路）
+func _build_navigation() -> void:
+	NavBridgeTool.setup_navigation_2d(nav_region, grid, _empty(), tile_size, tile_size * 0.1, map_origin, tile_size * 0.4)
+	_astar = NavBridgeTool.grid_to_astar_grid(grid, _empty(), Vector2(tile_size, tile_size))
+
+
+## 回合制格子寻路：Godot 自带 AStarGrid2D 逐格寻路（优化路径点稀疏、落格边界会抖动，格游用 AStar 最稳）
+func _next_step(from: Vector2i, to: Vector2i) -> Vector2i:
+	if _astar == null or from == to:
+		return from
+	var path := _astar.get_id_path(from, to)
+	if path.size() < 2:
+		return from
+	return path[1]
+
+
 ## —— 玩家回合 ——
 
 func _process(delta: float) -> void:
@@ -400,10 +442,9 @@ func _ai_step() -> void:
 	var target := best if best.x >= 0 else exit_pos
 	if target.x < 0:
 		return
-	var path := _bfs_path(player_pos, target)
-	if path.is_empty():
+	var step := _next_step(player_pos, target)
+	if step == player_pos:
 		return
-	var step: Vector2i = path[0]
 	if monsters.has(step):
 		_attack_monster(step)
 	else:
@@ -411,42 +452,6 @@ func _ai_step() -> void:
 		player_rect.position = _grid_to_world(step)
 		_pickup()
 		_check_exit()
-
-
-## BFS 寻路（避开墙与其他怪物；目标格允许是怪=攻击点）
-func _bfs_path(from: Vector2i, to: Vector2i) -> Array:
-	if from == to:
-		return []
-	var prev := {}
-	prev[from] = Vector2i(-1, -1)
-	var queue: Array = [from]
-	var found := false
-	var guard := 0
-	while not queue.is_empty() and guard < 30000:
-		guard += 1
-		var cur: Vector2i = queue.pop_front()
-		if cur == to:
-			found = true
-			break
-		for dir in [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)]:
-			var np: Vector2i = cur + dir
-			if prev.has(np):
-				continue
-			if not grid.in_bounds(np.x, np.y):
-				continue
-			if np != to and grid.get_cell(np.x, np.y, -1) == _solid():
-				continue
-			prev[np] = cur
-			queue.append(np)
-	if not found:
-		return []
-	var path: Array = []
-	var cur2 := to
-	while cur2 != from:
-		path.append(cur2)
-		cur2 = prev[cur2]
-	path.reverse()
-	return path
 
 
 func _attack_monster(target: Vector2i) -> void:

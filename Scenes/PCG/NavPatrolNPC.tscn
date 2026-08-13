@@ -1,0 +1,6 @@
+[gd_scene format=3 uid="uid://dp0vkqnnbvabc"]
+
+[ext_resource type="Script" path="res://Scenes/PCG/NavPatrolNPC.gd" id="1_npc"]
+
+[node name="NavPatrolNPC" type="CharacterBody3D"]
+script = ExtResource("1_npc")

@@ -1,10 +1,14 @@
-[gd_scene load_steps=8 format=3]
+[gd_scene format=3 uid="uid://dma656iukbp2j"]
 
-[ext_resource type="Script" path="res://Scenes/PCG/PCGDemo3D.gd" id="1_demo"]
-[ext_resource type="Resource" path="res://Assets/Def/PCG/Grid3D_Surface.tres" id="s1"]
+[ext_resource type="Script" uid="uid://b4orwjcmerwgo" path="res://Scenes/PCG/PCGDemo3D.gd" id="1_demo"]
 [ext_resource type="Resource" path="res://Assets/Def/PCG/Grid3D_Cave.tres" id="c1"]
-[ext_resource type="Resource" path="res://Assets/Def/PCG/Grid3D_WFC.tres" id="w1"]
 [ext_resource type="Resource" path="res://Assets/Def/PCG/Grid3D_NoiseCave.tres" id="n1"]
+[ext_resource type="Resource" path="res://Assets/Def/PCG/Grid3D_Surface.tres" id="s1"]
+[ext_resource type="Resource" path="res://Assets/Def/PCG/Grid3D_WFC.tres" id="w1"]
+
+[sub_resource type="Environment" id="Environment_3d"]
+background_mode = 2
+background_color = Color(0.15, 0.17, 0.2, 1)
 
 [sub_resource type="StyleBoxFlat" id="StyleBoxFlat_panel"]
 content_margin_left = 12.0
@@ -22,93 +26,88 @@ corner_radius_top_right = 8
 corner_radius_bottom_right = 8
 corner_radius_bottom_left = 8
 
-[sub_resource type="Environment" id="Environment_3d"]
-background_mode = 2
-background_color = Color(0.15, 0.17, 0.2, 1)
-
-[node name="PCGDemo3D" type="Node3D"]
+[node name="PCGDemo3D" type="Node3D" unique_id=1007255166]
 script = ExtResource("1_demo")
 grid3d_defs = Array[Resource]([ExtResource("s1"), ExtResource("c1"), ExtResource("w1"), ExtResource("n1")])
 
-[node name="World" type="Node3D" parent="."]
+[node name="World" type="Node3D" parent="." unique_id=1886445507]
 unique_name_in_owner = true
 
-[node name="Camera3D" type="Camera3D" parent="."]
+[node name="Camera3D" type="Camera3D" parent="." unique_id=1993521165]
 unique_name_in_owner = true
 transform = Transform3D(0.877583, -0.151395, 0.454648, 0, 0.948648, 0.316299, -0.479426, -0.277586, 0.83259, 22.6834, 6.61556, 11.7498)
 fov = 60.0
 
-[node name="Sun" type="DirectionalLight3D" parent="."]
+[node name="Sun" type="DirectionalLight3D" parent="." unique_id=623062533]
 transform = Transform3D(0.707107, -0.353553, -0.612372, 0, 0.866025, -0.5, 0.707107, 0.353553, 0.612372, 0, 0, 0)
 
-[node name="Env" type="WorldEnvironment" parent="."]
+[node name="Env" type="WorldEnvironment" parent="." unique_id=789035583]
 environment = SubResource("Environment_3d")
 
-[node name="UI" type="CanvasLayer" parent="."]
+[node name="UI" type="CanvasLayer" parent="." unique_id=1338796321]
 layer = 10
 
-[node name="Panel" type="PanelContainer" parent="UI"]
-layout_mode = 1
+[node name="Panel" type="PanelContainer" parent="UI" unique_id=569254878]
+anchors_preset = 1
 anchor_left = 1.0
 anchor_right = 1.0
 offset_left = -340.0
 offset_top = 20.0
 offset_right = -20.0
 grow_horizontal = 0
-grow_vertical = 1
 theme_override_styles/panel = SubResource("StyleBoxFlat_panel")
 
-[node name="VBox" type="VBoxContainer" parent="UI/Panel"]
+[node name="VBox" type="VBoxContainer" parent="UI/Panel" unique_id=406360752]
 layout_mode = 2
 theme_override_constants/separation = 8
 
-[node name="Title" type="Label" parent="UI/Panel/VBox"]
+[node name="Title" type="Label" parent="UI/Panel/VBox" unique_id=1038140704]
 layout_mode = 2
 text = "PCG 3D 演示 · 体素"
 horizontal_alignment = 1
 
-[node name="RowAlgo" type="HBoxContainer" parent="UI/Panel/VBox"]
+[node name="RowAlgo" type="HBoxContainer" parent="UI/Panel/VBox" unique_id=644443404]
 layout_mode = 2
 theme_override_constants/separation = 6
 
-[node name="AlgoLabel" type="Label" parent="UI/Panel/VBox/RowAlgo"]
-layout_mode = 2
+[node name="AlgoLabel" type="Label" parent="UI/Panel/VBox/RowAlgo" unique_id=1126112948]
 custom_minimum_size = Vector2(48, 0)
+layout_mode = 2
 text = "算法"
 
-[node name="AlgoOption" type="OptionButton" parent="UI/Panel/VBox/RowAlgo"]
+[node name="AlgoOption" type="OptionButton" parent="UI/Panel/VBox/RowAlgo" unique_id=1566614891]
 unique_name_in_owner = true
 layout_mode = 2
 size_flags_horizontal = 3
 
-[node name="RowSeed" type="HBoxContainer" parent="UI/Panel/VBox"]
+[node name="RowSeed" type="HBoxContainer" parent="UI/Panel/VBox" unique_id=1155987368]
 layout_mode = 2
 theme_override_constants/separation = 6
 
-[node name="SeedLabel" type="Label" parent="UI/Panel/VBox/RowSeed"]
-layout_mode = 2
+[node name="SeedLabel" type="Label" parent="UI/Panel/VBox/RowSeed" unique_id=1517967798]
 custom_minimum_size = Vector2(48, 0)
+layout_mode = 2
 text = "种子"
 
-[node name="SeedSpin" type="SpinBox" parent="UI/Panel/VBox/RowSeed"]
+[node name="SeedSpin" type="SpinBox" parent="UI/Panel/VBox/RowSeed" unique_id=1431642488]
 unique_name_in_owner = true
 layout_mode = 2
 size_flags_horizontal = 3
-min_value = 0.0
 max_value = 2147483647.0
-step = 1.0
 value = 20260811.0
 
-[node name="RegenButton" type="Button" parent="UI/Panel/VBox/RowSeed"]
+[node name="RegenButton" type="Button" parent="UI/Panel/VBox/RowSeed" unique_id=2044334561]
 layout_mode = 2
 text = "重新生成"
 
-[node name="LogBox" type="RichTextLabel" parent="UI/Panel/VBox"]
+[node name="LogBox" type="RichTextLabel" parent="UI/Panel/VBox" unique_id=1134638650]
 unique_name_in_owner = true
 custom_minimum_size = Vector2(0, 90)
 layout_mode = 2
 size_flags_vertical = 3
 bbcode_enabled = true
-scroll_active = true
+
+[node name="NavRegion3D" type="NavigationRegion3D" parent="." unique_id=496933478]
+unique_name_in_owner = true
 
 [connection signal="pressed" from="UI/Panel/VBox/RowSeed/RegenButton" to="." method="_on_regen_pressed"]

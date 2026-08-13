@@ -1,9 +1,9 @@
-[gd_scene load_steps=7 format=3]
+[gd_scene format=3 uid="uid://cbnnj38v5qd17"]
 
-[ext_resource type="Script" path="res://Scenes/PCG/DungeonGame.gd" id="1_game"]
+[ext_resource type="Script" uid="uid://blki280eky1yj" path="res://Scenes/PCG/DungeonGame.gd" id="1_game"]
 [ext_resource type="Resource" path="res://Assets/Def/PCG/Grid_BSPRooms.tres" id="g1"]
-[ext_resource type="Resource" path="res://Assets/Def/PCG/Stitch_Dungeon.tres" id="g2"]
-[ext_resource type="Resource" path="res://Assets/Def/PCG/Grid_Cave.tres" id="g3"]
+[ext_resource type="Resource" uid="uid://cwfoqew5dnngd" path="res://Assets/Def/PCG/Stitch_Dungeon.tres" id="g2"]
+[ext_resource type="Resource" uid="uid://ca3ed1isse7k3" path="res://Assets/Def/PCG/Grid_Cave.tres" id="g3"]
 [ext_resource type="Resource" path="res://Assets/Def/PCG/Grid_Maze.tres" id="g4"]
 
 [sub_resource type="StyleBoxFlat" id="StyleBoxFlat_panel"]
@@ -22,106 +22,104 @@ corner_radius_top_right = 8
 corner_radius_bottom_right = 8
 corner_radius_bottom_left = 8
 
-[node name="DungeonGame" type="Node2D"]
+[node name="DungeonGame" type="Node2D" unique_id=76495001]
 script = ExtResource("1_game")
 grid_defs = Array[Resource]([ExtResource("g1"), ExtResource("g2"), ExtResource("g3"), ExtResource("g4")])
-tile_size = 12
 
-[node name="Camera2D" type="Camera2D" parent="."]
+[node name="Camera2D" type="Camera2D" parent="." unique_id=2051467624]
 zoom = Vector2(0.7, 0.7)
 
-[node name="MapSprite" type="Sprite2D" parent="."]
+[node name="MapSprite" type="Sprite2D" parent="." unique_id=1389641772]
 unique_name_in_owner = true
 centered = false
 
-[node name="Items" type="Node2D" parent="."]
+[node name="Items" type="Node2D" parent="." unique_id=1447421697]
 unique_name_in_owner = true
 
-[node name="Player" type="ColorRect" parent="."]
+[node name="Player" type="ColorRect" parent="." unique_id=1611228602]
 unique_name_in_owner = true
 visible = false
 offset_right = 12.0
 offset_bottom = 12.0
 color = Color(0.9, 0.3, 0.25, 1)
 
-[node name="UI" type="CanvasLayer" parent="."]
+[node name="UI" type="CanvasLayer" parent="." unique_id=42427292]
 layer = 10
 
-[node name="Panel" type="PanelContainer" parent="UI"]
-layout_mode = 1
+[node name="Panel" type="PanelContainer" parent="UI" unique_id=305635023]
+anchors_preset = 1
 anchor_left = 1.0
 anchor_right = 1.0
 offset_left = -320.0
 offset_top = 20.0
 offset_right = -20.0
 grow_horizontal = 0
-grow_vertical = 1
 theme_override_styles/panel = SubResource("StyleBoxFlat_panel")
 
-[node name="VBox" type="VBoxContainer" parent="UI/Panel"]
+[node name="VBox" type="VBoxContainer" parent="UI/Panel" unique_id=1843536672]
 layout_mode = 2
 theme_override_constants/separation = 8
 
-[node name="Title" type="Label" parent="UI/Panel/VBox"]
+[node name="Title" type="Label" parent="UI/Panel/VBox" unique_id=798775058]
 layout_mode = 2
 text = "地牢探索 · PCG 小游戏"
 horizontal_alignment = 1
 
-[node name="Hint" type="Label" parent="UI/Panel/VBox"]
+[node name="Hint" type="Label" parent="UI/Panel/VBox" unique_id=2119225922]
 layout_mode = 2
 text = "方向键移动 · 走向怪物=攻击"
 horizontal_alignment = 1
 
-[node name="RowHud" type="HBoxContainer" parent="UI/Panel/VBox"]
+[node name="RowHud" type="HBoxContainer" parent="UI/Panel/VBox" unique_id=1461708325]
 layout_mode = 2
 theme_override_constants/separation = 6
 
-[node name="HudLabel" type="Label" parent="UI/Panel/VBox/RowHud"]
+[node name="HudLabel" type="Label" parent="UI/Panel/VBox/RowHud" unique_id=738818130]
 unique_name_in_owner = true
 layout_mode = 2
 text = "HP 100 ｜ 金币 0 ｜ 层 1"
 
-[node name="SeedLabel" type="Label" parent="UI/Panel/VBox/RowHud"]
+[node name="SeedLabel" type="Label" parent="UI/Panel/VBox/RowHud" unique_id=1777874625]
 layout_mode = 2
 size_flags_horizontal = 3
 text = "种子"
 
-[node name="SeedSpin" type="SpinBox" parent="UI/Panel/VBox/RowHud"]
+[node name="SeedSpin" type="SpinBox" parent="UI/Panel/VBox/RowHud" unique_id=381489658]
 unique_name_in_owner = true
 layout_mode = 2
 size_flags_horizontal = 3
-min_value = 0.0
 max_value = 2147483647.0
-step = 1.0
 value = 20260811.0
 
-[node name="RegenButton" type="Button" parent="UI/Panel/VBox"]
+[node name="RegenButton" type="Button" parent="UI/Panel/VBox" unique_id=678737767]
 layout_mode = 2
 text = "重新生成地牢"
 
-[node name="RowTerrain" type="HBoxContainer" parent="UI/Panel/VBox"]
+[node name="RowTerrain" type="HBoxContainer" parent="UI/Panel/VBox" unique_id=1493372665]
 layout_mode = 2
 theme_override_constants/separation = 6
 
-[node name="TerrainLabel" type="Label" parent="UI/Panel/VBox/RowTerrain"]
-layout_mode = 2
+[node name="TerrainLabel" type="Label" parent="UI/Panel/VBox/RowTerrain" unique_id=1693215056]
 custom_minimum_size = Vector2(48, 0)
+layout_mode = 2
 text = "地形"
 
-[node name="TerrainOption" type="OptionButton" parent="UI/Panel/VBox/RowTerrain"]
+[node name="TerrainOption" type="OptionButton" parent="UI/Panel/VBox/RowTerrain" unique_id=1730509674]
 unique_name_in_owner = true
 layout_mode = 2
 size_flags_horizontal = 3
 
-[node name="AutoCheck" type="CheckButton" parent="UI/Panel/VBox"]
+[node name="AutoCheck" type="CheckButton" parent="UI/Panel/VBox" unique_id=1795436760]
 unique_name_in_owner = true
 layout_mode = 2
 text = "AI 自动游玩"
 
-[node name="LogBox" type="RichTextLabel" parent="UI/Panel/VBox"]
+[node name="LogBox" type="RichTextLabel" parent="UI/Panel/VBox" unique_id=1063479959]
 unique_name_in_owner = true
 custom_minimum_size = Vector2(0, 110)
 layout_mode = 2
 size_flags_vertical = 3
 bbcode_enabled = true
-scroll_active = true
+
+[node name="NavRegion" type="NavigationRegion2D" parent="." unique_id=875183468]
+unique_name_in_owner = true

@@ -1,9 +1,9 @@
-[gd_resource type="Resource" load_steps=9 format=3]
+[gd_resource type="Resource" script_class="BiomeMapDef" format=3 uid="uid://bq7f6mgluspx5"]
 
-[ext_resource type="Script" path="res://addons/DEVFramework/PCG/Def/BiomeMapDef.gd" id="1_script"]
-[ext_resource type="Resource" path="res://Assets/Def/PCG/Biome_Elevation.tres" id="2_elev"]
-[ext_resource type="Resource" path="res://Assets/Def/PCG/Biome_Moisture.tres" id="3_moist"]
-[ext_resource type="Script" path="res://addons/DEVFramework/PCG/Def/BiomeEntryDef.gd" id="4_entry"]
+[ext_resource type="Script" uid="uid://ccn5kx7clmv1o" path="res://addons/DEVFramework/PCG/Def/BiomeMapDef.gd" id="1_script"]
+[ext_resource type="Resource" uid="uid://b2qellrjsproa" path="res://Assets/Def/PCG/Biome_Elevation.tres" id="2_elev"]
+[ext_resource type="Resource" uid="uid://br01ni27c14k" path="res://Assets/Def/PCG/Biome_Moisture.tres" id="3_moist"]
+[ext_resource type="Script" uid="uid://dexjr7hg6e5l6" path="res://addons/DEVFramework/PCG/Def/BiomeEntryDef.gd" id="4_entry"]
 
 [sub_resource type="Resource" id="Biome_ocean"]
 script = ExtResource("4_entry")
@@ -22,7 +22,6 @@ moisture_max = 0.3
 [sub_resource type="Resource" id="Biome_plain"]
 script = ExtResource("4_entry")
 name = "草原"
-color = Color(0.4, 0.7, 0.3, 1)
 height_min = 0.35
 height_max = 0.6
 moisture_min = 0.3
@@ -44,10 +43,8 @@ height_min = 0.6
 
 [resource]
 script = ExtResource("1_script")
-width = 96
-height = 96
 elevation_layer = ExtResource("2_elev")
 moisture_layer = ExtResource("3_moist")
+biomes = Array[ExtResource("4_entry")]([SubResource("Biome_ocean"), SubResource("Biome_desert"), SubResource("Biome_plain"), SubResource("Biome_forest"), SubResource("Biome_mountain")])
 smoothing_passes = 2
 output_key = "biomes"
-biomes = Array[BiomeEntryDef]([SubResource("Biome_ocean"), SubResource("Biome_desert"), SubResource("Biome_plain"), SubResource("Biome_forest"), SubResource("Biome_mountain")])

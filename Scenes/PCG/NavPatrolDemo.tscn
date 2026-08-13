@@ -1,0 +1,120 @@
+[gd_scene format=3 uid="uid://cbhjnqk7m8x3p"]
+
+[ext_resource type="Script" uid="uid://0k44021qn0u3" path="res://Scenes/PCG/NavPatrolDemo.gd" id="1_demo"]
+[ext_resource type="Resource" path="res://Assets/Def/PCG/Grid3D_NoiseCave.tres" id="n1"]
+[ext_resource type="Resource" path="res://Assets/Def/PCG/Grid3D_Surface.tres" id="s1"]
+
+[sub_resource type="Environment" id="Environment_3d"]
+background_mode = 2
+background_color = Color(0.15, 0.17, 0.2, 1)
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_panel"]
+content_margin_left = 12.0
+content_margin_top = 10.0
+content_margin_right = 12.0
+content_margin_bottom = 10.0
+bg_color = Color(0.08, 0.1, 0.13, 0.92)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(0.45, 0.75, 0.55, 1)
+corner_radius_top_left = 8
+corner_radius_top_right = 8
+corner_radius_bottom_right = 8
+corner_radius_bottom_left = 8
+
+[node name="NavPatrolDemo" type="Node3D" unique_id=1057847515]
+script = ExtResource("1_demo")
+grid3d_defs = Array[Resource]([ExtResource("s1"), ExtResource("n1")])
+
+[node name="World" type="Node3D" parent="." unique_id=468233535]
+unique_name_in_owner = true
+
+[node name="Camera3D" type="Camera3D" parent="." unique_id=1051715759]
+unique_name_in_owner = true
+transform = Transform3D(0.877583, -0.151395, 0.454648, 0, 0.948648, 0.316299, -0.479426, -0.277586, 0.83259, 22.6834, 6.61556, 11.7498)
+fov = 60.0
+
+[node name="Sun" type="DirectionalLight3D" parent="." unique_id=1634617052]
+transform = Transform3D(0.707107, -0.353553, -0.612372, 0, 0.866025, -0.5, 0.707107, 0.353553, 0.612372, 0, 0, 0)
+
+[node name="Env" type="WorldEnvironment" parent="." unique_id=134030545]
+environment = SubResource("Environment_3d")
+
+[node name="NPCLayer" type="Node3D" parent="." unique_id=1612970780]
+unique_name_in_owner = true
+
+[node name="PlayerLayer" type="Node3D" parent="." unique_id=642244628]
+unique_name_in_owner = true
+
+[node name="ObstacleLayer" type="Node3D" parent="." unique_id=997595861]
+unique_name_in_owner = true
+
+[node name="NavRegion3D" type="NavigationRegion3D" parent="." unique_id=785552728]
+unique_name_in_owner = true
+
+[node name="UI" type="CanvasLayer" parent="." unique_id=2080718031]
+layer = 10
+
+[node name="Panel" type="PanelContainer" parent="UI" unique_id=297814410]
+anchors_preset = 1
+anchor_left = 1.0
+anchor_right = 1.0
+offset_left = -340.0
+offset_top = 20.0
+offset_right = -20.0
+grow_horizontal = 0
+theme_override_styles/panel = SubResource("StyleBoxFlat_panel")
+
+[node name="VBox" type="VBoxContainer" parent="UI/Panel" unique_id=962041663]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="Title" type="Label" parent="UI/Panel/VBox" unique_id=1731528713]
+layout_mode = 2
+text = "NPC 巡逻 · PCG 导航桥接"
+horizontal_alignment = 1
+
+[node name="RowAlgo" type="HBoxContainer" parent="UI/Panel/VBox" unique_id=1140359370]
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="AlgoLabel" type="Label" parent="UI/Panel/VBox/RowAlgo" unique_id=1481033736]
+custom_minimum_size = Vector2(48, 0)
+layout_mode = 2
+text = "地形"
+
+[node name="AlgoOption" type="OptionButton" parent="UI/Panel/VBox/RowAlgo" unique_id=471940164]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="RowSeed" type="HBoxContainer" parent="UI/Panel/VBox" unique_id=75285297]
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="SeedLabel" type="Label" parent="UI/Panel/VBox/RowSeed" unique_id=870624574]
+custom_minimum_size = Vector2(48, 0)
+layout_mode = 2
+text = "种子"
+
+[node name="SeedSpin" type="SpinBox" parent="UI/Panel/VBox/RowSeed" unique_id=386428566]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+max_value = 2147483647.0
+value = 20260811.0
+
+[node name="RegenButton" type="Button" parent="UI/Panel/VBox/RowSeed" unique_id=1036430481]
+layout_mode = 2
+text = "重新生成"
+
+[node name="LogBox" type="RichTextLabel" parent="UI/Panel/VBox" unique_id=1152433291]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(0, 110)
+layout_mode = 2
+size_flags_vertical = 3
+bbcode_enabled = true
+
+[connection signal="pressed" from="UI/Panel/VBox/RowSeed/RegenButton" to="." method="_on_regen_pressed"]

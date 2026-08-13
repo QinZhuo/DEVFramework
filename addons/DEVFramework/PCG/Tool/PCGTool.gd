@@ -178,6 +178,381 @@ static func grid_to_image(grid: GeneratedGrid, palette: Dictionary = {}) -> Imag
 		img.set_pixel(i % grid.width, i / grid.width, palette.get(grid.cells[i], Color.BLACK))
 	return img
 
+## —— 高度图 ——
+
+## 生成连续高度场（多层噪声叠加 + 岛屿掩膜 + 高度映射）
+## 各层用独立派生种子保证互不干扰且可复现；0..1 连续高度输出
+## 流程：原始混合值 → 岛屿掩膜 → 整体 min-max 归一化 → 曲线（保证岛屿中心必达 max_height）
+static func generate_heightmap(def: HeightMapDef, rng: RandomNumberGenerator) -> HeightMap:
+	var seed := rng.seed + def.seed_offset
+	var hm := HeightMap.create(def.width, def.height)
+	var base_n: FastNoiseLite = def.base_layer.build_noise(seed + 101) if def.base_layer else null
+	var detail_n: FastNoiseLite = def.detail_layer.build_noise(seed + 202) if def.detail_layer else null
+	var ridge_n: FastNoiseLite = def.ridge_layer.build_noise(seed + 303) if def.ridge_layer else null
+	# 第一遍：算原始混合值（含掩膜），记录范围用于归一化
+	var raw := PackedFloat32Array()
+	raw.resize(def.width * def.height)
+	var lo := INF
+	var hi := -INF
+	for y in def.height:
+		for x in def.width:
+			var h := 0.0
+			var total_w := 0.0
+			if base_n:
+				h += def.base_layer.sample(base_n, x, y) * def.base_weight
+				total_w += def.base_weight
+			if detail_n:
+				h += def.detail_layer.sample(detail_n, x, y) * def.detail_weight
+				total_w += def.detail_weight
+			if ridge_n:
+				h += def.ridge_layer.sample(ridge_n, x, y) * def.ridge_weight
+				total_w += def.ridge_weight
+			if total_w > 0.0:
+				h /= total_w
+			else:
+				h = 0.5
+			# 岛屿掩膜：边缘压向海平面
+			if def.island_strength > 0.0:
+				h *= _island_falloff(x, y, def)
+			raw[y * def.width + x] = h
+			lo = minf(lo, h)
+			hi = maxf(hi, h)
+	# 第二遍：归一化 + 曲线 + 范围映射
+	var span := maxf(0.0001, hi - lo)
+	for i in raw.size():
+		var h := (raw[i] - lo) / span
+		h = pow(h, def.height_curve)
+		h = def.min_height + h * (def.max_height - def.min_height)
+		hm.heights[i] = clampf(h, 0.0, 1.0)
+	# 水力侵蚀（粒子模拟，可选）
+	if def.erosion_droplets > 0:
+		_erode_heightmap(hm, def, rng)
+	return hm
+
+
+## 水力侵蚀：粒子液滴模拟（Sebastian Lague 风格）
+## 每个液滴从随机高点出发，沿最陡下降移动，沿途侵蚀/沉积，形成河道与峡谷。
+static func _erode_heightmap(hm: HeightMap, def: HeightMapDef, rng: RandomNumberGenerator) -> void:
+	var w := hm.width
+	var h := hm.height
+	var radius: int = def.erosion_radius
+	var radius_sq := float(radius * radius)
+	# 预处理：为 4 邻域索引建立距离权重（侵蚀时平滑扩散）
+	for d in def.erosion_droplets:
+		# 随机起点（避免边界，给液滴空间）
+		var x := rng.randi_range(radius, w - 1 - radius)
+		var y := rng.randi_range(radius, h - 1 - radius)
+		var dir_x := 0.0
+		var dir_y := 0.0
+		var speed := 1.0
+		var water := 1.0
+		var sediment := 0.0
+		for step in 30:
+			# 采样当前 + 4 邻域高度（双线性平滑）
+			var cx := clampf(x, 0.0, w - 1.0)
+			var cy := clampf(y, 0.0, h - 1.0)
+			var h_cur := _hm_bilerp(hm, cx, cy)
+			# 最陡下降方向
+			var dx := 0.0
+			var dy := 0.0
+			var lowest := h_cur
+			var lowest_dx := 0.0
+			var lowest_dy := 0.0
+			for iy in [-1.0, 0.0, 1.0]:
+				for ix in [-1.0, 0.0, 1.0]:
+					if ix == 0.0 and iy == 0.0:
+						continue
+					var nx := clampf(cx + ix, 0.0, w - 1.0)
+					var ny := clampf(cy + iy, 0.0, h - 1.0)
+					var nh := _hm_bilerp(hm, nx, ny)
+					if nh < lowest:
+						lowest = nh
+						lowest_dx = ix
+						lowest_dy = iy
+			var gradient := h_cur - lowest
+			# 结合惯性与梯度方向
+			dir_x = dir_x * def.erosion_inertia - lowest_dx * (1.0 - def.erosion_inertia)
+			dir_y = dir_y * def.erosion_inertia - lowest_dy * (1.0 - def.erosion_inertia)
+			var len := sqrt(dir_x * dir_x + dir_y * dir_y)
+			if len < 0.0001:
+				len = 0.0001
+			dir_x /= len
+			dir_y /= len
+			# 移动
+			x += dir_x
+			y += dir_y
+			# 出界或斜率过缓 → 结束该液滴
+			if x < 0.0 or x >= w or y < 0.0 or y >= h:
+				break
+			if gradient < def.erosion_min_slope:
+				break
+			# 沉积能力（速度越快越能携带泥沙）
+			var carry := maxf(0.0, gradient * speed * water * def.erosion_power)
+			var deposit := sediment - carry
+			# 应用侵蚀/沉积（对半径邻域加权扩散）
+			_apply_erosion(hm, cx, cy, deposit, def)
+			sediment = maxf(0.0, carry)
+			# 蒸发 + 速度衰减
+			water *= (1.0 - def.erosion_evaporate)
+			speed = maxf(0.0, speed - 0.05)
+		# 把残余泥沙沉积到终点
+		if sediment > 0.0:
+			_apply_erosion(hm, clampf(x, 0, w - 1), clampf(y, 0, h - 1), sediment, def)
+	# 最后把越界值夹回 0..1
+	for i in hm.heights.size():
+		hm.heights[i] = clampf(hm.heights[i], 0.0, 1.0)
+
+
+## 双线性插值取高度（浮点坐标）
+static func _hm_bilerp(hm: HeightMap, x: float, y: float) -> float:
+	return hm.sample(x, y)
+
+
+## 对半径邻域施加侵蚀（amount<0 削低，>0 沉积抬高），按距离加权
+static func _apply_erosion(hm: HeightMap, cx: float, cy: float, amount: float, def: HeightMapDef) -> void:
+	if absf(amount) < 0.0001:
+		return
+	var xi := int(floorf(cx))
+	var yi := int(floorf(cy))
+	var radius: int = def.erosion_radius
+	var radius_sq := float(radius * radius)
+	var w := hm.width
+	var h := hm.height
+	for dy in range(-radius, radius + 1):
+		for dx in range(-radius, radius + 1):
+			var nx := xi + dx
+			var ny := yi + dy
+			if nx < 0 or nx >= w or ny < 0 or ny >= h:
+				continue
+			var dist_sq := float(dx * dx + dy * dy)
+			if dist_sq > radius_sq:
+				continue
+			var weight := 1.0 - dist_sq / radius_sq
+			hm.heights[ny * w + nx] += amount * weight
+
+
+## 岛屿掩膜：边缘 0（海），中心 1；shape=1 方形内缩，2 圆形
+static func _island_falloff(x: int, y: int, def: HeightMapDef) -> float:
+	var cx := (x + 0.5) / def.width
+	var cy := (y + 0.5) / def.height
+	if def.island_shape == 2:
+		var dx := (cx - 0.5) * 2.0
+		var dy := (cy - 0.5) * 2.0
+		var d := sqrt(dx * dx + dy * dy)
+		return clampf(1.0 - d * 1.4, 0.0, 1.0)
+	var edge := maxf(absf(cx - 0.5) * 2.0, absf(cy - 0.5) * 2.0)
+	return clampf(1.0 - edge * 1.3, 0.0, 1.0)
+
+
+## 高度图渲染成灰度图（黑=海，白=峰）
+static func heightmap_to_image(hm: HeightMap) -> Image:
+	var img := Image.create(hm.width, hm.height, false, Image.FORMAT_RGB8)
+	for i in hm.heights.size():
+		var v := hm.heights[i]
+		img.set_pixel(i % hm.width, i / hm.width, Color(v, v, v))
+	return img
+
+
+## 高度图 → 2D 栅格（阈值分割：>= sea_level 为陆地 solid_value）
+static func heightmap_to_grid(hm: HeightMap, sea_level := 0.5, solid_value := 1, empty_value := 0) -> GeneratedGrid:
+	var grid := GeneratedGrid.create(hm.width, hm.height, empty_value)
+	for i in hm.heights.size():
+		grid.cells[i] = solid_value if hm.heights[i] >= sea_level else empty_value
+	return grid
+
+
+## 高度图 → 3D 体素（Minecraft 式：每列填到 floor(height * height_scale) 高度）
+## 传入预分配的目标栅格（宽高对齐），填充实体；返回该栅格（便于复用已有 def 生成的地基）
+static func heightmap_to_grid3d(hm: HeightMap, target: GeneratedGrid3D, solid_value := 1, height_scale := 1.0) -> GeneratedGrid3D:
+	if target == null:
+		return null
+	for y in target.height:
+		for z in target.depth:
+			for x in target.width:
+				var h_val := hm.get_height(x, z, 0.0)
+				var fill_h := int(floorf(h_val * height_scale))
+				target.set_cell(x, y, z, solid_value if y <= fill_h else 0)
+	return target
+
+## —— 程序化纹理 ——
+
+## 生成程序化纹理（可复现），支持噪声/云/木纹/砖墙/水面
+static func generate_texture(def: TextureGenDef, rng: RandomNumberGenerator) -> Image:
+	var seed := rng.seed + def.seed_offset
+	var img := Image.create(def.width, def.height, false, Image.FORMAT_RGB8)
+	var noise: FastNoiseLite = def.noise_layer.build_noise(seed) if def.noise_layer else null
+	# 次级噪声（砖墙扰动 / 水面波纹用）
+	var detail: FastNoiseLite = null
+	if def.type == TextureGenDef.Type.BRICK or def.type == TextureGenDef.Type.WATER:
+		detail = FastNoiseLite.new()
+		detail.seed = seed + 7
+		detail.noise_type = FastNoiseLite.TYPE_PERLIN
+		detail.frequency = 0.06
+		detail.fractal_octaves = 3
+	var grad := def.gradient if def.gradient else _default_gradient(def)
+	for y in def.height:
+		for x in def.width:
+			var v := 0.0
+			var c: Color
+			match def.type:
+				TextureGenDef.Type.NOISE:
+					v = noise.get_noise_2d(x, y) * 0.5 + 0.5 if noise else 0.5
+					c = grad.sample(clampf(v, 0.0, 1.0))
+				TextureGenDef.Type.CLOUDS:
+					v = noise.get_noise_2d(x, y) * 0.5 + 0.5 if noise else 0.5
+					var cloud := clampf((v - def.threshold) / maxf(0.01, 1.0 - def.threshold), 0.0, 1.0)
+					c = grad.sample(cloud)
+				TextureGenDef.Type.WOOD:
+					# 环形噪声：沿离中心距离 + 噪声扰动做条纹
+					var nx := x - def.width * 0.5
+					var ny := y - def.height * 0.5
+					var wobble := noise.get_noise_2d(x * 0.5, y * 0.5) * 6.0 if noise else 0.0
+					var r := sqrt(nx * nx + ny * ny) + wobble
+					v = 0.5 + 0.5 * sin(r * def.ring_density)
+					c = grad.sample(clampf(v, 0.0, 1.0))
+				TextureGenDef.Type.BRICK:
+					# 砖块网格：行偏移 + 噪声扰动 + 灰浆缝
+					var wob := detail.get_noise_2d(x, y) * 2.0 if detail else 0.0
+					var row := int(floorf((y + wob) / def.brick_height))
+					var row_off := def.brick_width / 2.0 if row % 2 == 1 else 0.0
+					var bx := fmod(x + row_off + wob, def.brick_width)
+					var by := fmod(y + wob, def.brick_height)
+					var in_mortar := bx < def.mortar_thickness or by < def.mortar_thickness
+					c = grad.sample(0.0) if in_mortar else grad.sample(0.75 + 0.25 * (noise.get_noise_2d(x, y) * 0.5 + 0.5) if noise else 0.75)
+				TextureGenDef.Type.WATER:
+					# 低频大波 + 高频波纹
+					var base_wave := noise.get_noise_2d(x, y) * 0.5 + 0.5 if noise else 0.5
+					var ripple := detail.get_noise_2d(x * 3.0, y * 3.0) * 0.5 + 0.5 if detail else 0.5
+					v = clampf(base_wave * (1.0 - def.ripple_strength) + ripple * def.ripple_strength, 0.0, 1.0)
+					c = grad.sample(v)
+			c = Color(
+				clampf(pow(c.r, 1.0 / def.contrast), 0.0, 1.0),
+				clampf(pow(c.g, 1.0 / def.contrast), 0.0, 1.0),
+				clampf(pow(c.b, 1.0 / def.contrast), 0.0, 1.0))
+			img.set_pixel(x, y, c)
+	return img
+
+
+## 未配置色带时的默认渐变（按纹理类型给合理配色）
+static func _default_gradient(def: TextureGenDef) -> Gradient:
+	var g := Gradient.new()
+	match def.type:
+		TextureGenDef.Type.CLOUDS:
+			g.colors = PackedColorArray([Color(0.55, 0.6, 0.68), Color(0.95, 0.96, 0.98)])
+		TextureGenDef.Type.WOOD:
+			g.colors = PackedColorArray([Color(0.25, 0.15, 0.08), Color(0.6, 0.4, 0.2)])
+		TextureGenDef.Type.BRICK:
+			g.colors = PackedColorArray([Color(0.45, 0.42, 0.4), Color(0.7, 0.3, 0.22)])
+		TextureGenDef.Type.WATER:
+			g.colors = PackedColorArray([Color(0.1, 0.3, 0.55), Color(0.3, 0.6, 0.85)])
+		_:
+			g.colors = PackedColorArray([Color(0.1, 0.1, 0.1), Color(0.9, 0.9, 0.9)])
+	g.offsets = PackedFloat32Array([0.0, 1.0])
+	return g
+
+## —— L-System 生长 ——
+
+## 生成 L-System 线段集（每对相邻点 = 一条线段）
+## turtle 语义：F=前进(可画线)、G=前进(不画线)、+/-(转向)、[入栈 ]出栈
+static func generate_lsystem(def: LSystemDef, rng: RandomNumberGenerator) -> PackedVector2Array:
+	var angle_rad := deg_to_rad(def.angle_deg)
+	var pos := def.origin
+	var heading := deg_to_rad(def.start_angle)
+	var stack: Array = []
+	var segs := PackedVector2Array()
+	# 迭代重写
+	var current := def.axiom
+	for i in def.iterations:
+		var next := ""
+		for ch in current:
+			if def.rules.has(ch):
+				next += def.rules[ch]
+			else:
+				next += ch
+		current = next
+		if current.length() > def.max_segments * 4:
+			break
+	# turtle 解释
+	var step := def.step_length
+	for ch in current:
+		if segs.size() >= def.max_segments * 2:
+			break
+		match ch:
+			"F", "G":
+				var jitter := (rng.randf() - 0.5) * 2.0 * deg_to_rad(def.angle_jitter) if def.angle_jitter > 0.0 else 0.0
+				var to := pos + Vector2(cos(heading + jitter), sin(heading + jitter)) * step
+				if ch == "F" and def.draw_on_f:
+					segs.append(pos)
+					segs.append(to)
+				pos = to
+			"+":
+				heading += angle_rad
+			"-":
+				heading -= angle_rad
+			"[":
+				stack.append([pos, heading])
+			"]":
+				if not stack.is_empty():
+					var saved: Array = stack.pop_back()
+					pos = saved[0]
+					heading = saved[1]
+			_:
+				pass
+		# 子代步长在"F 分支"开始前缩放（简化：每遇到 [ 缩放一次）——用迭代层级更合理，
+		# 这里改为在 '[' 时缩小步长、']' 时恢复，模拟分层收敛
+		# （保持简单：不随层级缩放，由 length_factor 提供给用户自行配置策略）
+	return segs
+
+
+## 把线段集渲染成图（用于预览）
+static func lsystem_to_image(segments: PackedVector2Array, image_size := Vector2i(256, 256), color := Color.WHITE, bg := Color(0.1, 0.12, 0.14)) -> Image:
+	var img := Image.create(image_size.x, image_size.y, false, Image.FORMAT_RGB8)
+	img.fill(bg)
+	if segments.is_empty():
+		return img
+	# 计算包围盒自动适配画布
+	var min_p := segments[0]
+	var max_p := segments[0]
+	for i in segments.size():
+		if i % 2 == 0:
+			min_p = min_p.min(segments[i])
+			max_p = max_p.max(segments[i])
+	var span := max_p - min_p
+	if span.length() < 0.001:
+		return img
+	var scale := minf((image_size.x - 16.0) / maxf(span.x, 0.001), (image_size.y - 16.0) / maxf(span.y, 0.001))
+	var offset := Vector2(8, 8) - min_p * scale
+	for i in range(0, segments.size(), 2):
+		var a := segments[i] * scale + offset
+		var b := segments[i + 1] * scale + offset
+		_draw_line(img, a, b, color)
+	return img
+
+
+## 简单 Bresenham 画线（Image 无内建 draw_line）
+static func _draw_line(img: Image, a: Vector2, b: Vector2, color: Color) -> void:
+	var x0 := int(round(a.x))
+	var y0 := int(round(a.y))
+	var x1 := int(round(b.x))
+	var y1 := int(round(b.y))
+	var dx := absi(x1 - x0)
+	var dy := -absi(y1 - y0)
+	var sx := 1 if x0 < x1 else -1
+	var sy := 1 if y0 < y1 else -1
+	var err := dx + dy
+	while true:
+		if x0 >= 0 and x0 < img.get_width() and y0 >= 0 and y0 < img.get_height():
+			img.set_pixel(x0, y0, color)
+		if x0 == x1 and y0 == y1:
+			break
+		var e2 := 2 * err
+		if e2 >= dy:
+			err += dy
+			x0 += sx
+		if e2 <= dx:
+			err += dx
+			y0 += sy
+
 ## —— 生物群系 ——
 
 ## 采样多层噪声生成生物群系图（每个格子 = biomes 索引）

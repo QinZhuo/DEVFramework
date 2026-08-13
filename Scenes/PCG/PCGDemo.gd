@@ -137,10 +137,14 @@ func _generate() -> void:
 			_gen_pipeline(seed)
 
 
-## —— 噪声层 ——
+## —— 噪声层 / 程序化纹理 ——
 
 func _gen_noise(seed: int) -> void:
-	var def := _selected_def(noise_defs) as NoiseLayerDef
+	var res := _selected_def(noise_defs)
+	if res is TextureGenDef:
+		_gen_texture(res as TextureGenDef, seed)
+		return
+	var def := res as NoiseLayerDef
 	if def == null:
 		_log("请配置 noise_defs（参考 Scenes/PCG/PCGDemo.tscn）")
 		return
@@ -149,10 +153,26 @@ func _gen_noise(seed: int) -> void:
 	_log("噪声层: %s\nseed=%d  type=%s" % [def.name, seed, def.get_desc(null)])
 
 
+func _gen_texture(def: TextureGenDef, seed: int) -> void:
+	brush_row.visible = false
+	anim_row.visible = false
+	var img := PCGTool.generate_texture(def, PCGTool.make_rng(seed))
+	texture_rect.texture = ImageTexture.create_from_image(_scale_up(img))
+	_log("纹理: %s\nseed=%d  type=%s  %d x %d" % [
+		def.name, seed, TextureGenDef.Type.keys()[def.type], img.get_width(), img.get_height(),
+	])
+
+
 ## —— 网格生成 ——
 
 func _gen_grid(seed: int) -> void:
 	var res := _selected_def(grid_defs)
+	if res is LSystemDef:
+		_gen_lsystem(res as LSystemDef, seed)
+		return
+	if res is HeightMapDef:
+		_gen_heightmap(res as HeightMapDef, seed)
+		return
 	if res is TemplateStitchDef:
 		_gen_stitch(res as TemplateStitchDef, seed)
 		return
@@ -337,6 +357,55 @@ func _texture_to_grid(pos: Vector2, def: GridGenDef) -> Vector2i:
 	if tx < 0 or ty < 0 or tx >= def.width or ty >= def.height:
 		return Vector2i(-1, -1)
 	return Vector2i(tx, ty)
+
+
+## —— 高度图 ——
+
+func _gen_heightmap(def: HeightMapDef, seed: int) -> void:
+	brush_row.visible = false
+	anim_row.visible = false
+	var hm := PCGTool.generate_heightmap(def, PCGTool.make_rng(seed))
+	# 伪彩色：海蓝 → 沙滩 → 草地 → 山地 → 雪顶
+	var img := Image.create(hm.width, hm.height, false, Image.FORMAT_RGB8)
+	var sea := Color(0.15, 0.4, 0.7)
+	var sand := Color(0.85, 0.8, 0.5)
+	var grass := Color(0.3, 0.6, 0.3)
+	var rock := Color(0.5, 0.45, 0.4)
+	var snow := Color(0.95, 0.95, 0.95)
+	for i in hm.heights.size():
+		var h := hm.heights[i]
+		var c: Color
+		if h < 0.45:
+			c = sea.lerp(sand, h / 0.45)
+		elif h < 0.55:
+			c = sand.lerp(grass, (h - 0.45) / 0.1)
+		elif h < 0.8:
+			c = grass.lerp(rock, (h - 0.55) / 0.25)
+		else:
+			c = rock.lerp(snow, (h - 0.8) / 0.2)
+		img.set_pixel(i % hm.width, i / hm.width, c)
+	texture_rect.texture = ImageTexture.create_from_image(_scale_up(img))
+	var hist := hm.histogram(5)
+	var land := 0
+	for i in hm.heights.size():
+		if hm.heights[i] >= 0.5:
+			land += 1
+	_log("高度图: %s\n%d x %d  陆地 %.1f%%  分层(海/低/中/高/峰)=%s\n可导出: heightmap_to_grid(2D栅格) / heightmap_to_grid3d(体素)" % [
+		def.name, hm.width, hm.height, float(land) / hm.heights.size() * 100.0, str(hist),
+	])
+
+
+## —— L-System ——
+
+func _gen_lsystem(def: LSystemDef, seed: int) -> void:
+	brush_row.visible = false
+	anim_row.visible = false
+	var segs := PCGTool.generate_lsystem(def, PCGTool.make_rng(seed))
+	var img := PCGTool.lsystem_to_image(segs, Vector2i(256, 256))
+	texture_rect.texture = ImageTexture.create_from_image(_scale_up(img))
+	_log("L-System: %s\nseed=%d  线段 %d  迭代 %d  angle=%d" % [
+		def.name, seed, segs.size() / 2, def.iterations, def.angle_deg,
+	])
 
 
 ## —— 模板拼接 ——

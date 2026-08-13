@@ -19,6 +19,7 @@ enum Mode {
 @onready var radius_spin: SpinBox = %RadiusSpin
 @onready var seed_spin: SpinBox = %SeedSpin
 @onready var log_box: RichTextLabel = %LogBox
+@onready var nav_region: NavigationRegion3D = %NavRegion3D
 
 var _yaw := 0.7
 var _pitch := 0.25
@@ -93,8 +94,37 @@ func _gen_chunks() -> void:
 				_collect_pts(pts, g, def, Vector3(cx * 8, cy * 8, cz * 8), center)
 	var ms := Time.get_ticks_msec() - t
 	_render_voxels(pts, def)
+	_build_navigation(world_obj, def)
 	_log("3D 分块世界: %d 个 chunk（%d³ 体素） 耗时 %d ms\nseed=%d  鼠标左键拖拽旋转" % [
 		world_obj.get_chunk_count(), size, ms, world_obj.seed_base,
+	])
+
+
+## 桥接分块世界 → Godot 自带 3D 导航：NavBridgeTool 合并已加载 chunk 源几何 → 引擎烘焙 NavigationMesh
+func _build_navigation(world_obj: ChunkedWorld3D, def: Grid3DGenDef) -> void:
+	# 分块世界坐标从 0 起，演示居中显示 → chunk 世界坐标即 navmesh 顶点坐标（无需额外偏移）
+	nav_region.position = Vector3.ZERO
+	nav_region.navigation_mesh = NavBridgeTool.bake_navigation_3d_chunks(
+		world_obj.get_loaded_chunks(), world_obj.chunk_size, def.solid_value, 0.5, 0.25)
+	_test_navigation(world_obj)
+
+
+func _test_navigation(world_obj: ChunkedWorld3D) -> void:
+	# 烘焙与 region 注册到 NavigationServer 需要时间，延迟后重取 map 再实测寻路
+	await get_tree().create_timer(0.6).timeout
+	if not is_inside_tree():
+		return
+	var map := nav_region.get_navigation_map()
+	var mesh := nav_region.navigation_mesh
+	if mesh.get_vertices().size() < 3 or mesh.get_polygon_count() < 1:
+		_log("分块导航网格为空（无可走面）")
+		return
+	var size := world_obj.get_chunk_count() * world_obj.chunk_size
+	var a := NavigationServer3D.map_get_closest_point(map, Vector3(1, 5, 1))
+	var b := NavigationServer3D.map_get_closest_point(map, Vector3(size, 5, size))
+	var path := NavigationServer3D.map_get_path(map, a, b, true)
+	_log_tail("分块导航网格：顶点 %d ／ 多边形 %d ／ 跨块路径 %s" % [
+		mesh.get_vertices().size(), mesh.get_polygon_count(), "OK(%d 点)" % path.size() if not path.is_empty() else "空",
 	])
 
 
@@ -201,6 +231,11 @@ func _update_camera() -> void:
 
 func _log(msg: String) -> void:
 	log_box.text = msg
+
+
+func _log_tail(tail: String) -> void:
+	if log_box:
+		log_box.text += "\n" + tail
 
 
 const _DIR6: Array[Vector3i] = [

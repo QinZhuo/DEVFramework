@@ -1,0 +1,13 @@
+[gd_resource type="Resource" script_class="NoiseLayerDef" format=3]
+
+[ext_resource type="Script" uid="uid://bpiip54g2usbr" path="res://addons/DEVFramework/PCG/Def/NoiseLayerDef.gd" id="1_script"]
+
+[sub_resource type="FastNoiseLite" id="FNL"]
+noise_type = 1
+frequency = 0.02
+fractal_octaves = 4
+
+[resource]
+script = ExtResource("1_script")
+noise = SubResource("FNL")
+weight = 1.0

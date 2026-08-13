@@ -1,7 +1,7 @@
-[gd_resource type="Resource" load_steps=4 format=3]
+[gd_resource type="Resource" script_class="TileSetDef3D" format=3 uid="uid://dmkst17v44stf"]
 
-[ext_resource type="Script" path="res://addons/DEVFramework/PCG/Def/TileSetDef3D.gd" id="1_script"]
-[ext_resource type="Script" path="res://addons/DEVFramework/PCG/Def/TileDef3D.gd" id="2_tile"]
+[ext_resource type="Script" uid="uid://bn7kquaae1grr" path="res://addons/DEVFramework/PCG/Def/TileSetDef3D.gd" id="1_script"]
+[ext_resource type="Script" uid="uid://cbqtjwngam8mk" path="res://addons/DEVFramework/PCG/Def/TileDef3D.gd" id="2_tile"]
 
 [sub_resource type="Resource" id="Tile_A"]
 script = ExtResource("2_tile")
@@ -13,7 +13,6 @@ up = "a"
 down = "b"
 south = "d"
 north = "d"
-weight = 1.0
 
 [sub_resource type="Resource" id="Tile_B"]
 script = ExtResource("2_tile")
@@ -25,8 +24,7 @@ up = "b"
 down = "a"
 south = "d"
 north = "d"
-weight = 1.0
 
 [resource]
 script = ExtResource("1_script")
-tiles = Array[TileDef3D]([SubResource("Tile_A"), SubResource("Tile_B")])
+tiles = Array[ExtResource("2_tile")]([SubResource("Tile_A"), SubResource("Tile_B")])

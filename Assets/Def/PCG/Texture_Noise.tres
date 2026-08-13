@@ -1,0 +1,17 @@
+[gd_resource type="Resource" load_steps=4 format=3]
+
+[ext_resource type="Script" path="res://addons/DEVFramework/PCG/Def/TextureGenDef.gd" id="1_script"]
+[ext_resource type="Resource" path="res://Assets/Def/PCG/Height_Base.tres" id="2_noise"]
+
+[sub_resource type="Gradient" id="Gradient_noise"]
+offsets = PackedFloat32Array(0, 1)
+colors = PackedColorArray(0.05, 0.05, 0.08, 1, 0.92, 0.9, 0.88, 1)
+
+[resource]
+script = ExtResource("1_script")
+type = 0
+width = 256
+height = 256
+noise_layer = ExtResource("2_noise")
+gradient = SubResource("Gradient_noise")
+output_key = "tex_noise"

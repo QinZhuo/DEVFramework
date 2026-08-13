@@ -1,11 +1,10 @@
-[gd_resource type="Resource" load_steps=3 format=3]
+[gd_resource type="Resource" script_class="NoiseLayerDef" format=3 uid="uid://b2qellrjsproa"]
 
-[ext_resource type="Script" path="res://addons/DEVFramework/PCG/Def/NoiseLayerDef.gd" id="1_script"]
+[ext_resource type="Script" uid="uid://bpiip54g2usbr" path="res://addons/DEVFramework/PCG/Def/NoiseLayerDef.gd" id="1_script"]
 
 [sub_resource type="FastNoiseLite" id="FastNoiseLite_elev"]
 noise_type = 3
 frequency = 0.04
-fractal_type = 1
 fractal_octaves = 4
 
 [resource]

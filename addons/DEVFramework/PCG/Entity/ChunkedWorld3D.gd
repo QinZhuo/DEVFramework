@@ -28,6 +28,11 @@ func get_chunk(cx: int, cy: int, cz: int) -> GeneratedGrid3D:
 	return _chunks[key]
 
 
+## 已加载 chunk 列表（Vector3i → GeneratedGrid3D），供渲染/导航构建遍历
+func get_loaded_chunks() -> Dictionary:
+	return _chunks.duplicate()
+
+
 func has_chunk(cx: int, cy: int, cz: int) -> bool:
 	return _chunks.has(Vector3i(cx, cy, cz))
 

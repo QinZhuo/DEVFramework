@@ -1,7 +1,7 @@
-[gd_resource type="Resource" load_steps=7 format=3]
+[gd_resource type="Resource" script_class="TileSetDef" format=3 uid="uid://cfjh8nqsc2emm"]
 
-[ext_resource type="Script" path="res://addons/DEVFramework/PCG/Def/TileSetDef.gd" id="1_script"]
-[ext_resource type="Script" path="res://addons/DEVFramework/PCG/Def/TileDef.gd" id="2_tile"]
+[ext_resource type="Script" uid="uid://dsnx2mtgilufx" path="res://addons/DEVFramework/PCG/Def/TileSetDef.gd" id="1_script"]
+[ext_resource type="Script" uid="uid://b2wvixnl0c4fi" path="res://addons/DEVFramework/PCG/Def/TileDef.gd" id="2_tile"]
 
 [sub_resource type="Resource" id="Tile_grass"]
 script = ExtResource("2_tile")
@@ -45,4 +45,4 @@ weight = 1.5
 
 [resource]
 script = ExtResource("1_script")
-tiles = Array[TileDef]([SubResource("Tile_grass"), SubResource("Tile_flower"), SubResource("Tile_water"), SubResource("Tile_tree")])
+tiles = Array[ExtResource("2_tile")]([SubResource("Tile_grass"), SubResource("Tile_flower"), SubResource("Tile_water"), SubResource("Tile_tree")])
