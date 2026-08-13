@@ -6,6 +6,10 @@
 #include <godot_cpp/godot.hpp>
 
 #include "ecs_core.h"
+#include "pcg_erode.h"
+#include "pcg_wfc.h"
+#include "pcg_wfc3d.h"
+#include "pcg_lsystem.h"
 
 using namespace godot;
 
@@ -14,6 +18,10 @@ void initialize_devecs_module(ModuleInitializationLevel p_level) {
 		return;
 	}
 	GDREGISTER_CLASS(ECSCore);
+	GDREGISTER_CLASS(PCGErode);
+	GDREGISTER_CLASS(PCGWFC);
+	GDREGISTER_CLASS(PCGWFC3D);
+	GDREGISTER_CLASS(PCGLSystem);
 }
 
 void uninitialize_devecs_module(ModuleInitializationLevel p_level) {

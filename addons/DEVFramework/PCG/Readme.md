@@ -127,8 +127,18 @@ var img := PCGTool.heightmap_to_image(hm)           # → 灰度图
 
 **水力侵蚀**（`erosion_droplets > 0` 开启）：粒子液滴模拟（Sebastian Lague 风格）——
 每滴从随机高点沿最陡下降移动，沿途侵蚀/沉积，形成河道与峡谷，地形更真实。
-参数：`erosion_droplets`（液滴数，建议 ≤5000）/ `erosion_inertia`（惯性）/ `erosion_power`（强度）/
-`erosion_radius`（河道宽）/ `erosion_min_slope` / `erosion_evaporate`（蒸发）。GDScript 下液滴数请克制。
+参数：`erosion_droplets`（液滴数）/ `erosion_inertia`（惯性）/ `erosion_power`（强度）/
+`erosion_radius`（河道宽）/ `erosion_min_slope` / `erosion_evaporate`（蒸发）/
+`erosion_cliff_drop`（**悬崖落差阈值**，单步下降超过即停止侵蚀 → 保留峡谷壁/陡坡）/
+`erosion_deposition_rate`（**沉积率**，越低越保留下坡陡坡，配合悬崖参数保留地形锐利度）。
+
+**热侵蚀**（`thermal_iterations > 0` 开启）：逐迭代把超休止角（`thermal_talus`）的高度差从高格搬运到低格，
+平滑坡面/自然山脊，O(n) 稳定无粒子。C++ 实现（`PCGErode.thermal`），30 迭代 96×96 约 22ms。
+可与水力侵蚀叠加：先液滴挖河谷、再热侵蚀磨坡，得到真实地形。
+
+**C++ 加速（强依赖，无回退）**：侵蚀算法由框架级共享原生库（`FrameworkNative.get_native(&"PCGErode")`）实现，
+**纯 C++ 无 GDScript 回退**——原生库缺失会明确报错。实测 10 万液滴 96×96 约 246ms、
+5 万液滴+悬崖/热侵蚀组合约 59ms（GDScript 2 万即卡死），性能提升数十倍且支持海量液滴。
 
 ### 2.7 程序化纹理（可复现贴图）
 
@@ -204,8 +214,8 @@ while not anim.step():                 # 每帧推进若干步
 print("完成，共 %d 步" % anim.step_count)
 ```
 
-> WFC 在 GDScript 下选格是 O(n²)，建议尺寸 ≤ 64×64；>20000 格自动降级为加权随机填充。
-> 大图请用 `generate_grid_async` 后台生成或给瓦片集设计强约束（道路/房屋）加速收敛。
+> WFC 选格是 O(n²)，C++ 实现（`PCGWFC`）64×64 约 72ms、200×200（4 万格）约 6.5s，无降级。
+> 更大图请用 `generate_grid_async` 后台生成或给瓦片集设计强约束（道路/房屋）加速收敛。
 
 ### 4. 散布放置
 
@@ -264,6 +274,7 @@ voxels.neighbors(x, y, z, 1)     # 26 邻域统计
 与 2D WFC 同样支持回溯（`wfc_max_backtracks`）、整体重试（`wfc_retries`）与**固定格**：
 `fixed` 键支持 `Vector3i`(单格) / int(线性索引) / `"x,y,z"` / `AABB`(区域)，value 为瓦片索引。
 参考瓦片集 `Assets/Def/PCG/TileSet3D_Checker.tres`（A/B 垂直交替棋盘）。
+C++ 加速（`PCGWFC3D`）：20³（8000 体素）约 251ms、24³ 约 697ms（GDScript 16³ 即 214ms）。
 
 ```gdscript
 # 手绘部分：固定几个体素，3D WFC 自动补全其余

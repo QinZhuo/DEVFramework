@@ -224,111 +224,32 @@ static func generate_heightmap(def: HeightMapDef, rng: RandomNumberGenerator) ->
 		h = pow(h, def.height_curve)
 		h = def.min_height + h * (def.max_height - def.min_height)
 		hm.heights[i] = clampf(h, 0.0, 1.0)
-	# 水力侵蚀（粒子模拟，可选）
+	# 水力侵蚀（粒子模拟，可选）— 纯 C++ 实现（框架强依赖 PCGErode，无 GDScript 回退）
 	if def.erosion_droplets > 0:
-		_erode_heightmap(hm, def, rng)
+		var native := FrameworkNative.get_native(&"PCGErode", [&"erode"])
+		if native == null:
+			push_error("PCGTool.generate_heightmap: 原生库 PCGErode 不可用! 请确认 Native/devecs.gdextension 已加载。")
+		else:
+			var out: PackedFloat32Array = native.call(&"erode",
+				hm.heights, hm.width, hm.height,
+				def.erosion_droplets, def.erosion_inertia, def.erosion_power,
+				def.erosion_radius, def.erosion_min_slope, def.erosion_evaporate,
+				rng.seed + def.seed_offset + 404,
+				def.erosion_cliff_drop, def.erosion_deposition_rate)
+			if out.size() == hm.heights.size():
+				hm.heights = out
+	# 热侵蚀（平滑坡面）— 纯 C++ 实现
+	if def.thermal_iterations > 0:
+		var native := FrameworkNative.get_native(&"PCGErode", [&"thermal"])
+		if native == null:
+			push_error("PCGTool.generate_heightmap: 原生库 PCGErode 不可用! 请确认 Native/devecs.gdextension 已加载。")
+		else:
+			var out: PackedFloat32Array = native.call(&"thermal",
+				hm.heights, hm.width, hm.height,
+				def.thermal_iterations, def.thermal_talus)
+			if out.size() == hm.heights.size():
+				hm.heights = out
 	return hm
-
-
-## 水力侵蚀：粒子液滴模拟（Sebastian Lague 风格）
-## 每个液滴从随机高点出发，沿最陡下降移动，沿途侵蚀/沉积，形成河道与峡谷。
-static func _erode_heightmap(hm: HeightMap, def: HeightMapDef, rng: RandomNumberGenerator) -> void:
-	var w := hm.width
-	var h := hm.height
-	var radius: int = def.erosion_radius
-	var radius_sq := float(radius * radius)
-	# 预处理：为 4 邻域索引建立距离权重（侵蚀时平滑扩散）
-	for d in def.erosion_droplets:
-		# 随机起点（避免边界，给液滴空间）
-		var x := rng.randi_range(radius, w - 1 - radius)
-		var y := rng.randi_range(radius, h - 1 - radius)
-		var dir_x := 0.0
-		var dir_y := 0.0
-		var speed := 1.0
-		var water := 1.0
-		var sediment := 0.0
-		for step in 30:
-			# 采样当前 + 4 邻域高度（双线性平滑）
-			var cx := clampf(x, 0.0, w - 1.0)
-			var cy := clampf(y, 0.0, h - 1.0)
-			var h_cur := _hm_bilerp(hm, cx, cy)
-			# 最陡下降方向
-			var dx := 0.0
-			var dy := 0.0
-			var lowest := h_cur
-			var lowest_dx := 0.0
-			var lowest_dy := 0.0
-			for iy in [-1.0, 0.0, 1.0]:
-				for ix in [-1.0, 0.0, 1.0]:
-					if ix == 0.0 and iy == 0.0:
-						continue
-					var nx := clampf(cx + ix, 0.0, w - 1.0)
-					var ny := clampf(cy + iy, 0.0, h - 1.0)
-					var nh := _hm_bilerp(hm, nx, ny)
-					if nh < lowest:
-						lowest = nh
-						lowest_dx = ix
-						lowest_dy = iy
-			var gradient := h_cur - lowest
-			# 结合惯性与梯度方向
-			dir_x = dir_x * def.erosion_inertia - lowest_dx * (1.0 - def.erosion_inertia)
-			dir_y = dir_y * def.erosion_inertia - lowest_dy * (1.0 - def.erosion_inertia)
-			var len := sqrt(dir_x * dir_x + dir_y * dir_y)
-			if len < 0.0001:
-				len = 0.0001
-			dir_x /= len
-			dir_y /= len
-			# 移动
-			x += dir_x
-			y += dir_y
-			# 出界或斜率过缓 → 结束该液滴
-			if x < 0.0 or x >= w or y < 0.0 or y >= h:
-				break
-			if gradient < def.erosion_min_slope:
-				break
-			# 沉积能力（速度越快越能携带泥沙）
-			var carry := maxf(0.0, gradient * speed * water * def.erosion_power)
-			var deposit := sediment - carry
-			# 应用侵蚀/沉积（对半径邻域加权扩散）
-			_apply_erosion(hm, cx, cy, deposit, def)
-			sediment = maxf(0.0, carry)
-			# 蒸发 + 速度衰减
-			water *= (1.0 - def.erosion_evaporate)
-			speed = maxf(0.0, speed - 0.05)
-		# 把残余泥沙沉积到终点
-		if sediment > 0.0:
-			_apply_erosion(hm, clampf(x, 0, w - 1), clampf(y, 0, h - 1), sediment, def)
-	# 最后把越界值夹回 0..1
-	for i in hm.heights.size():
-		hm.heights[i] = clampf(hm.heights[i], 0.0, 1.0)
-
-
-## 双线性插值取高度（浮点坐标）
-static func _hm_bilerp(hm: HeightMap, x: float, y: float) -> float:
-	return hm.sample(x, y)
-
-
-## 对半径邻域施加侵蚀（amount<0 削低，>0 沉积抬高），按距离加权
-static func _apply_erosion(hm: HeightMap, cx: float, cy: float, amount: float, def: HeightMapDef) -> void:
-	if absf(amount) < 0.0001:
-		return
-	var xi := int(floorf(cx))
-	var yi := int(floorf(cy))
-	var radius: int = def.erosion_radius
-	var radius_sq := float(radius * radius)
-	var w := hm.width
-	var h := hm.height
-	for dy in range(-radius, radius + 1):
-		for dx in range(-radius, radius + 1):
-			var nx := xi + dx
-			var ny := yi + dy
-			if nx < 0 or nx >= w or ny < 0 or ny >= h:
-				continue
-			var dist_sq := float(dx * dx + dy * dy)
-			if dist_sq > radius_sq:
-				continue
-			var weight := 1.0 - dist_sq / radius_sq
-			hm.heights[ny * w + nx] += amount * weight
 
 
 ## 岛屿掩膜：边缘 0（海），中心 1；shape=1 方形内缩，2 圆形
@@ -455,53 +376,15 @@ static func _default_gradient(def: TextureGenDef) -> Gradient:
 ## 生成 L-System 线段集（每对相邻点 = 一条线段）
 ## turtle 语义：F=前进(可画线)、G=前进(不画线)、+/-(转向)、[入栈 ]出栈
 static func generate_lsystem(def: LSystemDef, rng: RandomNumberGenerator) -> PackedVector2Array:
-	var angle_rad := deg_to_rad(def.angle_deg)
-	var pos := def.origin
-	var heading := deg_to_rad(def.start_angle)
-	var stack: Array = []
-	var segs := PackedVector2Array()
-	# 迭代重写
-	var current := def.axiom
-	for i in def.iterations:
-		var next := ""
-		for ch in current:
-			if def.rules.has(ch):
-				next += def.rules[ch]
-			else:
-				next += ch
-		current = next
-		if current.length() > def.max_segments * 4:
-			break
-	# turtle 解释
-	var step := def.step_length
-	for ch in current:
-		if segs.size() >= def.max_segments * 2:
-			break
-		match ch:
-			"F", "G":
-				var jitter := (rng.randf() - 0.5) * 2.0 * deg_to_rad(def.angle_jitter) if def.angle_jitter > 0.0 else 0.0
-				var to := pos + Vector2(cos(heading + jitter), sin(heading + jitter)) * step
-				if ch == "F" and def.draw_on_f:
-					segs.append(pos)
-					segs.append(to)
-				pos = to
-			"+":
-				heading += angle_rad
-			"-":
-				heading -= angle_rad
-			"[":
-				stack.append([pos, heading])
-			"]":
-				if not stack.is_empty():
-					var saved: Array = stack.pop_back()
-					pos = saved[0]
-					heading = saved[1]
-			_:
-				pass
-		# 子代步长在"F 分支"开始前缩放（简化：每遇到 [ 缩放一次）——用迭代层级更合理，
-		# 这里改为在 '[' 时缩小步长、']' 时恢复，模拟分层收敛
-		# （保持简单：不随层级缩放，由 length_factor 提供给用户自行配置策略）
-	return segs
+	# 纯 C++ 实现（框架强依赖共享原生库 PCGLSystem，无 GDScript 回退）
+	var native := FrameworkNative.get_native(&"PCGLSystem", [&"generate"])
+	if native == null:
+		push_error("PCGTool.generate_lsystem: 原生库 PCGLSystem 不可用! 请确认 Native/devecs.gdextension 已加载。")
+		return PackedVector2Array()
+	return native.call(&"generate",
+		def.axiom, def.rules, def.iterations,
+		def.angle_deg, def.step_length, def.angle_jitter, def.draw_on_f,
+		def.start_angle, def.origin, def.max_segments, rng.seed)
 
 
 ## 把线段集渲染成图（用于预览）
@@ -1525,22 +1408,58 @@ static func _gen3d_wfc(grid: GeneratedGrid3D, def: Grid3DGenDef, rng: RandomNumb
 		grid.fill(def.solid_value)
 		return
 	var cell_count := grid.width * grid.height * grid.depth
-	if cell_count > 20000:
-		LogTool.warn("PCG", "3D WFC 体积过大(%d 格)，已降级为加权随机填充" % cell_count)
-		var all_mask := (1 << n) - 1
-		for i in cell_count:
-			grid.cells[i] = _wfc_weighted_choice(tiles, _wfc_bits(all_mask), rng)
-		_apply_wfc_fixed_3d(grid, def, fixed)
+	# 纯 C++ 实现（框架强依赖共享原生库 PCGWFC3D，无 GDScript 回退）
+	var native := FrameworkNative.get_native(&"PCGWFC3D", [&"generate"])
+	if native == null:
+		push_error("PCGTool.generate_grid_3d: 原生库 PCGWFC3D 不可用! 请确认 Native/devecs.gdextension 已加载。")
+		grid.fill(def.solid_value)
 		return
-	for retry in def.wfc_retries + 1:
-		if _wfc3d_generate_pass(grid, def, rng, fixed, cell_count, n):
-			return
-		LogTool.warn("PCG", "3D WFC 生成冲突，重试 %d/%d" % [retry + 1, def.wfc_retries])
-	LogTool.warn("PCG", "3D WFC 重试耗尽，降级为加权随机填充")
-	var all_mask := (1 << n) - 1
-	for i in cell_count:
-		grid.cells[i] = _wfc_weighted_choice(tiles, _wfc_bits(all_mask), rng)
-	_apply_wfc_fixed_3d(grid, def, fixed)
+	var socket_map := {}
+	var next_id := 0
+	var socket_ids := func(s: String) -> int:
+		if not socket_map.has(s):
+			socket_map[s] = next_id
+			next_id += 1
+		return socket_map[s]
+	var sockets := PackedInt32Array()
+	var weights := PackedFloat32Array()
+	for t in tiles:
+		for dir_i in 6:
+			sockets.append(socket_ids.call(t.socket(dir_i)))
+		weights.append(t.weight)
+	var fixed_idx := PackedInt32Array()
+	var fixed_tile := PackedInt32Array()
+	var merged := {}
+	for key in def.wfc_fixed_cells:
+		merged[key] = def.wfc_fixed_cells[key]
+	for key in fixed:
+		merged[key] = fixed[key]
+	for key in merged:
+		var tile_idx := int(merged[key])
+		if tile_idx < 0 or tile_idx >= n:
+			continue
+		if key is AABB:
+			var bb := key as AABB
+			for k in range(int(bb.position.z), int(bb.end.z)):
+				for j in range(int(bb.position.y), int(bb.end.y)):
+					for i in range(int(bb.position.x), int(bb.end.x)):
+						if grid.in_bounds(i, j, k):
+							fixed_idx.append(grid._index(i, j, k))
+							fixed_tile.append(tile_idx)
+			continue
+		var idx := _wfc3d_fixed_index(grid, key)
+		if idx >= 0:
+			fixed_idx.append(idx)
+			fixed_tile.append(tile_idx)
+	var out: PackedInt32Array = native.call(&"generate",
+		grid.width, grid.height, grid.depth, sockets, weights,
+		def.wfc_max_backtracks, def.wfc_retries, 0,
+		fixed_idx, fixed_tile, rng.seed)
+	if out.size() != cell_count:
+		push_error("PCGTool.generate_grid_3d: PCGWFC3D 生成失败(重试耗尽)! 请调整 wfc_retries 或瓦片约束。")
+		grid.fill(def.solid_value)
+		return
+	grid.cells = out
 
 ## 降级随机填充后重新应用固定格（保证约束不丢失）
 static func _apply_wfc_fixed_3d(grid: GeneratedGrid3D, def: Grid3DGenDef, fixed: Dictionary) -> void:
@@ -1566,76 +1485,6 @@ static func _apply_wfc_fixed_3d(grid: GeneratedGrid3D, def: Grid3DGenDef, fixed:
 		if idx >= 0:
 			grid.cells[idx] = tile_idx
 
-## 单遍 3D WFC：成功写入 grid 返回 true
-static func _wfc3d_generate_pass(grid: GeneratedGrid3D, def: Grid3DGenDef, rng: RandomNumberGenerator, fixed: Dictionary, cell_count: int, n: int) -> bool:
-	var tiles := def.tile_set3d.tiles
-	var all_mask := (1 << n) - 1
-	var wave := PackedInt32Array()
-	wave.resize(cell_count)
-	wave.fill(all_mask)
-	var queue: Array[int] = []
-	var fixed_indices := {}
-	var merged := {}
-	for key in def.wfc_fixed_cells:
-		merged[key] = def.wfc_fixed_cells[key]
-	for key in fixed:
-		merged[key] = fixed[key]
-	for key in merged:
-		var tile_idx := int(merged[key])
-		if tile_idx < 0 or tile_idx >= n:
-			continue
-		if key is AABB:
-			var bb := key as AABB
-			for k in range(int(bb.position.z), int(bb.end.z)):
-				for j in range(int(bb.position.y), int(bb.end.y)):
-					for i in range(int(bb.position.x), int(bb.end.x)):
-						if grid.in_bounds(i, j, k):
-							var idx := grid._index(i, j, k)
-							wave[idx] = 1 << tile_idx
-							queue.append(idx)
-							fixed_indices[idx] = true
-			continue
-		var idx := _wfc3d_fixed_index(grid, key)
-		if idx >= 0:
-			wave[idx] = 1 << tile_idx
-			queue.append(idx)
-			fixed_indices[idx] = true
-	var propagations := 0
-	propagations = _wfc3d_propagate(wave, grid, def, queue, propagations, fixed_indices)
-	var history: Array = []
-	var backtracks := 0
-	while true:
-		var cell := _wfc_pick_lowest_entropy(wave)
-		if cell == -1:
-			break
-		var opts := _wfc_bits(wave[cell])
-		if opts.is_empty():
-			if def.wfc_max_backtracks > 0 and backtracks < def.wfc_max_backtracks and not history.is_empty():
-				backtracks += 1
-				var h: Dictionary = history.pop_back()
-				wave = h.wave_copy.duplicate()
-				wave[h.cell] &= ~h.bad
-				queue.append(h.cell)
-				propagations = _wfc3d_propagate(wave, grid, def, queue, propagations, fixed_indices)
-				continue
-			return false
-		var chosen := _wfc_weighted_choice(tiles, opts, rng)
-		if def.wfc_max_backtracks > 0:
-			history.append({"cell": cell, "wave_copy": wave.duplicate(), "bad": 1 << chosen})
-		wave[cell] = 1 << chosen
-		queue.append(cell)
-		propagations = _wfc3d_propagate(wave, grid, def, queue, propagations, fixed_indices)
-	for i in cell_count:
-		if wave[i] == 0:
-			return false
-	for i in cell_count:
-		var m := wave[i]
-		if m != 0 and (m & (m - 1)) == 0:
-			grid.cells[i] = _wfc_bit_index(m)
-		else:
-			grid.cells[i] = def.solid_value
-	return true
-
 ## 解析 3D 固定格 key 为线性索引（支持 Vector3i / int / "x,y,z"）
 static func _wfc3d_fixed_index(grid: GeneratedGrid3D, key) -> int:
 	if key is Vector3i:
@@ -1652,50 +1501,11 @@ static func _wfc3d_fixed_index(grid: GeneratedGrid3D, key) -> int:
 				return grid._index(x, y, z)
 	return -1
 
-## 3D 邻接约束传播（6 方向）
-static func _wfc3d_propagate(wave: PackedInt32Array, grid: GeneratedGrid3D, def: Grid3DGenDef, queue: Array[int], propagations: int, fixed_indices: Dictionary = {}) -> int:
-	var tiles := def.tile_set3d.tiles
-	while not queue.is_empty():
-		var cur: int = queue.pop_back()
-		propagations += 1
-		var x := cur % grid.width
-		var y := (cur / grid.width) % grid.height
-		var z := cur / (grid.width * grid.height)
-		for dir_idx in 6:
-			var d: Vector3i = _DIR6_3D[dir_idx]
-			var nx := x + d.x
-			var ny := y + d.y
-			var nz := z + d.z
-			if not grid.in_bounds(nx, ny, nz):
-				continue
-			var ni := grid._index(nx, ny, nz)
-			if fixed_indices.has(ni):
-				continue
-			if wave[ni] == 0:
-				continue
-			var allowed := 0
-			for a in _wfc_bits(wave[cur]):
-				for b in _wfc_bits(wave[ni]):
-					if _wfc3d_compatible(tiles, a, b, dir_idx):
-						allowed |= 1 << b
-			if allowed == 0:
-				wave[ni] = 0
-				queue.append(ni)
-				continue
-			if (wave[ni] & allowed) != wave[ni]:
-				wave[ni] &= allowed
-				queue.append(ni)
-	return propagations
 
-static func _wfc3d_compatible(tiles: Array, a: int, b: int, dir_idx: int) -> bool:
-	var opp := _OPP3D[dir_idx]
-	return tiles[a].socket(dir_idx) == tiles[b].socket(opp)
+## —— WFC 算法实现（C++ 共享库 PCGWFC，参数解析后调用） ——
 
-## —— WFC 算法实现（简单瓦片模型 + 固定格 / 回溯 / 重试） ——
-
-## 每格候选集用 bitmask（瓦片索引位），波函数坍缩 = 选格 → 加权随机坍缩 → 邻接约束传播。
 ## fixed 支持 key 为 Vector2i / int(线性索引) / String("x,y")，value 为瓦片索引。
-## 冲突时优先回溯到上一次观测重选；仍失败则整体重试（wfc_retries 次），全部失败降级随机填充。
+## 冲突时优先回溯到上一次观测重选；仍失败则整体重试（wfc_retries 次），全部失败报错。
 static func _gen_wfc(grid: GeneratedGrid, def: GridGenDef, rng: RandomNumberGenerator, fixed: Dictionary = {}) -> void:
 	var tiles := def.tile_set.tiles if def.tile_set else []
 	var n := tiles.size()
@@ -1703,20 +1513,58 @@ static func _gen_wfc(grid: GeneratedGrid, def: GridGenDef, rng: RandomNumberGene
 		grid.fill(def.solid_value)
 		return
 	var cell_count := grid.width * grid.height
-	if cell_count > 20000:
-		LogTool.warn("PCG", "WFC 网格过大(%d 格)，已降级为加权随机填充" % cell_count)
-		for i in cell_count:
-			grid.cells[i] = _wfc_weighted_choice(tiles, _wfc_bits((1 << n) - 1), rng)
-		_apply_wfc_fixed_2d(grid, def, fixed)
+	# 纯 C++ 实现（框架强依赖共享原生库 PCGWFC，无 GDScript 回退）
+	var native := FrameworkNative.get_native(&"PCGWFC", [&"generate"])
+	if native == null:
+		push_error("PCGTool.generate_grid: 原生库 PCGWFC 不可用! 请确认 Native/devecs.gdextension 已加载。")
+		grid.fill(def.solid_value)
 		return
-	for retry in def.wfc_retries + 1:
-		if _wfc_generate_pass(grid, def, rng, fixed, cell_count, n):
-			return
-		LogTool.warn("PCG", "WFC 生成冲突，重试 %d/%d" % [retry + 1, def.wfc_retries])
-	LogTool.warn("PCG", "WFC 重试耗尽，降级为加权随机填充")
-	for i in cell_count:
-		grid.cells[i] = _wfc_weighted_choice(tiles, _wfc_bits((1 << n) - 1), rng)
-	_apply_wfc_fixed_2d(grid, def, fixed)
+	var socket_map := {}
+	var next_id := 0
+	var socket_ids := func(s: String) -> int:
+		if not socket_map.has(s):
+			socket_map[s] = next_id
+			next_id += 1
+		return socket_map[s]
+	var sockets := PackedInt32Array()
+	var weights := PackedFloat32Array()
+	for t in tiles:
+		sockets.append(socket_ids.call(t.socket(0)))
+		sockets.append(socket_ids.call(t.socket(1)))
+		sockets.append(socket_ids.call(t.socket(2)))
+		sockets.append(socket_ids.call(t.socket(3)))
+		weights.append(t.weight)
+	var fixed_idx := PackedInt32Array()
+	var fixed_tile := PackedInt32Array()
+	var merged := {}
+	for key in def.wfc_fixed_cells:
+		merged[key] = def.wfc_fixed_cells[key]
+	for key in fixed:
+		merged[key] = fixed[key]
+	for key in merged:
+		var tile_idx := int(merged[key])
+		if tile_idx < 0 or tile_idx >= n:
+			continue
+		if key is Rect2i:
+			var r := key as Rect2i
+			for ry in range(maxi(0, r.position.y), mini(grid.height, r.end.y)):
+				for rx in range(maxi(0, r.position.x), mini(grid.width, r.end.x)):
+					fixed_idx.append(ry * grid.width + rx)
+					fixed_tile.append(tile_idx)
+			continue
+		var idx := _wfc_fixed_index(grid, key)
+		if idx >= 0:
+			fixed_idx.append(idx)
+			fixed_tile.append(tile_idx)
+	var out: PackedInt32Array = native.call(&"generate",
+		grid.width, grid.height, sockets, weights,
+		def.wfc_max_backtracks, def.wfc_retries, def.wfc_max_propagations,
+		fixed_idx, fixed_tile, rng.seed)
+	if out.size() != cell_count:
+		push_error("PCGTool.generate_grid: PCGWFC 生成失败(重试耗尽)! 请调整 wfc_retries 或瓦片约束。")
+		grid.fill(def.solid_value)
+		return
+	grid.cells = out
 
 ## 降级随机填充后重新应用固定格（保证约束不丢失）
 static func _apply_wfc_fixed_2d(grid: GeneratedGrid, def: GridGenDef, fixed: Dictionary) -> void:
@@ -1741,73 +1589,6 @@ static func _apply_wfc_fixed_2d(grid: GeneratedGrid, def: GridGenDef, fixed: Dic
 		if idx >= 0:
 			grid.cells[idx] = tile_idx
 
-## 单遍 WFC：返回是否无矛盾（成功则写入 grid）
-static func _wfc_generate_pass(grid: GeneratedGrid, def: GridGenDef, rng: RandomNumberGenerator, fixed: Dictionary, cell_count: int, n: int) -> bool:
-	var tiles := def.tile_set.tiles
-	var all_mask := (1 << n) - 1
-	var wave := PackedInt32Array()
-	wave.resize(cell_count)
-	wave.fill(all_mask)
-	var queue: Array[int] = []
-	var fixed_indices := {}
-	var merged := {}
-	for key in def.wfc_fixed_cells:
-		merged[key] = def.wfc_fixed_cells[key]
-	for key in fixed:
-		merged[key] = fixed[key]
-	for key in merged:
-		var tile_idx := int(merged[key])
-		if tile_idx < 0 or tile_idx >= n:
-			continue
-		if key is Rect2i:
-			var r := key as Rect2i
-			for ry in range(maxi(0, r.position.y), mini(grid.height, r.end.y)):
-				for rx in range(maxi(0, r.position.x), mini(grid.width, r.end.x)):
-					var ri := ry * grid.width + rx
-					wave[ri] = 1 << tile_idx
-					queue.append(ri)
-					fixed_indices[ri] = true
-			continue
-		var idx := _wfc_fixed_index(grid, key)
-		if idx >= 0:
-			wave[idx] = 1 << tile_idx
-			queue.append(idx)
-			fixed_indices[idx] = true
-	var propagations := 0
-	propagations = _wfc_propagate(wave, grid, def, queue, propagations, fixed_indices)
-	var history: Array = []
-	var backtracks := 0
-	while true:
-		var cell := _wfc_pick_lowest_entropy(wave)
-		if cell == -1:
-			break
-		var opts := _wfc_bits(wave[cell])
-		if opts.is_empty():
-			if def.wfc_max_backtracks > 0 and backtracks < def.wfc_max_backtracks and not history.is_empty():
-				backtracks += 1
-				var h: Dictionary = history.pop_back()
-				wave = h.wave_copy.duplicate()
-				wave[h.cell] &= ~h.bad
-				queue.append(h.cell)
-				propagations = _wfc_propagate(wave, grid, def, queue, propagations, fixed_indices)
-				continue
-			return false
-		var chosen := _wfc_weighted_choice(tiles, opts, rng)
-		if def.wfc_max_backtracks > 0:
-			history.append({"cell": cell, "wave_copy": wave.duplicate(), "bad": 1 << chosen})
-		wave[cell] = 1 << chosen
-		queue.append(cell)
-		propagations = _wfc_propagate(wave, grid, def, queue, propagations, fixed_indices)
-	for i in cell_count:
-		if wave[i] == 0:
-			return false
-	for i in cell_count:
-		var m := wave[i]
-		if m != 0 and (m & (m - 1)) == 0:
-			grid.cells[i] = _wfc_bit_index(m)
-		else:
-			grid.cells[i] = def.solid_value
-	return true
 
 ## 解析固定格 key 为线性索引（支持 Vector2i / int / "x,y"）
 static func _wfc_fixed_index(grid: GeneratedGrid, key) -> int:
@@ -1824,92 +1605,6 @@ static func _wfc_fixed_index(grid: GeneratedGrid, key) -> int:
 				return y * grid.width + x
 	return -1
 
-## 选候选数最少（>1）的格子（popcount 内联，避免函数调用开销）
-static func _wfc_pick_lowest_entropy(wave: PackedInt32Array) -> int:
-	var best := -1
-	var best_count := 0x7FFFFFFF
-	for i in wave.size():
-		var v := wave[i]
-		if v == 0:
-			continue
-		var cnt := 0
-		var m := v
-		while m:
-			m &= m - 1
-			cnt += 1
-		if cnt > 1 and cnt < best_count:
-			best_count = cnt
-			best = i
-	return best
-
-## 邻接约束传播（BFS），返回累计传播次数
-static func _wfc_propagate(wave: PackedInt32Array, grid: GeneratedGrid, def: GridGenDef, queue: Array[int], propagations: int, fixed_indices: Dictionary = {}) -> int:
-	var tiles := def.tile_set.tiles
-	while not queue.is_empty():
-		if def.wfc_max_propagations > 0 and propagations >= def.wfc_max_propagations:
-			return propagations
-		var cur: int = queue.pop_back()
-		propagations += 1
-		var cx := cur % grid.width
-		var cy := cur / grid.width
-		for dir_idx in 4:
-			var d: Vector2i = _DIR4[dir_idx]
-			var nx := cx + d.x
-			var ny := cy + d.y
-			if not grid.in_bounds(nx, ny):
-				continue
-			var ni := ny * grid.width + nx
-			if fixed_indices.has(ni):
-				continue
-			if wave[ni] == 0:
-				continue
-			var allowed := 0
-			for a in _wfc_bits(wave[cur]):
-				for b in _wfc_bits(wave[ni]):
-					if _wfc_compatible(tiles, a, b, dir_idx):
-						allowed |= 1 << b
-			if allowed == 0:
-				wave[ni] = 0
-				queue.append(ni)
-				continue
-			if (wave[ni] & allowed) != wave[ni]:
-				wave[ni] &= allowed
-				queue.append(ni)
-	return propagations
-
-## socket 匹配：cur 位于邻居的 dir_idx 方向，cur 的 dir 侧 vs 邻居的 opposite 侧
-static func _wfc_compatible(tiles: Array, a: int, b: int, dir_idx: int) -> bool:
-	var opp := (dir_idx + 2) % 4
-	return tiles[a].socket(dir_idx) == tiles[b].socket(opp)
-
-## 加权随机选一个候选瓦片
-static func _wfc_weighted_choice(tiles: Array, opts: Array[int], rng: RandomNumberGenerator) -> int:
-	var total := 0.0
-	for i in opts:
-		total += maxf(tiles[i].weight, 0.0)
-	if total <= 0.0:
-		return opts[rng.randi_range(0, opts.size() - 1)]
-	var r := rng.randf() * total
-	for i in opts:
-		r -= maxf(tiles[i].weight, 0.0)
-		if r <= 0.0:
-			return i
-	return opts[opts.size() - 1]
-
-## 候选集 → 瓦片索引数组
-static func _wfc_bits(mask: int) -> Array[int]:
-	var out: Array[int] = []
-	for i in 30:
-		if mask & (1 << i):
-			out.append(i)
-	return out
-
-static func _wfc_bit_index(mask: int) -> int:
-	var i := 0
-	while mask > 1:
-		mask >>= 1
-		i += 1
-	return i
 
 const _DIR4: Array[Vector2i] = [Vector2i(0, -1), Vector2i(1, 0), Vector2i(0, 1), Vector2i(-1, 0)]
 const _DIR8: Array[Vector2i] = [

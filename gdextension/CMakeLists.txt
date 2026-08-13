@@ -20,6 +20,10 @@ add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/godot-cpp ${CMAKE_CURRENT_BINARY_DI
 add_library(devecs SHARED
     src/register_types.cpp
     src/ecs_core.cpp
+    src/pcg_erode.cpp
+    src/pcg_wfc.cpp
+    src/pcg_wfc3d.cpp
+    src/pcg_lsystem.cpp
 )
 
 target_link_libraries(devecs PRIVATE godot-cpp)

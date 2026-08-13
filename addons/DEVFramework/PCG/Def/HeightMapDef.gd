@@ -50,6 +50,16 @@ class_name HeightMapDef extends PCGGeneratorDef
 @export_range(0.0, 0.1, 0.005) var erosion_min_slope := 0.005
 ## 蒸发率（0..1）：每次移动液滴携带水减少比例，控制河道长度
 @export_range(0.0, 0.1, 0.005) var erosion_evaporate := 0.02
+## 悬崖落差阈值（高度单位）：液滴单步下降超过此值视为悬崖 → 停止侵蚀（保留陡坡/峡谷壁）
+@export_range(0.0, 1.0, 0.02) var erosion_cliff_drop := 0.0
+## 沉积率（0..1）：泥沙沉积强度，越低越保留下坡陡坡（配合 cliff 保留地形锐利度）
+@export_range(0.0, 1.0, 0.05) var erosion_deposition_rate := 1.0
+
+## —— 热侵蚀（thermal erosion，平滑坡面/自然山脊） ——
+## 迭代次数：0=关闭；每迭代把超休止角的高度差从高格搬运到低格，O(n) 稳定
+@export_range(0, 200, 1) var thermal_iterations := 0
+## 休止角（talus）：相邻格高差超过此值即搬运，越小坡越缓
+@export_range(0.001, 0.2, 0.005) var thermal_talus := 0.05
 
 
 func generate(ctx: PCGContext) -> void:

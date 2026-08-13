@@ -259,10 +259,15 @@ world.tick(delta)
 ### 4.6b 框架级共享原生库（`Native/`）
 
 整个 DEVFramework 的 C++ 原生能力集中在**唯一一个共享扩展**：
-`res://addons/DEVFramework/Native/devecs.gdextension`（编译产物也在该目录）。任何模块（ECS 的 `ECSCore`、未来 PCG 侵蚀加速等）的原生类都注册在这一个库里，共用一份二进制。
+`res://addons/DEVFramework/Native/devecs.gdextension`（编译产物也在该目录）。任何模块的原生类都注册在这一个库里，共用一份二进制。当前已注册：
+- `ECSCore` — ECS 高性能实体组件系统
+- `PCGErode` — PCG 高度图侵蚀加速（C++ 水力粒子液滴含悬崖/沉积参数 + 热侵蚀平滑坡面）
+- `PCGWFC` / `PCGWFC3D` — PCG 2D/3D 波函数坍缩加速（大图快 ~30 倍）
+- `PCGLSystem` — PCG L-System 生长展开加速（大迭代快数十倍）
 
 由 **`FrameworkNative`**（`Native/FrameworkNative.gd`）统一懒加载与校验：
 - `FrameworkNative.get_native(&"ECSCore", required_methods)` — 按类名取共享实例（缓存 + 方法集版本校验）
+- `FrameworkNative.get_native(&"PCGErode", [&"erode"])` / `&"PCGWFC"` / `&"PCGLSystem"` — PCG 算法加速
 - `FrameworkNative.instantiate_script(script)` — 稳定的脚本实例化（规避全局类注册时序问题）
 - `FrameworkNative.refresh(...)` — 清缓存（库热重载/测试）
 
