@@ -598,3 +598,5 @@ func _gold_ui() -> void:
 
 func _log(msg: String) -> void:
 	log_box.text = msg
+
+
