@@ -12,6 +12,7 @@ enum Mode {
 	CONTENT,
 	BIOME,
 	PIPELINE,
+	PATH,
 }
 
 @export var noise_defs: Array[Resource] = []
@@ -20,6 +21,7 @@ enum Mode {
 @export var content_defs: Array[Resource] = []
 @export var biome_defs: Array[Resource] = []
 @export var pipeline_defs: Array[Resource] = []
+@export var path_defs: Array[Resource] = []
 
 @onready var texture_rect: TextureRect = %TextureRect
 @onready var mode_option: OptionButton = %ModeOption
@@ -44,7 +46,7 @@ var _animating := false
 
 func _ready() -> void:
 	# 与 Mode 枚举一一对应的中文标签
-	var labels := ["噪声层", "网格生成", "散布放置", "内容生成", "生物群系", "综合管线"]
+	var labels := ["噪声层", "网格生成", "散布放置", "内容生成", "生物群系", "综合管线", "河流道路"]
 	for i in labels.size():
 		mode_option.add_item(labels[i], i)
 	mode_option.selected = _mode
@@ -97,6 +99,8 @@ func _reload_sub_options() -> void:
 			_add_options(biome_defs)
 		Mode.PIPELINE:
 			_add_options(pipeline_defs)
+		Mode.PATH:
+			_add_options(path_defs)
 	_generate()
 
 
@@ -135,6 +139,8 @@ func _generate() -> void:
 			_gen_biome(seed)
 		Mode.PIPELINE:
 			_gen_pipeline(seed)
+		Mode.PATH:
+			_gen_path(seed)
 
 
 ## —— 噪声层 / 程序化纹理 ——
@@ -292,13 +298,12 @@ func _on_anim_reset() -> void:
 
 func _on_animation_finished() -> void:
 	var steps := _animator.step_count if _animator else 0
-	var backtracks := _animator._backtracks if _animator else 0
 	var failed := _animator.failed if _animator else false
 	_animating = false
 	_animator = null
 	anim_check.button_pressed = false  # 触发 toggled(false) → 重新生成最终静态图
 	var tail := "（含矛盾格，已由重试兜底）" if failed else ""
-	_log("WFC 动画完成：%d 步，回溯 %d 次%s" % [steps, backtracks, tail])
+	_log("WFC 动画完成：%d 步%s" % [steps, tail])
 
 
 ## 在生成图上给固定格描一圈亮色边框，方便看出哪些格是手动固定的
@@ -441,6 +446,55 @@ func _gen_city(def: CityDef, seed: int) -> void:
 	_log("城市: %s\n建筑 %d ｜ 道路 %d ｜ 公园 %d" % [
 		def.name, grid.count(def.building_value), grid.count(def.road_value), grid.count(def.park_value),
 	])
+
+
+## —— 河流 / 道路 ——
+
+func _gen_path(seed: int) -> void:
+	brush_row.visible = false
+	anim_row.visible = false
+	var res := _selected_def(path_defs)
+	var rng := PCGTool.make_rng(seed)
+	# 用地形栅格作底：噪声地形(0=空, 1=陆)，河流/道路 stamp 上去
+	var size := 96
+	var terrain := GeneratedGrid.create(size, size, 0)
+	var terrain_def := load("res://Assets/Def/PCG/Grid_NoiseTerrain.tres") as GridGenDef
+	if terrain_def:
+		terrain = PCGTool.generate_grid(terrain_def, PCGTool.make_rng(seed + 777))
+	var img := PCGTool.grid_to_image(terrain, {
+		1: Color(0.62, 0.66, 0.55),  # 陆地
+		0: Color(0.25, 0.5, 0.7),    # 空地(海)
+	})
+	var info := ""
+	if res is RiverDef:
+		var def := res as RiverDef
+		var paths := PCGTool.generate_river(def, rng)
+		PCGTool.stamp_path(terrain, paths, def.river_value, def.width)
+		info = "河流 %s: %d 段 宽 %d\n流经高度场梯度下降，蓝线=河道" % [
+			def.name, def.river_count, def.width,
+		]
+		img = PCGTool.grid_to_image(terrain, {
+			1: Color(0.62, 0.66, 0.55),
+			0: Color(0.25, 0.5, 0.7),
+			def.river_value: Color(0.25, 0.45, 0.9),
+		})
+	elif res is RoadDef:
+		var def := res as RoadDef
+		var roads := PCGTool.generate_road(def, rng)
+		PCGTool.stamp_path(terrain, roads, def.road_value, def.road_width)
+		info = "道路 %s: %d 枢纽 宽 %d%s\nL 型走廊连接，灰线=道路" % [
+			def.name, def.hub_count, def.road_width, "（MST 最小生成树）" if def.mst_only else "",
+		]
+		img = PCGTool.grid_to_image(terrain, {
+			1: Color(0.62, 0.66, 0.55),
+			0: Color(0.25, 0.5, 0.7),
+			def.road_value: Color(0.75, 0.75, 0.75),
+		})
+	else:
+		_log("请配置 path_defs（RiverDef 或 RoadDef）")
+		return
+	texture_rect.texture = ImageTexture.create_from_image(_scale_up(img))
+	_log("%s\nseed=%d  鼠标可点击下方区域" % [info, seed])
 
 
 ## —— 生物群系 ——

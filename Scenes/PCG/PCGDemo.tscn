@@ -1,4 +1,4 @@
-[gd_scene load_steps=33 format=3]
+[gd_scene load_steps=35 format=3]
 
 [ext_resource type="Script" path="res://Scenes/PCG/PCGDemo.gd" id="1_demo"]
 [ext_resource type="Resource" path="res://Assets/Def/PCG/Noise_Perlin.tres" id="n1"]
@@ -31,6 +31,8 @@
 [ext_resource type="Resource" path="res://Assets/Def/PCG/Evolve_Equipment.tres" id="c5"]
 [ext_resource type="Resource" path="res://Assets/Def/PCG/Biome_World.tres" id="b1"]
 [ext_resource type="Resource" path="res://Assets/Def/PCG/Pipeline_World.tres" id="pl1"]
+[ext_resource type="Resource" path="res://Assets/Def/PCG/River_Terrain.tres" id="r1"]
+[ext_resource type="Resource" path="res://Assets/Def/PCG/Road_Network.tres" id="r2"]
 
 [sub_resource type="StyleBoxFlat" id="StyleBoxFlat_panel"]
 content_margin_left = 12.0
@@ -62,6 +64,7 @@ placement_defs = Array[Resource]([ExtResource("p1"), ExtResource("p2")])
 content_defs = Array[Resource]([ExtResource("c1"), ExtResource("c2"), ExtResource("c3"), ExtResource("c4"), ExtResource("c5")])
 biome_defs = Array[Resource]([ExtResource("b1")])
 pipeline_defs = Array[Resource]([ExtResource("pl1")])
+path_defs = Array[Resource]([ExtResource("r1"), ExtResource("r2")])
 
 [node name="TextureRect" type="TextureRect" parent="."]
 unique_name_in_owner = true
