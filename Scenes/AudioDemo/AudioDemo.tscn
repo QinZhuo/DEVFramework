@@ -18,10 +18,10 @@ anchor_left = 0.5
 anchor_top = 0.5
 anchor_right = 0.5
 anchor_bottom = 0.5
-offset_left = -260.0
-offset_top = -200.0
-offset_right = 260.0
-offset_bottom = 200.0
+offset_left = -280.0
+offset_top = -250.0
+offset_right = 280.0
+offset_bottom = 250.0
 grow_horizontal = 2
 grow_vertical = 2
 
@@ -38,13 +38,13 @@ theme_override_constants/separation = 14
 
 [node name="Title" type="Label" parent="Panel/Margin/VBox" unique_id=2014866830]
 layout_mode = 2
-text = "程序化音频 Demo"
+text = "程序化音频 风格画廊"
 horizontal_alignment = 1
 
 [node name="SubTitle" type="Label" parent="Panel/Margin/VBox" unique_id=941019222]
 modulate = Color(1, 1, 1, 0.6)
 layout_mode = 2
-text = "以下声音均由 AudioSynthDef 实时渲染生成"
+text = "全部由 AudioSynthDef 程序化生成，无任何音频素材"
 horizontal_alignment = 1
 
 [node name="SFXRow" type="HBoxContainer" parent="Panel/Margin/VBox" unique_id=1814343988]
@@ -52,60 +52,112 @@ layout_mode = 2
 theme_override_constants/separation = 10
 
 [node name="BtnLaser" type="Button" parent="Panel/Margin/VBox/SFXRow" unique_id=794207728]
-custom_minimum_size = Vector2(0, 44)
+custom_minimum_size = Vector2(0, 40)
 layout_mode = 2
 size_flags_horizontal = 3
 text = "激光"
 
 [node name="BtnExplosion" type="Button" parent="Panel/Margin/VBox/SFXRow" unique_id=1709106932]
-custom_minimum_size = Vector2(0, 44)
+custom_minimum_size = Vector2(0, 40)
 layout_mode = 2
 size_flags_horizontal = 3
 text = "爆炸"
 
 [node name="BtnCoin" type="Button" parent="Panel/Margin/VBox/SFXRow" unique_id=1512859449]
-custom_minimum_size = Vector2(0, 44)
+custom_minimum_size = Vector2(0, 40)
 layout_mode = 2
 size_flags_horizontal = 3
 text = "拾取"
 
 [node name="BtnHit" type="Button" parent="Panel/Margin/VBox/SFXRow" unique_id=620722509]
-custom_minimum_size = Vector2(0, 44)
+custom_minimum_size = Vector2(0, 40)
 layout_mode = 2
 size_flags_horizontal = 3
 text = "打击"
 
 [node name="BgmRow" type="HBoxContainer" parent="Panel/Margin/VBox" unique_id=1316958297]
 layout_mode = 2
-theme_override_constants/separation = 10
+theme_override_constants/separation = 8
 
 [node name="BtnBgmAdventure" type="Button" parent="Panel/Margin/VBox/BgmRow" unique_id=957630177]
-custom_minimum_size = Vector2(0, 44)
+custom_minimum_size = Vector2(0, 40)
 layout_mode = 2
 size_flags_horizontal = 3
-text = "BGM 冒险(循环)"
+text = "冒险"
 
 [node name="BtnBgmAmbient" type="Button" parent="Panel/Margin/VBox/BgmRow" unique_id=1188182711]
-custom_minimum_size = Vector2(0, 44)
+custom_minimum_size = Vector2(0, 40)
 layout_mode = 2
 size_flags_horizontal = 3
-text = "BGM 氛围(循环)"
+text = "氛围"
+
+[node name="BtnBgmChiptune" type="Button" parent="Panel/Margin/VBox/BgmRow" unique_id=1765940211]
+custom_minimum_size = Vector2(0, 40)
+layout_mode = 2
+size_flags_horizontal = 3
+text = "8位"
+
+[node name="BtnBgmRock" type="Button" parent="Panel/Margin/VBox/BgmRow" unique_id=1765940212]
+custom_minimum_size = Vector2(0, 40)
+layout_mode = 2
+size_flags_horizontal = 3
+text = "摇滚"
+
+[node name="BtnBgmHouse" type="Button" parent="Panel/Margin/VBox/BgmRow" unique_id=1765940213]
+custom_minimum_size = Vector2(0, 40)
+layout_mode = 2
+size_flags_horizontal = 3
+text = "House"
+
+[node name="BgmRow2" type="HBoxContainer" parent="Panel/Margin/VBox" unique_id=1765940214]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="BtnBgmTrap" type="Button" parent="Panel/Margin/VBox/BgmRow2" unique_id=1765940215]
+custom_minimum_size = Vector2(0, 40)
+layout_mode = 2
+size_flags_horizontal = 3
+text = "Trap"
+
+[node name="BtnBgmJazz" type="Button" parent="Panel/Margin/VBox/BgmRow2" unique_id=1765940216]
+custom_minimum_size = Vector2(0, 40)
+layout_mode = 2
+size_flags_horizontal = 3
+text = "爵士"
+
+[node name="BtnBgmCinematic" type="Button" parent="Panel/Margin/VBox/BgmRow2" unique_id=1765940217]
+custom_minimum_size = Vector2(0, 40)
+layout_mode = 2
+size_flags_horizontal = 3
+text = "电影"
+
+[node name="BtnBgmWorld" type="Button" parent="Panel/Margin/VBox/BgmRow2" unique_id=1765940218]
+custom_minimum_size = Vector2(0, 40)
+layout_mode = 2
+size_flags_horizontal = 3
+text = "世界"
+
+[node name="BtnBgmShowcase" type="Button" parent="Panel/Margin/VBox/BgmRow2" unique_id=1765940219]
+custom_minimum_size = Vector2(0, 40)
+layout_mode = 2
+size_flags_horizontal = 3
+text = "综合"
 
 [node name="BtnStopBgm" type="Button" parent="Panel/Margin/VBox" unique_id=1474047417]
-custom_minimum_size = Vector2(0, 44)
+custom_minimum_size = Vector2(0, 40)
 layout_mode = 2
 text = "停止 BGM"
 
 [node name="Hint" type="Label" parent="Panel/Margin/VBox" unique_id=1818536591]
 modulate = Color(1, 1, 1, 0.5)
 layout_mode = 2
-text = "SFX 为一次性离线渲染，BGM 由 AudioLivePlayer 实时无限循环"
+text = "点击风格按钮生成 BGM，下方显示该风格的音色构成与用到的能力"
 horizontal_alignment = 1
 autowrap_mode = 3
 
 [node name="InfoLabel" type="Label" parent="Panel/Margin/VBox" unique_id=2073678522]
-modulate = Color(0, 1, 1, 0.7)
+modulate = Color(0.9, 1, 1, 0.9)
 layout_mode = 2
-text = "播放 BGM 后在此显示时长/声道/循环信息"
+text = "程序化音频风格画廊\n点击任意风格按钮试听\n\n10 种风格 · 全部由 Def 配置驱动 · 可复现(seed)"
 horizontal_alignment = 1
 autowrap_mode = 3

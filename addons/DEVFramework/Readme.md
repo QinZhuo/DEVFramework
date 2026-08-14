@@ -402,6 +402,7 @@ AudioTool.list_examples()                      # 列出全部示例
 ```
 
 - **渲染管线**：`Def → AudioSequence（展开事件）→ AudioSynthEngine（C++ 逐采样合成，gdextension/src/audio_synth.cpp）→ AudioTool（归一化/软削波/int16 母带）`。
+- **风格模板层**（`StyleDef`）：**风格配方**一键生成完整 BGM Def——配置全局（BPM/调性/和声/效果链）+ 声部列表（角色+音色模板+力度/八度）+ 鼓模式 + 段落。内置 **12 个音色模板**（`lead_square/lead_fm/pad_saw/bass_acid/pluck/drum_kick` 等）与 **8 种风格预设**（`StyleDef.preset("HOUSE")` 等：Chiptune/Rock/House/Jazz/Trap/Cinematic/World/Ambient）。`.build()` 返回可播放 `AudioSynthDef`；参考资源 `Examples/Style_House.tres`。
 - **合成内核 C++ 实现**：PolyBLEP 抗锯齿振荡器（6 波形）、**FM 频率调制**（调制器-载波对，DX7 风格电钢/钟/贝斯）、**Karplus-Strong 拨弦**（物理建模吉他/竖琴/古筝）、SVF 滤波器（低/带/高通，可被**LFO 扫频**）、ADSR 包络（支持曲线）、**LFO 自动化层**（`AudioLFODef` 可同时调制滤波/音量/声像/音高，实现扫频/抽吸/自动声像/颤音等音色演化）、鼓合成（KICK / SNARE / HAT / HAT_OPEN / TOM / CLAP）全部由**共享原生库 `AudioSynthEngine`** 实现（`FrameworkNative.get_native(&"AudioSynthEngine")`，无 GDScript 回退）。这些是 Godot 不提供的数据级合成 API，故自研并放原生层以获得实时性能；**其余通用能力一律用 Godot 已有功能**。
 - **自动编曲**（`AudioMusicDef`）：音阶音池 + 加权随机游走旋律 + 和弦进行 + 鼓节奏音型；**段落结构**（`AudioMusicSectionDef`）支持 intro/verse/chorus/outro 等曲式——每段独立小节数/和声进行/强度/乐器启停/八度偏移，声部间段落无缝拼接。
 - **和声深度**：ChordType 覆盖三和弦→13 和弦全系（含 9/11/13、挂留、加九等 21 种）；`chord_quality` 逐音级指定和弦色彩（调式交换/借用和弦）；声部级 + 段落级 `transpose_semitones` 转调（副歌升调等）；`AudioMusicDef.preset_progression("II_V_I")` 等 10 组常用和声进行预设（含 12 小节蓝调/爵士循环/小室进行）。
@@ -448,7 +449,9 @@ AudioTool.list_examples()                      # 列出全部示例
 
 **淡入淡出**：`AudioSynthDef.fade_in`（头部淡入，离线烘焙与 `play_loop()` 完整流均生效，仅首轮）与 `fade_out`（尾部淡出）。
 
-**示例音效库**（共 20 个）：激光/爆炸/金币/受击/跳跃/UI 点击/能量拾取/脚步声/翻滚/魔法/重击/**FM 电钢(DX7)**/**拨弦(Karplus-Strong)**/**Acid Bass(LFO 扫频)** + 冒险循环 BGM/环境循环 BGM/**段落结构 BGM(intro→main→outro)**/**House 鼓模式 BGM**/**Jazz BGM(ii-V-I + 9 和弦 + 转调 + 摇摆鼓)**/**综合编曲 BGM_Showcase**(FM 电钢+拨弦琶音+Acid 贝斯+FM 主奏; intro→verse(TRAP 鼓)→chorus(+2 转调, BREAKBEAT 鼓)→outro; 9 和弦调式交换)。
+**示例音效库**（共 25 个）：激光/爆炸/金币/受击/跳跃/UI 点击/能量拾取/脚步声/翻滚/魔法/重击/**FM 电钢(DX7)**/**拨弦(Karplus-Strong)**/**Acid Bass(LFO 扫频)** + **10 种风格 BGM**：冒险/氛围/8位 Chiptune/摇滚/House/Trap/爵士/电影管弦/世界拨弦/综合 Showcase。
+
+`Scenes/AudioDemo/AudioDemo.tscn` 是**程序化音频风格画廊**：10 种风格一键生成 BGM，点击后 InfoLabel 展示该风格的**音色构成与用到的能力**（如「爵士: FM 电钢 7/9 和弦 + 摇摆鼓 → 和声深度 + 鼓模式摇摆」），直观理解程序化生成能做到的程度。
 
 ### 5.9 其他工具
 

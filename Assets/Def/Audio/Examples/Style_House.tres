@@ -1,0 +1,31 @@
+[gd_resource type="Resource" script_class="StyleDef" format=3 uid="uid://duqn7yfvii7sh"]
+
+[ext_resource type="Script" uid="uid://d1fb15ekhwurw" path="res://addons/DEVFramework/Def/Audio/StyleDef.gd" id="1_obb1i"]
+
+[resource]
+script = ExtResource("1_obb1i")
+style = "HOUSE"
+bpm = 124.0
+fx = Array[String](["compressor", "delay"])
+scale_root_midi = 57
+scale_type = 6
+chord_progression = PackedInt32Array(1, 5, 6, 4)
+drum_pattern_name = "HOUSE"
+voices = Array[Dictionary]([{
+"preset": "pad_fm",
+"role": 1,
+"velocity": 0.5
+}, {
+"preset": "bass_saw",
+"role": 3,
+"velocity": 0.8
+}, {
+"preset": "drum_kick",
+"role": 5
+}, {
+"preset": "drum_snare",
+"role": 5
+}, {
+"preset": "drum_hat",
+"role": 5
+}])

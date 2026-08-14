@@ -53,6 +53,11 @@ static func _build_synths() -> Dictionary:
 	d["BGM_Loop_House"] = _synth_house()
 	d["BGM_Loop_Jazz"] = _synth_jazz()
 	d["BGM_Showcase"] = _synth_showcase()
+	d["BGM_Chiptune"] = _synth_chiptune()
+	d["BGM_Rock"] = _synth_rock()
+	d["BGM_Trap"] = _synth_trap()
+	d["BGM_Cinematic"] = _synth_cinematic()
+	d["BGM_World"] = _synth_world()
 	return d
 
 # —— 便捷构造 ——
@@ -873,3 +878,302 @@ static func _synth_jazz() -> AudioSynthDef:
 	s.music = [ch, bm, dk, ds, dh]
 	return s
 
+
+
+## 8-bit 复古(Chiptune): SQUARE 主奏 + 方波贝斯 + 三角琶音 + 16 分镲 —— 减法合成 + 琶音编曲 + 鼓模式
+static func _synth_chiptune() -> AudioSynthDef:
+	var s := AudioSynthDef.new()
+	s.category = AudioSynthDef.Category.BGM
+	s.sample_rate = 22050
+	s.loop = true
+	s.master_volume = 0.85
+	s.soft_clip = 0.5
+	s.bus = "BGM"
+	s.fx_chain = AudioTool.fxs_from_names(["compressor"])
+	var lead := _voice_tone([_osc(AudioTool.Wave.SQUARE, 0.7, 0.0, 1)], _env(0.005, 0.1, 0.0, 0.08), 0.6)
+	var bass := _voice_tone([_osc(AudioTool.Wave.SQUARE, 0.8)], _env(0.002, 0.2, 0.0, 0.1), 0.8)
+	var arp := _voice_tone([_osc(AudioTool.Wave.TRIANGLE, 0.8)], _env(0.002, 0.15, 0.0, 0.1), 0.5)
+	var hat := _voice_drum(AudioVoiceDef.DrumType.HAT_CLOSED, 0.0, 0.6, 0.5, 0.35)
+	s.voices = [lead, bass, arp, hat]
+	var scale := AudioScaleDef.new()
+	scale.root_midi = 60
+	scale.scale_type = AudioScaleDef.ScaleType.MAJOR
+	var prog := PackedInt32Array([1, 5, 6, 4])
+	var mel := AudioMusicDef.new()
+	mel.role = AudioMusicDef.Role.MELODY
+	mel.scale = scale
+	mel.bpm = 140.0
+	mel.bars = 4
+	mel.chord_progression = prog
+	mel.note_length = 0.25
+	mel.gate = 0.9
+	mel.velocity = 0.9
+	mel.voice_index = 0
+	var bas := AudioMusicDef.new()
+	bas.role = AudioMusicDef.Role.BASS
+	bas.scale = scale
+	bas.bpm = 140.0
+	bas.bars = 4
+	bas.chord_progression = prog
+	bas.velocity = 0.85
+	bas.voice_index = 1
+	var ar := AudioMusicDef.new()
+	ar.role = AudioMusicDef.Role.ARPEGGIO
+	ar.scale = scale
+	ar.bpm = 140.0
+	ar.bars = 4
+	ar.chord_progression = prog
+	ar.note_length = 0.125
+	ar.gate = 0.9
+	ar.velocity = 0.5
+	ar.voice_index = 2
+	var dh := AudioMusicDef.new()
+	dh.role = AudioMusicDef.Role.DRUM
+	dh.bpm = 140.0
+	dh.bars = 4
+	dh.drum_kit = AudioMusicDef.DrumKit.HAT
+	dh.drum_pattern = DrumPatternDef.preset("TECHNO")
+	dh.voice_index = 3
+	s.music = [mel, bas, ar, dh]
+	return s
+
+## 摇滚(Rock): 失真吉他 power chord + 方波贝斯 + 重军鼓 —— 失真效果 + 鼓模式 + 挂留和弦
+static func _synth_rock() -> AudioSynthDef:
+	var s := AudioSynthDef.new()
+	s.category = AudioSynthDef.Category.BGM
+	s.sample_rate = 22050
+	s.loop = true
+	s.master_volume = 0.9
+	s.soft_clip = 0.8
+	s.bus = "BGM"
+	s.fx_chain = AudioTool.fxs_from_names(["distortion", "compressor"])
+	var gtr := _voice_tone([_osc(AudioTool.Wave.SQUARE, 0.7, 0.0, 0, 0.25), _osc(AudioTool.Wave.SAW, 0.4)], _env(0.003, 0.2, 0.0, 0.1), 0.9)
+	gtr.filter = _filt(AudioFilterDef.Mode.LOW_PASS, 3000.0, 0.4)
+	var bass := _voice_tone([_osc(AudioTool.Wave.SQUARE, 0.8, 0.0, -1)], _env(0.002, 0.3, 0.0, 0.15), 0.9)
+	var kick := _voice_drum(AudioVoiceDef.DrumType.KICK, 90.0, 0.2, 0.85, 1.0)
+	var snare := _voice_drum(AudioVoiceDef.DrumType.SNARE, 190.0, 0.6, 0.55, 0.9)
+	var hat := _voice_drum(AudioVoiceDef.DrumType.HAT_CLOSED, 0.0, 0.5, 0.5, 0.4)
+	s.voices = [gtr, bass, kick, snare, hat]
+	var scale := AudioScaleDef.new()
+	scale.root_midi = 57
+	scale.scale_type = AudioScaleDef.ScaleType.PENTATONIC_MINOR
+	var prog := PackedInt32Array([1, 6, 4, 5])
+	var ch := AudioMusicDef.new()
+	ch.role = AudioMusicDef.Role.CHORD
+	ch.scale = scale
+	ch.bpm = 130.0
+	ch.bars = 4
+	ch.chord_progression = prog
+	ch.chord_type = AudioMusicDef.ChordType.SUS2
+	ch.gate = 0.9
+	ch.velocity = 0.7
+	ch.voice_index = 0
+	var bas := AudioMusicDef.new()
+	bas.role = AudioMusicDef.Role.BASS
+	bas.scale = scale
+	bas.bpm = 130.0
+	bas.bars = 4
+	bas.chord_progression = prog
+	bas.velocity = 0.9
+	bas.voice_index = 1
+	var dk := AudioMusicDef.new()
+	dk.role = AudioMusicDef.Role.DRUM
+	dk.bpm = 130.0
+	dk.bars = 4
+	dk.drum_kit = AudioMusicDef.DrumKit.KICK
+	dk.drum_pattern = DrumPatternDef.preset("ROCK")
+	dk.voice_index = 2
+	var ds := AudioMusicDef.new()
+	ds.role = AudioMusicDef.Role.DRUM
+	ds.bpm = 130.0
+	ds.bars = 4
+	ds.drum_kit = AudioMusicDef.DrumKit.SNARE
+	ds.drum_pattern = DrumPatternDef.preset("ROCK")
+	ds.voice_index = 3
+	var dh := AudioMusicDef.new()
+	dh.role = AudioMusicDef.Role.DRUM
+	dh.bpm = 130.0
+	dh.bars = 4
+	dh.drum_kit = AudioMusicDef.DrumKit.HAT
+	dh.drum_pattern = DrumPatternDef.preset("ROCK")
+	dh.voice_index = 4
+	s.music = [ch, bas, dk, ds, dh]
+	return s
+
+## 陷阱(Trap): TRAP 三连鼓 + 重低音(LFO 抽吸) + FM 钟 —— 鼓模式(三连/切分) + FM + LFO
+static func _synth_trap() -> AudioSynthDef:
+	var s := AudioSynthDef.new()
+	s.category = AudioSynthDef.Category.BGM
+	s.sample_rate = 22050
+	s.loop = true
+	s.master_volume = 0.9
+	s.soft_clip = 0.7
+	s.bus = "BGM"
+	s.fx_chain = AudioTool.fxs_from_names(["compressor", "delay"])
+	var sub := _voice_tone([_osc(AudioTool.Wave.SINE, 0.9)], _env(0.01, 0.3, 0.0, 0.2), 0.9)
+	sub.lfo.enabled = true
+	sub.lfo.rate = 8.0
+	sub.lfo.depth = 0.5
+	sub.lfo.mod_volume = true
+	var bell := _voice_tone([_osc(AudioTool.Wave.SINE, 0.7, 0.0, 0, 0.5, 2.0, 10.0)], _env(0.002, 0.5, 0.0, 0.5), 0.5)
+	var kick := _voice_drum(AudioVoiceDef.DrumType.KICK, 85.0, 0.2, 0.9, 1.0)
+	var snare := _voice_drum(AudioVoiceDef.DrumType.SNARE, 200.0, 0.6, 0.5, 0.8)
+	var hat := _voice_drum(AudioVoiceDef.DrumType.HAT_CLOSED, 0.0, 0.5, 0.5, 0.35)
+	s.voices = [sub, bell, kick, snare, hat]
+	var scale := AudioScaleDef.new()
+	scale.root_midi = 50
+	scale.scale_type = AudioScaleDef.ScaleType.PENTATONIC_MINOR
+	var prog := PackedInt32Array([1, 6, 4, 5])
+	var bas := AudioMusicDef.new()
+	bas.role = AudioMusicDef.Role.BASS
+	bas.scale = scale
+	bas.bpm = 140.0
+	bas.bars = 4
+	bas.chord_progression = prog
+	bas.velocity = 0.9
+	bas.voice_index = 0
+	var bl := AudioMusicDef.new()
+	bl.role = AudioMusicDef.Role.MELODY
+	bl.scale = scale
+	bl.bpm = 140.0
+	bl.bars = 4
+	bl.chord_progression = prog
+	bl.note_length = 0.5
+	bl.gate = 0.6
+	bl.velocity = 0.7
+	bl.voice_index = 1
+	var dk := AudioMusicDef.new()
+	dk.role = AudioMusicDef.Role.DRUM
+	dk.bpm = 140.0
+	dk.bars = 4
+	dk.drum_kit = AudioMusicDef.DrumKit.KICK
+	dk.drum_pattern = DrumPatternDef.preset("TRAP")
+	dk.voice_index = 2
+	var ds := AudioMusicDef.new()
+	ds.role = AudioMusicDef.Role.DRUM
+	ds.bpm = 140.0
+	ds.bars = 4
+	ds.drum_kit = AudioMusicDef.DrumKit.SNARE
+	ds.drum_pattern = DrumPatternDef.preset("TRAP")
+	ds.voice_index = 3
+	var dh := AudioMusicDef.new()
+	dh.role = AudioMusicDef.Role.DRUM
+	dh.bpm = 140.0
+	dh.bars = 4
+	dh.drum_kit = AudioMusicDef.DrumKit.HAT
+	dh.drum_pattern = DrumPatternDef.preset("TRAP")
+	dh.voice_index = 4
+	s.music = [bas, bl, dk, ds, dh]
+	return s
+
+## 电影/管弦(Cinematic): 弦乐 pad(失谐叠加) + 低音 drone + 定音鼓 —— 减法叠加 + 7 和弦 + 慢速长音
+static func _synth_cinematic() -> AudioSynthDef:
+	var s := AudioSynthDef.new()
+	s.category = AudioSynthDef.Category.BGM
+	s.sample_rate = 22050
+	s.loop = true
+	s.master_volume = 0.9
+	s.soft_clip = 0.6
+	s.bus = "BGM"
+	s.fx_chain = AudioTool.fxs_from_names(["reverb_hall", "compressor"])
+	var strings := _voice_tone(
+		[_osc(AudioTool.Wave.SAW, 0.5, -8.0), _osc(AudioTool.Wave.SAW, 0.5, 8.0), _osc(AudioTool.Wave.TRIANGLE, 0.6)],
+		_env(1.0, 1.5, 0.9, 1.5), 0.6)
+	strings.filter = _filt(AudioFilterDef.Mode.LOW_PASS, 1500.0, 0.2)
+	var drone := _voice_tone([_osc(AudioTool.Wave.SINE, 0.7, 0.0, -1)], _env(2.0, 1.0, 0.9, 2.0), 0.5)
+	var timp := _voice_drum(AudioVoiceDef.DrumType.TOM, 70.0, 0.2, 0.9, 0.9)
+	var kick := _voice_drum(AudioVoiceDef.DrumType.KICK, 60.0, 0.2, 0.8, 1.0)
+	s.voices = [strings, drone, timp, kick]
+	var scale := AudioScaleDef.new()
+	scale.root_midi = 55
+	scale.scale_type = AudioScaleDef.ScaleType.DORIAN
+	var prog := PackedInt32Array([1, 6, 4, 5])
+	var ch := AudioMusicDef.new()
+	ch.role = AudioMusicDef.Role.PAD
+	ch.scale = scale
+	ch.bpm = 70.0
+	ch.bars = 8
+	ch.chord_progression = prog
+	ch.chord_quality = {1: AudioMusicDef.ChordType.MAJOR7, 6: AudioMusicDef.ChordType.MINOR7, 4: AudioMusicDef.ChordType.MAJOR7, 5: AudioMusicDef.ChordType.DOMINANT7}
+	ch.gate = 0.95
+	ch.velocity = 0.7
+	ch.voice_index = 0
+	var dn := AudioMusicDef.new()
+	dn.role = AudioMusicDef.Role.BASS
+	dn.scale = scale
+	dn.bpm = 70.0
+	dn.bars = 8
+	dn.chord_progression = prog
+	dn.velocity = 0.7
+	dn.voice_index = 1
+	var dt := AudioMusicDef.new()
+	dt.role = AudioMusicDef.Role.DRUM
+	dt.bpm = 70.0
+	dt.bars = 8
+	dt.drum_kit = AudioMusicDef.DrumKit.KICK
+	dt.drum_pattern = DrumPatternDef.preset("BALLAD")
+	dt.voice_index = 3
+	var dt2 := AudioMusicDef.new()
+	dt2.role = AudioMusicDef.Role.DRUM
+	dt2.bpm = 70.0
+	dt2.bars = 8
+	dt2.drum_kit = AudioMusicDef.DrumKit.KICK
+	dt2.drum_pattern = DrumPatternDef.new()
+	dt2.drum_pattern.style = "TIMPI"
+	dt2.drum_pattern.steps = 8
+	dt2.drum_pattern.rows = {"KICK": "T...T..."}
+	dt2.voice_index = 2
+	s.music = [ch, dn, dt, dt2]
+	return s
+
+## 世界/拨弦(World): Karplus 竖琴琶音 + 笛音旋律 + 五声音阶 —— 物理建模 + 音阶 + 开镲点缀
+static func _synth_world() -> AudioSynthDef:
+	var s := AudioSynthDef.new()
+	s.category = AudioSynthDef.Category.BGM
+	s.sample_rate = 22050
+	s.loop = true
+	s.master_volume = 0.85
+	s.bus = "BGM"
+	s.fx_chain = AudioTool.fxs_from_names(["reverb", "delay"])
+	var harp := _voice_tone(
+		[_osc(AudioTool.Wave.KARPLUS, 0.8), _osc(AudioTool.Wave.KARPLUS, 0.3, 6.0, 1)],
+		_env(0.001, 0.5, 0.0, 0.4), 0.7)
+	var flute := _voice_tone([_osc(AudioTool.Wave.TRIANGLE, 0.8)], _env(0.1, 0.3, 0.6, 0.4), 0.5)
+	var hat := _voice_drum(AudioVoiceDef.DrumType.HAT_OPEN, 0.0, 0.4, 0.4, 0.25)
+	s.voices = [harp, flute, hat]
+	var scale := AudioScaleDef.new()
+	scale.root_midi = 60
+	scale.scale_type = AudioScaleDef.ScaleType.PENTATONIC_MAJOR
+	var prog := PackedInt32Array([1, 4, 5, 1])
+	var ar := AudioMusicDef.new()
+	ar.role = AudioMusicDef.Role.ARPEGGIO
+	ar.scale = scale
+	ar.bpm = 90.0
+	ar.bars = 4
+	ar.chord_progression = prog
+	ar.note_length = 0.25
+	ar.gate = 0.85
+	ar.velocity = 0.7
+	ar.voice_index = 0
+	var fl := AudioMusicDef.new()
+	fl.role = AudioMusicDef.Role.MELODY
+	fl.scale = scale
+	fl.bpm = 90.0
+	fl.bars = 4
+	fl.chord_progression = prog
+	fl.note_length = 0.5
+	fl.gate = 0.9
+	fl.velocity = 0.7
+	fl.voice_index = 1
+	var dh := AudioMusicDef.new()
+	dh.role = AudioMusicDef.Role.DRUM
+	dh.bpm = 90.0
+	dh.bars = 4
+	dh.drum_kit = AudioMusicDef.DrumKit.HAT_OPEN
+	dh.drum_pattern = DrumPatternDef.new()
+	dh.drum_pattern.style = "WORLD_OPEN"
+	dh.drum_pattern.steps = 16
+	dh.drum_pattern.rows = {"HAT_OPEN": "....h.......h..."}
+	dh.voice_index = 2
+	s.music = [ar, fl, dh]
+	return s
