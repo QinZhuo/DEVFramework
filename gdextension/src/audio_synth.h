@@ -39,12 +39,13 @@ class AudioSynthEngine : public RefCounted {
 
 public:
 	// 配置声部。voice_params 布局(每声部, 浮点):
-	//   [0] kind(0=TONE,1=DRUM) [1]volume [2]pan [3]noise_amount [4]vibrato_rate
-	//   [5]vibrato_depth [6]glide [7]drum_type [8]drum_freq [9]drum_tone
-	//   [10]drum_noise [11]drum_length [12]env.attack [13]env.decay [14]env.sustain
-	//   [15]env.release [16]env.curve [17]filt.enabled [18]filt.mode [19]filt.cutoff
-	//   [20]filt.resonance [21]filt.env_amount [22]filt.lfo_amount [23]n_osc
-	//   随后每振荡器 6 个: [waveform, level, detune_cents, octave_shift, pulse_width, phase_offset]
+//   [0] kind(0=TONE,1=DRUM) [1]volume [2]pan [3]noise_amount [4]vibrato_rate
+//   [5]vibrato_depth [6]glide [7]drum_type [8]drum_freq [9]drum_tone
+//   [10]drum_noise [11]drum_length [12]env.attack [13]env.decay [14]env.sustain
+//   [15]env.release [16]env.curve [17]filt.enabled [18]filt.mode [19]filt.cutoff
+//   [20]filt.resonance [21]filt.env_amount [22]filt.lfo_amount [23]n_osc
+//   随后每振荡器 9 个: [waveform, level, detune_cents, octave_shift, pulse_width,
+//   phase_offset, fm_ratio, fm_index, ks_damping]
 	void configure(const PackedFloat32Array &p_voice_params, const PackedInt32Array &p_osc_counts, int p_sample_rate);
 
 	// 设置某声部的事件数组。事件为 Dictionary: {start:int, duration:int, midi:int, velocity:float, pitch_cents:float}
@@ -64,12 +65,12 @@ protected:
 
 private:
 	// ---- 常量(与 GDScript 端打包布局一致) ----
-	static const int VHEAD = 24;       // 每声部头部标量数
-	static const int OSC_STRIDE = 6;   // 每振荡器标量数
+	static const int VHEAD = 32;       // 每声部头部标量数
+	static const int OSC_STRIDE = 9;   // 每振荡器标量数
 	static const int PCG_SEED = 123456;
 
 	// ---- 枚举 ----
-	enum Wave { WAVE_SINE, WAVE_SQUARE, WAVE_SAW, WAVE_TRIANGLE, WAVE_PULSE, WAVE_NOISE };
+	enum Wave { WAVE_SINE, WAVE_SQUARE, WAVE_SAW, WAVE_TRIANGLE, WAVE_PULSE, WAVE_NOISE, WAVE_KARPLUS };
 	enum FilterMode { FILTER_LOW_PASS, FILTER_BAND_PASS, FILTER_HIGH_PASS };
 
 public:
@@ -109,7 +110,7 @@ public:
 	// ---- 振荡器 ----
 	static float poly_blep(float t, float dt);
 	static float wrap(float p);
-	float osc(int wave, float phase, float dt, float duty, Pcg32 &rng);
+	float osc(int wave, float phase, float dt, float duty, Pcg32 &rng, float phase_mod = 0.0f);
 
 	// ---- 发声音符状态 ----
 	struct Tone {
@@ -117,6 +118,11 @@ public:
 		float target_freq = 440.0f, freq = 440.0f, velocity = 1.0f;
 		float vibrato_phase = 0.0f;
 		std::vector<float> phases;
+		// FM 调制器相位(每振荡器一个, 仅 fm_index>0 时使用)
+		std::vector<float> mod_phases;
+		// Karplus-Strong 拨弦波表(每振荡器一个; 用 vector-of-vector 保持每振荡器独立)
+		std::vector<std::vector<float>> ks_bufs;
+		std::vector<uint32_t> ks_pos;
 		Adsr adsr;
 		Svf filter;
 		bool has_filter = false;
@@ -133,6 +139,7 @@ public:
 		int waveform = WAVE_SINE;
 		float level = 1.0f, detune = 0.0f, pulse_width = 0.5f;
 		int octave = 0;
+		float fm_ratio = 1.0f, fm_index = 0.0f, ks_damping = 0.5f;
 	};
 
 	struct Event {
@@ -153,6 +160,13 @@ public:
 		int filt_mode = 0;
 		float filt_cutoff = 8000.0f, filt_resonance = 0.3f;
 		float filt_env_amount = 0.0f, filt_lfo_amount = 0.0f;
+		// LFO 自动化
+		bool lfo_enabled = false;
+		float lfo_rate = 5.0f;
+		int lfo_waveform = 0;
+		float lfo_depth = 0.5f;
+		bool mod_cutoff = false, mod_volume = false, mod_pan = false, mod_pitch = false;
+		float lfo_phase = 0.0f, lfo_noise_hold = 0.0f, lfo_current = 0.0f;
 		std::vector<OscParam> oscs;
 		// 运行时
 		std::vector<Tone> tones;
@@ -170,6 +184,7 @@ public:
 	void _parse_voice(const PackedFloat32Array &p, int p_start, int p_osc_count, Voice &out);
 
 	void _trigger(Voice &v, const Event &e, uint64_t index);
+	float _lfo_value(Voice &v);
 	float _render_tones(Voice &v, uint64_t index);
 	float _render_tone(Voice &v, Tone &n, uint64_t index);
 	float _render_drum(Voice &v, uint64_t index);

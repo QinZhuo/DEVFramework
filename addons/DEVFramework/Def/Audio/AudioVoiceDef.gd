@@ -34,6 +34,8 @@ enum DrumType {
 @export var envelope: AudioEnvelopeDef = AudioEnvelopeDef.new()
 ## 滤波器(低通/带通/高通, 可被包络调制)
 @export var filter: AudioFilterDef = AudioFilterDef.new()
+## LFO 自动化层(可同时调制滤波/音量/声像/音高, 让音色随时间演化; 默认关闭)
+@export var lfo: AudioLFODef = AudioLFODef.new()
 
 ## ——— 公共参数 ———
 @export_range(0.0, 1.0, 0.001) var volume := 0.8

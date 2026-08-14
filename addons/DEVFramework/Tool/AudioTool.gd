@@ -33,6 +33,8 @@ enum Wave {
 	PULSE,
 	## 噪声(颗粒/风/爆)
 	NOISE,
+	## 拨弦(经典 Karplus-Strong 物理建模, 吉他/竖琴/古筝类衰减拨弦音色)
+	KARPLUS,
 }
 
 ## 振荡器/滤波/ADSR/逐采样渲染已由 C++ AudioSynthEngine 1:1 实现
@@ -163,6 +165,16 @@ static func _voice_params(def: AudioSynthDef) -> Array:
 		params.append(flt.cutoff_envelope_amount if flt else 0.0)
 		params.append(flt.cutoff_lfo_amount if flt else 0.0)
 		params.append(float(v.oscillators.size()))
+		# LFO 自动化层
+		var lfo := v.lfo
+		params.append(1.0 if lfo and lfo.enabled else 0.0)
+		params.append(lfo.rate if lfo else 5.0)
+		params.append(float(lfo.waveform) if lfo else 0.0)
+		params.append(lfo.depth if lfo else 0.5)
+		params.append(1.0 if lfo and lfo.mod_cutoff else 0.0)
+		params.append(1.0 if lfo and lfo.mod_volume else 0.0)
+		params.append(1.0 if lfo and lfo.mod_pan else 0.0)
+		params.append(1.0 if lfo and lfo.mod_pitch else 0.0)
 		for o in v.oscillators:
 			params.append(float(o.waveform))
 			params.append(o.level)
@@ -170,6 +182,9 @@ static func _voice_params(def: AudioSynthDef) -> Array:
 			params.append(float(o.octave_shift))
 			params.append(o.pulse_width)
 			params.append(o.phase_offset)
+			params.append(o.fm_ratio)
+			params.append(o.fm_index)
+			params.append(o.ks_damping)
 	return [params, counts]
 
 static func _write_i16(bytes: PackedByteArray, off: int, v: int) -> void:
@@ -239,22 +254,30 @@ static func play_stream(stream: AudioStream, volume_db := 0.0, bus := "Master", 
 ## 循环播放 BGM(完整流烘焙后走 Godot 通用 AudioStreamPlayer, 不再实时渲染):
 ## 后台线程生成完整 loop 音频流(build_stream 自动设 loop_mode), 完成后交给引擎原生播放。
 ## 返回的 player 立即可用(可 stop/释放); 生成完成前 stream 为空, 完成后自动 play。
-static func play_loop(def: AudioSynthDef) -> AudioStreamPlayer:
+## on_ready(player) 可选: 生成完成且已开始播放时回调(可读取 stream 信息)。
+## 并发安全: 连续调用只保留最后一次生成的流, 过时生成结果自动丢弃。
+static var _loop_token := 0
+static func play_loop(def: AudioSynthDef, on_ready: Callable = Callable()) -> AudioStreamPlayer:
 	var player := AudioStreamPlayer.new()
 	player.bus = resolve_bus(def.bus if def.bus else "Master", def.fx_chain)
 	var root := Engine.get_main_loop() as SceneTree
 	if root and root.root:
 		root.root.add_child(player)
+	_loop_token += 1
 	@warning_ignore("return_value_discarded")
-	_play_loop_async(def, player)
+	_play_loop_async(def, player, _loop_token, on_ready)
 	return player
 
-## play_loop 的后台协程: 生成完成后把流挂到播放器并播放
-static func _play_loop_async(def: AudioSynthDef, player: AudioStreamPlayer) -> void:
+## play_loop 的后台协程: 生成完成后把流挂到播放器并播放; token 不匹配则丢弃(被更新的 play_loop 取代)
+static func _play_loop_async(def: AudioSynthDef, player: AudioStreamPlayer, token: int, on_ready: Callable) -> void:
 	var stream := await generate_async(def)
+	if token != _loop_token:
+		return
 	if stream != null and is_instance_valid(player):
 		player.stream = stream
 		player.play()
+		if on_ready.is_valid():
+			on_ready.call(player)
 
 ## ============ 编辑器预览(Inspector 按钮使用) ============
 
@@ -463,6 +486,62 @@ static func get_stream_info(stream: AudioStreamWAV) -> Dictionary:
 		info["frames"] = frame_count
 		info["seconds"] = float(frame_count) / stream.mix_rate
 	return info
+
+## ============ 调试与基准 ============
+
+## 定义调试分析: 声部/振荡器/事件/时长/内存/渲染耗时 一键信息, 策划验证配置用
+static func inspect_def(def: AudioSynthDef) -> Dictionary:
+	var sr := int(def.sample_rate)
+	var events: Array = AudioSequence.expand(def)
+	var total := int(def.duration * sr) if def.duration > 0.0 else 0
+	for e in events:
+		total = maxi(total, int(e.start) + int(e.duration))
+	var per_voice := []
+	for i in def.voices.size():
+		per_voice.append(0)
+	var osc_total := 0
+	for v in def.voices:
+		osc_total += v.oscillators.size()
+	for e in events:
+		var vi := int(e.voice_index)
+		if vi >= 0 and vi < per_voice.size():
+			per_voice[vi] += 1
+	var t := Time.get_ticks_usec()
+	var stream := generate(def)
+	var render_us := Time.get_ticks_usec() - t
+	var stream_info := get_stream_info(stream) if stream else {}
+	var info := {
+		"category": AudioSynthDef.Category.keys()[def.category],
+		"sample_rate": sr,
+		"voices": def.voices.size(),
+		"oscillators_total": osc_total,
+		"events_total": events.size(),
+		"events_per_voice": per_voice,
+		"loop": def.loop,
+		"render_ms": render_us / 1000.0,
+		"data_kb": (float(stream.data.size()) / 1024.0) if stream else 0.0,
+		"stream": stream_info,
+		"duration_s": stream_info.get("seconds", float(total) / sr),
+	}
+	return info
+
+## 性能基准: 渲染 N 次取平均耗时(ms)。注意 BGM 较大会阻塞主线程, 建议小迭代或用 generate_async
+static func benchmark(def: AudioSynthDef, iterations := 3) -> Dictionary:
+	var times_ms := []
+	for i in iterations:
+		var t := Time.get_ticks_usec()
+		render_data(def)
+		times_ms.append((Time.get_ticks_usec() - t) / 1000.0)
+	var avg := 0.0
+	for x in times_ms:
+		avg += x
+	avg /= maxi(1, iterations)
+	return {
+		"iterations": iterations,
+		"times_ms": times_ms,
+		"avg_ms": avg,
+		"seconds_per_iteration": float(int(def.sample_rate) * (def.duration if def.duration > 0.0 else 4.0)) / float(def.sample_rate),
+	}
 
 ## ============ 总线管理(整合 Godot AudioServer + AudioEffect) ============
 

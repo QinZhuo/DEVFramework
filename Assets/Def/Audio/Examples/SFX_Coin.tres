@@ -1,66 +1,71 @@
-[gd_resource type="Resource" script_class="AudioSynthDef" format=3]
+[gd_resource type="Resource" script_class="AudioSynthDef" format=3 uid="uid://ct3x0qofpbgrg"]
 
-[ext_resource type="Script" path="res://addons/DEVFramework/Def/Audio/AudioMusicDef.gd" id="1_ibgn1"]
-[ext_resource type="Script" path="res://addons/DEVFramework/Def/Audio/AudioPatternDef.gd" id="2_5jwx2"]
-[ext_resource type="Script" path="res://addons/DEVFramework/Def/Audio/AudioNoteDef.gd" id="3_c2pgo"]
-[ext_resource type="Script" path="res://addons/DEVFramework/Def/Audio/AudioSynthDef.gd" id="4_vlo8x"]
-[ext_resource type="Script" path="res://addons/DEVFramework/Def/Audio/AudioVoiceDef.gd" id="5_e6p0f"]
-[ext_resource type="Script" path="res://addons/DEVFramework/Def/Audio/AudioEnvelopeDef.gd" id="6_eqler"]
-[ext_resource type="Script" path="res://addons/DEVFramework/Def/Audio/AudioFilterDef.gd" id="7_km1f4"]
-[ext_resource type="Script" path="res://addons/DEVFramework/Def/Audio/AudioOscillatorDef.gd" id="8_oy6r5"]
+[ext_resource type="Script" uid="uid://dwiub8t3hcyoa" path="res://addons/DEVFramework/Def/Audio/AudioMusicDef.gd" id="1_5jwx2"]
+[ext_resource type="Script" uid="uid://b2388juft7kwj" path="res://addons/DEVFramework/Def/Audio/AudioPatternDef.gd" id="2_c2pgo"]
+[ext_resource type="Script" uid="uid://blr6be658iryg" path="res://addons/DEVFramework/Def/Audio/AudioNoteDef.gd" id="3_vlo8x"]
+[ext_resource type="Script" uid="uid://mooo2h1jepi3" path="res://addons/DEVFramework/Def/Audio/AudioSynthDef.gd" id="4_e6p0f"]
+[ext_resource type="Script" uid="uid://yx3ujnlf36pd" path="res://addons/DEVFramework/Def/Audio/AudioVoiceDef.gd" id="5_eqler"]
+[ext_resource type="Script" uid="uid://dm8sa58nfhqx0" path="res://addons/DEVFramework/Def/Audio/AudioEnvelopeDef.gd" id="6_km1f4"]
+[ext_resource type="Script" uid="uid://2rcrtbajrd2k" path="res://addons/DEVFramework/Def/Audio/AudioFilterDef.gd" id="7_oy6r5"]
+[ext_resource type="Script" uid="uid://camf4tclururv" path="res://addons/DEVFramework/Def/Audio/AudioLFODef.gd" id="8_twcb5"]
+[ext_resource type="Script" uid="uid://eiaa3h6ifnbv" path="res://addons/DEVFramework/Def/Audio/AudioOscillatorDef.gd" id="9_2vlrx"]
 
-[sub_resource type="Resource" id="Resource_twcb5"]
-script = ExtResource("3_c2pgo")
+[sub_resource type="Resource" id="Resource_5jwx2"]
+script = ExtResource("3_vlo8x")
 midi = 88
 length_beats = 0.12
 
-[sub_resource type="Resource" id="Resource_2vlrx"]
-script = ExtResource("3_c2pgo")
+[sub_resource type="Resource" id="Resource_c2pgo"]
+script = ExtResource("3_vlo8x")
 midi = 88
 length_beats = 0.12
 
-[sub_resource type="Resource" id="Resource_sevpm"]
-script = ExtResource("3_c2pgo")
+[sub_resource type="Resource" id="Resource_vlo8x"]
+script = ExtResource("3_vlo8x")
 midi = 91
 length_beats = 0.18
 
-[sub_resource type="Resource" id="Resource_o2yuc"]
-script = ExtResource("2_5jwx2")
+[sub_resource type="Resource" id="Resource_e6p0f"]
+script = ExtResource("2_c2pgo")
 bpm = 200.0
-notes = Array[ExtResource("3_c2pgo")]([SubResource("Resource_twcb5"), SubResource("Resource_2vlrx"), SubResource("Resource_sevpm")])
+notes = Array[ExtResource("3_vlo8x")]([SubResource("Resource_5jwx2"), SubResource("Resource_c2pgo"), SubResource("Resource_vlo8x")])
 
-[sub_resource type="Resource" id="Resource_mlbr1"]
-script = ExtResource("6_eqler")
+[sub_resource type="Resource" id="Resource_eqler"]
+script = ExtResource("6_km1f4")
 attack = 0.002
 decay = 0.25
 sustain = 0.1
 release = 0.12
 
-[sub_resource type="Resource" id="Resource_1iwov"]
-script = ExtResource("7_km1f4")
+[sub_resource type="Resource" id="Resource_km1f4"]
+script = ExtResource("7_oy6r5")
 enabled = true
 mode = 2
 cutoff = 1500.0
 
-[sub_resource type="Resource" id="Resource_gorkk"]
-script = ExtResource("8_oy6r5")
+[sub_resource type="Resource" id="Resource_oy6r5"]
+script = ExtResource("8_twcb5")
+
+[sub_resource type="Resource" id="Resource_twcb5"]
+script = ExtResource("9_2vlrx")
 level = 0.8
 
-[sub_resource type="Resource" id="Resource_yebw7"]
-script = ExtResource("8_oy6r5")
+[sub_resource type="Resource" id="Resource_2vlrx"]
+script = ExtResource("9_2vlrx")
 level = 0.4
 detune_cents = 4.0
 
-[sub_resource type="Resource" id="Resource_1pfhy"]
-script = ExtResource("5_e6p0f")
-oscillators = Array[ExtResource("8_oy6r5")]([SubResource("Resource_gorkk"), SubResource("Resource_yebw7")])
-envelope = SubResource("Resource_mlbr1")
-filter = SubResource("Resource_1iwov")
+[sub_resource type="Resource" id="Resource_sevpm"]
+script = ExtResource("5_eqler")
+oscillators = Array[ExtResource("9_2vlrx")]([SubResource("Resource_twcb5"), SubResource("Resource_2vlrx")])
+envelope = SubResource("Resource_eqler")
+filter = SubResource("Resource_km1f4")
+lfo = SubResource("Resource_oy6r5")
 volume = 0.9
 
 [resource]
-script = ExtResource("4_vlo8x")
-voices = Array[ExtResource("5_e6p0f")]([SubResource("Resource_1pfhy")])
-patterns = Array[ExtResource("2_5jwx2")]([SubResource("Resource_o2yuc")])
+script = ExtResource("4_e6p0f")
+voices = Array[ExtResource("5_eqler")]([SubResource("Resource_sevpm")])
+patterns = Array[ExtResource("2_c2pgo")]([SubResource("Resource_e6p0f")])
 master_volume = 0.85
 bus = "UI"

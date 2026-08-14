@@ -4,9 +4,11 @@
 extends Control
 
 var _bgm: AudioStreamPlayer
+var _info: Label
 
 func _ready() -> void:
 	_bind_buttons()
+	_info = find_child("InfoLabel", true, false) as Label
 
 func _bind_buttons() -> void:
 	var targets := {
@@ -16,6 +18,9 @@ func _bind_buttons() -> void:
 		"BtnHit": "SFX_Hit",
 		"BtnBgmAdventure": "BGM_Loop_Adventure",
 		"BtnBgmAmbient": "BGM_Loop_Ambient",
+		"BtnBgmHouse": "BGM_Loop_House",
+		"BtnBgmJazz": "BGM_Loop_Jazz",
+		"BtnBgmShowcase": "BGM_Showcase",
 		"BtnStopBgm": "",
 	}
 	for btn_name in targets.keys():
@@ -36,10 +41,20 @@ func _play_bgm(name: String) -> void:
 	var def := AudioTool.example_def(name)
 	if def == null:
 		return
-	_bgm = AudioTool.play_loop(def)
+	if _info:
+		_info.text = "BGM: %s（后台生成中…）" % name
+	_bgm = AudioTool.play_loop(def, func(p):
+		var st := p.stream as AudioStreamWAV
+		if _info and st:
+			var channel := "立体声" if st.stereo else "单声道"
+			var loop := "循环" if st.loop_mode != AudioStreamWAV.LOOP_DISABLED else "单次"
+			_info.text = "BGM: %s  |  %.1fs  |  %s  |  %s  |  %dHz" % [name, st.get_length(), channel, loop, st.mix_rate]
+	)
 
 func _stop_bgm() -> void:
 	if _bgm:
 		_bgm.stop()
 		_bgm.queue_free()
 		_bgm = null
+	if _info:
+		_info.text = ""

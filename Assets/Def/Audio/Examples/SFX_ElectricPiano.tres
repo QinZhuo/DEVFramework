@@ -1,0 +1,85 @@
+[gd_resource type="Resource" script_class="AudioSynthDef" format=3 uid="uid://bo08s6pvqrox2"]
+
+[ext_resource type="Script" uid="uid://dwiub8t3hcyoa" path="res://addons/DEVFramework/Def/Audio/AudioMusicDef.gd" id="1_rjbw5"]
+[ext_resource type="Script" uid="uid://b2388juft7kwj" path="res://addons/DEVFramework/Def/Audio/AudioPatternDef.gd" id="2_lgteq"]
+[ext_resource type="Script" uid="uid://blr6be658iryg" path="res://addons/DEVFramework/Def/Audio/AudioNoteDef.gd" id="3_k1l0u"]
+[ext_resource type="Script" uid="uid://mooo2h1jepi3" path="res://addons/DEVFramework/Def/Audio/AudioSynthDef.gd" id="4_7qhyr"]
+[ext_resource type="Script" uid="uid://yx3ujnlf36pd" path="res://addons/DEVFramework/Def/Audio/AudioVoiceDef.gd" id="5_wxs51"]
+[ext_resource type="Script" uid="uid://dm8sa58nfhqx0" path="res://addons/DEVFramework/Def/Audio/AudioEnvelopeDef.gd" id="6_c8ruq"]
+[ext_resource type="Script" uid="uid://2rcrtbajrd2k" path="res://addons/DEVFramework/Def/Audio/AudioFilterDef.gd" id="7_d3yb7"]
+[ext_resource type="Script" uid="uid://camf4tclururv" path="res://addons/DEVFramework/Def/Audio/AudioLFODef.gd" id="8_yslk8"]
+[ext_resource type="Script" uid="uid://eiaa3h6ifnbv" path="res://addons/DEVFramework/Def/Audio/AudioOscillatorDef.gd" id="9_g2730"]
+
+[sub_resource type="AudioEffectLimiter" id="AudioEffectLimiter_rjbw5"]
+ceiling_db = -1.0
+threshold_db = -3.0
+
+[sub_resource type="Resource" id="Resource_lgteq"]
+script = ExtResource("3_k1l0u")
+midi = 72
+length_beats = 0.3
+
+[sub_resource type="Resource" id="Resource_k1l0u"]
+script = ExtResource("3_k1l0u")
+midi = 76
+length_beats = 0.3
+
+[sub_resource type="Resource" id="Resource_7qhyr"]
+script = ExtResource("3_k1l0u")
+midi = 79
+length_beats = 0.3
+
+[sub_resource type="Resource" id="Resource_wxs51"]
+script = ExtResource("3_k1l0u")
+midi = 84
+length_beats = 0.5
+
+[sub_resource type="Resource" id="Resource_c8ruq"]
+script = ExtResource("2_lgteq")
+bpm = 200.0
+notes = Array[ExtResource("3_k1l0u")]([SubResource("Resource_lgteq"), SubResource("Resource_k1l0u"), SubResource("Resource_7qhyr"), SubResource("Resource_wxs51")])
+
+[sub_resource type="Resource" id="Resource_d3yb7"]
+script = ExtResource("6_c8ruq")
+attack = 0.002
+decay = 0.3
+sustain = 0.15
+release = 0.3
+
+[sub_resource type="Resource" id="Resource_yslk8"]
+script = ExtResource("7_d3yb7")
+enabled = true
+cutoff = 7000.0
+resonance = 0.2
+
+[sub_resource type="Resource" id="Resource_g2730"]
+script = ExtResource("8_yslk8")
+
+[sub_resource type="Resource" id="Resource_r3ary"]
+script = ExtResource("9_g2730")
+level = 0.8
+fm_ratio = 2.0
+fm_index = 8.0
+
+[sub_resource type="Resource" id="Resource_vmxxq"]
+script = ExtResource("9_g2730")
+level = 0.35
+detune_cents = 4.0
+fm_ratio = 2.0
+fm_index = 12.0
+
+[sub_resource type="Resource" id="Resource_7g6j6"]
+script = ExtResource("5_wxs51")
+oscillators = Array[ExtResource("9_g2730")]([SubResource("Resource_r3ary"), SubResource("Resource_vmxxq")])
+envelope = SubResource("Resource_d3yb7")
+filter = SubResource("Resource_yslk8")
+lfo = SubResource("Resource_g2730")
+volume = 0.9
+
+[resource]
+script = ExtResource("4_7qhyr")
+voices = Array[ExtResource("5_wxs51")]([SubResource("Resource_7g6j6")])
+patterns = Array[ExtResource("2_lgteq")]([SubResource("Resource_c8ruq")])
+soft_clip = 0.6
+bus = "SFX"
+fx_chain = Array[AudioEffect]([SubResource("AudioEffectLimiter_rjbw5")])

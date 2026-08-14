@@ -1,8 +1,8 @@
-[gd_scene load_steps=2 format=3 uid="uid://audiodemo0000001"]
+[gd_scene format=3 uid="uid://cekxdgr2qpvp5"]
 
-[ext_resource type="Script" path="res://Scenes/AudioDemo/AudioDemo.gd" id="1"]
+[ext_resource type="Script" uid="uid://us486ptbiq57" path="res://Scenes/AudioDemo/AudioDemo.gd" id="1"]
 
-[node name="AudioDemo" type="Control"]
+[node name="AudioDemo" type="Control" unique_id=93159495]
 layout_mode = 3
 anchors_preset = 15
 anchor_right = 1.0
@@ -11,7 +11,7 @@ grow_horizontal = 2
 grow_vertical = 2
 script = ExtResource("1")
 
-[node name="Panel" type="PanelContainer" parent="."]
+[node name="Panel" type="PanelContainer" parent="." unique_id=1243915911]
 layout_mode = 1
 anchors_preset = 8
 anchor_left = 0.5
@@ -25,80 +25,87 @@ offset_bottom = 200.0
 grow_horizontal = 2
 grow_vertical = 2
 
-[node name="Margin" type="MarginContainer" parent="Panel"]
+[node name="Margin" type="MarginContainer" parent="Panel" unique_id=1021546693]
 layout_mode = 2
 theme_override_constants/margin_left = 24
 theme_override_constants/margin_top = 20
 theme_override_constants/margin_right = 24
 theme_override_constants/margin_bottom = 20
 
-[node name="VBox" type="VBoxContainer" parent="Panel/Margin"]
+[node name="VBox" type="VBoxContainer" parent="Panel/Margin" unique_id=1716821060]
 layout_mode = 2
 theme_override_constants/separation = 14
 
-[node name="Title" type="Label" parent="Panel/Margin/VBox"]
+[node name="Title" type="Label" parent="Panel/Margin/VBox" unique_id=2014866830]
 layout_mode = 2
 text = "程序化音频 Demo"
 horizontal_alignment = 1
 
-[node name="SubTitle" type="Label" parent="Panel/Margin/VBox"]
+[node name="SubTitle" type="Label" parent="Panel/Margin/VBox" unique_id=941019222]
+modulate = Color(1, 1, 1, 0.6)
 layout_mode = 2
 text = "以下声音均由 AudioSynthDef 实时渲染生成"
 horizontal_alignment = 1
-modulate = Color(1, 1, 1, 0.6)
 
-[node name="SFXRow" type="HBoxContainer" parent="Panel/Margin/VBox"]
+[node name="SFXRow" type="HBoxContainer" parent="Panel/Margin/VBox" unique_id=1814343988]
 layout_mode = 2
 theme_override_constants/separation = 10
 
-[node name="BtnLaser" type="Button" parent="Panel/Margin/VBox/SFXRow"]
+[node name="BtnLaser" type="Button" parent="Panel/Margin/VBox/SFXRow" unique_id=794207728]
 custom_minimum_size = Vector2(0, 44)
 layout_mode = 2
 size_flags_horizontal = 3
 text = "激光"
 
-[node name="BtnExplosion" type="Button" parent="Panel/Margin/VBox/SFXRow"]
+[node name="BtnExplosion" type="Button" parent="Panel/Margin/VBox/SFXRow" unique_id=1709106932]
 custom_minimum_size = Vector2(0, 44)
 layout_mode = 2
 size_flags_horizontal = 3
 text = "爆炸"
 
-[node name="BtnCoin" type="Button" parent="Panel/Margin/VBox/SFXRow"]
+[node name="BtnCoin" type="Button" parent="Panel/Margin/VBox/SFXRow" unique_id=1512859449]
 custom_minimum_size = Vector2(0, 44)
 layout_mode = 2
 size_flags_horizontal = 3
 text = "拾取"
 
-[node name="BtnHit" type="Button" parent="Panel/Margin/VBox/SFXRow"]
+[node name="BtnHit" type="Button" parent="Panel/Margin/VBox/SFXRow" unique_id=620722509]
 custom_minimum_size = Vector2(0, 44)
 layout_mode = 2
 size_flags_horizontal = 3
 text = "打击"
 
-[node name="BgmRow" type="HBoxContainer" parent="Panel/Margin/VBox"]
+[node name="BgmRow" type="HBoxContainer" parent="Panel/Margin/VBox" unique_id=1316958297]
 layout_mode = 2
 theme_override_constants/separation = 10
 
-[node name="BtnBgmAdventure" type="Button" parent="Panel/Margin/VBox/BgmRow"]
+[node name="BtnBgmAdventure" type="Button" parent="Panel/Margin/VBox/BgmRow" unique_id=957630177]
 custom_minimum_size = Vector2(0, 44)
 layout_mode = 2
 size_flags_horizontal = 3
 text = "BGM 冒险(循环)"
 
-[node name="BtnBgmAmbient" type="Button" parent="Panel/Margin/VBox/BgmRow"]
+[node name="BtnBgmAmbient" type="Button" parent="Panel/Margin/VBox/BgmRow" unique_id=1188182711]
 custom_minimum_size = Vector2(0, 44)
 layout_mode = 2
 size_flags_horizontal = 3
 text = "BGM 氛围(循环)"
 
-[node name="BtnStopBgm" type="Button" parent="Panel/Margin/VBox"]
+[node name="BtnStopBgm" type="Button" parent="Panel/Margin/VBox" unique_id=1474047417]
 custom_minimum_size = Vector2(0, 44)
 layout_mode = 2
 text = "停止 BGM"
 
-[node name="Hint" type="Label" parent="Panel/Margin/VBox"]
+[node name="Hint" type="Label" parent="Panel/Margin/VBox" unique_id=1818536591]
+modulate = Color(1, 1, 1, 0.5)
 layout_mode = 2
 text = "SFX 为一次性离线渲染，BGM 由 AudioLivePlayer 实时无限循环"
 horizontal_alignment = 1
 autowrap_mode = 3
-modulate = Color(1, 1, 1, 0.5)
+
+[node name="InfoLabel" type="Label" parent="Panel/Margin/VBox" unique_id=2073678522]
+modulate = Color(0, 1, 1, 0.7)
+layout_mode = 2
+text = "播放 BGM 后在此显示时长/声道/循环信息"
+horizontal_alignment = 1
+autowrap_mode = 3

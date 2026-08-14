@@ -402,8 +402,10 @@ AudioTool.list_examples()                      # 列出全部示例
 ```
 
 - **渲染管线**：`Def → AudioSequence（展开事件）→ AudioSynthEngine（C++ 逐采样合成，gdextension/src/audio_synth.cpp）→ AudioTool（归一化/软削波/int16 母带）`。
-- **合成内核 C++ 实现**：PolyBLEP 抗锯齿振荡器、SVF 滤波器（低/带/高通）、ADSR 包络（支持曲线）、鼓合成（KICK / SNARE / HAT / HAT_OPEN / TOM / CLAP）全部由**共享原生库 `AudioSynthEngine`** 实现（`FrameworkNative.get_native(&"AudioSynthEngine")`，无 GDScript 回退）。这些是 Godot 不提供的数据级合成 API，故自研并放原生层以获得实时性能；**其余通用能力一律用 Godot 已有功能**。
-- **自动编曲**（`AudioMusicDef`）：音阶音池 + 加权随机游走旋律 + 和弦进行 + 鼓节奏音型。
+- **合成内核 C++ 实现**：PolyBLEP 抗锯齿振荡器（6 波形）、**FM 频率调制**（调制器-载波对，DX7 风格电钢/钟/贝斯）、**Karplus-Strong 拨弦**（物理建模吉他/竖琴/古筝）、SVF 滤波器（低/带/高通，可被**LFO 扫频**）、ADSR 包络（支持曲线）、**LFO 自动化层**（`AudioLFODef` 可同时调制滤波/音量/声像/音高，实现扫频/抽吸/自动声像/颤音等音色演化）、鼓合成（KICK / SNARE / HAT / HAT_OPEN / TOM / CLAP）全部由**共享原生库 `AudioSynthEngine`** 实现（`FrameworkNative.get_native(&"AudioSynthEngine")`，无 GDScript 回退）。这些是 Godot 不提供的数据级合成 API，故自研并放原生层以获得实时性能；**其余通用能力一律用 Godot 已有功能**。
+- **自动编曲**（`AudioMusicDef`）：音阶音池 + 加权随机游走旋律 + 和弦进行 + 鼓节奏音型；**段落结构**（`AudioMusicSectionDef`）支持 intro/verse/chorus/outro 等曲式——每段独立小节数/和声进行/强度/乐器启停/八度偏移，声部间段落无缝拼接。
+- **和声深度**：ChordType 覆盖三和弦→13 和弦全系（含 9/11/13、挂留、加九等 21 种）；`chord_quality` 逐音级指定和弦色彩（调式交换/借用和弦）；声部级 + 段落级 `transpose_semitones` 转调（副歌升调等）；`AudioMusicDef.preset_progression("II_V_I")` 等 10 组常用和声进行预设（含 12 小节蓝调/爵士循环/小室进行）。
+- **鼓模式预设库**（`DrumPatternDef`）：行模式节奏型（每字符一步，`K/S/H/h/T/C/x`），任意步数（16=十六分/12=三连音/24=十六分三连）+ 切分 + 深度摇摆；内置 ROCK/HOUSE/TRAP/BREAKBEAT/FUNK/TECHNO/REGGAE/BALLAD 预设（`DrumPatternDef.preset("HOUSE")`），`AudioMusicDef.drum_pattern` 接入，按 `drum_kit` 分轨到不同鼓声部。
 - **循环 BGM**：`AudioTool.play_loop()` 一次性烘焙完整 loop 流（`AudioStreamWAV.loop_mode` 原生循环），交给 Godot 通用 `AudioStreamPlayer` 播放，无实时渲染负担。
 - **后台线程**：`AudioTool.generate_async(def)` 放 worker 线程渲染，避免阻塞主线程。
 
@@ -428,7 +430,7 @@ AudioTool.list_examples()                      # 列出全部示例
 | `AudioSequence` / `AudioSynthEngine` | 事件展开（GDScript）/ C++ 逐采样合成核心（共享原生库） |
 | `AudioTool` / `DevAudioExamples` | **统一入口**：渲染/生成/播放/保存/总线/示例 全部集成 / 一键生成示例定义 |
 
-`AudioTool` 是音频功能的**唯一对外入口**，内部再分为：合成内核（C++ `AudioSynthEngine` 逐采样合成 + `soft_clip`/`midi_to_freq`/`Wave` 小函数）、合成渲染（`render_data`/`build_stream`/`render`）、生成（`generate`/`generate_async`）、播放（`play`/`play_stream`/`play_loop`/`play_example`）、保存（`save_wav`/`save_resource`/`generate_and_save`/`bake_wav`）、查询（`get_stream_info`/`list_examples`/`example_def`）、总线管理（`ensure_bus`/`resolve_bus`/`create_fx`/`setup_audio_buses`）、编辑器预览（`play_editor_preview`/`stop_editor_preview`）。
+`AudioTool` 是音频功能的**唯一对外入口**，内部再分为：合成内核（C++ `AudioSynthEngine` 逐采样合成 + `soft_clip`/`midi_to_freq`/`Wave` 小函数）、合成渲染（`render_data`/`build_stream`/`render`）、生成（`generate`/`generate_async`）、播放（`play`/`play_stream`/`play_loop`/`play_example`）、保存（`save_wav`/`save_resource`/`generate_and_save`/`bake_wav`）、查询（`get_stream_info`/`list_examples`/`example_def`）、**调试与基准**（`inspect_def` 定义一键分析 / `benchmark` 渲染耗时基准）、总线管理（`ensure_bus`/`resolve_bus`/`create_fx`/`setup_audio_buses`）、编辑器预览（`play_editor_preview`/`stop_editor_preview`）。
 
 ### Inspector 预览与烘焙
 
@@ -446,7 +448,7 @@ AudioTool.list_examples()                      # 列出全部示例
 
 **淡入淡出**：`AudioSynthDef.fade_in`（头部淡入，离线烘焙与 `play_loop()` 完整流均生效，仅首轮）与 `fade_out`（尾部淡出）。
 
-**示例音效库**（共 13 个）：激光/爆炸/金币/受击/跳跃/UI 点击/能量拾取/脚步声/翻滚/魔法/重击 + 冒险循环 BGM/环境循环 BGM。
+**示例音效库**（共 20 个）：激光/爆炸/金币/受击/跳跃/UI 点击/能量拾取/脚步声/翻滚/魔法/重击/**FM 电钢(DX7)**/**拨弦(Karplus-Strong)**/**Acid Bass(LFO 扫频)** + 冒险循环 BGM/环境循环 BGM/**段落结构 BGM(intro→main→outro)**/**House 鼓模式 BGM**/**Jazz BGM(ii-V-I + 9 和弦 + 转调 + 摇摆鼓)**/**综合编曲 BGM_Showcase**(FM 电钢+拨弦琶音+Acid 贝斯+FM 主奏; intro→verse(TRAP 鼓)→chorus(+2 转调, BREAKBEAT 鼓)→outro; 9 和弦调式交换)。
 
 ### 5.9 其他工具
 

@@ -153,31 +153,33 @@ float AudioSynthEngine::wrap(float p) {
 	return p - std::floor(p);
 }
 
-float AudioSynthEngine::osc(int wave, float phase, float dt, float duty, Pcg32 &rng) {
+float AudioSynthEngine::osc(int wave, float phase, float dt, float duty, Pcg32 &rng, float phase_mod) {
+	// phase_mod 为弧度偏移(FM 调制), 转成相位增量叠加到相位上
+	float p = phase + phase_mod / TAU;
 	switch (wave) {
 		case WAVE_SINE:
-			return std::sin(phase * TAU);
+			return std::sin(p * TAU);
 		case WAVE_SQUARE: {
-			float s = (phase < 0.5f) ? 1.0f : -1.0f;
-			s += poly_blep(phase, dt) - poly_blep(wrap(phase + 0.5f), dt);
+			float s = (p < 0.5f) ? 1.0f : -1.0f;
+			s += poly_blep(p, dt) - poly_blep(wrap(p + 0.5f), dt);
 			return s;
 		}
 		case WAVE_SAW: {
-			float s = 2.0f * phase - 1.0f;
-			s -= poly_blep(phase, dt);
+			float s = 2.0f * p - 1.0f;
+			s -= poly_blep(p, dt);
 			return s;
 		}
 		case WAVE_TRIANGLE: {
-			float s = 2.0f * phase - 1.0f;
-			s -= poly_blep(phase, dt);
-			float p2 = wrap(phase + 0.5f);
+			float s = 2.0f * p - 1.0f;
+			s -= poly_blep(p, dt);
+			float p2 = wrap(p + 0.5f);
 			float s2 = 2.0f * p2 - 1.0f;
 			s2 -= poly_blep(p2, dt);
 			return (s - s2) * 0.5f;
 		}
 		case WAVE_PULSE: {
-			float s = (phase < duty) ? 1.0f : -1.0f;
-			s += poly_blep(phase, dt) - poly_blep(wrap(phase - duty + 1.0f), dt);
+			float s = (p < duty) ? 1.0f : -1.0f;
+			s += poly_blep(p, dt) - poly_blep(wrap(p - duty + 1.0f), dt);
 			return s;
 		}
 		case WAVE_NOISE:
@@ -236,6 +238,18 @@ void AudioSynthEngine::_parse_voice(const PackedFloat32Array &p, int s, int osc_
 	out.filt_env_amount = p[s + 21];
 	out.filt_lfo_amount = p[s + 22];
 	// [s+23] = n_osc (冗余, 以 osc_counts 为准)
+	// LFO 自动化(s+24..s+31)
+	out.lfo_enabled = p[s + 24] > 0.5f;
+	out.lfo_rate = p[s + 25];
+	out.lfo_waveform = (int)p[s + 26];
+	out.lfo_depth = p[s + 27];
+	out.mod_cutoff = p[s + 28] > 0.5f;
+	out.mod_volume = p[s + 29] > 0.5f;
+	out.mod_pan = p[s + 30] > 0.5f;
+	out.mod_pitch = p[s + 31] > 0.5f;
+	out.lfo_phase = 0.0f;
+	out.lfo_noise_hold = 0.0f;
+	out.lfo_current = 0.0f;
 	out.oscs.clear();
 	int oo = s + VHEAD;
 	for (int i = 0; i < osc_count; ++i) {
@@ -246,6 +260,9 @@ void AudioSynthEngine::_parse_voice(const PackedFloat32Array &p, int s, int osc_
 		o.octave = (int)p[oo + 3];
 		o.pulse_width = p[oo + 4];
 		// [oo+5] = phase_offset (GDScript 端未使用, 忽略以保持一致)
+		o.fm_ratio = p[oo + 6];
+		o.fm_index = p[oo + 7];
+		o.ks_damping = p[oo + 8];
 		out.oscs.push_back(o);
 		oo += OSC_STRIDE;
 	}
@@ -284,13 +301,6 @@ PackedVector2Array AudioSynthEngine::render(int p_count) {
 	}
 	out.resize(p_count);
 
-	std::vector<float> gls(_voices.size()), grs(_voices.size());
-	for (size_t vi = 0; vi < _voices.size(); ++vi) {
-		float pan = godot::CLAMP(_voices[vi].pan, -1.0f, 1.0f);
-		gls[vi] = std::cos((pan + 1.0f) * PI / 4.0f) * _voices[vi].volume;
-		grs[vi] = std::sin((pan + 1.0f) * PI / 4.0f) * _voices[vi].volume;
-	}
-
 	Vector2 *w = out.ptrw();
 	for (int i = 0; i < p_count; ++i) {
 		float l = 0.0f, r = 0.0f;
@@ -301,14 +311,50 @@ PackedVector2Array AudioSynthEngine::render(int p_count) {
 				_trigger(v, v.events[v.event_idx], gi);
 				++v.event_idx;
 			}
+			// 每采样推进 LFO(供声部内所有音符共用: 滤波/音量/音高/声像调制)
+			if (v.lfo_enabled) {
+				v.lfo_current = _lfo_value(v);
+			}
 			float mono = (v.kind == 1) ? _render_drum(v, gi) : _render_tones(v, gi);
-			l += mono * gls[vi];
-			r += mono * grs[vi];
+			// 声像(可被 LFO 自动声像调制)
+			float pan = v.pan;
+			if (v.lfo_enabled && v.mod_pan) {
+				pan = godot::CLAMP(v.pan + v.lfo_current * v.lfo_depth, -1.0f, 1.0f);
+			}
+			float gl = std::cos((pan + 1.0f) * PI / 4.0f) * v.volume;
+			float gr = std::sin((pan + 1.0f) * PI / 4.0f) * v.volume;
+			l += mono * gl;
+			r += mono * gr;
 			++v.cursor;
 		}
 		w[i] = Vector2(l, r);
 	}
 	return out;
+}
+
+float AudioSynthEngine::_lfo_value(Voice &v) {
+	float old = v.lfo_phase;
+	v.lfo_phase += v.lfo_rate / (float)_sample_rate;
+	v.lfo_phase -= std::floor(v.lfo_phase);
+	switch (v.lfo_waveform) {
+		case WAVE_SINE:
+			return std::sin(old * TAU);
+		case WAVE_TRIANGLE:
+			return 2.0f * std::fabs(2.0f * (old - std::floor(old + 0.5f))) - 1.0f;
+		case WAVE_SAW:
+			return 2.0f * old - 1.0f;
+		case WAVE_SQUARE:
+			return (old < 0.5f) ? -1.0f : 1.0f;
+		case WAVE_NOISE: {
+			// 随机采样保持: 每周期更新一次
+			float next = old + v.lfo_rate / (float)_sample_rate;
+			if (std::floor(next) != std::floor(old)) {
+				v.lfo_noise_hold = v.rng.random(-1.0f, 1.0f);
+			}
+			return v.lfo_noise_hold;
+		}
+	}
+	return 0.0f;
 }
 
 void AudioSynthEngine::reset_stream() {
@@ -317,6 +363,9 @@ void AudioSynthEngine::reset_stream() {
 		v.event_idx = 0;
 		v.tones.clear();
 		v.drums.clear();
+		v.lfo_phase = 0.0f;
+		v.lfo_noise_hold = 0.0f;
+		v.lfo_current = 0.0f;
 		// 重置 RNG: 保证循环重放时噪声序列与首轮一致(同 seed 必复现)。
 		// (旧 GDScript AudioVoice.reset_stream 未重置 rng, 会导致每圈噪声不同, 此处修正)
 		v.rng.seed(PCG_SEED);
@@ -351,6 +400,22 @@ void AudioSynthEngine::_trigger(AudioSynthEngine::Voice &v, const Event &e, uint
 	n.target_freq *= std::pow(2.0f, e.pitch_cents / 1200.0f);
 	n.freq = n.target_freq * ((v.glide > 0.0f) ? 0.5f : 1.0f);
 	n.phases.assign(v.oscs.size(), 0.0f);
+	n.mod_phases.assign(v.oscs.size(), 0.0f);
+	n.ks_bufs.resize(v.oscs.size());
+	n.ks_pos.assign(v.oscs.size(), 0u);
+	for (size_t oi = 0; oi < v.oscs.size(); ++oi) {
+		const OscParam &od = v.oscs[oi];
+		if (od.waveform == WAVE_KARPLUS) {
+			// 拨弦: 波表大小 = 采样率/频率, 以白噪声初始化, 拨弦瞬间激励
+			float f = n.target_freq * std::pow(2.0f, (od.detune + od.octave * 1200.0f) / 1200.0f);
+			int size = std::max(2, (int)((float)_sample_rate / std::max(f, 20.0f)));
+			n.ks_bufs[oi].resize((size_t)size);
+			for (int k = 0; k < size; ++k) {
+				n.ks_bufs[oi][k] = v.rng.random(-1.0f, 1.0f);
+			}
+			n.ks_pos[oi] = 0u;
+		}
+	}
 	n.adsr.sample_rate = (float)_sample_rate;
 	n.adsr.attack = v.env_attack;
 	n.adsr.decay = v.env_decay;
@@ -396,6 +461,11 @@ float AudioSynthEngine::_render_tone(AudioSynthEngine::Voice &v, AudioSynthEngin
 		float a = 1.0f - std::exp(-1.0f / (godot::MAX(v.glide, 0.0001f) * (float)_sample_rate));
 		n.freq = n.freq + (n.target_freq - n.freq) * a;
 	}
+	// LFO 音高调制(半音; 叠加在颤音/滑音之上, 以目标频率为基准)
+	if (v.lfo_enabled && v.mod_pitch) {
+		float cents = v.lfo_current * v.lfo_depth * 100.0f;
+		n.freq = n.target_freq * std::pow(2.0f, cents / 1200.0f);
+	}
 	float env = n.adsr.process();
 	if (n.adsr.is_done()) {
 		n.removed = true;
@@ -407,21 +477,57 @@ float AudioSynthEngine::_render_tone(AudioSynthEngine::Voice &v, AudioSynthEngin
 		float f = n.target_freq * std::pow(2.0f, (od.detune + od.octave * 1200.0f) / 1200.0f);
 		float dt = f / (float)_sample_rate;
 		float ph = n.phases[oi];
-		wave += osc(od.waveform, ph, dt, od.pulse_width, v.rng) * od.level;
+		if (od.waveform == WAVE_KARPLUS) {
+			// Karplus-Strong 拨弦: 读波表 + 相邻平均低通反馈
+			auto &buf = n.ks_bufs[oi];
+			if (buf.empty()) {
+				n.phases[oi] = ph + dt - std::floor(ph + dt);
+				continue;
+			}
+			uint32_t pos = n.ks_pos[oi];
+			float out = buf[pos];
+			uint32_t next = pos + 1;
+			if (next >= (uint32_t)buf.size()) {
+				next = 0;
+			}
+			buf[pos] = od.ks_damping * (out + buf[next]) * 0.5f;
+			n.ks_pos[oi] = next;
+			wave += out * od.level;
+		} else {
+			float mod = 0.0f;
+			if (od.fm_index > 0.0f) {
+				// FM: 调制器频率 = 载波 × ratio, 调制指数 fm_index
+				float mdt = (f * od.fm_ratio) / (float)_sample_rate;
+				float mph = n.mod_phases[oi];
+				mod = od.fm_index * std::sin(mph * TAU);
+				n.mod_phases[oi] = mph + mdt - std::floor(mph + mdt);
+			}
+			wave += osc(od.waveform, ph, dt, od.pulse_width, v.rng, mod) * od.level;
+		}
 		n.phases[oi] = ph + dt - std::floor(ph + dt);
 	}
 	if (v.noise_amount > 0.0f) {
 		wave += v.rng.random(-1.0f, 1.0f) * v.noise_amount;
 	}
 	if (n.has_filter) {
-		float cut = n.filter.cutoff;
+		// 基于基础 cutoff 重算(而非 n.filter.cutoff 累积值): LFO 乘法调制会指数漂移, 从基础算才正确
+		float cut = v.filt_cutoff;
 		if (v.filt_env_amount != 0.0f) {
 			cut += v.filt_env_amount * env;
+		}
+		// LFO 滤波扫频: cutoff 在 ±depth 倍之间(1±depth)
+		if (v.lfo_enabled && v.mod_cutoff) {
+			cut *= (1.0f + v.lfo_current * v.lfo_depth);
 		}
 		n.filter.cutoff = godot::CLAMP(cut, 20.0f, (float)_sample_rate * 0.45f);
 		wave = n.filter.process(wave);
 	}
-	return wave * env * n.velocity;
+	float gain = env * n.velocity;
+	// LFO 音量调制(律动抽吸/颤音)
+	if (v.lfo_enabled && v.mod_volume) {
+		gain *= (1.0f + v.lfo_current * v.lfo_depth);
+	}
+	return wave * gain;
 }
 
 float AudioSynthEngine::_render_drum(AudioSynthEngine::Voice &v, uint64_t index) {
