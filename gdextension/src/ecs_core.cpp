@@ -6,7 +6,10 @@
 #include <godot_cpp/classes/visual_instance3d.hpp>
 
 #include <algorithm>
+#if defined(__SSE2__) && (defined(__x86_64__) || defined(_M_X64))
 #include <emmintrin.h> // SSE2 (SIMD 加速 batch 运算)
+#define ECS_SIMD_SSE2 1
+#endif
 #include <unordered_map>
 
 using namespace godot;
@@ -2315,6 +2318,8 @@ int64_t ECSCore::batch_apply_col_rows(const StringName &anchor, const PackedInt3
 		return 0;
 	}
 	// SIMD 快路径: 单块 + 全量连续 + 同组件 VECTOR2/FLOAT ADD/SET(参考 Flecs 内循环直算)
+	// 仅 x86/x64 + SSE2 可用; 其他架构(如 Apple Silicon)自动走下方通用路径
+#if defined(ECS_SIMD_SSE2)
 	bool full = (cnt > 0) && rows[0] == 0 && rows[cnt - 1] == cnt - 1;
 	int32_t narch = 0;
 	int32_t only_arch = -1;
@@ -2411,6 +2416,7 @@ int64_t ECSCore::batch_apply_col_rows(const StringName &anchor, const PackedInt3
 			}
 		}
 	}
+#endif
 	// 聚合行号 -> (archetype, 块内行) 表(一次 O(N)) + 每块聚合起始(thread_local 复用避免每帧分配)
 	static thread_local std::vector<std::pair<int32_t, int32_t>> agg; agg.clear();
 	static thread_local std::vector<int32_t> arch_list; arch_list.clear();
