@@ -5,6 +5,7 @@
 #include <godot_cpp/core/defs.hpp>
 #include <godot_cpp/godot.hpp>
 
+#include "audio_synth.h"
 #include "ecs_core.h"
 #include "pcg_erode.h"
 #include "pcg_wfc.h"
@@ -19,6 +20,7 @@ void initialize_devecs_module(ModuleInitializationLevel p_level) {
 	if (p_level != MODULE_INITIALIZATION_LEVEL_SCENE) {
 		return;
 	}
+	GDREGISTER_CLASS(AudioSynthEngine);
 	GDREGISTER_CLASS(ECSCore);
 	GDREGISTER_CLASS(PCGErode);
 	GDREGISTER_CLASS(PCGWFC);

@@ -401,35 +401,34 @@ AudioTool.get_stream_info(stream)              # 查询时长/采样率/循环�
 AudioTool.list_examples()                      # 列出全部示例
 ```
 
-- **渲染管线**：`Def → AudioSequence（展开事件）→ AudioVoice（逐音符渲染）→ AudioTool（混合/归一化/软削波）`。
-- **合成内核自研**（现已并入 `AudioTool`）：PolyBLEP 抗锯齿振荡器、SVF 滤波器（低/带/高通）、ADSR 包络（支持曲线）、`midi_to_freq`、鼓合成（KICK / SNARE / HAT / HAT_OPEN / TOM / CLAP）。这些是 Godot 不提供的数据级合成 API，故自研；**其余通用能力一律用 Godot 已有功能**。
+- **渲染管线**：`Def → AudioSequence（展开事件）→ AudioSynthEngine（C++ 逐采样合成，gdextension/src/audio_synth.cpp）→ AudioTool（归一化/软削波/int16 母带）`。
+- **合成内核 C++ 实现**：PolyBLEP 抗锯齿振荡器、SVF 滤波器（低/带/高通）、ADSR 包络（支持曲线）、鼓合成（KICK / SNARE / HAT / HAT_OPEN / TOM / CLAP）全部由**共享原生库 `AudioSynthEngine`** 实现（`FrameworkNative.get_native(&"AudioSynthEngine")`，无 GDScript 回退）。这些是 Godot 不提供的数据级合成 API，故自研并放原生层以获得实时性能；**其余通用能力一律用 Godot 已有功能**。
 - **自动编曲**（`AudioMusicDef`）：音阶音池 + 加权随机游走旋律 + 和弦进行 + 鼓节奏音型。
-- **实时无限循环**：`AudioLivePlayer` 基于 Godot 内置 `AudioStreamGenerator` 逐块渲染，BGM 不占内存、无限循环。
+- **循环 BGM**：`AudioTool.play_loop()` 一次性烘焙完整 loop 流（`AudioStreamWAV.loop_mode` 原生循环），交给 Godot 通用 `AudioStreamPlayer` 播放，无实时渲染负担。
 - **后台线程**：`AudioTool.generate_async(def)` 放 worker 线程渲染，避免阻塞主线程。
 
 **只自研"无法用内置实现"的部分，其余全部用 Godot 已有功能：**
 
 | 能力 | 实现 | 说明 |
 |---|---|---|
-| 振荡/滤波/包络/鼓 | 自研（并入 `AudioTool`）| Godot 无逐采样合成 API，必须自研 |
+| 振荡/滤波/包络/鼓 | **C++ 原生 `AudioSynthEngine`** | Godot 无逐采样合成 API，必须自研；放共享原生库（`devecs.gdextension`），性能远高于 GDScript 逐采样 |
 | 混响 / 延迟 / 失真 / 限幅 / 压缩 / EQ | **Godot 内置 `AudioEffect`** | 播放时经 `AudioSynthDef.bus` + `fx_chain` 路由到带效果的总线；**离线烘焙同样支持**——用内置 `AudioEffectRecord` 录音法把效果链固化进 .wav（`bake_wav(..., bake_fx=true)`，默认开启）|
 | WAV 写盘 | 自写 44 字节标准 PCM 头 | 4.7.1 内置 `save_to_wav()` 会把 16bit 立体声写成 mono 头（数据仍交错），Godot 重导入后声道/时长错乱，故自写标准头 |
-| 实时循环播放 | **Godot 内置 `AudioStreamGenerator`** | `AudioLivePlayer` 包装使用 |
+| 循环播放 | **Godot 通用 `AudioStreamPlayer` + `AudioStreamWAV.loop_mode`** | `AudioTool.play_loop()` 先完整生成 loop 流再交给引擎原生播放 |
 | 总线布局 | **Godot 内置 `AudioServer` / `AudioBusLayout`** | `AudioTool.setup_audio_buses()` 一键生成 Master/SFX/BGM/UI 布局并写入项目设置 |
 
 - `AudioTool.ensure_bus()` 按需幂等创建任意效果总线；`resolve_bus()` 为带 `fx_chain` 的定义自动建 `FX_<bus>` 效果总线。
-- `AudioTool.play_stream()` 播放结束后自动释放节点；`AudioLivePlayer` 自动挂到定义的总线。
+- `AudioTool.play_stream()` 播放结束后自动释放节点；`play_loop()` 返回的循环 BGM 播放器自动挂到定义的总线。
 
 | 类 | 说明 |
 |---|---|
 | `AudioSynthDef` | 根定义：类别（SFX/BGM/AMBIENT/LOOP）、采样率、主音量、软削波、`bus` + `fx_chain`（总线效果链）、循环/淡出 |
 | `AudioVoiceDef` | 声部（Tone/DRUM），含振荡器组、滤波器、ADSR、声像、音量 |
 | `AudioMusicDef` | 自动编曲配方；`AudioPatternDef` 显式四分音符节拍 |
-| `AudioSequence` / `AudioVoice` | 事件展开 / 音符渲染（Entity 层内部实现，不直接使用） |
-| `AudioLivePlayer` | 实时无限循环 BGM 播放器（一般用 `AudioTool.play_loop()` 创建） |
+| `AudioSequence` / `AudioSynthEngine` | 事件展开（GDScript）/ C++ 逐采样合成核心（共享原生库） |
 | `AudioTool` / `DevAudioExamples` | **统一入口**：渲染/生成/播放/保存/总线/示例 全部集成 / 一键生成示例定义 |
 
-`AudioTool` 是音频功能的**唯一对外入口**，内部再分为：合成内核（`osc`/`poly_blep`/`SVFilter`/`ADSR`/`soft_clip`/`midi_to_freq`/`Wave`）、合成渲染（`render_data`/`build_stream`/`render`）、生成（`generate`/`generate_async`）、播放（`play`/`play_stream`/`play_loop`/`play_example`）、保存（`save_wav`/`save_resource`/`generate_and_save`/`bake_wav`）、查询（`get_stream_info`/`list_examples`/`example_def`）、总线管理（`ensure_bus`/`resolve_bus`/`create_fx`/`setup_audio_buses`）、编辑器预览（`play_editor_preview`/`stop_editor_preview`）。
+`AudioTool` 是音频功能的**唯一对外入口**，内部再分为：合成内核（C++ `AudioSynthEngine` 逐采样合成 + `soft_clip`/`midi_to_freq`/`Wave` 小函数）、合成渲染（`render_data`/`build_stream`/`render`）、生成（`generate`/`generate_async`）、播放（`play`/`play_stream`/`play_loop`/`play_example`）、保存（`save_wav`/`save_resource`/`generate_and_save`/`bake_wav`）、查询（`get_stream_info`/`list_examples`/`example_def`）、总线管理（`ensure_bus`/`resolve_bus`/`create_fx`/`setup_audio_buses`）、编辑器预览（`play_editor_preview`/`stop_editor_preview`）。
 
 ### Inspector 预览与烘焙
 
@@ -441,11 +440,11 @@ AudioTool.list_examples()                      # 列出全部示例
 
 `fx_chain` 为 **Godot 原生 `Array[AudioEffect]` 资源数组**——直接在 Inspector 里从音频效果资源列表选取并展开调参（混响 / 延迟 / 失真 / 限幅 / 压缩 / EQ 等任意内置效果）；代码侧可用 `AudioTool.create_fx("reverb")` 取标准预设、`AudioTool.fxs_from_names(["reverb", "delay"])` 批量构建。标准预设名：`reverb` / `reverb_hall` / `delay` / `distortion` / `limiter` / `compressor` / `eq_lowpass` / `eq_highpass` / `eq_bandpass` / `spectrum`。
 
-> 生成较重的 BGM（16 秒）约需 2 倍实时（后台线程），建议一次性烘焙成 `.wav` 资源供游戏加载；实时循环交给 `AudioLivePlayer`。
+> 生成较重的 BGM（16 秒）约需 2 倍实时（后台线程；C++ `AudioSynthEngine` 实测 16s BGM 渲染约 0.3s），一次性烘焙成 `.wav` 资源供游戏加载；循环 BGM 用 `AudioTool.play_loop()`（完整流 + 通用播放器）。
 
 **人性化随机**：`AudioMusicDef` / `AudioPatternDef` 上新增 `pitch_jitter_cents`（每音符音高 ±音分抖动）与 `timing_jitter_ms`（每音符触发时间 ±毫秒抖动），消除重复旋律/打击乐的机械感；`AudioPatternDef.random_seed` 控制抖动变体。
 
-**淡入淡出**：`AudioSynthDef.fade_in`（头部淡入，离线烘焙与 `AudioLivePlayer` 实时播放均生效，仅首轮）与 `fade_out`（尾部淡出）。
+**淡入淡出**：`AudioSynthDef.fade_in`（头部淡入，离线烘焙与 `play_loop()` 完整流均生效，仅首轮）与 `fade_out`（尾部淡出）。
 
 **示例音效库**（共 13 个）：激光/爆炸/金币/受击/跳跃/UI 点击/能量拾取/脚步声/翻滚/魔法/重击 + 冒险循环 BGM/环境循环 BGM。
 

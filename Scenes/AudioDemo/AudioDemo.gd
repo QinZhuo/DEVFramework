@@ -3,7 +3,7 @@
 ## 播放全部通过 AudioTool 一行 API 完成
 extends Control
 
-var _bgm: AudioLivePlayer
+var _bgm: AudioStreamPlayer
 
 func _ready() -> void:
 	_bind_buttons()

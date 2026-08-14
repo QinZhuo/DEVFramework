@@ -19,6 +19,7 @@ add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/godot-cpp ${CMAKE_CURRENT_BINARY_DI
 
 add_library(devecs SHARED
     src/register_types.cpp
+    src/audio_synth.cpp
     src/ecs_core.cpp
     src/pcg_erode.cpp
     src/pcg_wfc.cpp
@@ -37,6 +38,9 @@ set_target_properties(devecs PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON
 # (w64devkit 的 GCC 未启用 LTO, 故仅用 -march=native)
 if(NOT MSVC)
     target_compile_options(devecs PRIVATE -march=native)
+    # 禁用 FMA 融合: 使逐采样 float 运算与 Godot 引擎语义一致(引擎构建未开 FMA),
+    # 保证 C++ 音频合成输出与旧 GDScript 渲染 bit 级一致(迁移无感)。
+    target_compile_options(devecs PRIVATE -ffp-contract=off)
 endif()
 
 if(APPLE)

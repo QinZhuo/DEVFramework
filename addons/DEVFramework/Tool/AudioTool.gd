@@ -17,7 +17,7 @@ static var fx_names := [
 	"limiter", "compressor", "eq_lowpass", "eq_highpass", "eq_bandpass", "spectrum",
 ]
 
-## ======= 合成内核(原 AudioDSP 合并至此) =======
+## ======= 合成内核(逐采样 DSP 已由 C++ AudioSynthEngine 实现) =======
 
 ## 波形枚举(与 AudioOscillatorDef.Wave 一致)
 enum Wave {
@@ -35,48 +35,9 @@ enum Wave {
 	NOISE,
 }
 
-## PolyBLEP 抗锯齿修正——消除方波/锯齿/三角波的高频混叠，让音色"干净"
-static func poly_blep(t: float, dt: float) -> float:
-	if t < dt:
-		t /= dt
-		return t + t - t * t - 1.0
-	elif t > 1.0 - dt:
-		t = (t - 1.0) / dt
-		return t * t + t + t + 1.0
-	return 0.0
-
-static func _wrap(p: float) -> float:
-	return p - floorf(p)
-
-## 生成一帧波形。phase 为 0~1 相位，dt 为每采样相位步进，duty 为 PULSE 占空比
-static func osc(wave: int, phase: float, dt: float, duty := 0.5, rng: RandomNumberGenerator = null) -> float:
-	match wave:
-		Wave.SINE:
-			return sin(phase * TAU)
-		Wave.SQUARE:
-			var s := 1.0 if phase < 0.5 else -1.0
-			s += poly_blep(phase, dt) - poly_blep(_wrap(phase + 0.5), dt)
-			return s
-		Wave.SAW:
-			var s := 2.0 * phase - 1.0
-			s -= poly_blep(phase, dt)
-			return s
-		Wave.TRIANGLE:
-			var s := 2.0 * phase - 1.0
-			s -= poly_blep(phase, dt)
-			var p2 := _wrap(phase + 0.5)
-			var s2 := 2.0 * p2 - 1.0
-			s2 -= poly_blep(p2, dt)
-			return (s - s2) * 0.5
-		Wave.PULSE:
-			var s := 1.0 if phase < duty else -1.0
-			s += poly_blep(phase, dt) - poly_blep(_wrap(phase - duty + 1.0), dt)
-			return s
-		Wave.NOISE:
-			if rng:
-				return rng.randf_range(-1.0, 1.0)
-			return randf_range(-1.0, 1.0)
-	return 0.0
+## 振荡器/滤波/ADSR/逐采样渲染已由 C++ AudioSynthEngine 1:1 实现
+## (gdextension/src/audio_synth.cpp, 与旧 AudioVoice 输出一致、性能提升约 10~50 倍)。
+## 这里仅保留 soft_clip / midi_to_freq 等母带级小函数与 Wave 枚举(供 Def 配置引用)。
 
 ## 非线性软削波(tanh)——温和过载，防止爆音并带来温暖感
 static func soft_clip(x: float, drive: float) -> float:
@@ -84,107 +45,7 @@ static func soft_clip(x: float, drive: float) -> float:
 		return x
 	return tanh(x * drive)
 
-## 状态变量滤波器(SVF)，支持低通/带通/高通，带截止频率调制
-class SVFilter:
-	var sample_rate := 44100.0
-	var mode := 0
-	var cutoff := 8000.0
-	var resonance := 0.3
-	var _low := 0.0
-	var _band := 0.0
-
-	func _init(sr: float = 44100.0, c: float = 8000.0, r: float = 0.3, m: int = 0) -> void:
-		sample_rate = sr
-		cutoff = c
-		resonance = r
-		mode = m
-
-	func reset() -> void:
-		_low = 0.0
-		_band = 0.0
-
-	func process(x: float) -> float:
-		var f := 2.0 * sin(PI * clampf(cutoff, 20.0, sample_rate * 0.45) / sample_rate)
-		var q := 2.0 * (1.0 - clampf(resonance, 0.0, 1.0)) + 0.5
-		_low += f * _band
-		var high := x - _low - q * _band
-		_band = f * high + _band
-		match mode:
-			1:
-				return _band
-			2:
-				return high
-		return _low
-
-## 指数衰减 ADSR 包络（逐采样，支持曲线）
-class ADSR:
-	var sample_rate := 44100.0
-	var attack := 0.005
-	var decay := 0.1
-	var sustain := 0.7
-	var release := 0.2
-	var curve := 0.0
-
-	var _phase := -1
-	var _timer := 0.0
-	var _start_level := 0.0
-	var _level := 0.0
-
-	func _init(sr: float = 44100.0) -> void:
-		sample_rate = sr
-
-	func reset() -> void:
-		_phase = -1
-		_level = 0.0
-
-	func note_on() -> void:
-		_phase = 0
-		_timer = 0.0
-		_start_level = maxf(_level, 0.0)
-
-	func note_off() -> void:
-		if _phase >= 0 and _phase <= 2:
-			_phase = 3
-			_timer = 0.0
-			_start_level = _level
-
-	func is_done() -> bool:
-		return _phase == -1
-
-	func get_level() -> float:
-		return _level
-
-	func process() -> float:
-		var dt := 1.0 / sample_rate
-		_timer += dt
-		match _phase:
-			0:
-				var t0 := 1.0 if attack <= 0.0 else _timer / attack
-				_level = _curve_segment(_start_level, 1.0, clampf(t0, 0.0, 1.0))
-				if _timer >= attack:
-					_phase = 1
-					_timer = 0.0
-			1:
-				var t1 := 1.0 if decay <= 0.0 else _timer / decay
-				_level = _curve_segment(1.0, sustain, clampf(t1, 0.0, 1.0))
-				if _timer >= decay:
-					_phase = 2
-			2:
-				_level = sustain
-			3:
-				var t3 := 1.0 if release <= 0.0 else _timer / release
-				_level = _curve_segment(_start_level, 0.0, clampf(t3, 0.0, 1.0))
-				if _timer >= release:
-					_phase = -1
-					_level = 0.0
-		return _level
-
-	func _curve_segment(a: float, b: float, t: float) -> float:
-		if absf(curve) < 0.001:
-			return lerpf(a, b, t)
-		if curve > 0.0:
-			return lerpf(a, b, pow(t, 1.0 + curve))
-		return lerpf(a, b, pow(t, 1.0 / (1.0 - curve)))
+## 状态变量滤波器 / ADSR 包络等逐采样 DSP 已由 C++ AudioSynthEngine 实现(见 audio_synth.cpp)
 
 ## MIDI 音高 → 频率
 static func midi_to_freq(m: int) -> float:
@@ -193,6 +54,7 @@ static func midi_to_freq(m: int) -> float:
 ## ======= 合成渲染(原 AudioSynth 合并至此) =======
 
 ## 主渲染器: 把 AudioSynthDef 展开成 int16 交错立体声数据
+## 逐采样合成由 C++ AudioSynthEngine 完成(见 gdextension/src/audio_synth.cpp, 与旧 AudioVoice 输出一致)
 ## 线程安全: 仅返回纯数据字典(不创建 AudioStreamWAV), 供后台线程使用
 static func render_data(def: AudioSynthDef) -> Dictionary:
 	var sr := int(def.sample_rate)
@@ -206,13 +68,6 @@ static func render_data(def: AudioSynthDef) -> Dictionary:
 	if total <= 0:
 		return {"ok": false, "reason": "没有可渲染的音符或时长"}
 
-	var l := PackedFloat32Array()
-	var r := PackedFloat32Array()
-	l.resize(total)
-	r.resize(total)
-	l.fill(0.0)
-	r.fill(0.0)
-
 	var per_voice: Array = []
 	for i in def.voices.size():
 		per_voice.append([])
@@ -221,17 +76,12 @@ static func render_data(def: AudioSynthDef) -> Dictionary:
 		if vi >= 0 and vi < per_voice.size():
 			per_voice[vi].append(e)
 
+	var engine := synth_engine(def, sr)
+	if engine == null:
+		return {"ok": false, "reason": "AudioSynthEngine 原生库不可用"}
 	for vi in def.voices.size():
-		var vd: AudioVoiceDef = def.voices[vi]
-		var voice := AudioVoice.new(vd, sr)
-		voice.events = per_voice[vi]
-		var mono := voice.render_to_array(total)
-		var pan := clampf(vd.pan, -1.0, 1.0)
-		var gl := cos((pan + 1.0) * PI / 4.0) * vd.volume
-		var gr := sin((pan + 1.0) * PI / 4.0) * vd.volume
-		for i in total:
-			l[i] += mono[i] * gl
-			r[i] += mono[i] * gr
+		engine.set_events(vi, per_voice[vi])
+	var frames: PackedVector2Array = engine.render(total)
 
 	# 回声/延迟/混响等后期效果不自研, 由 Godot 内置 AudioEffect 在播放总线上提供(AudioSynthDef.bus + fx_chain)
 
@@ -242,30 +92,26 @@ static func render_data(def: AudioSynthDef) -> Dictionary:
 		for i in range(start, total):
 			var t := 1.0 - float(i - start) / maxi(1, fc)
 			var minv := clampf(t, 0.0, 1.0)
-			l[i] *= minv
-			r[i] *= minv
+			frames[i] = Vector2(frames[i].x * minv, frames[i].y * minv)
 
 	# 软削波 + 归一化(先统一到 ~1.0 电平再软削波, 最后乘母带音量)
 	var peak := 0.0
 	for i in total:
-		peak = maxf(peak, absf(l[i]))
-		peak = maxf(peak, absf(r[i]))
+		peak = maxf(peak, absf(frames[i].x))
+		peak = maxf(peak, absf(frames[i].y))
 	var norm := 0.97 / maxf(peak, 0.000001)
 	var drive := def.soft_clip
 	var fi := int(def.fade_in * sr)
+	var bytes := PackedByteArray()
+	bytes.resize(total * 2 * 2)
 	for i in total:
 		var fade := 1.0
 		if fi > 0 and i < fi:
 			fade = smoothstep(0.0, 1.0, float(i) / fi)
-		l[i] = soft_clip(l[i] * norm, drive) * def.master_volume * fade
-		r[i] = soft_clip(r[i] * norm, drive) * def.master_volume * fade
-
-	# 转 int16 交错立体声
-	var bytes := PackedByteArray()
-	bytes.resize(total * 2 * 2)
-	for i in total:
-		_write_i16(bytes, i * 4, int(clampf(l[i], -1.0, 1.0) * 32767.0))
-		_write_i16(bytes, i * 4 + 2, int(clampf(r[i], -1.0, 1.0) * 32767.0))
+		var l := soft_clip(frames[i].x * norm, drive) * def.master_volume * fade
+		var r := soft_clip(frames[i].y * norm, drive) * def.master_volume * fade
+		_write_i16(bytes, i * 4, int(clampf(l, -1.0, 1.0) * 32767.0))
+		_write_i16(bytes, i * 4 + 2, int(clampf(r, -1.0, 1.0) * 32767.0))
 
 	return {
 		"sample_rate": sr,
@@ -273,6 +119,58 @@ static func render_data(def: AudioSynthDef) -> Dictionary:
 		"data": bytes,
 		"loop": def.loop,
 	}
+
+## 构建 C++ 合成引擎(逐采样合成核心)。返回 AudioSynthEngine 实例或 null。
+static func synth_engine(def: AudioSynthDef, sr: int) -> Object:
+	var native := FrameworkNative.get_native(&"AudioSynthEngine",
+		[&"configure", &"set_events", &"render", &"reset_stream", &"get_loop_frames"])
+	if native == null:
+		return null
+	var packed := _voice_params(def)
+	native.configure(packed[0], packed[1], sr)
+	return native
+
+## 把 AudioSynthDef 的声部参数压成扁平数值数组(C++ 端布局见 audio_synth.h VHEAD/OSC_STRIDE)。
+## 返回 [PackedFloat32Array 参数, PackedInt32Array 每声部振荡器数]。
+static func _voice_params(def: AudioSynthDef) -> Array:
+	var params := PackedFloat32Array()
+	var counts := PackedInt32Array()
+	for v in def.voices:
+		counts.append(v.oscillators.size())
+		params.append(float(v.kind))
+		params.append(v.volume)
+		params.append(v.pan)
+		params.append(v.noise_amount)
+		params.append(v.vibrato_rate)
+		params.append(v.vibrato_depth)
+		params.append(v.glide)
+		params.append(float(v.drum_type))
+		params.append(v.drum_freq)
+		params.append(v.drum_tone)
+		params.append(v.drum_noise)
+		params.append(v.drum_length)
+		var env := v.envelope
+		params.append(env.attack if env else 0.005)
+		params.append(env.decay if env else 0.1)
+		params.append(env.sustain if env else 0.7)
+		params.append(env.release if env else 0.2)
+		params.append(env.curve if env else 0.0)
+		var flt := v.filter
+		params.append(1.0 if flt and flt.enabled else 0.0)
+		params.append(float(flt.mode) if flt else 0.0)
+		params.append(flt.cutoff if flt else 8000.0)
+		params.append(flt.resonance if flt else 0.3)
+		params.append(flt.cutoff_envelope_amount if flt else 0.0)
+		params.append(flt.cutoff_lfo_amount if flt else 0.0)
+		params.append(float(v.oscillators.size()))
+		for o in v.oscillators:
+			params.append(float(o.waveform))
+			params.append(o.level)
+			params.append(o.detune_cents)
+			params.append(float(o.octave_shift))
+			params.append(o.pulse_width)
+			params.append(o.phase_offset)
+	return [params, counts]
 
 static func _write_i16(bytes: PackedByteArray, off: int, v: int) -> void:
 	bytes[off] = v & 0xFF
@@ -285,6 +183,8 @@ static func build_stream(data: Dictionary) -> AudioStreamWAV:
 	var stream := AudioStreamWAV.new()
 	stream.format = AudioStreamWAV.FORMAT_16_BITS
 	stream.mix_rate = data.sample_rate
+	# render_data 输出 L/R 交错立体声(int16, 每帧 4 字节), 必须标记 stereo 否则被当 mono 播放
+	stream.stereo = true
 	stream.data = data.data
 	if data.get("loop", false):
 		stream.loop_mode = AudioStreamWAV.LOOP_FORWARD
@@ -336,15 +236,25 @@ static func play_stream(stream: AudioStream, volume_db := 0.0, bus := "Master", 
 		player.finished.connect(player.queue_free)
 	return player
 
-## 实时无限循环播放 BGM(基于 Godot AudioStreamGenerator, 不占内存): 一行启动, 返回播放器可自由控制/停止
-static func play_loop(def: AudioSynthDef) -> AudioLivePlayer:
-	var player := AudioLivePlayer.new()
+## 循环播放 BGM(完整流烘焙后走 Godot 通用 AudioStreamPlayer, 不再实时渲染):
+## 后台线程生成完整 loop 音频流(build_stream 自动设 loop_mode), 完成后交给引擎原生播放。
+## 返回的 player 立即可用(可 stop/释放); 生成完成前 stream 为空, 完成后自动 play。
+static func play_loop(def: AudioSynthDef) -> AudioStreamPlayer:
+	var player := AudioStreamPlayer.new()
+	player.bus = resolve_bus(def.bus if def.bus else "Master", def.fx_chain)
 	var root := Engine.get_main_loop() as SceneTree
 	if root and root.root:
 		root.root.add_child(player)
-	player.setup(def)
-	player.play()
+	@warning_ignore("return_value_discarded")
+	_play_loop_async(def, player)
 	return player
+
+## play_loop 的后台协程: 生成完成后把流挂到播放器并播放
+static func _play_loop_async(def: AudioSynthDef, player: AudioStreamPlayer) -> void:
+	var stream := await generate_async(def)
+	if stream != null and is_instance_valid(player):
+		player.stream = stream
+		player.play()
 
 ## ============ 编辑器预览(Inspector 按钮使用) ============
 
@@ -540,14 +450,16 @@ static func get_stream_info(stream: AudioStreamWAV) -> Dictionary:
 		return {}
 	var info := {
 		"mix_rate": stream.mix_rate,
-		"channels": 2,
+		"channels": 2 if stream.stereo else 1,
+		"stereo": stream.stereo,
 		"format": stream.format,
 		"loop": stream.loop_mode != AudioStreamWAV.LOOP_DISABLED,
 		"loop_begin": stream.loop_begin,
 		"loop_end": stream.loop_end,
 	}
 	if stream.format == AudioStreamWAV.FORMAT_16_BITS:
-		var frame_count := stream.data.size() / 4
+		var bytes_per_frame := 2 if not stream.stereo else 4
+		var frame_count := stream.data.size() / bytes_per_frame
 		info["frames"] = frame_count
 		info["seconds"] = float(frame_count) / stream.mix_rate
 	return info
