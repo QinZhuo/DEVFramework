@@ -22,3 +22,4 @@ addons/VoxelSupport/Native/~*
 
 # GDExtension uid 缓存不入库
 *.gdextension.uid
+/.opencode
