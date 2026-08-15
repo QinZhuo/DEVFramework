@@ -110,7 +110,6 @@ func build() -> AudioSynthDef:
 			m.drum_kit = kit_by_voice.get(i, AudioMusicDef.DrumKit.FULL)
 			if drum_pat:
 				m.drum_pattern = drum_pat
-			m.velocity = 1.0
 		if not secs.is_empty():
 			m.sections.assign(secs.map(func(x): return x.duplicate()))
 		if not bool(v.get("enabled", true)):

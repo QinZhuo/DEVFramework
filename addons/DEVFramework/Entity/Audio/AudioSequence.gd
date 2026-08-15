@@ -112,7 +112,8 @@ static func _append_music_section(mine: Array, m: AudioMusicDef, sec: AudioMusic
 					# 随机游走选音(跨段延续, 旋律连贯)
 					var step_n := _rng_step(rng)
 					state.melody_idx = clampi(int(state.melody_idx) + step_n, 0, scale_notes.size() - 1)
-					var midi: int = int(scale_notes[int(state.melody_idx)]) + 12 * oct
+					# 八度偏移 + 转调(声部级+段落级): 必须与和弦同步移调
+					var midi: int = int(scale_notes[int(state.melody_idx)]) + 12 * oct + m.transpose_semitones + sec.transpose_semitones
 					mine.append(_ev(m.voice_index, start, int(step_frames * m.gate), midi, vel * _twitch(rng)))
 			m.Role.DRUM:
 				# 节奏型模式(drum_pattern)优先: 支持切分/三连音/摇摆; 否则退回 drum_kit 固定 4/4

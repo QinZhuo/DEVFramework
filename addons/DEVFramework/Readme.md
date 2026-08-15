@@ -384,7 +384,12 @@ var data = await ActorTool.save_data(root)
 await ActorTool.load_data(root, data)
 ```
 
-### 5.8 程序化音频生成（AudioTool）
+### 5.8 程序化音频生成（PCG AudioSynthTool + 通用 AudioTool）
+
+**架构分层**（对齐程序化纹理的 PCG 先例）：
+- **生成（PCG 模块）**：`PCG/Tool/AudioSynthTool.gd`（Def→采样数据，含 `render_data`/`generate`/`randomize_def` 等）+ `PCG/Def/AudioGenDef.gd`（`extends PCGGeneratorDef`，**接入 PCG 管线**，同种子可生成配套音效/BGM）+ 配置 Def（`Def/Audio/*`）+ C++ `AudioSynthEngine`。
+- **通用管理（AudioTool）**：播放任意 `AudioStream`（`play_stream`）、程序化 BGM（`play_loop`，内部经 AudioSynthTool 生成）、总线效果、WAV 保存、流查询、编辑器预览/烘焙——**非 PCG 专属，任何音频都可用**。
+- AudioTool 保留生成方法的兼容代理（标注见 PCG）。
 
 用 `AudioSynthDef` 描述声音，一键生成 3A 级音效 / BGM / 氛围 / 循环音乐，无需外部音频素材：
 
@@ -401,7 +406,7 @@ AudioTool.get_stream_info(stream)              # 查询时长/采样率/循环�
 AudioTool.list_examples()                      # 列出全部示例
 ```
 
-- **渲染管线**：`Def → AudioSequence（展开事件）→ AudioSynthEngine（C++ 逐采样合成，gdextension/src/audio_synth.cpp）→ AudioTool（归一化/软削波/int16 母带）`。
+- **渲染管线**：`Def → AudioSequence（展开事件）→ AudioSynthEngine（C++ 逐采样合成，gdextension/src/audio_synth.cpp）→ AudioSynthTool（归一化/软削波/int16 母带）`。
 - **风格模板层**（`StyleDef`）：**风格配方**一键生成完整 BGM Def——配置全局（BPM/调性/和声/效果链）+ 声部列表（角色+音色模板+力度/八度）+ 鼓模式 + 段落。内置 **12 个音色模板**（`lead_square/lead_fm/pad_saw/bass_acid/pluck/drum_kick` 等）与 **8 种风格预设**（`StyleDef.preset("HOUSE")` 等：Chiptune/Rock/House/Jazz/Trap/Cinematic/World/Ambient）。`.build()` 返回可播放 `AudioSynthDef`；参考资源 `Examples/Style_House.tres`。
 - **合成内核 C++ 实现**：PolyBLEP 抗锯齿振荡器（6 波形）、**FM 频率调制**（调制器-载波对，DX7 风格电钢/钟/贝斯）、**Karplus-Strong 拨弦**（物理建模吉他/竖琴/古筝）、SVF 滤波器（低/带/高通，可被**LFO 扫频**）、ADSR 包络（支持曲线）、**LFO 自动化层**（`AudioLFODef` 可同时调制滤波/音量/声像/音高，实现扫频/抽吸/自动声像/颤音等音色演化）、鼓合成（KICK / SNARE / HAT / HAT_OPEN / TOM / CLAP）全部由**共享原生库 `AudioSynthEngine`** 实现（`FrameworkNative.get_native(&"AudioSynthEngine")`，无 GDScript 回退）。这些是 Godot 不提供的数据级合成 API，故自研并放原生层以获得实时性能；**其余通用能力一律用 Godot 已有功能**。
 - **自动编曲**（`AudioMusicDef`）：音阶音池 + 加权随机游走旋律 + 和弦进行 + 鼓节奏音型；**段落结构**（`AudioMusicSectionDef`）支持 intro/verse/chorus/outro 等曲式——每段独立小节数/和声进行/强度/乐器启停/八度偏移，声部间段落无缝拼接。
@@ -447,7 +452,13 @@ AudioTool.list_examples()                      # 列出全部示例
 
 **人性化随机**：`AudioMusicDef` / `AudioPatternDef` 上新增 `pitch_jitter_cents`（每音符音高 ±音分抖动）与 `timing_jitter_ms`（每音符触发时间 ±毫秒抖动），消除重复旋律/打击乐的机械感；`AudioPatternDef.random_seed` 控制抖动变体。
 
-**淡入淡出**：`AudioSynthDef.fade_in`（头部淡入，离线烘焙与 `play_loop()` 完整流均生效，仅首轮）与 `fade_out`（尾部淡出）。
+**淡入淡出**：`AudioSynthDef.fade_in`（头部淡入，离线烘焙与 `play_loop()` 完整流均生效，仅首轮）与 `fade_out`（尾部淡出）。注意：循环 BGM 若设 `fade_in`，因 `loop_begin=0` 每圈会重复淡入，建议循环曲用 0。
+
+**算法审查与参数语义**（对照 Godot 引擎源码 + 业界标准实现）：
+- 合成内核（PolyBLEP/SVF/ADSR/FM/Karplus-Strong/鼓/PCG32 RNG/常量功率声像/母带）与标准实现一致；`AudioStreamWAV.loop_begin/end` 为**帧**单位。
+- **转调同步**：`transpose_semitones` 对旋律/和弦/贝斯/琶音一致生效（旋律基于音池 + 转调叠加）。
+- `AudioOscillatorDef.phase_offset`：振荡器初始相位；`AudioFilterDef.cutoff_lfo_amount`：滤波截止随声部 LFO 线性调制（配合 `AudioLFODef`）。
+- 冗余：`AudioVoiceDef.drum_length` 已废弃（鼓时长由事件与指数衰减决定），打包层保留占位以稳定布局。
 
 **示例音效库**（共 25 个）：激光/爆炸/金币/受击/跳跃/UI 点击/能量拾取/脚步声/翻滚/魔法/重击/**FM 电钢(DX7)**/**拨弦(Karplus-Strong)**/**Acid Bass(LFO 扫频)** + **10 种风格 BGM**：冒险/氛围/8位 Chiptune/摇滚/House/Trap/爵士/电影管弦/世界拨弦/综合 Showcase。
 

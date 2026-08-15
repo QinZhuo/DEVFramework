@@ -20,7 +20,7 @@ static func create_all(save_tres := true, render_wav := true) -> Dictionary:
 				results[name] = {"tres": err}
 				continue
 		if render_wav:
-			var stream := AudioTool.generate(def)
+			var stream := AudioSynthTool.generate(def)
 			if stream == null:
 				LogTool.error("音频", "渲染失败: ", name)
 				results[name] = {"tres": OK, "stream": ERR_BUG}

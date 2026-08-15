@@ -140,6 +140,7 @@ public:
 		float level = 1.0f, detune = 0.0f, pulse_width = 0.5f;
 		int octave = 0;
 		float fm_ratio = 1.0f, fm_index = 0.0f, ks_damping = 0.5f;
+		float phase_offset = 0.0f;
 	};
 
 	struct Event {
@@ -152,7 +153,7 @@ public:
 		float volume = 0.8f, pan = 0.0f, noise_amount = 0.0f;
 		float vibrato_rate = 5.0f, vibrato_depth = 0.0f, glide = 0.0f;
 		int drum_type = 0;
-		float drum_freq = 90.0f, drum_tone = 0.6f, drum_noise = 0.4f, drum_length = 0.3f;
+		float drum_freq = 90.0f, drum_tone = 0.6f, drum_noise = 0.4f;
 		// 包络
 		float env_attack = 0.005f, env_decay = 0.1f, env_sustain = 0.7f, env_release = 0.2f, env_curve = 0.0f;
 		// 滤波

@@ -225,7 +225,7 @@ void AudioSynthEngine::_parse_voice(const PackedFloat32Array &p, int s, int osc_
 	out.drum_freq = p[s + 8];
 	out.drum_tone = p[s + 9];
 	out.drum_noise = p[s + 10];
-	out.drum_length = p[s + 11];
+	// [s+11] = drum_length(已废弃, 占位保持布局稳定, 不读)
 	out.env_attack = p[s + 12];
 	out.env_decay = p[s + 13];
 	out.env_sustain = p[s + 14];
@@ -259,7 +259,7 @@ void AudioSynthEngine::_parse_voice(const PackedFloat32Array &p, int s, int osc_
 		o.detune = p[oo + 2];
 		o.octave = (int)p[oo + 3];
 		o.pulse_width = p[oo + 4];
-		// [oo+5] = phase_offset (GDScript 端未使用, 忽略以保持一致)
+		o.phase_offset = p[oo + 5];
 		o.fm_ratio = p[oo + 6];
 		o.fm_index = p[oo + 7];
 		o.ks_damping = p[oo + 8];
@@ -400,6 +400,9 @@ void AudioSynthEngine::_trigger(AudioSynthEngine::Voice &v, const Event &e, uint
 	n.target_freq *= std::pow(2.0f, e.pitch_cents / 1200.0f);
 	n.freq = n.target_freq * ((v.glide > 0.0f) ? 0.5f : 1.0f);
 	n.phases.assign(v.oscs.size(), 0.0f);
+	for (size_t oi = 0; oi < v.oscs.size(); ++oi) {
+		n.phases[oi] = v.oscs[oi].phase_offset;  // 相位偏移生效
+	}
 	n.mod_phases.assign(v.oscs.size(), 0.0f);
 	n.ks_bufs.resize(v.oscs.size());
 	n.ks_pos.assign(v.oscs.size(), 0u);
@@ -514,6 +517,10 @@ float AudioSynthEngine::_render_tone(AudioSynthEngine::Voice &v, AudioSynthEngin
 		float cut = v.filt_cutoff;
 		if (v.filt_env_amount != 0.0f) {
 			cut += v.filt_env_amount * env;
+		}
+		// cutoff_lfo_amount: 滤波器截止随声部 LFO 线性调制(配合 AudioLFODef; LFO 关闭时 lfo_current=0 无影响)
+		if (v.filt_lfo_amount != 0.0f) {
+			cut += v.filt_lfo_amount * v.lfo_current;
 		}
 		// LFO 滤波扫频: cutoff 在 ±depth 倍之间(1±depth)
 		if (v.lfo_enabled && v.mod_cutoff) {

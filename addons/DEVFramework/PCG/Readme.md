@@ -29,6 +29,7 @@ addons/DEVFramework/PCG/
 │   ├── BiomeMapDef.gd         # 生物群系图生成器（多层噪声映射）
 │   ├── TemplateDef / TemplateStitchDef  # 手作模板 + 拼接
 │   ├── RiverDef / RoadDef     # 河流（梯度下降）/ 道路（MST 走廊）
+│   ├── AudioGenDef.gd         # 音频生成器(AudioSynthDef → AudioStreamWAV, 同 seed 生成配套音效/BGM)
 │   └── PCGDef.gd              # 生成管线（组合多个生成器 + 共享 seed）
 ├── Entity/                    # 生成结果（运行时数据）
 │   ├── GeneratedGrid.gd       # 2D 整数栅格（邻居/连通域/BFS 查询，可序列化）
@@ -283,9 +284,22 @@ var fixed := {Vector3i(2, 2, 2): 0, Vector3i(3, 3, 3): 1, AABB(Vector3(10, 10, 1
 var voxels := PCGTool.generate_grid_3d(wfc3d_def, PCGTool.make_rng(seed), fixed)
 ```
 
-### 5.8 城市与内容进化
+### 5.8 程序化音频生成（AudioGenDef）
 
-**CityDef**（城市街区）：道路网格划分街区，街区填充建筑/公园：
+用 `AudioGenDef` 把程序化音频接入 PCG 管线（对齐 `TextureGenDef`）：`AudioSynthTool`（PCG/Tool）负责渲染，管线内同一种子可生成世界 + 配套音效/BGM。
+
+```gdscript
+var synth: AudioSynthDef = load("res://Assets/Def/Audio/Examples/SFX_Laser.tres")
+var audio_gen := AudioGenDef.from_def(synth, "laser")   # 包装音频定义
+var pcg := PCGDef.new()
+pcg.generators.append(audio_gen)
+var out := PCGTool.generate(pcg, 123)                    # 同 seed 必复现
+var stream: AudioStreamWAV = out["laser"]                # 直接播放/保存
+```
+
+音频生成核心（合成/编曲/风格/示例）在框架音频模块；`AudioTool` 为通用音频管理（播放/总线/保存/查询），两者均非 PCG 专属。
+
+### 5.9 城市与内容进化**CityDef**（城市街区）：道路网格划分街区，街区填充建筑/公园：
 
 ```gdscript
 var city: CityDef = load("res://Assets/Def/PCG/City_Grid.tres")
