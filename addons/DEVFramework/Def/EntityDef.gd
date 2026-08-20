@@ -27,5 +27,5 @@ func get_desc(_data) -> String:
 func get_display_name(_data) -> String:
 	var desc := str("[color=#", color.to_html(false), "]", super._to_string(), "[/color]")
 	if icon:
-		return str("[img=center,center,40x40]", icon.resource_path, "[/img]", desc)
+		return str("[img]", icon.resource_path, "[/img]", desc)
 	return desc
