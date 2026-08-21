@@ -960,7 +960,7 @@ func _on_preview_loaded(path: String, preview: Texture2D, thumbnail: Texture2D, 
 	if target == null:
 		return
 	# 校验异步回调的路径与单元格当前内容一致, 拒绝虚拟化复用后残留的过期回调
-	if String(target.get_meta(&"preview_path", "")) != path:
+	if str(target.get_meta(&"preview_path", "")) != path:
 		return
 	target.set_resource_preview(preview)
 
