@@ -23,12 +23,32 @@ var column_offsets: Array[float] = []
 ## 列偏移: cell_pos.x 是全局列索引, 本网格从第几列开始渲染(冻结网格=0, 滚动网格=1)
 var column_offset: int = 0
 
+## 悬停高亮行(B3, -1=无): 由 View 设置; _draw 绘制在单元格之下, 与半透明斑马纹叠加
+var hover_row: int = -1:
+	set(v):
+		if hover_row != v:
+			hover_row = v
+			queue_redraw()
+
 var _cached_minimum_size := Vector2.ZERO
 
 
 func _notification(what: int) -> void:
 	if what == NOTIFICATION_SORT_CHILDREN:
 		sort_children()
+	elif what == NOTIFICATION_DRAW:
+		_draw_hover()
+
+
+func _draw_hover() -> void:
+	if hover_row < 0 or hover_row >= row_heights.size():
+		return
+	var h: float = row_heights[hover_row]
+	var y: float = row_offsets[hover_row] if hover_row < row_offsets.size() else 0.0
+	var w := 0.0
+	for cw in column_widths:
+		w += cw
+	draw_rect(Rect2(0.0, y, maxf(w, size.x), h), Color(1.0, 1.0, 1.0, 0.055))
 
 
 func _get_minimum_size() -> Vector2:

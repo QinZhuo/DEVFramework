@@ -60,6 +60,9 @@ var _syncing_scroll := false
 var _measure_rtl: RichTextLabel
 var _width_cache: Dictionary = {}
 
+## 行染色缓存(B1 row stylization): 每行取首个有效 Color 值作为整行染色
+var _row_tints: Array[Color] = []
+
 
 func _ready() -> void:
 	if editor_interface == null:
@@ -89,6 +92,7 @@ func _ready() -> void:
 		editor_interface.get_resource_filesystem().filesystem_changed.connect(_on_filesystem_changed)
 	refresh_btn.pressed.connect(_on_refresh_pressed)
 	dir_tree.item_selected.connect(_on_dir_selected)
+	_setup_hover_highlight()
 	# 用 _shortcut_input 处理快捷键(Ctrl+C/V 在编辑器里可能先被编辑器自身的快捷键消费,
 	# _shortcut_input 比 _unhandled_input 更早触发, 能可靠捕获)
 	set_process_shortcut_input(true)
@@ -228,6 +232,7 @@ func _load_dir(path: String) -> void:
 	rows = loaded
 	_build_columns()
 	_sort_rows()
+	_compute_row_tints()
 	# 目录/列结构变化时清空旧单元格, 避免复用旧列类型的 cell 导致类型错位
 	_clear_grid_cells()
 	_clear_measure_cache()
@@ -885,9 +890,44 @@ func _update_visible_rows(force_rebuild: bool = false) -> void:
 	_update_selection_visuals()
 
 
-## 计算行的染色颜色(默认关闭整行染色, 保持清晰斑马纹; 颜色值已由色块单元格展示)
+## 行染色(don-tnowe row stylization): 取该行首个有效 Color 值, 低透明度染整行;
+## 无颜色值则全透明(保持斑马纹)。_load_dir 后预计算, 避免逐格扫描
+func _compute_row_tints() -> void:
+	_row_tints.clear()
+	for r in rows.size():
+		var tint := Color(0, 0, 0, 0)
+		for col in columns.size():
+			if col < column_types.size() and column_types[col] == TYPE_COLOR:
+				var v = _get_value(rows[r], col)
+				if v is Color:
+					tint = Color(v.r, v.g, v.b, 0.4)
+					break
+		_row_tints.append(tint)
+
+
 func _row_tint_color(row: int) -> Color:
-	return Color(1, 1, 1, 0)
+	return _row_tints[row] if row >= 0 and row < _row_tints.size() else Color(0, 0, 0, 0)
+
+
+## 悬停行高亮(B3, Excel crosshair 风格): 由 DefTableGrid 自绘(hover_row 属性),
+## 主网格与冻结首列同步; 离开网格或滚动时清除
+func _setup_hover_highlight() -> void:
+	grid.mouse_exited.connect(func() -> void: _set_hover_row(-1))
+	frozen_grid.mouse_exited.connect(func() -> void: _set_hover_row(-1))
+	# 垂直滚动时鼠标下的行已变化, 清除避免高亮错位
+	grid_scroll.get_v_scroll_bar().value_changed.connect(func(_v: float) -> void: _set_hover_row(-1))
+
+
+func _set_hover_row(row: int) -> void:
+	grid.hover_row = row
+	frozen_grid.hover_row = row
+
+
+func _on_cell_mouse_entered(cell: DefTableCellClass) -> void:
+	if cell == null or not is_instance_valid(cell):
+		return
+	var pos: Vector2i = cell.get_meta(&"cell_pos", Vector2i(-1, -1))
+	_set_hover_row(pos.y)
 
 
 func _make_cell(pos: Vector2i) -> DefTableCellClass:
@@ -896,6 +936,8 @@ func _make_cell(pos: Vector2i) -> DefTableCellClass:
 	cell.custom_minimum_size = Vector2(column_widths[pos.x], 0)
 	cell.set_meta(&"cell_pos", pos)
 	cell.gui_input.connect(_on_cell_gui_input.bind(cell))
+	# 悬停行高亮: 回调动态读取 cell_pos meta, 虚拟化复用单元格时定位仍正确
+	cell.mouse_entered.connect(_on_cell_mouse_entered.bind(cell))
 	return cell
 
 
@@ -927,16 +969,9 @@ func _fill_cell(cell: DefTableCellClass, pos: Vector2i, tint: Color = Color(1, 1
 	cell.bg_color = Color(1, 1, 1, 0.02) if pos.y % 2 == 0 else Color(0, 0, 0, 0.18)
 	cell.row_tint = tint
 	cell.set_selected(pos in edited_cells)
-	# 按列类型对齐: 数值/枚举右对齐(位数可比), bool 居中, 其余左对齐
-	match cell.kind:
-		DefTableCellClass.Kind.NUMBER, DefTableCellClass.Kind.ENUM:
-			cell.set_content_align(HORIZONTAL_ALIGNMENT_RIGHT)
-		DefTableCellClass.Kind.BOOL:
-			cell.set_content_align(HORIZONTAL_ALIGNMENT_CENTER)
-		_:
-			cell.set_content_align(HORIZONTAL_ALIGNMENT_LEFT)
 	var text := ""
 	var tip := ""
+	var is_empty := false
 	if pos.y < rows.size() and pos.x < columns.size():
 		var raw = _get_value(rows[pos.y], pos.x)
 		if cell.kind == DefTableCellClass.Kind.COLOR and raw is Color:
@@ -948,6 +983,7 @@ func _fill_cell(cell: DefTableCellClass, pos: Vector2i, tint: Color = Color(1, 1
 			tip = text
 			if text == "":
 				# 空值淡灰占位: 区分"空"与"0"(tooltip 仍为原始内容)
+				is_empty = true
 				text = "[color=#6e6e6e]—[/color]"
 			elif cell.kind == DefTableCellClass.Kind.BOOL:
 				# bool 符号化: 绿勾/暗红叉, 一眼可辨真假
@@ -965,8 +1001,15 @@ func _fill_cell(cell: DefTableCellClass, pos: Vector2i, tint: Color = Color(1, 1
 				_request_resource_preview(cell, raw)
 		cell.tooltip_text = "%s\n%s\n---\n%s" % [rows[pos.y].resource_path.get_file(), String(columns[pos.x]), tip]
 	else:
+		is_empty = true
 		cell.set_value_text("")
 		cell.tooltip_text = ""
+	# 对齐: 空占位/bool 居中, 数值/枚举右对齐(位数可比), 其余左对齐
+	match cell.kind:
+		DefTableCellClass.Kind.NUMBER, DefTableCellClass.Kind.ENUM:
+			cell.set_content_align(HORIZONTAL_ALIGNMENT_RIGHT if not is_empty else HORIZONTAL_ALIGNMENT_CENTER)
+		_:
+			cell.set_content_align(HORIZONTAL_ALIGNMENT_CENTER if (is_empty or cell.kind == DefTableCellClass.Kind.BOOL) else HORIZONTAL_ALIGNMENT_LEFT)
 
 
 ## 单行文本超列宽时截断加省略号(SubUX 规范: 截断必须带 …, 完整内容由 tooltip 提供)
