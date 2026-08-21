@@ -10,6 +10,9 @@ const DefTableCellClass := preload("res://addons/DEVFramework/DefTable/DefTableC
 const ROW_HEIGHT := 24.0
 const DEFS_BASE := "res://Assets/Def/"
 const MAX_COL_WIDTH := 600.0
+## 单元格内容左右内边距(与 DefTableCell 的 CELL_MARGIN_L/R 一致):
+## 列宽测量/行高测量都减此值得到"渲染可用宽", 保证测量与渲染同一口径
+const CELL_PADDING := 8.0
 
 var editor_interface: Object
 var editor_plugin: EditorPlugin
@@ -61,6 +64,9 @@ var _width_cache: Dictionary = {}
 func _ready() -> void:
 	if editor_interface == null:
 		return
+	# 表头横向滚动由主网格驱动: 隐藏滚动条(SHOW_NEVER), 避免用户单独拖动表头错位;
+	# 不用 DISABLED, 否则 ScrollContainer 的 minimum 会包含子节点总宽, 撑爆整个布局。
+	header_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_SHOW_NEVER
 	hint_label.text = "点击选中 · Ctrl+点击多选 · Shift+点击连选 · Ctrl+C 复制 · Ctrl+V 粘贴"
 	_refresh_dir_list()
 	if _dirs.size() > 0:
@@ -69,6 +75,8 @@ func _ready() -> void:
 	_loaded = true
 	grid_scroll.get_v_scroll_bar().value_changed.connect(_on_v_scroll)
 	grid_scroll.get_h_scroll_bar().value_changed.connect(_on_h_scroll)
+	# 双向锁定: 表头横向滚动由主网格驱动, 反向变化也同步回去, 防止表头独立滚动错位
+	header_scroll.get_h_scroll_bar().value_changed.connect(_on_header_h_scroll)
 	grid_scroll.resized.connect(_update_visible_rows)
 	frozen_grid_scroll.get_v_scroll_bar().value_changed.connect(_on_frozen_v_scroll)
 	# 主网格横向滚动条出现/消失时, 同步冻结列底部高度, 避免 name 列与其它列产生高度差
@@ -499,12 +507,12 @@ func _compute_layout() -> void:
 	for col in columns.size():
 		column_widths.append(90.0)
 
-	var line_height := ROW_HEIGHT
+	var line_height := _measure_line_height()
 	# 第一遍: 表头宽度
 	for col in columns.size():
 		var hw := _measure_text_width(_column_header_text(col), font, fsize)
-		if hw > column_widths[col]:
-			column_widths[col] = hw
+		if hw + CELL_PADDING >= column_widths[col]:
+			column_widths[col] = hw + CELL_PADDING
 
 	var heights: Array[float] = []
 	for r in rows.size():
@@ -516,11 +524,14 @@ func _compute_layout() -> void:
 			var is_bb := _is_bbcode(text)
 			var measure_text := _strip_bbcode(text) if is_bb else text
 			var tw := _measure_text_width(measure_text, font, fsize)
-			if tw > column_widths[col] and column_widths[col] < MAX_COL_WIDTH:
-				column_widths[col] = minf(tw, MAX_COL_WIDTH)
-			# 文本宽度超列宽 或 含 BBCode(图片/换行无法用纯文本宽度预测) -> 按实际宽度测高
-			if tw > column_widths[col] or is_bb:
-				var lh := _measure_bbcode_height(text, column_widths[col] - 8.0)
+			# 列宽扩到能容纳单行文本: 留足 CELL_PADDING 余量,
+			# 使"渲染可用宽(列宽-8)" >= 文本宽, 避免单行内容因边距差意外换行/裁切
+			if tw + CELL_PADDING >= column_widths[col] and column_widths[col] < MAX_COL_WIDTH:
+				column_widths[col] = minf(tw + CELL_PADDING, MAX_COL_WIDTH)
+			# 文本可能换行(接近/超列宽/含BBCode/含显式换行) -> 按实际渲染宽度测高;
+			# 用 >= 覆盖"文本宽恰好=可用宽"的临界换行, 否则漏算行高导致内容被裁切/挤在一起
+			if tw >= column_widths[col] - CELL_PADDING or is_bb or measure_text.contains("\n"):
+				var lh := _measure_bbcode_height(text, column_widths[col] - CELL_PADDING)
 				if lh > row_h:
 					row_h = lh
 		heights.append(row_h)
@@ -532,21 +543,45 @@ func _compute_layout() -> void:
 
 ## 用复用 RichTextLabel(进树 + reset_size 同步测量)计算 BBCode 文本高度
 ## 复用同一实例避免反复 new/free, 提升大数据量布局性能
-func _measure_bbcode_height(text: String, width: float) -> float:
-	if not is_inside_tree():
-		return ROW_HEIGHT * 2
+## 用 get_content_height() 而非 fit_content 的 get_minimum_size():
+##   · fit_content 模式在隐藏控件上测出的最小尺寸异常虚高(短文本也可能返回 90+px)
+##   · 固定宽度 + get_content_height 与单元格实际渲染一致
+## 测量用 RTL 必须与单元格渲染同口径: 清除默认 stylebox 的 32px 内容边距,
+## 否则"测量可用宽 = 列宽-32"而"渲染可用宽 = 列宽", 导致单行文本被误判为需换行/行高虚高。
+func _ensure_measure_rtl() -> RichTextLabel:
 	if not is_instance_valid(_measure_rtl):
 		_measure_rtl = RichTextLabel.new()
 		_measure_rtl.bbcode_enabled = true
-		_measure_rtl.fit_content = true
+		_measure_rtl.fit_content = false
 		_measure_rtl.scroll_active = false
 		_measure_rtl.visible = false
+		# 与 DefTableCell 的 label cell 一致: 空 stylebox, 无内容边距
+		_measure_rtl.add_theme_stylebox_override("normal", StyleBoxEmpty.new())
 		add_child(_measure_rtl)
-	_measure_rtl.custom_minimum_size = Vector2(maxf(width, 50.0), 0)
-	_measure_rtl.text = text
-	_measure_rtl.reset_size()
-	var h := _measure_rtl.get_minimum_size().y
-	return h + 2.0
+	return _measure_rtl
+
+
+func _measure_bbcode_height(text: String, width: float) -> float:
+	if not is_inside_tree():
+		return _measure_line_height()
+	var rtl := _ensure_measure_rtl()
+	rtl.custom_minimum_size = Vector2(maxf(width, 50.0), 0)
+	rtl.size = Vector2(maxf(width, 50.0), 0)
+	rtl.text = text
+	rtl.reset_size()
+	return rtl.get_content_height() + 2.0
+
+
+## 测量当前主题下单行文本实际高度(替代硬编码 ROW_HEIGHT, 适配不同编辑器字号)
+func _measure_line_height() -> float:
+	if not is_inside_tree():
+		return ROW_HEIGHT
+	var rtl := _ensure_measure_rtl()
+	rtl.custom_minimum_size = Vector2(200.0, 0)
+	rtl.size = Vector2(200.0, 0)
+	rtl.text = "Ag"
+	rtl.reset_size()
+	return rtl.get_content_height()
 
 
 ## 粗略检测 BBCode(如 [img]/[color]/[font]), 此类文本不参与行高扩展
@@ -567,14 +602,14 @@ func _strip_bbcode(text: String) -> String:
 	return out
 
 
-## 用纯 Font 测量单行文本宽度(与渲染一致, 无 Label 依赖)
+## 用纯 Font 测量单行文本宽度(纯文本宽, 不含内边距; 调用方自行加 CELL_PADDING)
 ## 按文本缓存结果, 大量重复文本(同列同值)时显著提速
 func _measure_text_width(text: String, font: Font, fsize: int) -> float:
 	if text == "" or font == null:
 		return 0.0
 	if _width_cache.has(text):
 		return _width_cache[text]
-	var w := font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, fsize).x + 20.0
+	var w := font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, fsize).x
 	_width_cache[text] = w
 	return w
 
@@ -621,28 +656,37 @@ func _rebuild_header() -> void:
 	for child in frozen_header_row.get_children().duplicate():
 		frozen_header_row.remove_child(child)
 		child.queue_free()
+	var header_h := _measure_line_height()
+	header_scroll.custom_minimum_size = Vector2(0, header_h)
+	# 冻结表头容器同样跟随实际表头高度
+	var frozen_header_sc := frozen_header_row.get_parent() as ScrollContainer
+	if frozen_header_sc != null:
+		frozen_header_sc.custom_minimum_size = Vector2(0, header_h)
 	# 冻结首列(列 0)不随横向滚动
 	if columns.size() > 0:
 		frozen_header_row.add_child(_make_header_button(0))
-	frozen_header_row.custom_minimum_size = Vector2(column_widths[0] if columns.size() > 0 else 0, ROW_HEIGHT)
+	frozen_header_row.custom_minimum_size = Vector2(column_widths[0] if columns.size() > 0 else 0, header_h)
 	# 可滚动列(列 1..n-1)
 	for col in range(1, columns.size()):
 		header_row.add_child(_make_header_button(col))
-	header_row.custom_minimum_size = Vector2(_scroll_total_width(), ROW_HEIGHT)
+	header_row.custom_minimum_size = Vector2(_scroll_total_width(), header_h)
 
 
 func _make_header_button(col: int) -> Button:
 	var btn := Button.new()
 	btn.flat = true
 	btn.text = _column_header_text(col)
-	btn.custom_minimum_size = Vector2(column_widths[col], ROW_HEIGHT)
+	btn.clip_text = true
+	btn.custom_minimum_size = Vector2(column_widths[col], _measure_line_height())
 	btn.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
 	btn.pressed.connect(_on_header_pressed.bind(col))
 	btn.tooltip_text = String(columns[col])
-	# 表头分隔线
+	# 表头分隔线。去掉主题默认内容边距, 让按钮宽度=列宽,
+	# 避免"列名驱动的窄列"因 Button 自带 padding 比内容列宽, 导致表头与数据错位。
 	var sb := StyleBoxFlat.new()
 	sb.bg_color = Color(0.16, 0.16, 0.18, 0.35)
 	sb.set_border_width_all(0)
+	sb.set_content_margin_all(0)
 	sb.border_width_right = 1
 	sb.border_color = Color(0, 0, 0, 0.25)
 	btn.add_theme_stylebox_override("normal", sb)
@@ -803,7 +847,7 @@ func _display_kind(col: int) -> int:
 
 func _fill_cell(cell: DefTableCellClass, pos: Vector2i, tint: Color = Color(1, 1, 1, 0)) -> void:
 	cell.set_meta(&"cell_pos", pos)
-	cell.custom_minimum_size = Vector2(column_widths[pos.x], grid.row_heights[pos.y] if pos.y < grid.row_heights.size() else ROW_HEIGHT)
+	cell.custom_minimum_size = Vector2(column_widths[pos.x], grid.row_heights[pos.y] if pos.y < grid.row_heights.size() else _measure_line_height())
 	cell.bg_color = Color(1, 1, 1, 0.02) if pos.y % 2 == 0 else Color(0, 0, 0, 0.18)
 	cell.row_tint = tint
 	cell.set_selected(pos in edited_cells)
@@ -989,7 +1033,20 @@ func _on_frozen_v_scroll(v: float) -> void:
 
 
 func _on_h_scroll(v: float) -> void:
+	if _syncing_scroll:
+		return
+	_syncing_scroll = true
 	header_scroll.set_h_scroll(int(v))
+	_syncing_scroll = false
+
+
+## 表头横向滚动反向同步(兜底: 任何表头滚动变化都回到主网格, 保证表头与数据列不错位)
+func _on_header_h_scroll(v: float) -> void:
+	if _syncing_scroll:
+		return
+	_syncing_scroll = true
+	grid_scroll.set_h_scroll(int(v))
+	_syncing_scroll = false
 
 
 ## 同步冻结列底部高度: 主网格显示横向滚动条时, 冻结列底部补等高的占位, 使 name 列与其它列底部对齐

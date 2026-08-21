@@ -12,7 +12,7 @@ extends Control
 ## 显示类型(与列无关的展示类别)
 enum Kind { TEXT, NUMBER, BOOL, COLOR, RESOURCE, ARRAY, DICT, ENUM }
 
-const ROW_HEIGHT := 24.0
+const ROW_HEIGHT := 32.0
 const CELL_MARGIN_L := 4.0
 const CELL_MARGIN_R := 2.0
 const CELL_MARGIN_T := 2.0

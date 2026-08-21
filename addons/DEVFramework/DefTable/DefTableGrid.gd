@@ -86,7 +86,7 @@ func sort_children() -> void:
 		_cached_minimum_size = Vector2(0.0, 0.0)
 		return
 
-	var min_row_h := 24.0
+	var min_row_h := 32.0
 	for child in get_children():
 		if not (child is Control):
 			continue
