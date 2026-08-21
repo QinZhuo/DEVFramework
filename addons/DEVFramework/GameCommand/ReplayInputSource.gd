@@ -1,7 +1,7 @@
 @tool
-class_name ScriptedInputSource extends InputSource
+class_name ReplayInputSource extends InputSource
 
-## 脚本化输入源：按序弹出预录决策（回放/自动化测试用），绝不触碰任何 UI。
+## 回放输入源：按序弹出预录决策（回放/自动化测试用），绝不触碰任何 UI。
 ## 与实战日志的 params 决策段一一对应，保证回放确定性。
 
 var answers: Array = []
@@ -13,7 +13,7 @@ func _init(p_answers: Array = []) -> void:
 
 func take(_request: Dictionary) -> int:
 	if answers.is_empty():
-		push_error("ScriptedInputSource: 输入队列已空，动作与记录不匹配")
+		push_error("ReplayInputSource: 输入队列已空，动作与记录不匹配")
 		return -1
 	var value: int = int(answers.pop_front())
 	journal.append(value)
