@@ -170,7 +170,13 @@ func _build_label_cell() -> void:
 	_content = lb
 
 
-func _set_label_align(align: int) -> void:
+## 设置内容水平对齐(由 View 按列类型调用: 数值右对齐/bool 居中/文本左对齐)
+func set_content_align(align: int) -> void:
+	if kind == Kind.RESOURCE:
+		var rlb := _content.get_node_or_null(NodePath("Label")) as RichTextLabel
+		if rlb:
+			rlb.horizontal_alignment = align
+		return
 	var rtl := _content as RichTextLabel
 	if rtl:
 		rtl.horizontal_alignment = align

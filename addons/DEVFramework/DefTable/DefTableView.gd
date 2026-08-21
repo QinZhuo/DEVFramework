@@ -603,9 +603,9 @@ func _compute_layout() -> void:
 			# 使"渲染可用宽(列宽-8)" >= 文本宽, 避免单行内容因边距差意外换行/裁切
 			if tw + CELL_PADDING >= column_widths[col] and column_widths[col] < MAX_COL_WIDTH:
 				column_widths[col] = minf(tw + CELL_PADDING, MAX_COL_WIDTH)
-			# 文本可能换行(接近/超列宽/含BBCode/含显式换行) -> 按实际渲染宽度测高;
-			# 用 >= 覆盖"文本宽恰好=可用宽"的临界换行, 否则漏算行高导致内容被裁切/挤在一起
-			if tw >= column_widths[col] - CELL_PADDING or is_bb or measure_text.contains("\n"):
+			# 自动行高: 多行内容(显式换行)或 BBCode 富内容按实际渲染高度撑行;
+			# 单行超宽内容由 _ellipsize 截断省略, 不撑行
+			if is_bb or measure_text.contains("\n"):
 				var lh := _measure_bbcode_height(text, column_widths[col] - CELL_PADDING)
 				if lh > row_h:
 					row_h = lh
@@ -750,7 +750,8 @@ func _rebuild_header() -> void:
 func _make_header_button(col: int) -> Button:
 	var btn := Button.new()
 	btn.flat = true
-	btn.text = _column_header_text(col)
+	# 列名超列宽时截断加省略号(tooltip 已有完整列名)
+	btn.text = _ellipsize(_column_header_text(col), col)
 	btn.clip_text = true
 	btn.custom_minimum_size = Vector2(column_widths[col], _measure_line_height())
 	btn.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
@@ -926,14 +927,35 @@ func _fill_cell(cell: DefTableCellClass, pos: Vector2i, tint: Color = Color(1, 1
 	cell.bg_color = Color(1, 1, 1, 0.02) if pos.y % 2 == 0 else Color(0, 0, 0, 0.18)
 	cell.row_tint = tint
 	cell.set_selected(pos in edited_cells)
+	# 按列类型对齐: 数值/枚举右对齐(位数可比), bool 居中, 其余左对齐
+	match cell.kind:
+		DefTableCellClass.Kind.NUMBER, DefTableCellClass.Kind.ENUM:
+			cell.set_content_align(HORIZONTAL_ALIGNMENT_RIGHT)
+		DefTableCellClass.Kind.BOOL:
+			cell.set_content_align(HORIZONTAL_ALIGNMENT_CENTER)
+		_:
+			cell.set_content_align(HORIZONTAL_ALIGNMENT_LEFT)
 	var text := ""
+	var tip := ""
 	if pos.y < rows.size() and pos.x < columns.size():
 		var raw = _get_value(rows[pos.y], pos.x)
 		if cell.kind == DefTableCellClass.Kind.COLOR and raw is Color:
 			cell.set_color_value(raw)
 			text = (raw as Color).to_html(false)
+			tip = text
 		else:
 			text = _to_text(raw, pos.x)
+			tip = text
+			if text == "":
+				# 空值淡灰占位: 区分"空"与"0"(tooltip 仍为原始内容)
+				text = "[color=#6e6e6e]—[/color]"
+			elif cell.kind == DefTableCellClass.Kind.BOOL:
+				# bool 符号化: 绿勾/暗红叉, 一眼可辨真假
+				text = "[color=#7bd88f]✓[/color]" if raw else "[color=#c25555]✗[/color]"
+			else:
+				# 单行内容超宽时截断加省略号(tooltip 保留完整内容);
+				# 多行内容(字典/数组)保留换行, 由 _compute_layout 按实际高度撑高行
+				text = _ellipsize(text, pos.x)
 		cell.set_value_text(text)
 		if cell.kind == DefTableCellClass.Kind.RESOURCE:
 			# 先清除旧预览, 避免复用/重填时残留上一个 Def 的图标
@@ -941,10 +963,29 @@ func _fill_cell(cell: DefTableCellClass, pos: Vector2i, tint: Color = Color(1, 1
 			cell.set_resource_preview(null)
 			if raw is Resource:
 				_request_resource_preview(cell, raw)
-		cell.tooltip_text = "%s\n%s\n---\n%s" % [rows[pos.y].resource_path.get_file(), String(columns[pos.x]), text]
+		cell.tooltip_text = "%s\n%s\n---\n%s" % [rows[pos.y].resource_path.get_file(), String(columns[pos.x]), tip]
 	else:
 		cell.set_value_text("")
 		cell.tooltip_text = ""
+
+
+## 单行文本超列宽时截断加省略号(SubUX 规范: 截断必须带 …, 完整内容由 tooltip 提供)
+## 多行文本(含 \n)不截断, 保留换行由自动行高完整展示
+func _ellipsize(text: String, col: int) -> String:
+	if text == "" or text.contains("\n") or col >= column_widths.size():
+		return text
+	var font := get_theme_font("font", "Label")
+	if font == null:
+		return text
+	var fsize := get_theme_font_size("font", "Label")
+	var avail := column_widths[col] - CELL_PADDING
+	if avail <= 0.0 or font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, fsize).x <= avail:
+		return text
+	while text.length() > 1:
+		text = text.substr(0, text.length() - 1)
+		if font.get_string_size(text + "…", HORIZONTAL_ALIGNMENT_LEFT, -1, fsize).x <= avail:
+			return text + "…"
+	return "…"
 
 
 ## 请求资源预览图(参考 resources_spreadsheet_view 的 cell_editor_resource)
