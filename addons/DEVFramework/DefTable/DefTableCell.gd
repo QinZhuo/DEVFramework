@@ -158,6 +158,9 @@ func _build_label_cell() -> void:
 	var sb := StyleBoxEmpty.new()
 	lb.add_theme_stylebox_override("normal", sb)
 	lb.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	# 单元格内容: 垂直居中 + 水平左对齐(长文本/数字列表时左对齐更易阅读)
+	lb.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+	lb.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	lb.set_anchors_preset(Control.PRESET_FULL_RECT)
 	lb.offset_left = CELL_MARGIN_L
 	lb.offset_right = -CELL_MARGIN_R
@@ -219,6 +222,8 @@ func _build_resource_cell() -> void:
 	lb.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	lb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	lb.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	# 资源单元格文本: 垂直居中 + 水平左对齐
+	lb.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
 	lb.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	box.add_child(lb)
 
