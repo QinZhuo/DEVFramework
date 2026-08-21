@@ -123,6 +123,7 @@ func _refresh_dir_list() -> void:
 	dir_tree.clear()
 	var root := dir_tree.create_item()
 	root.set_text(0, DEFS_BASE.trim_suffix("/").get_file())
+	root.set_icon(0, _folder_icon())
 	# 每个目录路径拆段, 按父子关系挂到 Tree; 节点 metadata 存完整目录路径
 	# _dirs 已按字典序排序, 保证父目录先于子目录处理
 	var parents := {}  # 目录路径 -> TreeItem
@@ -139,10 +140,18 @@ func _refresh_dir_list() -> void:
 				continue
 			var child := item.create_child()
 			child.set_text(0, seg)
+			child.set_icon(0, _folder_icon())
 			child.set_metadata(0, path)
 			parents[path] = child
 			item = child
 	root.collapsed = false
+
+
+## 获取编辑器文件夹图标(与 FileSystem 停靠面板一致的 Folder 图标)
+func _folder_icon() -> Texture2D:
+	if editor_interface == null:
+		return null
+	return editor_interface.get_base_control().get_theme_icon("Folder", "EditorIcons")
 
 
 func _select_first_dir_item() -> TreeItem:
