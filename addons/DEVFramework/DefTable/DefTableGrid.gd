@@ -5,6 +5,10 @@
 class_name DefTableGrid
 extends Container
 
+## 行高最小值: set_row_heights 统一钳制, 偏移/渲染共用同一份 row_heights,
+## 保证摆位与渲染高度一致, 避免单元格溢出到下一行造成重叠
+const MIN_ROW_HEIGHT := 32.0
+
 ## 每列宽度
 var column_widths: Array[float] = []
 ## 总行数
@@ -40,8 +44,13 @@ func configure(widths: Array[float], rows_total: int) -> void:
 
 
 ## 传入预计算的行高, 刷新偏移与滚动范围。
+## 在此统一钳制到 MIN_ROW_HEIGHT, 使 row_heights 与 row_offsets 口径一致
+## (渲染用同一份 row_heights, 不再在 sort_children 里二次钳制)。
 func set_row_heights(heights: Array[float]) -> void:
 	row_heights = heights.duplicate()
+	for i in row_heights.size():
+		if row_heights[i] < MIN_ROW_HEIGHT:
+			row_heights[i] = MIN_ROW_HEIGHT
 	_recompute_offsets()
 	queue_sort()
 
@@ -86,7 +95,6 @@ func sort_children() -> void:
 		_cached_minimum_size = Vector2(0.0, 0.0)
 		return
 
-	var min_row_h := 32.0
 	for child in get_children():
 		if not (child is Control):
 			continue
@@ -96,9 +104,9 @@ func sort_children() -> void:
 		var gi := meta.x - column_offset
 		if meta.y < 0 or meta.y >= total_rows or gi < 0 or gi >= ncols:
 			continue
-		var h := row_heights[meta.y] if meta.y < row_heights.size() else min_row_h
-		if h < min_row_h:
-			h = min_row_h
+		# row_heights 已由 set_row_heights 统一钳制到 MIN_ROW_HEIGHT, 直接使用即可;
+		# 越界行兜底也用同一最小值, 保证偏移与渲染一致
+		var h := row_heights[meta.y] if meta.y < row_heights.size() else MIN_ROW_HEIGHT
 		fit_child_in_rect(c, Rect2(
 			Vector2(column_offsets[gi], row_offsets[meta.y] if meta.y < row_offsets.size() else 0.0),
 			Vector2(column_widths[gi], h)))
