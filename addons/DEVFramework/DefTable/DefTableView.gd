@@ -17,7 +17,7 @@ const CELL_PADDING := 8.0
 var editor_interface: Object
 var editor_plugin: EditorPlugin
 
-@onready var dir_list: ItemList = %DirList
+@onready var dir_tree: Tree = %DirTree
 @onready var refresh_btn: Button = %RefreshBtn
 @onready var count_label: Label = %CountLabel
 @onready var header_scroll: ScrollContainer = %HeaderScroll
@@ -70,8 +70,10 @@ func _ready() -> void:
 	hint_label.text = "点击选中 · Ctrl+点击多选 · Shift+点击连选 · Ctrl+C 复制 · Ctrl+V 粘贴"
 	_refresh_dir_list()
 	if _dirs.size() > 0:
-		dir_list.select(0)
-		_on_dir_selected(0)
+		# 默认选中第一个(最深层目录优先展示, 否则选中根级首个)
+		var first_item := _select_first_dir_item()
+		if first_item != null:
+			_on_dir_selected()
 	_loaded = true
 	grid_scroll.get_v_scroll_bar().value_changed.connect(_on_v_scroll)
 	grid_scroll.get_h_scroll_bar().value_changed.connect(_on_h_scroll)
@@ -86,20 +88,14 @@ func _ready() -> void:
 	if editor_interface != null and editor_interface.get_resource_filesystem() != null:
 		editor_interface.get_resource_filesystem().filesystem_changed.connect(_on_filesystem_changed)
 	refresh_btn.pressed.connect(_on_refresh_pressed)
-	dir_list.item_selected.connect(_on_dir_selected)
+	dir_tree.item_selected.connect(_on_dir_selected)
 	# 用 _shortcut_input 处理快捷键(Ctrl+C/V 在编辑器里可能先被编辑器自身的快捷键消费,
 	# _shortcut_input 比 _unhandled_input 更早触发, 能可靠捕获)
 	set_process_shortcut_input(true)
 	set_process_unhandled_input(true)
 
 
-func _refresh_dir_list() -> void:
-	_dirs = _list_dirs(DEFS_BASE)
-	dir_list.clear()
-	for d in _dirs:
-		dir_list.add_item(d.trim_prefix(DEFS_BASE).trim_suffix("/"))
-
-
+## 递归收集 base 下的所有子目录(含子孙), 返回完整 res:// 路径(带尾部 /)
 func _list_dirs(base: String) -> Array[String]:
 	var out: Array[String] = []
 	var stack: Array[String] = [base]
@@ -121,11 +117,61 @@ func _list_dirs(base: String) -> Array[String]:
 	return out
 
 
-func _on_dir_selected(index: int) -> void:
-	if index < 0 or index >= dir_list.item_count:
+## 刷新左侧目录树: 按 DEFS_BASE 下的目录层级构建 Tree(父目录可折叠, 选中加载整个子树)
+func _refresh_dir_list() -> void:
+	_dirs = _list_dirs(DEFS_BASE)
+	dir_tree.clear()
+	var root := dir_tree.create_item()
+	root.set_text(0, DEFS_BASE.trim_suffix("/").get_file())
+	# 每个目录路径拆段, 按父子关系挂到 Tree; 节点 metadata 存完整目录路径
+	# _dirs 已按字典序排序, 保证父目录先于子目录处理
+	var parents := {}  # 目录路径 -> TreeItem
+	parents[DEFS_BASE] = root
+	for d in _dirs:
+		var rel := d.trim_prefix(DEFS_BASE).trim_suffix("/")
+		var segments := rel.split("/")
+		var item := root
+		var path := DEFS_BASE
+		for seg in segments:
+			path = path.path_join(seg) + "/"
+			if parents.has(path):
+				item = parents[path]
+				continue
+			var child := item.create_child()
+			child.set_text(0, seg)
+			child.set_metadata(0, path)
+			parents[path] = child
+			item = child
+	root.collapsed = false
+
+
+func _select_first_dir_item() -> TreeItem:
+	# 深度优先取第一个带完整路径的目录节点(最深层级优先), 便于默认展示具体分类
+	var found: TreeItem = null
+	var stack: Array = []
+	if dir_tree.get_root() != null:
+		stack.append(dir_tree.get_root())
+	while stack.size() > 0:
+		var item := stack.pop_back() as TreeItem
+		var path: Variant = item.get_metadata(0)
+		if path is String and (path as String).ends_with("/"):
+			item.select(0)
+			item.set_collapsed(false)
+			found = item
+			break
+		for ch in item.get_children():
+			stack.append(ch)
+	return found
+
+
+func _on_dir_selected() -> void:
+	var item := dir_tree.get_selected()
+	if item == null:
 		return
-	var rel: String = dir_list.get_item_text(index)
-	_current_dir = DEFS_BASE + rel
+	var meta: Variant = item.get_metadata(0)
+	if not (meta is String):
+		return
+	_current_dir = meta as String
 	if not _current_dir.ends_with("/"):
 		_current_dir += "/"
 	_load_dir(_current_dir)
@@ -136,7 +182,27 @@ func _on_refresh_pressed() -> void:
 
 
 func _on_filesystem_changed() -> void:
-	if _loaded:
+	if not _loaded:
+		return
+	# 文件系统变化时刷新目录树(新增/删除目录), 并保持当前选中项
+	var prev_path := _current_dir
+	_refresh_dir_list()
+	var found: TreeItem = null
+	var stack: Array = []
+	if dir_tree.get_root() != null:
+		stack.append(dir_tree.get_root())
+	while stack.size() > 0 and found == null:
+		var item := stack.pop_back() as TreeItem
+		var meta: Variant = item.get_metadata(0)
+		if str(meta) == prev_path:
+			found = item
+			break
+		for ch in item.get_children():
+			stack.append(ch)
+	if found != null:
+		found.select(0)
+		_load_dir(prev_path)
+	else:
 		_load_dir(_current_dir)
 
 
