@@ -13,6 +13,8 @@ const MAX_COL_WIDTH := 600.0
 ## 单元格内容左右内边距(与 DefTableCell 的 CELL_MARGIN_L/R 一致):
 ## 列宽测量/行高测量都减此值得到"渲染可用宽", 保证测量与渲染同一口径
 const CELL_PADDING := 8.0
+## 行高垂直余量: 叠加在字体实测高度上, 给文字上下留呼吸感(单行与多行行高共用)
+const ROW_V_PADDING := 8.0
 
 var editor_interface: Object
 var editor_plugin: EditorPlugin
@@ -649,10 +651,11 @@ func _measure_bbcode_height(text: String, width: float) -> float:
 	rtl.size = Vector2(maxf(width, 50.0), 0)
 	rtl.text = text
 	rtl.reset_size()
-	return rtl.get_content_height() + 2.0
+	return rtl.get_content_height() + ROW_V_PADDING
 
 
-## 测量当前主题下单行文本实际高度(替代硬编码 ROW_HEIGHT, 适配不同编辑器字号)
+## 测量当前主题下单行文本实际高度 + 垂直余量(替代硬编码 ROW_HEIGHT, 适配不同编辑器字号;
+## 余量给文字上下留呼吸感, 避免字体撑满行高显得拥挤)
 func _measure_line_height() -> float:
 	if not is_inside_tree():
 		return ROW_HEIGHT
@@ -661,7 +664,7 @@ func _measure_line_height() -> float:
 	rtl.size = Vector2(200.0, 0)
 	rtl.text = "Ag"
 	rtl.reset_size()
-	return rtl.get_content_height()
+	return rtl.get_content_height() + ROW_V_PADDING
 
 
 ## 粗略检测 BBCode(如 [img]/[color]/[font]), 此类文本不参与行高扩展
