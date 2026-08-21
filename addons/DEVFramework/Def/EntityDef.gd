@@ -1,11 +1,6 @@
 @tool
 @abstract class_name EntityDef extends Def
 
-## 中文名
-@export var zh_name: String:
-	get(): return _get_zh(name)
-	set(value): _set_zh(name, value)
-
 @export_multiline var tr_desc: String:
 	get():
 		return get_desc(null)

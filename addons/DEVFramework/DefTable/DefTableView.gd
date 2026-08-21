@@ -1,0 +1,1204 @@
+﻿@tool
+## DefTable 顶部 Main Screen: 按 Def 类型目录加载 Def 资源(.tres),
+## 以只读表格展示, 支持选择/复制/粘贴(批量赋值)/Inspector 联动/排序。
+## 参照 resources_spreadsheet_view 的表格交互, 但去掉单元格内编辑, 只做展示+复制粘贴。
+class_name DefTableView
+extends Control
+
+const DefTableGridClass := preload("res://addons/DEVFramework/DefTable/DefTableGrid.gd")
+const DefTableCellClass := preload("res://addons/DEVFramework/DefTable/DefTableCell.gd")
+const ROW_HEIGHT := 24.0
+const DEFS_BASE := "res://Assets/Def/"
+const MAX_COL_WIDTH := 600.0
+
+var editor_interface: Object
+var editor_plugin: EditorPlugin
+
+@onready var dir_list: ItemList = %DirList
+@onready var refresh_btn: Button = %RefreshBtn
+@onready var count_label: Label = %CountLabel
+@onready var header_scroll: ScrollContainer = %HeaderScroll
+@onready var header_row: HBoxContainer = %HeaderRow
+@onready var grid_scroll: ScrollContainer = %GridScroll
+@onready var grid: Container = %Grid
+@onready var frozen_header_row: HBoxContainer = %FrozenHeaderRow
+@onready var frozen_grid_scroll: ScrollContainer = %FrozenGridScroll
+@onready var frozen_grid: Container = %FrozenGrid
+@onready var frozen_spacer: Control = %FrozenSpacer
+@onready var sel_label: Label = %SelLabel
+@onready var hint_label: Label = %HintLabel
+
+## 当前加载数据
+var rows: Array = []                 # Array[Resource]
+var columns: Array[StringName] = []
+var column_types: Array[int] = []
+var column_hints: Array[int] = []
+var column_hint_strings: Array[PackedStringArray] = []
+var column_writable: Array[bool] = []
+var column_widths: Array[float] = []
+
+## 选中单元格 (单列限制, 同 resources_spreadsheet_view)
+var edited_cells: Array[Vector2i] = []
+
+## 可见行范围(虚拟化)
+var first_row := 0
+var last_row := 0
+
+## 排序
+var sorting_by := &"name"
+var sorting_reverse := false
+
+var _dirs: Array[String] = []
+var _current_dir := ""
+var _loaded := false
+var _syncing_scroll := false
+
+## 测量缓存(性能): 复用单个 RichTextLabel 测 BBCode 高度, 缓存文本宽度
+var _measure_rtl: RichTextLabel
+var _width_cache: Dictionary = {}
+
+
+func _ready() -> void:
+	if editor_interface == null:
+		return
+	hint_label.text = "点击选中 · Ctrl+点击多选 · Shift+点击连选 · Ctrl+C 复制 · Ctrl+V 粘贴"
+	_refresh_dir_list()
+	if _dirs.size() > 0:
+		dir_list.select(0)
+		_on_dir_selected(0)
+	_loaded = true
+	grid_scroll.get_v_scroll_bar().value_changed.connect(_on_v_scroll)
+	grid_scroll.get_h_scroll_bar().value_changed.connect(_on_h_scroll)
+	grid_scroll.resized.connect(_update_visible_rows)
+	frozen_grid_scroll.get_v_scroll_bar().value_changed.connect(_on_frozen_v_scroll)
+	# 主网格横向滚动条出现/消失时, 同步冻结列底部高度, 避免 name 列与其它列产生高度差
+	grid_scroll.get_h_scroll_bar().visibility_changed.connect(_sync_frozen_spacer)
+	grid_scroll.resized.connect(_sync_frozen_spacer)
+	_sync_frozen_spacer()
+	if editor_interface != null and editor_interface.get_resource_filesystem() != null:
+		editor_interface.get_resource_filesystem().filesystem_changed.connect(_on_filesystem_changed)
+	refresh_btn.pressed.connect(_on_refresh_pressed)
+	dir_list.item_selected.connect(_on_dir_selected)
+	# 用 _shortcut_input 处理快捷键(Ctrl+C/V 在编辑器里可能先被编辑器自身的快捷键消费,
+	# _shortcut_input 比 _unhandled_input 更早触发, 能可靠捕获)
+	set_process_shortcut_input(true)
+	set_process_unhandled_input(true)
+
+
+func _refresh_dir_list() -> void:
+	_dirs = _list_dirs(DEFS_BASE)
+	dir_list.clear()
+	for d in _dirs:
+		dir_list.add_item(d.trim_prefix(DEFS_BASE).trim_suffix("/"))
+
+
+func _list_dirs(base: String) -> Array[String]:
+	var out: Array[String] = []
+	var stack: Array[String] = [base]
+	while stack.size() > 0:
+		var dir: String = stack.pop_back()
+		var d := DirAccess.open(dir)
+		if d == null:
+			continue
+		d.list_dir_begin()
+		var f := d.get_next()
+		while f != "":
+			if d.current_is_dir() and not f.begins_with("."):
+				var sub := dir.path_join(f)
+				out.append(sub + "/")
+				stack.append(sub + "/")
+			f = d.get_next()
+		d.list_dir_end()
+	out.sort()
+	return out
+
+
+func _on_dir_selected(index: int) -> void:
+	if index < 0 or index >= dir_list.item_count:
+		return
+	var rel: String = dir_list.get_item_text(index)
+	_current_dir = DEFS_BASE + rel
+	if not _current_dir.ends_with("/"):
+		_current_dir += "/"
+	_load_dir(_current_dir)
+
+
+func _on_refresh_pressed() -> void:
+	_load_dir(_current_dir)
+
+
+func _on_filesystem_changed() -> void:
+	if _loaded:
+		_load_dir(_current_dir)
+
+
+func _load_dir(path: String) -> void:
+	if path == "":
+		return
+	var all_tres := _collect_tres_recursive(path)
+	var loaded: Array[Resource] = []
+	for p in all_tres:
+		if ResourceLoader.exists(p):
+			var res: Resource = load(p)
+			if res != null and _is_def(res):
+				loaded.append(res)
+	rows = loaded
+	_build_columns()
+	_sort_rows()
+	# 目录/列结构变化时清空旧单元格, 避免复用旧列类型的 cell 导致类型错位
+	_clear_grid_cells()
+	_clear_measure_cache()
+	_compute_layout()
+	_rebuild_header()
+	_update_visible_rows(true)
+	count_label.text = "共 %d 个 Def" % rows.size()
+	sel_label.text = "未选中"
+	edited_cells.clear()
+
+
+## 清空网格中所有单元格节点(目录切换/列结构变化时调用)
+func _clear_grid_cells() -> void:
+	for child in grid.get_children().duplicate():
+		grid.remove_child(child)
+		child.queue_free()
+	for child in frozen_grid.get_children().duplicate():
+		frozen_grid.remove_child(child)
+		child.queue_free()
+	first_row = 0
+	last_row = 0
+
+
+func _collect_tres_recursive(path: String) -> PackedStringArray:
+	var out := PackedStringArray()
+	var stack: Array[String] = [path]
+	while stack.size() > 0:
+		var dir: String = stack.pop_back()
+		var d := DirAccess.open(dir)
+		if d == null:
+			continue
+		d.list_dir_begin()
+		var f := d.get_next()
+		while f != "":
+			if d.current_is_dir() and not f.begins_with("."):
+				stack.append(dir.path_join(f) + "/")
+			elif f.ends_with(".tres") or f.ends_with(".res"):
+				out.append(dir.path_join(f))
+			f = d.get_next()
+		d.list_dir_end()
+	return out
+
+
+func _is_def(res: Resource) -> bool:
+	var script: Script = res.get_script()
+	if script == null:
+		return false
+	if res is Def:
+		return true
+	return script.resource_path.begins_with("res://") and script.get_global_name().ends_with("Def")
+
+
+func _build_columns() -> void:
+	columns.clear()
+	column_types.clear()
+	column_hints.clear()
+	column_hint_strings.clear()
+	column_writable.clear()
+
+	var seen := {&"name": true}
+
+	# 固定列: name(Def 名) —— 不显示 resource_path, 名字即可
+	columns.append(&"name")
+	column_types.append(TYPE_STRING)
+	column_hints.append(PROPERTY_HINT_NONE)
+	column_hint_strings.append(PackedStringArray())
+	column_writable.append(false)
+
+	# 固定列: tr_name(翻译名) —— 紧跟 name 之后
+	seen[&"tr_name"] = true
+	columns.append(&"tr_name")
+	column_types.append(TYPE_STRING)
+	column_hints.append(PROPERTY_HINT_NONE)
+	column_hint_strings.append(PackedStringArray())
+	column_writable.append(false)
+
+	# 其余导出属性取并集(保持 get_property_list 默认顺序), 来自多个脚本时兼容
+	for res in rows:
+		for p in res.get_property_list():
+			if not can_display_property(p):
+				continue
+			var pname: StringName = p["name"]
+			if seen.has(pname):
+				continue
+			seen[pname] = true
+			columns.append(pname)
+			column_types.append(p["type"])
+			column_hints.append(p["hint"])
+			column_hint_strings.append(str(p["hint_string"]).split(","))
+			column_writable.append(bool(p["usage"] & PROPERTY_USAGE_READ_ONLY) == false)
+
+
+func can_display_property(p: Dictionary) -> bool:
+	var pname: String = p["name"]
+	var ptype: int = p["type"]
+	if ptype == TYPE_CALLABLE or ptype == TYPE_SIGNAL:
+		return false
+	if int(p["usage"]) & PROPERTY_USAGE_EDITOR == 0:
+		return false
+	if pname == "script" or pname == "resource_local_to_scene" or pname == "resource_scene_unique_id":
+		return false
+	if pname == "resource_path" or pname == "resource_name" or pname.begins_with("metadata"):
+		return false
+	return true
+
+
+func _is_derived_col(col: int) -> bool:
+	return col < 1
+
+
+func _get_value(res: Resource, col: int) -> Variant:
+	if col == 0:
+		return res.get("name") if "name" in res else res.resource_path.get_file().get_basename()
+	var pname: StringName = columns[col]
+	return res.get(pname)
+
+
+func _to_text(value, col: int) -> String:
+	if value == null:
+		return ""
+	match column_types[col]:
+		TYPE_STRING:
+			return str(value)
+		TYPE_INT, TYPE_FLOAT:
+			return str(value)
+		TYPE_BOOL:
+			return "true" if value else "false"
+		TYPE_COLOR:
+			return (value as Color).to_html(false)
+		TYPE_OBJECT:
+			if value is Resource:
+				return _resource_display_text(value)
+			return str(value)
+		TYPE_ARRAY:
+			var parts := PackedStringArray()
+			for item in value:
+				parts.append(_array_item_name(item))
+			return "、".join(parts)
+		TYPE_DICTIONARY:
+			var dstr := var_to_str(value)
+			return dstr if dstr.length() <= 40 else "%s…" % dstr.substr(0, 40)
+		TYPE_PACKED_STRING_ARRAY, TYPE_PACKED_BYTE_ARRAY, TYPE_PACKED_INT32_ARRAY, TYPE_PACKED_INT64_ARRAY, TYPE_PACKED_FLOAT32_ARRAY, TYPE_PACKED_FLOAT64_ARRAY:
+			return _packed_array_to_text(value)
+		TYPE_NIL:
+			return ""
+		_:
+			if column_hints[col] == PROPERTY_HINT_ENUM:
+				var opts := column_hint_strings[col]
+				if value is int and value >= 0 and value < opts.size():
+					return opts[value]
+			return str(value)
+
+
+## 打包数组转展示文本(PackedStringArray 等)
+func _packed_array_to_text(value) -> String:
+	var items: Array = []
+	for item in value:
+		items.append(_array_item_name(item))
+	return "、".join(items)
+
+
+func _array_item_name(item) -> String:
+	if item is Resource:
+		return _resource_display_text(item)
+	return str(item)
+
+
+## 资源引用显示 tostring 内容; 若未重写 _to_string 则回退到文件名
+func _resource_display_text(value: Resource) -> String:
+	var s := str(value)
+	# 重写了 _to_string 的资源返回自定义文本(不含 res:// 路径标记)
+	if not s.begins_with("res://") and not s.contains("(res://") and not s.contains(":<"):
+		return s
+	if value.resource_path != "":
+		return value.resource_path.get_file().get_basename()
+	return s
+
+
+## 解析粘贴文本为列值。返回 {ok: bool, value: Variant, error: String}
+## 校验类型并给出具体错误(如"期望 int, 得到 'abc'"), 失败时 ok=false 且 value 无效
+func _from_text(text: String, col: int) -> Dictionary:
+	var type_name := _type_display_name(column_types[col])
+	if text == "":
+		return {"ok": true, "value": null, "error": ""}
+	match column_types[col]:
+		TYPE_STRING:
+			var v = str_to_var(text)
+			return _ok(v if v != null else text)
+		TYPE_INT:
+			if column_hints[col] == PROPERTY_HINT_ENUM:
+				var opts := column_hint_strings[col]
+				var idx := opts.find(text)
+				if idx >= 0:
+					return _ok(idx)
+				if text.is_valid_int():
+					return _ok(text.to_int())
+				return _err("期望枚举 %s, 得到 '%s'" % [type_name, text])
+			if text.is_valid_int():
+				return _ok(text.to_int())
+			var iv = str_to_var(text)
+			if iv is int:
+				return _ok(iv)
+			return _err("期望 int, 得到 '%s'" % text)
+		TYPE_FLOAT:
+			if text.is_valid_float():
+				return _ok(text.to_float())
+			var fv = str_to_var(text)
+			if fv is float:
+				return _ok(fv)
+			return _err("期望 float, 得到 '%s'" % text)
+		TYPE_BOOL:
+			var bv = str_to_var(text)
+			if bv is bool:
+				return _ok(bv)
+			if text == "true" or text == "1" or text.to_lower() == "yes":
+				return _ok(true)
+			if text == "false" or text == "0" or text.to_lower() == "no":
+				return _ok(false)
+			return _err("期望 bool(true/false/1/0), 得到 '%s'" % text)
+		TYPE_COLOR:
+			var cv = str_to_var(text)
+			if cv is Color:
+				return _ok(cv)
+			var c = Color.from_string(text, Color(-1, -1, -1, -1))
+			if c.a >= 0.0:
+				return _ok(c)
+			return _err("期望颜色(如 #ff0000), 得到 '%s'" % text)
+		TYPE_OBJECT:
+			if text.begins_with("res://") and ResourceLoader.exists(text):
+				return _ok(load(text))
+			return _err("期望资源路径(res://), 得到 '%s'" % text)
+		TYPE_ARRAY, TYPE_PACKED_STRING_ARRAY, TYPE_PACKED_BYTE_ARRAY, TYPE_PACKED_INT32_ARRAY, TYPE_PACKED_INT64_ARRAY, TYPE_PACKED_FLOAT32_ARRAY, TYPE_PACKED_FLOAT64_ARRAY:
+			# 数组: 优先按 _cell_copy_text 的 JSON 格式还原(含资源路径), 兼容 var_to_str 的手写格式
+			var parsed = JSON.parse_string(text)
+			if parsed is Array:
+				return _ok(_jsonable_to_value(parsed))
+			return _err("期望数组(JSON), 得到 '%s'" % text)
+		TYPE_DICTIONARY:
+			var parsed_dict = JSON.parse_string(text)
+			if parsed_dict is Dictionary:
+				return _ok(_jsonable_to_value(parsed_dict))
+			var sv = str_to_var(text)
+			if sv is Dictionary:
+				return _ok(sv)
+			return _err("期望字典(JSON), 得到 '%s'" % text)
+		_:
+			return _ok(str_to_var(text))
+
+
+func _ok(value) -> Dictionary:
+	return {"ok": true, "value": value, "error": ""}
+
+
+func _err(msg: String) -> Dictionary:
+	return {"ok": false, "value": null, "error": msg}
+
+
+func _type_display_name(t: int) -> String:
+	match t:
+		TYPE_STRING: return "string"
+		TYPE_INT: return "int"
+		TYPE_FLOAT: return "float"
+		TYPE_BOOL: return "bool"
+		TYPE_COLOR: return "color"
+		TYPE_OBJECT: return "resource"
+		TYPE_ARRAY: return "array"
+		TYPE_DICTIONARY: return "dictionary"
+		_:
+			return "value"
+
+
+## 将序列化的 JSON 值还原为实际值(资源路径 -> load, 数组/字典递归)
+func _jsonable_to_value(v) -> Variant:
+	if v is Dictionary and v.has("__res"):
+		var p = v["__res"]
+		if p is String and ResourceLoader.exists(p):
+			return load(p)
+		return null
+	if v is Array:
+		var arr := []
+		for e in v:
+			arr.append(_jsonable_to_value(e))
+		return arr
+	if v is Dictionary:
+		var d := {}
+		for k in v:
+			d[k] = _jsonable_to_value(v[k])
+		return d
+	return v
+
+
+## 将实际值转为可 JSON 序列化的形式(资源 -> {__res: 路径}, 数组/字典递归)
+func _value_to_jsonable(v) -> Variant:
+	if v is Resource:
+		return {"__res": v.resource_path}
+	if v is Array:
+		var arr := []
+		for e in v:
+			arr.append(_value_to_jsonable(e))
+		return arr
+	if v is Dictionary:
+		var d := {}
+		for k in v:
+			d[k] = _value_to_jsonable(v[k])
+		return d
+	if v is PackedByteArray or v is PackedInt32Array or v is PackedInt64Array or v is PackedFloat32Array or v is PackedFloat64Array or v is PackedStringArray:
+		var arr2 := []
+		for e in v:
+			arr2.append(_value_to_jsonable(e))
+		return arr2
+	return v
+
+
+func _sort_rows() -> void:
+	var sort_col := columns.find(sorting_by)
+	if sort_col < 0:
+		sort_col = 0
+	var sort_val: Callable = func(a: Resource, b: Resource) -> bool:
+		var va = _get_value(a, sort_col)
+		var vb = _get_value(b, sort_col)
+		return _compare_values(va, vb)
+	rows.sort_custom(sort_val)
+	if sorting_reverse:
+		rows.reverse()
+
+
+func _compare_values(a, b) -> bool:
+	if a == null and b == null:
+		return false
+	if a == null:
+		return true
+	if b == null:
+		return false
+	if (a is int or a is float) and (b is int or b is float):
+		return a < b
+	if a is Color and b is Color:
+		return a.h < b.h if a.h != b.h else a.v < b.v
+	if a is Resource and b is Resource:
+		return a.resource_path < b.resource_path
+	return str(a).filenocasecmp_to(str(b)) < 0
+
+
+## 计算列宽 + 行高 (单次遍历, 缓存文本测量结果)
+## 参考 jospic/dynamicdatatable: 列宽 = 全量遍历 font.get_string_size 取最大值;
+## 参考 don-tnowe: 行高 = 内容驱动(超长文本换行后扩展)。
+func _compute_layout() -> void:
+	var font := get_theme_font("font", "Label")
+	var fsize := get_theme_font_size("font", "Label")
+	if font == null:
+		font = ThemeDB.fallback_font
+	column_widths.clear()
+	for col in columns.size():
+		column_widths.append(90.0)
+
+	var line_height := ROW_HEIGHT
+	# 第一遍: 表头宽度
+	for col in columns.size():
+		var hw := _measure_text_width(_column_header_text(col), font, fsize)
+		if hw > column_widths[col]:
+			column_widths[col] = hw
+
+	var heights: Array[float] = []
+	for r in rows.size():
+		var row_h := line_height
+		for col in columns.size():
+			var text := _to_text(_get_value(rows[r], col), col)
+			if text == "":
+				continue
+			var is_bb := _is_bbcode(text)
+			var measure_text := _strip_bbcode(text) if is_bb else text
+			var tw := _measure_text_width(measure_text, font, fsize)
+			if tw > column_widths[col] and column_widths[col] < MAX_COL_WIDTH:
+				column_widths[col] = minf(tw, MAX_COL_WIDTH)
+			# 文本宽度超列宽 或 含 BBCode(图片/换行无法用纯文本宽度预测) -> 按实际宽度测高
+			if tw > column_widths[col] or is_bb:
+				var lh := _measure_bbcode_height(text, column_widths[col] - 8.0)
+				if lh > row_h:
+					row_h = lh
+		heights.append(row_h)
+	grid.set_row_heights(heights)
+	frozen_grid.set_row_heights(heights)
+	# 冻结首列宽度跟随 name 列
+	frozen_grid.custom_minimum_size = Vector2(column_widths[0], 0)
+
+
+## 用复用 RichTextLabel(进树 + reset_size 同步测量)计算 BBCode 文本高度
+## 复用同一实例避免反复 new/free, 提升大数据量布局性能
+func _measure_bbcode_height(text: String, width: float) -> float:
+	if not is_inside_tree():
+		return ROW_HEIGHT * 2
+	if not is_instance_valid(_measure_rtl):
+		_measure_rtl = RichTextLabel.new()
+		_measure_rtl.bbcode_enabled = true
+		_measure_rtl.fit_content = true
+		_measure_rtl.scroll_active = false
+		_measure_rtl.visible = false
+		add_child(_measure_rtl)
+	_measure_rtl.custom_minimum_size = Vector2(maxf(width, 50.0), 0)
+	_measure_rtl.text = text
+	_measure_rtl.reset_size()
+	var h := _measure_rtl.get_minimum_size().y
+	return h + 2.0
+
+
+## 粗略检测 BBCode(如 [img]/[color]/[font]), 此类文本不参与行高扩展
+func _is_bbcode(text: String) -> bool:
+	return text.contains("[img]") or text.contains("[color") or text.contains("[font") or text.contains("[icon")
+
+
+## 去除 BBCode 标签, 保留纯文本内容(含 [img]..[/img] 与带参标签整体移除)
+func _strip_bbcode(text: String) -> String:
+	var out := text
+	var re := RegEx.new()
+	# [img]路径[/img] 整体移除
+	re.compile("\\[img[^\\]]*\\][^\\[]*\\[/img\\]")
+	out = re.sub(out, "", true)
+	# 任意 [tag=值] 或 [tag] 标签对
+	re.compile("\\[[^\\]]+\\]")
+	out = re.sub(out, "", true)
+	return out
+
+
+## 用纯 Font 测量单行文本宽度(与渲染一致, 无 Label 依赖)
+## 按文本缓存结果, 大量重复文本(同列同值)时显著提速
+func _measure_text_width(text: String, font: Font, fsize: int) -> float:
+	if text == "" or font == null:
+		return 0.0
+	if _width_cache.has(text):
+		return _width_cache[text]
+	var w := font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, fsize).x + 20.0
+	_width_cache[text] = w
+	return w
+
+
+func _clear_measure_cache() -> void:
+	_width_cache.clear()
+
+
+## 用 TextServer 计算文本在给定宽度下的换行行数(与 Label autowrap 一致)
+func _count_wrap_lines(text: String, width: float) -> int:
+	if text == "" or width <= 0.0:
+		return 1
+	var font := get_theme_font("font", "Label")
+	var fsize := get_theme_font_size("font", "Label")
+	if font == null:
+		return 1
+	var ts := TextServerManager.get_primary_interface()
+	var shaped := ts.create_shaped_text()
+	if shaped == RID():
+		return 1
+	var font_rids := font.get_rids()
+	var font_rid := font_rids[0] if font_rids.size() > 0 else RID()
+	if font_rid == RID():
+		ts.free_rid(shaped)
+		return 1
+	ts.shaped_text_add_string(shaped, text, [font_rid], fsize)
+	ts.shaped_text_shape(shaped)
+	var breaks := ts.shaped_text_get_line_breaks(shaped, width)
+	ts.free_rid(shaped)
+	return breaks.size() if breaks.size() > 0 else 1
+
+
+func _column_header_text(col: int) -> String:
+	var text := String(columns[col])
+	if sorting_by == columns[col]:
+		text += " ▲" if not sorting_reverse else " ▼"
+	return text
+
+
+func _rebuild_header() -> void:
+	for child in header_row.get_children().duplicate():
+		header_row.remove_child(child)
+		child.queue_free()
+	for child in frozen_header_row.get_children().duplicate():
+		frozen_header_row.remove_child(child)
+		child.queue_free()
+	# 冻结首列(列 0)不随横向滚动
+	if columns.size() > 0:
+		frozen_header_row.add_child(_make_header_button(0))
+	frozen_header_row.custom_minimum_size = Vector2(column_widths[0] if columns.size() > 0 else 0, ROW_HEIGHT)
+	# 可滚动列(列 1..n-1)
+	for col in range(1, columns.size()):
+		header_row.add_child(_make_header_button(col))
+	header_row.custom_minimum_size = Vector2(_scroll_total_width(), ROW_HEIGHT)
+
+
+func _make_header_button(col: int) -> Button:
+	var btn := Button.new()
+	btn.flat = true
+	btn.text = _column_header_text(col)
+	btn.custom_minimum_size = Vector2(column_widths[col], ROW_HEIGHT)
+	btn.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
+	btn.pressed.connect(_on_header_pressed.bind(col))
+	btn.tooltip_text = String(columns[col])
+	# 表头分隔线
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(0.16, 0.16, 0.18, 0.35)
+	sb.set_border_width_all(0)
+	sb.border_width_right = 1
+	sb.border_color = Color(0, 0, 0, 0.25)
+	btn.add_theme_stylebox_override("normal", sb)
+	var sbh := sb.duplicate() as StyleBoxFlat
+	sbh.bg_color = Color(0.25, 0.28, 0.32, 0.5)
+	btn.add_theme_stylebox_override("hover", sbh)
+	var sbp := sb.duplicate() as StyleBoxFlat
+	sbp.bg_color = Color(0.3, 0.33, 0.38, 0.6)
+	btn.add_theme_stylebox_override("pressed", sbp)
+	return btn
+
+
+func _scroll_total_width() -> float:
+	var w := 0.0
+	for col in range(1, columns.size()):
+		w += column_widths[col]
+	return w
+
+
+func _on_header_pressed(col: int) -> void:
+	var col_name: StringName = columns[col]
+	if sorting_by == col_name:
+		sorting_reverse = not sorting_reverse
+	else:
+		sorting_by = col_name
+		sorting_reverse = false
+	_sort_rows()
+	_update_header_arrows()
+	_update_visible_rows(true)
+
+
+func _update_header_arrows() -> void:
+	if frozen_header_row.get_child_count() > 0:
+		var fb := frozen_header_row.get_child(0) as Button
+		if fb != null:
+			fb.text = _column_header_text(0)
+	for col in header_row.get_child_count():
+		var btn := header_row.get_child(col) as Button
+		if btn != null:
+			btn.text = _column_header_text(col + 1)
+
+
+## 可滚动列(列 1..n-1)的宽度数组, 供 scroll grid 布局
+func _scroll_column_widths() -> Array[float]:
+	var w: Array[float] = []
+	for col in range(1, columns.size()):
+		w.append(column_widths[col])
+	return w
+
+
+func _update_visible_rows(force_rebuild: bool = false) -> void:
+	if columns.size() == 0 or rows.size() == 0:
+		for child in grid.get_children():
+			child.queue_free()
+		for child in frozen_grid.get_children():
+			child.queue_free()
+		var scroll_w: Array[float] = _scroll_column_widths()
+		grid.configure(scroll_w, 0)
+		var fw: Array[float] = [column_widths[0]] if columns.size() > 0 else []
+		frozen_grid.configure(fw, 0)
+		return
+
+	var view_h := maxf(grid_scroll.size.y, 1.0)
+	var new_first: int = grid.row_index_at(grid_scroll.scroll_vertical)
+	var vis_count := 0
+	var acc := grid_scroll.scroll_vertical
+	while new_first + vis_count < rows.size() and acc < grid_scroll.scroll_vertical + view_h:
+		acc += grid.row_heights[new_first + vis_count]
+		vis_count += 1
+	var new_last := mini(new_first + vis_count + 1, rows.size())
+	if not force_rebuild and new_first == first_row and new_last == last_row:
+		return
+
+	first_row = new_first
+	last_row = new_last
+
+	# 可滚动网格: 列 1..n-1 (cell_pos.x 为全局列索引, 布局时减去 column_offset=1)
+	var scroll_cols := columns.size() - 1
+	grid.column_offset = 1
+	grid.configure(_scroll_column_widths(), rows.size())
+	var visible_count := (last_row - first_row) * scroll_cols
+	while grid.get_child_count() > visible_count:
+		var last := grid.get_child(grid.get_child_count() - 1)
+		grid.remove_child(last)
+		last.queue_free()
+	while grid.get_child_count() < visible_count:
+		var i := grid.get_child_count()
+		var pos := Vector2i(1 + i % scroll_cols, first_row + i / scroll_cols)
+		grid.add_child(_make_cell(pos))
+
+	for i in visible_count:
+		var cell := grid.get_child(i) as DefTableCellClass
+		var pos := Vector2i(1 + i % scroll_cols, first_row + i / scroll_cols)
+		cell.custom_minimum_size = Vector2(column_widths[pos.x], grid.row_heights[pos.y])
+		# 颜色行染色: 颜色列的值染色其右侧单元格背景(参考 resources_spreadsheet_view)
+		var tint := _row_tint_color(pos.y)
+		_fill_cell(cell, pos, tint)
+	grid.queue_sort()
+
+	# 冻结网格: 列 0 (首列 name), 不随横向滚动, 纵向与主网格同步
+	var frozen_widths: Array[float] = [column_widths[0]]
+	frozen_grid.column_offset = 0
+	frozen_grid.configure(frozen_widths, rows.size())
+	var frozen_count := last_row - first_row
+	while frozen_grid.get_child_count() > frozen_count:
+		var fl := frozen_grid.get_child(frozen_grid.get_child_count() - 1)
+		frozen_grid.remove_child(fl)
+		fl.queue_free()
+	while frozen_grid.get_child_count() < frozen_count:
+		var fi := frozen_grid.get_child_count()
+		frozen_grid.add_child(_make_cell(Vector2i(0, first_row + fi)))
+	for fi in frozen_count:
+		var fcell := frozen_grid.get_child(fi) as DefTableCellClass
+		var fpos := Vector2i(0, first_row + fi)
+		fcell.custom_minimum_size = Vector2(column_widths[0], frozen_grid.row_heights[fpos.y])
+		var ftint := _row_tint_color(fpos.y)
+		_fill_cell(fcell, fpos, ftint)
+	frozen_grid.queue_sort()
+
+	_update_selection_visuals()
+
+
+## 计算行的染色颜色(默认关闭整行染色, 保持清晰斑马纹; 颜色值已由色块单元格展示)
+func _row_tint_color(row: int) -> Color:
+	return Color(1, 1, 1, 0)
+
+
+func _make_cell(pos: Vector2i) -> DefTableCellClass:
+	var kind := _display_kind(pos.x)
+	var cell := DefTableCellClass.make_cell(kind)
+	cell.custom_minimum_size = Vector2(column_widths[pos.x], 0)
+	cell.set_meta(&"cell_pos", pos)
+	cell.gui_input.connect(_on_cell_gui_input.bind(cell))
+	return cell
+
+
+## 列 -> 显示类型(参考 resources_spreadsheet_view 的类型化单元格)
+func _display_kind(col: int) -> int:
+	if col < 1:
+		return DefTableCellClass.Kind.TEXT
+	match column_types[col]:
+		TYPE_COLOR:
+			return DefTableCellClass.Kind.COLOR
+		TYPE_OBJECT:
+			return DefTableCellClass.Kind.RESOURCE
+		TYPE_INT, TYPE_FLOAT:
+			if column_hints[col] == PROPERTY_HINT_ENUM:
+				return DefTableCellClass.Kind.ENUM
+			return DefTableCellClass.Kind.NUMBER
+		TYPE_BOOL:
+			return DefTableCellClass.Kind.BOOL
+		TYPE_ARRAY:
+			return DefTableCellClass.Kind.ARRAY
+		TYPE_DICTIONARY:
+			return DefTableCellClass.Kind.DICT
+	return DefTableCellClass.Kind.TEXT
+
+
+func _fill_cell(cell: DefTableCellClass, pos: Vector2i, tint: Color = Color(1, 1, 1, 0)) -> void:
+	cell.set_meta(&"cell_pos", pos)
+	cell.custom_minimum_size = Vector2(column_widths[pos.x], grid.row_heights[pos.y] if pos.y < grid.row_heights.size() else ROW_HEIGHT)
+	cell.bg_color = Color(1, 1, 1, 0.02) if pos.y % 2 == 0 else Color(0, 0, 0, 0.18)
+	cell.row_tint = tint
+	cell.set_selected(pos in edited_cells)
+	var text := ""
+	if pos.y < rows.size() and pos.x < columns.size():
+		var raw = _get_value(rows[pos.y], pos.x)
+		if cell.kind == DefTableCellClass.Kind.COLOR and raw is Color:
+			cell.set_color_value(raw)
+			text = (raw as Color).to_html(false)
+		else:
+			text = _to_text(raw, pos.x)
+		cell.set_value_text(text)
+		if cell.kind == DefTableCellClass.Kind.RESOURCE:
+			# 先清除旧预览, 避免复用/重填时残留上一个 Def 的图标
+			cell.set_meta(&"preview_path", "")
+			cell.set_resource_preview(null)
+			if raw is Resource:
+				_request_resource_preview(cell, raw)
+		cell.tooltip_text = "%s\n%s\n---\n%s" % [rows[pos.y].resource_path.get_file(), String(columns[pos.x]), text]
+	else:
+		cell.set_value_text("")
+		cell.tooltip_text = ""
+
+
+## 请求资源预览图(参考 resources_spreadsheet_view 的 cell_editor_resource)
+func _request_resource_preview(cell: DefTableCellClass, res: Resource) -> void:
+	if res is Texture2D:
+		cell.set_meta(&"preview_path", res.resource_path)
+		cell.set_resource_preview(res)
+		return
+	if editor_interface == null or editor_interface.get_resource_previewer() == null:
+		return
+	if res.resource_path == "":
+		return
+	cell.set_meta(&"preview_path", res.resource_path)
+	editor_interface.get_resource_previewer().queue_resource_preview(
+		res.resource_path, self, &"_on_preview_loaded", cell)
+
+
+func _on_preview_loaded(path: String, preview: Texture2D, thumbnail: Texture2D, cell) -> void:
+	if cell == null or not is_instance_valid(cell):
+		return
+	var target := cell as DefTableCellClass
+	if target == null:
+		return
+	# 校验异步回调的路径与单元格当前内容一致, 拒绝虚拟化复用后残留的过期回调
+	if String(target.get_meta(&"preview_path", "")) != path:
+		return
+	target.set_resource_preview(preview)
+
+
+func _on_cell_gui_input(event: InputEvent, cell: Control) -> void:
+	if not (event is InputEventMouseButton):
+		return
+	if event.button_index != MOUSE_BUTTON_LEFT:
+		return
+	var pos: Vector2i = cell.get_meta(&"cell_pos")
+	if event.pressed:
+		if event.is_command_or_control_pressed():
+			_toggle_cell(pos)
+		elif Input.is_key_pressed(KEY_SHIFT):
+			_select_cells_to(pos)
+		else:
+			_deselect_all()
+			_select_cell(pos)
+		_update_sel_label()
+		# Inspector 联动
+		if pos.y < rows.size() and editor_interface != null:
+			editor_interface.edit_resource(rows[pos.y])
+
+
+## 定向更新单个单元格选中态(仅当该单元格当前可见), 替代全量遍历
+func _set_cell_selected(cell_pos: Vector2i, selected: bool) -> void:
+	var node := _get_cell_node(cell_pos)
+	if node != null:
+		node.set_selected(selected)
+
+
+## 定位单元格节点(冻结列或滚动网格), 不可见返回 null
+func _get_cell_node(cell_pos: Vector2i) -> DefTableCellClass:
+	var is_frozen := cell_pos.x == 0
+	var target := frozen_grid if is_frozen else grid
+	var cols := 1 if is_frozen else maxi(columns.size() - 1, 1)
+	var row_in_view := cell_pos.y - first_row
+	if row_in_view < 0 or row_in_view >= (last_row - first_row):
+		return null
+	var idx := row_in_view * cols + (0 if is_frozen else cell_pos.x - 1)
+	if idx >= 0 and idx < target.get_child_count():
+		return target.get_child(idx) as DefTableCellClass
+	return null
+
+
+func _deselect_all() -> void:
+	for c in edited_cells:
+		_set_cell_selected(c, false)
+	edited_cells.clear()
+
+
+func _select_cell(pos: Vector2i) -> void:
+	if edited_cells.size() > 0 and edited_cells[0].x != pos.x:
+		_deselect_all()
+	if pos not in edited_cells:
+		edited_cells.append(pos)
+		_set_cell_selected(pos, true)
+	_update_sel_label()
+
+
+func _toggle_cell(pos: Vector2i) -> void:
+	if edited_cells.size() > 0 and edited_cells[0].x != pos.x:
+		_deselect_all()
+	if pos in edited_cells:
+		edited_cells.erase(pos)
+		_set_cell_selected(pos, false)
+	else:
+		edited_cells.append(pos)
+		_set_cell_selected(pos, true)
+	_update_sel_label()
+
+
+func _select_cells_to(pos: Vector2i) -> void:
+	if edited_cells.size() == 0:
+		edited_cells.append(pos)
+		_set_cell_selected(pos, true)
+		_update_sel_label()
+		return
+	var col := edited_cells[0].x
+	if col != pos.x:
+		return
+	var last_row_idx := edited_cells[-1].y
+	var lo := mini(last_row_idx, pos.y)
+	var hi := maxi(last_row_idx, pos.y)
+	for r in range(lo, hi + 1):
+		var c := Vector2i(col, r)
+		if c not in edited_cells:
+			edited_cells.append(c)
+			_set_cell_selected(c, true)
+	_update_sel_label()
+
+
+func _update_selection_visuals() -> void:
+	for child in grid.get_children():
+		var cell := child as DefTableCellClass
+		if cell == null:
+			continue
+		var pos: Vector2i = cell.get_meta(&"cell_pos")
+		cell.set_selected(pos in edited_cells)
+	for child in frozen_grid.get_children():
+		var fcell := child as DefTableCellClass
+		if fcell == null:
+			continue
+		var fpos: Vector2i = fcell.get_meta(&"cell_pos")
+		fcell.set_selected(fpos in edited_cells)
+
+
+func _update_sel_label() -> void:
+	if edited_cells.size() == 0:
+		sel_label.text = "未选中"
+		return
+	var col := edited_cells[0].x
+	var col_name := String(columns[col])
+	var rows_in_sel: Array[int] = []
+	for pos in edited_cells:
+		if pos.y not in rows_in_sel:
+			rows_in_sel.append(pos.y)
+	sel_label.text = "选中 %d 个单元格 (列: %s, %d 行)" % [edited_cells.size(), col_name, rows_in_sel.size()]
+
+
+func _on_v_scroll(_v: float) -> void:
+	if not _syncing_scroll:
+		_syncing_scroll = true
+		frozen_grid_scroll.scroll_vertical = grid_scroll.scroll_vertical
+		_syncing_scroll = false
+	_update_visible_rows()
+
+
+func _on_frozen_v_scroll(v: float) -> void:
+	if _syncing_scroll:
+		return
+	_syncing_scroll = true
+	grid_scroll.scroll_vertical = frozen_grid_scroll.scroll_vertical
+	_syncing_scroll = false
+	_update_visible_rows()
+
+
+func _on_h_scroll(v: float) -> void:
+	header_scroll.set_h_scroll(int(v))
+
+
+## 同步冻结列底部高度: 主网格显示横向滚动条时, 冻结列底部补等高的占位, 使 name 列与其它列底部对齐
+func _sync_frozen_spacer() -> void:
+	if frozen_spacer == null or grid_scroll == null:
+		return
+	var hbar := grid_scroll.get_h_scroll_bar()
+	var h := 0.0
+	if hbar != null and hbar.visible and hbar.get_parent() == grid_scroll:
+		h = hbar.get_minimum_size().y
+	frozen_spacer.custom_minimum_size = Vector2(0, h)
+
+
+func _copy_selected() -> void:
+	if edited_cells.size() == 0:
+		return
+	var lines := PackedStringArray()
+	var sorted := edited_cells.duplicate()
+	sorted.sort()
+	for pos in sorted:
+		if pos.y < rows.size():
+			lines.append(_cell_copy_text(_get_value(rows[pos.y], pos.x), pos.x))
+	DisplayServer.clipboard_set("\n".join(lines))
+
+	# 复制反馈: 显示首个单元格的行/列/内容
+	var first: Vector2i = sorted[0] if sorted.size() > 0 else Vector2i()
+	if first.y < rows.size() and first.x < columns.size():
+		var row_name: String = rows[first.y].resource_path.get_file().get_basename()
+		var col_name: String = String(columns[first.x])
+		var content: String = _cell_copy_text(_get_value(rows[first.y], first.x), first.x)
+		if content.length() > 40:
+			content = content.substr(0, 40) + "…"
+		sel_label.text = "已复制 %s · %s = %s" % [row_name, col_name, content]
+	elif sorted.size() > 0:
+		sel_label.text = "已复制 %d 个单元格" % sorted.size()
+
+
+## 复制用文本: 保证能与 _from_text 往返还原(原始值序列化)
+## 资源复制路径, 数组/字典用 JSON(含资源路径), 其余用 var_to_str(可被 str_to_var 还原)
+func _cell_copy_text(value, col: int) -> String:
+	if value == null:
+		return ""
+	var t := column_types[col]
+	if t == TYPE_OBJECT:
+		if value is Resource and value.resource_path != "":
+			return value.resource_path
+		return ""
+	if t == TYPE_COLOR and value is Color:
+		return "#" + (value as Color).to_html(false)
+	if t == TYPE_ARRAY or t == TYPE_DICTIONARY or t == TYPE_PACKED_STRING_ARRAY or t == TYPE_PACKED_BYTE_ARRAY or t == TYPE_PACKED_INT32_ARRAY or t == TYPE_PACKED_INT64_ARRAY or t == TYPE_PACKED_FLOAT32_ARRAY or t == TYPE_PACKED_FLOAT64_ARRAY:
+		return JSON.stringify(_value_to_jsonable(value))
+	return var_to_str(value)
+
+
+func _paste_to_selected() -> void:
+	if edited_cells.size() == 0:
+		return
+	if not DisplayServer.clipboard_has():
+		printerr("DefTable: 剪贴板为空, 无法粘贴")
+		return
+	var col := edited_cells[0].x
+	if not column_writable[col]:
+		printerr("DefTable: 列 %s 只读, 无法粘贴" % String(columns[col]))
+		return
+
+	var clip := DisplayServer.clipboard_get().replace("\r", "")
+	var lines := clip.split("\n")
+	var values: Array = []
+	var parse_failed: Array[bool] = []
+	var first_error := ""
+	var paste_each_line := lines.size() == edited_cells.size()
+	var failed := 0
+	for i in edited_cells.size():
+		var src := lines[i] if paste_each_line else lines[0]
+		var result: Dictionary = _from_text(src, col)
+		values.append(result["value"])
+		# 解析失败: 标记跳过, 防止把属性误清空成 null; 记录首个具体错误
+		var bad := not bool(result["ok"])
+		parse_failed.append(bad)
+		if bad:
+			failed += 1
+			if first_error == "":
+				first_error = String(result["error"])
+
+	var undo_redo: Object = editor_interface.get_editor_undo_redo()
+	if undo_redo == null:
+		printerr("DefTable: 无法获取 EditorUndoRedoManager, 粘贴失败")
+		return
+	undo_redo.create_action("DefTable 粘贴赋值")
+	var edited_resources := {}
+	var changed := 0
+	for i in edited_cells.size():
+		var pos := edited_cells[i]
+		if pos.y >= rows.size():
+			continue
+		if parse_failed[i]:
+			continue
+		var res: Resource = rows[pos.y]
+		var pname: StringName = columns[pos.x]
+		var old = res.get(pname)
+		var newv = values[i]
+		if old == newv:
+			continue
+		changed += 1
+		undo_redo.add_do_property(res, pname, newv)
+		undo_redo.add_undo_property(res, pname, old)
+		edited_resources[res] = res.resource_path
+	undo_redo.add_do_method(self, "_persist_resources", edited_resources.keys(), edited_resources.values())
+	undo_redo.add_undo_method(self, "_persist_resources", edited_resources.keys(), edited_resources.values())
+	undo_redo.commit_action()
+
+	_update_visible_rows(true)
+	_update_sel_label()
+
+	if failed > 0:
+		printerr("DefTable: %d 个值无法解析(%s 列), 已跳过: %s" % [failed, String(columns[col]), first_error])
+		sel_label.text += " (粘贴: %d 项无法解析: %s)" % [failed, first_error]
+	elif changed > 0:
+		sel_label.text += " (已粘贴 %d 项)" % changed
+	else:
+		sel_label.text += " (粘贴: 值与原数据相同, 未变更)"
+
+
+func _persist_resources(res_list: Array, path_list: Array) -> void:
+	for i in res_list.size():
+		var res: Resource = res_list[i]
+		var path: String = path_list[i]
+		if path != "":
+			ResourceSaver.save(res, path)
+	if editor_interface != null and editor_interface.get_resource_filesystem() != null:
+		editor_interface.get_resource_filesystem().scan()
+
+
+func _shortcut_input(event: InputEvent) -> void:
+	# 仅当 DefTable 是当前激活的 Main Screen(可见)时才处理快捷键, 避免误吞编辑器其他处的 Ctrl+C/V
+	if not visible or not is_inside_tree():
+		return
+	# 处理 Ctrl+C / Ctrl+V 复制粘贴(在编辑器里 _shortcut_input 比 _unhandled_input 更早触发,
+	# 能避开编辑器自身对 Ctrl+C 的节点复制快捷键消费)
+	if event is InputEventKey:
+		var key_event := event as InputEventKey
+		if not key_event.pressed:
+			return
+		var is_ctrl: bool = key_event.is_command_or_control_pressed()
+		var keycode: Key = key_event.keycode
+		if is_ctrl and keycode == KEY_C:
+			_copy_selected()
+			accept_event()
+			return
+		if is_ctrl and keycode == KEY_V:
+			_paste_to_selected()
+			accept_event()
+			return
+	# 兼容系统内置 ui_copy / ui_paste 动作
+	elif event.is_action_pressed(&"ui_copy"):
+		_copy_selected()
+		accept_event()
+		return
+	elif event.is_action_pressed(&"ui_paste"):
+		_paste_to_selected()
+		accept_event()
+		return
+
+
+func _unhandled_input(event: InputEvent) -> void:
+	if not (event is InputEventKey):
+		return
+	var key_event := event as InputEventKey
+	if not key_event.pressed:
+		return
+	var keycode: Key = key_event.keycode
+	if keycode == KEY_UP or keycode == KEY_DOWN:
+		_navigate_vertical(1 if keycode == KEY_DOWN else -1)
+		accept_event()
+	elif keycode == KEY_LEFT or keycode == KEY_RIGHT:
+		_navigate_horizontal(1 if keycode == KEY_RIGHT else -1)
+		accept_event()
+
+
+func _navigate_vertical(delta: int) -> void:
+	if edited_cells.size() == 0:
+		return
+	var col := edited_cells[0].x
+	var target_y := edited_cells[-1].y + delta
+	target_y = clampi(target_y, 0, rows.size() - 1)
+	_deselect_all()
+	edited_cells.append(Vector2i(col, target_y))
+	_ensure_row_visible(target_y)
+	# ensure 可能触发虚拟化重建, 此处全量刷新选中态
+	_update_selection_visuals()
+	_update_sel_label()
+	if editor_interface != null:
+		editor_interface.edit_resource(rows[target_y])
+
+
+func _navigate_horizontal(delta: int) -> void:
+	if edited_cells.size() == 0:
+		return
+	var current_y := edited_cells[-1].y
+	var col := clampi(edited_cells[0].x + delta, 0, columns.size() - 1)
+	_deselect_all()
+	var new_pos := Vector2i(col, current_y)
+	edited_cells.append(new_pos)
+	_set_cell_selected(new_pos, true)
+	_update_sel_label()
+
+
+func _ensure_row_visible(row: int) -> void:
+	if row < first_row or row >= last_row:
+		if row < grid.row_offsets.size():
+			grid_scroll.scroll_vertical = grid.row_offsets[row]
+# touch to trigger godot reload
