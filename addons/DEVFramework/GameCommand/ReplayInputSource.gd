@@ -12,7 +12,7 @@ var consumed: Array = []
 func _init(p_inputs: Array = []) -> void:
 	inputs.assign(p_inputs)
 
-func take(_request: Dictionary) -> Array:
+func poll(_tick: int, _request: Dictionary = {}) -> Array:
 	if inputs.is_empty():
 		push_error("ReplayInputSource: 输入队列已空，动作与记录不匹配")
 		return []

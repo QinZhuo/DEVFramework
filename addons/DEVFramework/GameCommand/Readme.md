@@ -8,7 +8,7 @@
 |---|---|
 | `GameCommand` | 一条命令记录：`type`(StringName 类型名) + `tick`(时序序号，回合制下即回合号) + `params`(决策参数数组) |
 | `CommandHistory` | 按序记录命令；按 tick 过滤/弹出；整体序列化 |
-| `InputSource` | 决策输入策略基类。模拟层通过 `take(request) -> Array` 获取决策，不感知来源是 UI、回放还是脚本 |
+| `InputSource` | 决策输入策略基类（tick 轮询模型，回合制/实时通用）。模拟层通过 `poll(tick) -> Array` 获取决策，空数组=本 tick 无输入 |
 | `ReplayInputSource` | 回放输入源：按序弹出预录输入（`inputs`），并记录已消费的 `consumed` 供校验 |
 
 ## 典型流程
@@ -27,7 +27,7 @@ var data: Array = history.save_data()
 
 # 回放
 var replay := ReplayInputSource.new([[3]])
-var value: Array = replay.take({})   # -> [3]
+var value: Array = replay.poll(0)   # -> [3]
 assert(replay.consumed == [[3]])
 ```
 
@@ -35,6 +35,7 @@ assert(replay.consumed == [[3]])
 
 ## 约定
 
-- `InputSource.take()` 返回空数组表示取消/无输入
+- `InputSource.poll(tick)` 返回空数组表示本 tick 无输入（实时每帧轮询为常态）；回合制可事件驱动入队 + 轮询消费
+- 取消等操作用显式命令表达（如 &"cancel"），不用哨兵值
 - `params[0]` 惯例为命令主体标识
 - 同一命令序列 + 相同初始状态 ⇒ 必须复现相同结果（确定性回放）
