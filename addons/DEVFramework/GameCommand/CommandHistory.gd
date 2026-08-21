@@ -7,7 +7,11 @@ class_name CommandHistory extends RefCounted
 var commands: Array[GameCommand] = []
 
 func append(cmd: GameCommand) -> void:
+	assert(not commands.has(cmd), "CommandHistory: 重复追加同一条命令")
 	commands.append(cmd)
+
+func size() -> int:
+	return commands.size()
 
 ## 删除第一条匹配的命令（用于取消回滚）。predicate 收到 GameCommand 返回是否删除。
 ## 返回是否有删除
