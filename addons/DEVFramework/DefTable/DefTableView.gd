@@ -1027,12 +1027,8 @@ func _fill_cell(cell: DefTableCellClass, pos: Vector2i, tint: Color = Color(1, 1
 		is_empty = true
 		cell.set_value_text("")
 		cell.tooltip_text = ""
-	# 对齐: 空占位/bool 居中, 数值/枚举右对齐(位数可比), 其余左对齐
-	match cell.kind:
-		DefTableCellClass.Kind.NUMBER, DefTableCellClass.Kind.ENUM:
-			cell.set_content_align(HORIZONTAL_ALIGNMENT_RIGHT if not is_empty else HORIZONTAL_ALIGNMENT_CENTER)
-		_:
-			cell.set_content_align(HORIZONTAL_ALIGNMENT_CENTER if (is_empty or cell.kind == DefTableCellClass.Kind.BOOL) else HORIZONTAL_ALIGNMENT_LEFT)
+	# 对齐: 空占位/bool 居中, 其余(含数值/枚举)统一左对齐
+	cell.set_content_align(HORIZONTAL_ALIGNMENT_CENTER if (is_empty or cell.kind == DefTableCellClass.Kind.BOOL) else HORIZONTAL_ALIGNMENT_LEFT)
 
 
 ## 取单元格展示文本(带缓存): 计算型 getter 属性(如 EntityDef.tr_desc 递归构建整棵
