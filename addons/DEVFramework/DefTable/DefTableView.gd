@@ -15,6 +15,10 @@ const MAX_COL_WIDTH := 600.0
 const CELL_PADDING := 8.0
 ## 行高垂直余量: 叠加在字体实测高度上, 给文字上下留呼吸感(单行与多行行高共用)
 const ROW_V_PADDING := 8.0
+## [img] 列宽补贴: 内联图标按此近似宽度计入列宽(实际渲染尺寸随资源而定)
+const IMG_PREVIEW_MIN_WIDTH := 22.0
+## 表头排序箭头预留宽: 排序后列名会追加 ▲/▼, 度量时统一预留避免裁字
+const HEADER_ARROW_RESERVE := 18.0
 
 var editor_interface: Object
 var editor_plugin: EditorPlugin
@@ -61,6 +65,10 @@ var _syncing_scroll := false
 ## 测量缓存(性能): 复用单个 RichTextLabel 测 BBCode 高度, 缓存文本宽度
 var _measure_rtl: RichTextLabel
 var _width_cache: Dictionary = {}
+
+## 单元格文本缓存(性能): Resource -> 按列的展示文本。
+## 计算型 getter 属性(tr_desc 等)访问即全量重建, 必须缓存避免布局/渲染重复计算
+var _text_cache: Dictionary = {}
 
 ## 行染色缓存(B1 row stylization): 每行取首个有效 Color 值作为整行染色
 var _row_tints: Array[Color] = []
@@ -224,6 +232,7 @@ func _on_filesystem_changed() -> void:
 func _load_dir(path: String) -> void:
 	if path == "":
 		return
+	var t := LogTool.timer("DefTable", "加载 %s" % path.get_file())
 	var all_tres := _collect_tres_recursive(path)
 	var loaded: Array[Resource] = []
 	for p in all_tres:
@@ -232,6 +241,8 @@ func _load_dir(path: String) -> void:
 			if res != null and _is_def(res):
 				loaded.append(res)
 	rows = loaded
+	t.stop()
+	var tl := LogTool.timer("DefTable", "布局 %d 行" % rows.size())
 	_build_columns()
 	_sort_rows()
 	_compute_row_tints()
@@ -244,6 +255,7 @@ func _load_dir(path: String) -> void:
 	count_label.text = "共 %d 个 Def" % rows.size()
 	sel_label.text = "未选中"
 	edited_cells.clear()
+	tl.stop()
 
 
 ## 清空网格中所有单元格节点(目录切换/列结构变化时调用)
@@ -580,7 +592,12 @@ func _compare_values(a, b) -> bool:
 ## 计算列宽 + 行高 (单次遍历, 缓存文本测量结果)
 ## 参考 jospic/dynamicdatatable: 列宽 = 全量遍历 font.get_string_size 取最大值;
 ## 参考 don-tnowe: 行高 = 内容驱动(超长文本换行后扩展)。
+## 性能约定:
+##   · 文本经 _cell_text 缓存, 布局与渲染共享一份(计算型 getter 只算一次)
+##   · 仅含显式换行的内容做 RTL 实测撑行; 单行内容(BBCode 与否)固定行高,
+##     由 RichTextLabel 在单元格内自动换行+裁剪 —— 避免 O(单元格数) 次 RTL 全排版卡帧
 func _compute_layout() -> void:
+	var t := LogTool.timer("DefTable", "布局 %s (%d 行)" % [_current_dir.get_file(), rows.size()])
 	var font := get_theme_font("font", "Label")
 	var fsize := get_theme_font_size("font", "Label")
 	if font == null:
@@ -590,9 +607,16 @@ func _compute_layout() -> void:
 		column_widths.append(90.0)
 
 	var line_height := _measure_line_height()
-	# 第一遍: 表头宽度
+	# 第一遍: 表头宽度 —— 必须用 Button 实际渲染字体度量(Label 字体可能不同号),
+	# 并预留排序箭头位, 否则列名会被 clip_text 裁掉尾巴
+	var hfont := get_theme_font("font", "Button")
+	if hfont == null:
+		hfont = font
+	var hfsize := get_theme_font_size("font_size", "Button")
+	if hfsize <= 0:
+		hfsize = fsize
 	for col in columns.size():
-		var hw := _measure_text_width(_column_header_text(col), font, fsize)
+		var hw := _measure_text_width("H:" + _column_header_text(col), hfont, hfsize) + HEADER_ARROW_RESERVE
 		if hw + CELL_PADDING >= column_widths[col]:
 			column_widths[col] = hw + CELL_PADDING
 
@@ -600,19 +624,22 @@ func _compute_layout() -> void:
 	for r in rows.size():
 		var row_h := line_height
 		for col in columns.size():
-			var text := _to_text(_get_value(rows[r], col), col)
+			var text := _cell_text(rows[r], col)
 			if text == "":
 				continue
 			var is_bb := _is_bbcode(text)
 			var measure_text := _strip_bbcode(text) if is_bb else text
+			# 列宽按"可见文本"计: BBCode 标签零宽不计入, 每个 [img] 补贴固定图标宽
 			var tw := _measure_text_width(measure_text, font, fsize)
+			if is_bb:
+				tw += text.count("[img]") * IMG_PREVIEW_MIN_WIDTH
 			# 列宽扩到能容纳单行文本: 留足 CELL_PADDING 余量,
 			# 使"渲染可用宽(列宽-8)" >= 文本宽, 避免单行内容因边距差意外换行/裁切
 			if tw + CELL_PADDING >= column_widths[col] and column_widths[col] < MAX_COL_WIDTH:
 				column_widths[col] = minf(tw + CELL_PADDING, MAX_COL_WIDTH)
-			# 自动行高: 多行内容(显式换行)或 BBCode 富内容按实际渲染高度撑行;
-			# 单行超宽内容由 _ellipsize 截断省略, 不撑行
-			if is_bb or measure_text.contains("\n"):
+			# 自动行高: 仅显式多行内容(字典/数组/多段描述)按实际渲染高度撑行;
+			# 单行内容(BBCode 含 [img])固定行高, 超出部分由单元格裁剪, 完整内容见 tooltip
+			if measure_text.contains("\n"):
 				var lh := _measure_bbcode_height(text, column_widths[col] - CELL_PADDING)
 				if lh > row_h:
 					row_h = lh
@@ -621,6 +648,7 @@ func _compute_layout() -> void:
 	frozen_grid.set_row_heights(heights)
 	# 冻结首列宽度跟随 name 列
 	frozen_grid.custom_minimum_size = Vector2(column_widths[0], 0)
+	t.stop()
 
 
 ## 用复用 RichTextLabel(进树 + reset_size 同步测量)计算 BBCode 文本高度
@@ -672,16 +700,20 @@ func _is_bbcode(text: String) -> bool:
 	return text.contains("[img]") or text.contains("[color") or text.contains("[font") or text.contains("[icon")
 
 
+static var _re_img: RegEx
+static var _re_tag: RegEx
+
 ## 去除 BBCode 标签, 保留纯文本内容(含 [img]..[/img] 与带参标签整体移除)
 func _strip_bbcode(text: String) -> String:
 	var out := text
-	var re := RegEx.new()
-	# [img]路径[/img] 整体移除
-	re.compile("\\[img[^\\]]*\\][^\\[]*\\[/img\\]")
-	out = re.sub(out, "", true)
-	# 任意 [tag=值] 或 [tag] 标签对
-	re.compile("\\[[^\\]]+\\]")
-	out = re.sub(out, "", true)
+	# 正则一次性编译(热路径: 布局阶段每格调用, 逐次 new+compile 开销显著)
+	if _re_img == null:
+		_re_img = RegEx.new()
+		_re_img.compile("\\[img[^\\]]*\\][^\\[]*\\[/img\\]")
+		_re_tag = RegEx.new()
+		_re_tag.compile("\\[[^\\]]+\\]")
+	out = _re_img.sub(out, "", true)
+	out = _re_tag.sub(out, "", true)
 	return out
 
 
@@ -699,30 +731,7 @@ func _measure_text_width(text: String, font: Font, fsize: int) -> float:
 
 func _clear_measure_cache() -> void:
 	_width_cache.clear()
-
-
-## 用 TextServer 计算文本在给定宽度下的换行行数(与 Label autowrap 一致)
-func _count_wrap_lines(text: String, width: float) -> int:
-	if text == "" or width <= 0.0:
-		return 1
-	var font := get_theme_font("font", "Label")
-	var fsize := get_theme_font_size("font", "Label")
-	if font == null:
-		return 1
-	var ts := TextServerManager.get_primary_interface()
-	var shaped := ts.create_shaped_text()
-	if shaped == RID():
-		return 1
-	var font_rids := font.get_rids()
-	var font_rid := font_rids[0] if font_rids.size() > 0 else RID()
-	if font_rid == RID():
-		ts.free_rid(shaped)
-		return 1
-	ts.shaped_text_add_string(shaped, text, [font_rid], fsize)
-	ts.shaped_text_shape(shaped)
-	var breaks := ts.shaped_text_get_line_breaks(shaped, width)
-	ts.free_rid(shaped)
-	return breaks.size() if breaks.size() > 0 else 1
+	_text_cache.clear()
 
 
 func _column_header_text(col: int) -> String:
@@ -758,8 +767,8 @@ func _rebuild_header() -> void:
 func _make_header_button(col: int) -> Button:
 	var btn := Button.new()
 	btn.flat = true
-	# 列名超列宽时截断加省略号(tooltip 已有完整列名)
-	btn.text = _ellipsize(_column_header_text(col), col)
+	# 列名超列宽由 clip_text 原生裁剪(渲染层职责), tooltip 已有完整列名
+	btn.text = _column_header_text(col)
 	btn.clip_text = true
 	btn.custom_minimum_size = Vector2(column_widths[col], _measure_line_height())
 	btn.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
@@ -829,7 +838,11 @@ func _update_visible_rows(force_rebuild: bool = false) -> void:
 			child.queue_free()
 		var scroll_w: Array[float] = _scroll_column_widths()
 		grid.configure(scroll_w, 0)
-		var fw: Array[float] = [column_widths[0]] if columns.size() > 0 else []
+		# 空目录(如尚未添加数据的 Condition)会走到这里; 三元返回的无类型 [] 无法赋给
+		# Array[float], 必须显式 append 构造
+		var fw: Array[float] = []
+		if columns.size() > 0:
+			fw.append(column_widths[0])
 		frozen_grid.configure(fw, 0)
 		return
 
@@ -866,7 +879,7 @@ func _update_visible_rows(force_rebuild: bool = false) -> void:
 		var pos := Vector2i(1 + i % scroll_cols, first_row + i / scroll_cols)
 		cell.custom_minimum_size = Vector2(column_widths[pos.x], grid.row_heights[pos.y])
 		# 颜色行染色: 颜色列的值染色其右侧单元格背景(参考 resources_spreadsheet_view)
-		var tint := _row_tint_color(pos.y)
+		var tint := _row_tint_for(pos.y)
 		_fill_cell(cell, pos, tint)
 	grid.queue_sort()
 
@@ -886,7 +899,7 @@ func _update_visible_rows(force_rebuild: bool = false) -> void:
 		var fcell := frozen_grid.get_child(fi) as DefTableCellClass
 		var fpos := Vector2i(0, first_row + fi)
 		fcell.custom_minimum_size = Vector2(column_widths[0], frozen_grid.row_heights[fpos.y])
-		var ftint := _row_tint_color(fpos.y)
+		var ftint := _row_tint_for(fpos.y)
 		_fill_cell(fcell, fpos, ftint)
 	frozen_grid.queue_sort()
 
@@ -910,6 +923,15 @@ func _compute_row_tints() -> void:
 
 func _row_tint_color(row: int) -> Color:
 	return _row_tints[row] if row >= 0 and row < _row_tints.size() else Color(0, 0, 0, 0)
+
+
+## 行染色 + 斑马纹调制: 颜色列的值染整行, 但奇数行对染色 RGB 轻微压暗,
+## 让斑马纹在带色行上仍可感知(否则强色行的底纹明暗差会被完全盖掉)
+func _row_tint_for(row: int) -> Color:
+	var tint := _row_tint_color(row)
+	if row % 2 == 1 and tint.a > 0.0:
+		tint = Color(tint.r * 0.82, tint.g * 0.82, tint.b * 0.82, tint.a)
+	return tint
 
 
 ## 悬停行高亮(B3, Excel crosshair 风格): 由 DefTableGrid 自绘(hover_row 属性),
@@ -976,32 +998,30 @@ func _fill_cell(cell: DefTableCellClass, pos: Vector2i, tint: Color = Color(1, 1
 	var tip := ""
 	var is_empty := false
 	if pos.y < rows.size() and pos.x < columns.size():
-		var raw = _get_value(rows[pos.y], pos.x)
-		if cell.kind == DefTableCellClass.Kind.COLOR and raw is Color:
-			cell.set_color_value(raw)
-			text = (raw as Color).to_html(false)
-			tip = text
-		else:
-			text = _to_text(raw, pos.x)
-			tip = text
-			if text == "":
-				# 空值淡灰占位: 区分"空"与"0"(tooltip 仍为原始内容)
-				is_empty = true
-				text = "[color=#6e6e6e]—[/color]"
-			elif cell.kind == DefTableCellClass.Kind.BOOL:
-				# bool 符号化: 绿勾/暗红叉, 一眼可辨真假
-				text = "[color=#7bd88f]✓[/color]" if raw else "[color=#c25555]✗[/color]"
-			else:
-				# 单行内容超宽时截断加省略号(tooltip 保留完整内容);
-				# 多行内容(字典/数组)保留换行, 由 _compute_layout 按实际高度撑高行
-				text = _ellipsize(text, pos.x)
+		# 文本走缓存(布局阶段已生成, 避免计算型 getter 如 tr_desc 重复递归构建)
+		text = _cell_text(rows[pos.y], pos.x)
+		tip = text
+		if text == "":
+			# 空值淡灰占位: 区分"空"与"0"(tooltip 仍为原始内容)
+			is_empty = true
+			text = "[color=#6e6e6e]—[/color]"
+		elif cell.kind == DefTableCellClass.Kind.BOOL:
+			# bool 符号化: 绿勾/暗红叉, 一眼可辨真假
+			var raw = _get_value(rows[pos.y], pos.x)
+			text = "[color=#7bd88f]✓[/color]" if raw else "[color=#c25555]✗[/color]"
 		cell.set_value_text(text)
-		if cell.kind == DefTableCellClass.Kind.RESOURCE:
-			# 先清除旧预览, 避免复用/重填时残留上一个 Def 的图标
-			cell.set_meta(&"preview_path", "")
-			cell.set_resource_preview(null)
-			if raw is Resource:
-				_request_resource_preview(cell, raw)
+		match cell.kind:
+			DefTableCellClass.Kind.COLOR:
+				var cval = _get_value(rows[pos.y], pos.x)
+				if cval is Color:
+					cell.set_color_value(cval)
+			DefTableCellClass.Kind.RESOURCE:
+				# 先清除旧预览, 避免复用/重填时残留上一个 Def 的图标
+				cell.set_meta(&"preview_path", "")
+				cell.set_resource_preview(null)
+				var rval = _get_value(rows[pos.y], pos.x)
+				if rval is Resource:
+					_request_resource_preview(cell, rval)
 		cell.tooltip_text = "%s\n%s\n---\n%s" % [rows[pos.y].resource_path.get_file(), String(columns[pos.x]), tip]
 	else:
 		is_empty = true
@@ -1015,23 +1035,17 @@ func _fill_cell(cell: DefTableCellClass, pos: Vector2i, tint: Color = Color(1, 1
 			cell.set_content_align(HORIZONTAL_ALIGNMENT_CENTER if (is_empty or cell.kind == DefTableCellClass.Kind.BOOL) else HORIZONTAL_ALIGNMENT_LEFT)
 
 
-## 单行文本超列宽时截断加省略号(SubUX 规范: 截断必须带 …, 完整内容由 tooltip 提供)
-## 多行文本(含 \n)不截断, 保留换行由自动行高完整展示
-func _ellipsize(text: String, col: int) -> String:
-	if text == "" or text.contains("\n") or col >= column_widths.size():
-		return text
-	var font := get_theme_font("font", "Label")
-	if font == null:
-		return text
-	var fsize := get_theme_font_size("font", "Label")
-	var avail := column_widths[col] - CELL_PADDING
-	if avail <= 0.0 or font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, fsize).x <= avail:
-		return text
-	while text.length() > 1:
-		text = text.substr(0, text.length() - 1)
-		if font.get_string_size(text + "…", HORIZONTAL_ALIGNMENT_LEFT, -1, fsize).x <= avail:
-			return text + "…"
-	return "…"
+## 取单元格展示文本(带缓存): 计算型 getter 属性(如 EntityDef.tr_desc 递归构建整棵
+## effect 树的描述)每次 res.get() 都全量重算, 布局+渲染两阶段至少访问两次,
+## 按 Resource 实例缓存一份文本, 排序/滚动复用不受行序影响。
+## 缓存在 _clear_measure_cache(目录切换)与粘贴提交后失效。
+func _cell_text(res: Resource, col: int) -> String:
+	var arr: PackedStringArray = _text_cache.get(res, PackedStringArray())
+	if arr.size() <= col:
+		while arr.size() < columns.size():
+			arr.append(_to_text(_get_value(res, arr.size()), arr.size()))
+		_text_cache[res] = arr
+	return arr[col]
 
 
 ## 请求资源预览图(参考 resources_spreadsheet_view 的 cell_editor_resource)
@@ -1320,6 +1334,9 @@ func _paste_to_selected() -> void:
 	undo_redo.add_undo_method(self, "_persist_resources", edited_resources.keys(), edited_resources.values())
 	undo_redo.commit_action()
 
+	# 粘贴改值后文本/列宽/行高都可能变化: 失效缓存并整体重算布局
+	_text_cache.clear()
+	_compute_layout()
 	_update_visible_rows(true)
 	_update_sel_label()
 
