@@ -687,6 +687,7 @@ static func _place_random_3d(def: PlacementDef3D, rng: RandomNumberGenerator) ->
 static func generate_town(def: CityDef, hm: HeightMap, seed_base: int) -> TownLayout:
 	var layout := TownLayout.new()
 	layout.roads_grid = GeneratedGrid.create(def.width, def.height, 0)
+	layout.heightmap = hm
 	var site := _town_site(def, hm, make_rng(derive_seed(seed_base, 11)))
 	layout.site = site.pos
 	layout.site_score = site.score
@@ -1511,6 +1512,30 @@ static func _try_place_one(def: CityDef, layout: TownLayout, parcel: Dictionary,
 		if door.x >= 0:
 			break
 	var footprint := Rect2i(ox, oy, fw, fh)
+	# 贴地判定：四角采样高度，小高差切台整平、大高差桩基抬升、水上弃建
+	var ground_y := 0.0
+	var foundation := "terrace"
+	var hm := layout.heightmap
+	if hm != null:
+		var corners: Array[float] = [
+			hm.get_height(ox, oy, 0.0),
+			hm.get_height(ox + fw - 1, oy, 0.0),
+			hm.get_height(ox, oy + fh - 1, 0.0),
+			hm.get_height(ox + fw - 1, oy + fh - 1, 0.0),
+		]
+		for h4 in corners:
+			if h4 < def.sea_level:
+				return false
+		var mn: float = corners[0]
+		var mx: float = corners[0]
+		for h4 in corners:
+			mn = minf(mn, h4)
+			mx = maxf(mx, h4)
+		if mx - mn > def.build_max_step:
+			foundation = "stilt"
+			ground_y = mx
+		else:
+			ground_y = (mn + mx) * 0.5
 	if door.x < 0:
 		door = footprint.get_center()
 		build.set_cell(door.x, door.y, def.building_floor_value)
@@ -1530,6 +1555,7 @@ static func _try_place_one(def: CityDef, layout: TownLayout, parcel: Dictionary,
 		"id": bid, "type": type_name, "style": style,
 		"rect": footprint, "door": door, "facing": facing,
 		"layers": layers, "roof": roof,
+		"ground_y": ground_y, "foundation": foundation,
 		"template": tmpl.resource_path,
 		"_tmpl": tmpl, "lot": li,
 	})

@@ -85,6 +85,12 @@ class_name CityDef extends PCGGeneratorDef
 ## 路灯沿主干道路的间隔（格）
 @export_range(2, 16, 1) var streetlamp_spacing := 6
 
+## —— 贴地放置（有高度图时生效） ——
+## footprint 四角高差超过此值转桩基(否则切台整平)
+@export_range(0.02, 0.3, 0.01) var build_max_step := 0.08
+## 归一高→世界格高的换算比例（渲染/导航共用）
+@export_range(1.0, 24.0, 0.5) var height_scale := 8.0
+
 ## —— S5 建筑放置 ——
 ## 户型模板库（门字符 G 画在最底边墙上，旋转后门自动朝向临街边）
 @export var houses: Array[TemplateDef] = []

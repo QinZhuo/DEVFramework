@@ -242,7 +242,7 @@ func _gen_town_3d(def: CityDef) -> void:
 	])
 
 
-## TownLayout 三层栅格 → MultiMesh 体块（道路/广场/墙体/地板/门/家具/围栏 分组着色）
+## TownLayout 三层栅格 → MultiMesh 体块（地形起伏贴地 + 道路/建筑/家具 分组着色）
 func _render_town(layout: TownLayout, def: CityDef) -> void:
 	for child in world.get_children():
 		child.queue_free()
@@ -250,9 +250,9 @@ func _render_town(layout: TownLayout, def: CityDef) -> void:
 	var bg: GeneratedGrid = layout.build_grid
 	var w := grid.width
 	var d := grid.height
-	var to_world := func(x: int, z: int) -> Vector3:
-		return Vector3(x - w / 2.0 + 0.5, 0, z - d / 2.0 + 0.5)
-	# 草地基板（城镇模式配置天空盒+环境光，避免暗色 albedo 在纯平行光下发黑）
+	var hs := def.height_scale
+	var hm := layout.heightmap
+	# 天空盒+环境光（城镇模式专用氛围）
 	var env := get_node_or_null("Env") as WorldEnvironment
 	if env:
 		var sky := Sky.new()
@@ -269,14 +269,41 @@ func _render_town(layout: TownLayout, def: CityDef) -> void:
 	var sun := get_node_or_null("Sun") as DirectionalLight3D
 	if sun:
 		sun.light_energy = 1.5
-	var ground := MeshInstance3D.new()
-	var gm := BoxMesh.new()
-	gm.size = Vector3(w, 0.2, d)
-	gm.material = StandardMaterial3D.new()
-	gm.material.albedo_color = Color(0.36, 0.52, 0.3)
-	ground.mesh = gm
-	ground.position = Vector3(0, -0.1, 0)
-	world.add_child(ground)
+	# 格坐标 → 世界坐标（y 取地表高度；无高度图时为 0）
+	var to_world := func(x: int, z: int) -> Vector3:
+		var h: float = hm.sample(x, z) if hm != null else 0.0
+		return Vector3(x - w / 2.0 + 0.5, h * hs, z - d / 2.0 + 0.5)
+	# 地形柱：每格一根，从底到地表高（起伏可见）
+	if hm != null:
+		var terrain_pts := PackedVector3Array()
+		var terrain_h := PackedFloat32Array()
+		for z in d:
+			for x in w:
+				terrain_pts.append(to_world.call(x, z))
+				terrain_h.append(maxf(0.35, hm.sample(x, z) * hs))
+		var mm := MultiMesh.new()
+		mm.transform_format = MultiMesh.TRANSFORM_3D
+		var mesh := BoxMesh.new()
+		mesh.size = Vector3(1, 1, 1)
+		mesh.material = StandardMaterial3D.new()
+		mesh.material.albedo_color = Color(0.36, 0.52, 0.3)
+		mm.mesh = mesh
+		mm.instance_count = terrain_pts.size()
+		for i in terrain_pts.size():
+			var col_h: float = terrain_h[i]
+			mm.set_instance_transform(i, Transform3D(Basis().scaled(Vector3(1, col_h, 1)), terrain_pts[i] - Vector3(0, col_h * 0.5 - 0.05, 0)))
+		var mmi := MultiMeshInstance3D.new()
+		mmi.multimesh = mm
+		world.add_child(mmi)
+	else:
+		var ground := MeshInstance3D.new()
+		var gm := BoxMesh.new()
+		gm.size = Vector3(w, 0.2, d)
+		gm.material = StandardMaterial3D.new()
+		gm.material.albedo_color = Color(0.36, 0.52, 0.3)
+		ground.mesh = gm
+		ground.position = Vector3(0, -0.1, 0)
+		world.add_child(ground)
 	# 道路层（按值分组，不同高度微差避免 z-fighting）
 	var road_style := {
 		def.road_main_value: [Color(0.9, 0.78, 0.4), 0.18],
@@ -303,74 +330,46 @@ func _render_town(layout: TownLayout, def: CityDef) -> void:
 		_add_box(pcw + Vector3(0, 0.25, 0), Vector3(1.6, 0.35, 1.6), Color(0.52, 0.5, 0.46))
 		_add_box(pcw + Vector3(0, 1.1, 0), Vector3(0.55, 1.7, 0.55), Color(0.62, 0.6, 0.56))
 		_add_box(pcw + Vector3(0, 2.1, 0), Vector3(0.9, 0.22, 0.9), Color(0.45, 0.43, 0.4))
-	# 建筑：墙体按 (类型, 层数, 风格) 分组（高度=层数语义、颜色=风格语义），地板薄板
-	var wall_groups := {}  # "fac_2_石砌" → pts
-	var fac_cells := {}
-	var house_cells := {}
-	var layers_of := {}  # 墙格 → 该建筑层数
-	var style_of := {}   # 墙格 → 该建筑风格
-	var style_wall := {
-		"木构": Color(0.36, 0.23, 0.14),
-		"石砌": Color(0.55, 0.55, 0.52),
-		"砖混": Color(0.5, 0.28, 0.2),
-	}
-	for b in layout.buildings:
-		var target := fac_cells if String(b.type) != "住宅" else house_cells
-		for yy in range(b.rect.position.y, b.rect.end.y):
-			for xx in range(b.rect.position.x, b.rect.end.x):
-				target[Vector2i(xx, yy)] = true
-				layers_of[Vector2i(xx, yy)] = int(b.layers)
-				style_of[Vector2i(xx, yy)] = String(b.style)
+	# 建筑：墙体按 (类型,层数,风格) 分组——y 全部基于 ground_y 切台基准；地板/门/窗/屋顶贴地
+	var wall_groups := {}  # key → pts（中心已含 ground_y）
+	var wall_set_of := {}  # b.id → 本建筑墙格集合
 	var floors := PackedVector3Array()
-	for z in d:
-		for x in w:
-			var c := Vector2i(x, z)
-			var v := bg.get_cell(x, z, -1)
-			if v == def.building_wall_value:
-				var gkey := ("F_" if fac_cells.has(c) else "H_") + str(int(layers_of.get(c, 1))) + "_" + String(style_of.get(c, ""))
-				if not wall_groups.has(gkey):
-					wall_groups[gkey] = PackedVector3Array()
-				wall_groups[gkey].append(to_world.call(x, z))
-			elif v == def.building_floor_value:
-				floors.append(to_world.call(x, z))
-	for gkey in wall_groups:
-		var is_fac_g: bool = String(gkey).begins_with("F_")
-		var ln: int = int(String(gkey).get_slice("_", 1))
-		var sname: String = String(gkey).get_slice("_", 2)
-		var col: Color = style_wall.get(sname, Color(0.36, 0.23, 0.14))
-		if is_fac_g:
-			col = col.lightened(0.25)
-		_add_mesh_sized(wall_groups[gkey], col, Vector3(1, ln * 1.5 + 0.9, 1))
-	_add_mesh_sized(floors, Color(0.62, 0.48, 0.3), Vector3(1, 0.1, 1))
-	# 屋顶（屋檐板+屋脊）、发光窗、定向门板
 	var win_along_x := PackedVector3Array()
 	var win_along_z := PackedVector3Array()
 	var door_along_x := PackedVector3Array()
 	var door_along_z := PackedVector3Array()
 	for b in layout.buildings:
 		var is_fac := String(b.type) != "住宅"
-		var wall_set: Dictionary = fac_cells if is_fac else house_cells
 		var rect: Rect2i = b.rect
 		var blayers: int = int(b.layers)
+		var gy: float = float(b.ground_y) * hs
 		var top_h := blayers * 1.5 + 0.9
-		var center: Vector3 = to_world.call(rect.get_center().x, rect.get_center().y)
-		var eave_y := top_h + 0.12
-		var ridge_y := eave_y + 0.36
-		var eave_size := Vector3(rect.size.x + 0.6, 0.24, rect.size.y + 0.6)
-		var ridge_size := Vector3(maxf(1.0, rect.size.x * 0.55), 0.5, maxf(1.0, rect.size.y * 0.55))
-		# 屋顶按语义类型：gable 双坡(檐+脊)；flat 平顶只留檐口女儿墙
-		if String(b.roof) == "flat":
-			_add_box(Vector3(center.x, eave_y, center.z),
-					Vector3(rect.size.x + 0.2, 0.35, rect.size.y + 0.2),
-					Color(0.4, 0.44, 0.52) if is_fac else Color(0.45, 0.32, 0.24))
+		var gkey := ("F_" if is_fac else "H_") + str(blayers) + "_" + String(b.style)
+		if not wall_groups.has(gkey):
+			wall_groups[gkey] = PackedVector3Array()
+		var wpts: PackedVector3Array = wall_groups[gkey]
+		var wall_set: Dictionary = {}
+		for yy in range(rect.position.y, rect.end.y):
+			for xx in range(rect.position.x, rect.end.x):
+				var cv := bg.get_cell(xx, yy, -1)
+				var c := Vector2i(xx, yy)
+				var base: Vector3 = to_world.call(xx, yy)
+				if cv == def.building_wall_value:
+					wall_set[c] = true
+					wpts.append(base + Vector3(0, top_h * 0.5 - 0.1, 0))
+				elif cv == def.building_floor_value:
+					floors.append(base + Vector3(0, 0.08, 0))
+		# 定向门板（贴地、朝向正确）
+		var dr: Vector2i = b.door
+		var dp: Vector3 = to_world.call(dr.x, dr.y) + Vector3(0, 1.25, 0)
+		dp.y = gy + 1.25
+		if int(b.facing) == 1 or int(b.facing) == 3:
+			door_along_x.append(dp)
 		else:
-			_add_box(Vector3(center.x, eave_y, center.z), eave_size,
-					Color(0.42, 0.46, 0.58) if is_fac else Color(0.5, 0.22, 0.14))
-			_add_box(Vector3(center.x, ridge_y, center.z), ridge_size,
-					Color(0.48, 0.52, 0.62) if is_fac else Color(0.56, 0.28, 0.17))
-		# 发光窗：每层一排、棋盘间隔，贴暴露面外侧（按暴露轴分薄板方向）
-		for row in maxi(1, blayers - (0 if is_fac else 0)):
-			var wy := 1.15 + row * 1.5
+			door_along_z.append(dp)
+		# 发光窗：每层一排、棋盘间隔、贴暴露面外侧
+		for row in maxi(1, blayers):
+			var wy := gy + 1.15 + row * 1.5
 			for yy in range(rect.position.y, rect.end.y):
 				for xx in range(rect.position.x, rect.end.x):
 					if not wall_set.has(Vector2i(xx, yy)) or (xx + yy + row) % 2 == 1:
@@ -383,13 +382,40 @@ func _render_town(layout: TownLayout, def: CityDef) -> void:
 							else:
 								win_along_z.append(wp)
 							break
-		# 定向门板（薄轴与墙面垂直）
-		var dr: Vector2i = b.door
-		var dp: Vector3 = to_world.call(dr.x, dr.y) + Vector3(0, 0.05, 0)
-		if int(b.facing) == 1 or int(b.facing) == 3:
-			door_along_x.append(dp)
+		# 屋顶与桩基支撑
+		var rc: Vector3 = to_world.call(rect.get_center().x, rect.get_center().y)
+		rc.y = gy
+		if String(b.roof) == "flat":
+			_add_box(rc + Vector3(0, top_h + 0.18, 0),
+					Vector3(rect.size.x + 0.2, 0.35, rect.size.y + 0.2),
+					Color(0.4, 0.44, 0.52) if is_fac else Color(0.45, 0.32, 0.24))
 		else:
-			door_along_z.append(dp)
+			_add_box(rc + Vector3(0, top_h + 0.12, 0),
+					Vector3(rect.size.x + 0.6, 0.24, rect.size.y + 0.6),
+					Color(0.42, 0.46, 0.58) if is_fac else Color(0.5, 0.22, 0.14))
+			_add_box(rc + Vector3(0, top_h + 0.48, 0),
+					Vector3(maxf(1.0, rect.size.x * 0.55), 0.5, maxf(1.0, rect.size.y * 0.55)),
+					Color(0.48, 0.52, 0.62) if is_fac else Color(0.56, 0.28, 0.17))
+		if String(b.foundation) == "stilt":
+			for corner in [rect.position, Vector2i(rect.end.x - 1, rect.position.y),
+					Vector2i(rect.position.x, rect.end.y - 1), rect.end - Vector2i.ONE]:
+				var base2: Vector3 = to_world.call(corner.x, corner.y)
+				var pillar_h := maxf(0.5, gy - base2.y + 0.6)
+				_add_box(Vector3(base2.x, base2.y + pillar_h * 0.5, base2.z),
+						Vector3(0.28, pillar_h, 0.28), Color(0.32, 0.23, 0.14))
+	for gkey in wall_groups:
+		var is_fac_g: bool = String(gkey).begins_with("F_")
+		var ln: int = int(String(gkey).get_slice("_", 1))
+		var sname: String = String(gkey).get_slice("_", 2)
+		var col: Color = {
+			"木构": Color(0.36, 0.23, 0.14),
+			"石砌": Color(0.55, 0.55, 0.52),
+			"砖混": Color(0.5, 0.28, 0.2),
+		}.get(sname, Color(0.36, 0.23, 0.14))
+		if is_fac_g:
+			col = col.lightened(0.25)
+		_add_mesh_sized(wall_groups[gkey], col, Vector3(1, ln * 1.5 + 0.9, 1))
+	_add_mesh_sized(floors, Color(0.62, 0.48, 0.3), Vector3(1, 0.1, 1))
 	var roof_win := Color(1.0, 0.88, 0.5)
 	_add_mesh_sized(win_along_x, roof_win, Vector3(0.16, 0.75, 0.7), false, roof_win)
 	_add_mesh_sized(win_along_z, roof_win, Vector3(0.7, 0.75, 0.16), false, roof_win)
@@ -440,27 +466,34 @@ func _render_town(layout: TownLayout, def: CityDef) -> void:
 	_add_mesh_sized(site_mark, Color(1.0, 0.25, 0.1), Vector3(1.2, 6.0, 1.2))
 
 
-## 城镇导航：可行走面 = 道路/广场/室内地板，墙体为三层实体障碍 → 引擎烘焙后实测跨建筑寻路
+## 城镇导航：可行走面 = 道路/广场/室内地板，墙体为实体障碍；
+## 有高度图时按真实地表高度分层（NavBridge 找顶面逻辑天然适配）
 func _build_town_navigation(layout: TownLayout, def: CityDef) -> void:
 	var grid: GeneratedGrid = layout.roads_grid
 	var bg: GeneratedGrid = layout.build_grid
 	var w := grid.width
 	var d := grid.height
+	var hm := layout.heightmap
+	var hs := def.height_scale
+	var layers := int(hs) + 4 if hm != null else 3
 	var walkable := {}
 	for z in d:
 		for x in w:
 			if grid.get_cell(x, z, -1) != 0 or bg.get_cell(x, z, -1) == def.building_floor_value:
 				walkable[Vector2i(x, z)] = true
-	var nav_grid := GeneratedGrid3D.create(w, 3, d, 0)
+	var nav_grid := GeneratedGrid3D.create(w, layers, d, 0)
 	for z in d:
 		for x in w:
 			var c := Vector2i(x, z)
+			var gh := int(round((hm.sample(x, z) * hs) if hm != null else 0.0))
 			if bg.get_cell(x, z, -1) == def.building_wall_value:
-				for y in 3:
-					nav_grid.set_cell(x, y, z, 1)
+				for ly in range(gh, mini(layers, gh + 4)):
+					nav_grid.set_cell(x, ly, z, 1)
 			elif walkable.has(c):
-				nav_grid.set_cell(x, 0, z, 1)
-	NavBridgeTool.setup_navigation_3d(nav_region, nav_grid, 1, Vector3(-w / 2.0, -0.8, -d / 2.0), 0.45, 0.5)
+				for ly in range(0, mini(layers, gh + 1)):
+					nav_grid.set_cell(x, ly, z, 1)
+	NavBridgeTool.setup_navigation_3d(nav_region, nav_grid, 1,
+			Vector3(-w / 2.0, -1.0, -d / 2.0), 0.45, 0.5)
 	_test_town_navigation(layout, def)
 
 
