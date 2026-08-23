@@ -701,6 +701,7 @@ static func generate_town(def: CityDef, hm: HeightMap, seed_base: int) -> TownLa
 	_town_interiors(def, layout, make_rng(derive_seed(seed_base, 16)))
 	_town_greenery(def, layout, make_rng(derive_seed(seed_base, 17)))
 	_town_street_furniture(def, layout)
+	_conform_terrain(def, layout)
 	return layout
 
 
@@ -1636,9 +1637,11 @@ static func _town_ring_road(def: CityDef, hm: HeightMap, layout: TownLayout) -> 
 	for c in edge_cells:
 		if roads.get_cell(c.x, c.y, 0) != 0:
 			continue
-		if hm != null and not def.bridge_allowed and hm.get_height(c.x, c.y, 1.0) < def.sea_level:
+		var under_water: bool = hm != null and hm.get_height(c.x, c.y, 1.0) < def.sea_level
+		if under_water and not def.bridge_allowed:
 			continue
-		roads.set_cell(c.x, c.y, def.road_ring_value)
+		# 水上段必须有桥语义（否则贴地回写跳过水下格，形成断崖）
+		roads.set_cell(c.x, c.y, def.bridge_value if under_water else def.road_ring_value)
 
 
 ## 广场：选址点周围半径内的空地记入 plaza_cells（不放建筑、地块细分跳过），
@@ -1915,6 +1918,110 @@ static func _town_street_furniture(def: CityDef, layout: TownLayout) -> void:
 		bench_walk += 1
 		if bench_walk % 2 == 1 and build.get_cell(px, py, -1) == 0:
 			layout.streets["benches"].append(Vector2i(px, py))
+
+
+## —— V1 地形回写（cut & fill） ——
+
+## 道路限坡平滑 → 广场/建筑地基整平为锚点 → 向外羽化回写高度场。
+## 保护规则：水上格(原高<海平面)不回写；陆地格回写后不低于海平面（防填海/挖成水洼）。
+static func _conform_terrain(def: CityDef, layout: TownLayout) -> void:
+	if not def.terrain_conform or layout.heightmap == null:
+		return
+	var hm := layout.heightmap
+	var roads := layout.roads_grid
+	var build := layout.build_grid
+	var w := roads.width
+	var n := w * roads.height
+	# 1) 锚点目标高：道路(限坡平滑) → 广场(均值) → 建筑切台(ground_y, 最高优先)
+	var target := PackedFloat32Array()
+	target.resize(n)
+	target.fill(INF)
+	# 1a 道路：梯度约束松弛——相邻路格高差强制 ≤ road_max_grade（正反扫 4 轮传播约束）
+	var road_h := {}
+	for i in n:
+		if roads.cells[i] != 0:
+			road_h[i] = hm.heights[i]
+	var step := def.road_max_grade
+	for _pass in 24:
+		for rev in [false, true]:
+			var xs := range(w)
+			var ys := range(roads.height)
+			if rev:
+				xs.reverse()
+				ys.reverse()
+			for yy in ys:
+				for xx in xs:
+					var ri: int = yy * w + xx
+					if not road_h.has(ri):
+						continue
+					for d in _DIR4:
+						var ni: int = (yy + d.y) * w + (xx + d.x)
+						if not road_h.has(ni):
+							continue
+						road_h[ri] = clampf(float(road_h[ri]), float(road_h[ni]) - step, float(road_h[ni]) + step)
+	for i in road_h:
+		target[int(i)] = float(road_h[i])
+	# 1b 广场：均值整平
+	if not layout.plaza_cells.is_empty():
+		var psum := 0.0
+		for idx in layout.plaza_cells:
+			psum += hm.heights[int(idx)]
+		var pavg := psum / float(layout.plaza_cells.size())
+		for idx in layout.plaza_cells:
+			target[int(idx)] = pavg
+	# 1c 建筑：ground_y 切台（最高优先，覆盖道路锚点）
+	for b in layout.buildings:
+		var gy: float = float(b.ground_y)
+		for yy in range(b.rect.position.y, b.rect.end.y):
+			for xx in range(b.rect.position.x, b.rect.end.x):
+				target[yy * w + xx] = gy
+	# 2) 羽化回写：多源 BFS 从锚点向外携带目标高，随距离衰减 lerp；水上格不回写
+	var blend := def.terrace_blend
+	var src_h := PackedFloat32Array()
+	src_h.resize(n)
+	src_h.fill(INF)
+	var dist2 := PackedInt32Array()
+	dist2.resize(n)
+	dist2.fill(-1)
+	var q2: Array[int] = []
+	for i in n:
+		if target[i] != INF:
+			dist2[i] = 0
+			src_h[i] = target[i]
+			q2.append(i)
+	var head := 0
+	while head < q2.size():
+		var cur3: int = q2[head]
+		head += 1
+		var cx3: int = int(cur3) % w
+		var cy3: int = int(cur3) / w
+		for d in _DIR4:
+			var ni := (cy3 + d.y) * w + (cx3 + d.x)
+			if dist2[ni] != -1 or dist2[cur3] + 1 > blend:
+				continue
+			dist2[ni] = dist2[cur3] + 1
+			src_h[ni] = src_h[cur3]
+			q2.append(ni)
+	var sea := def.sea_level
+	for i in n:
+		var orig2 := hm.heights[i]
+		var is_bridge := roads.cells[i] == def.bridge_value
+		if orig2 < sea and not is_bridge:
+			continue
+		var t2 := target[i]
+		if t2 != INF:
+			hm.heights[i] = maxf(t2, sea - 0.01)
+		elif dist2[i] > 0 and not is_bridge:
+			var k := 1.0 - float(dist2[i]) / float(blend + 1)
+			var blended := lerpf(orig2, src_h[i], clampf(k, 0.0, 1.0))
+			hm.heights[i] = maxf(blended, sea - 0.01)
+
+
+## 陆地保护：原为陆地的格回写后不得低于海平面
+static func _land_safe(orig: float, target: float, sea: float) -> float:
+	if orig < sea:
+		return orig
+	return maxf(target, sea - 0.01)
 
 
 ## —— 模板拼接 ——

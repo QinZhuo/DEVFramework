@@ -90,6 +90,12 @@ class_name CityDef extends PCGGeneratorDef
 @export_range(0.02, 0.3, 0.01) var build_max_step := 0.08
 ## 归一高→世界格高的换算比例（渲染/导航共用）
 @export_range(1.0, 24.0, 0.5) var height_scale := 8.0
+## V1 地形回写：道路/广场/建筑地基整平并羽化回写高度场（cut & fill）
+@export var terrain_conform := true
+## 道路相邻格最大高差（归一高；超过处形成台阶路）
+@export_range(0.02, 0.3, 0.01) var road_max_grade := 0.1
+## 切台/广场边缘的羽化宽度（格）
+@export_range(0, 6, 1) var terrace_blend := 3
 
 ## —— S5 建筑放置 ——
 ## 户型模板库（门字符 G 画在最底边墙上，旋转后门自动朝向临街边）
