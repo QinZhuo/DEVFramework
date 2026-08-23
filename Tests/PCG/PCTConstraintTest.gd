@@ -1,4 +1,4 @@
-class_name PCTConstraintTest
+﻿class_name PCTConstraintTest
 extends RefCounted
 
 ## PCG 约束正确性测试 — 算法输出满足其定义约束
@@ -99,7 +99,7 @@ static func run() -> void:
 	print("[约束] 3D WFC 固定格遵守: %s" % f3_ok)
 
 	# 城镇：主街存在 + 地块全部临街 + 道路网连通(site 可达地图边缘) + 建筑门临路
-	var city := load("res://Assets/Def/PCG/City_Grid.tres") as CityDef
+	var city := load("res://Assets/Def/PCG/City_Grid.tres") as TownDef
 	var tl := PCGTool.generate_town(city, null, 7)
 	var rg := tl.roads_grid
 	var bgrid := tl.build_grid

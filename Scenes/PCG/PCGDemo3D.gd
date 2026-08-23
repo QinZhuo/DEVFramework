@@ -1,4 +1,4 @@
-extends Node3D
+﻿extends Node3D
 ## PCG 3D 演示 · 体素地形 / 洞穴
 ##
 ## 生成 GeneratedGrid3D 并用 MultiMesh 体素化显示，鼠标左键拖拽旋转查看。
@@ -50,7 +50,7 @@ func _update_camera() -> void:
 
 func _current_size() -> float:
 	var res := _selected_res()
-	if res is CityDef:
+	if res is TownDef:
 		return maxf(float(res.width), float(res.height))
 	return maxf(maxf(res.width if res else 32, res.height if res else 32), res.depth if res else 32)
 
@@ -70,8 +70,8 @@ func _generate() -> void:
 	if res == null:
 		_log("请配置 grid3d_defs")
 		return
-	if res is CityDef:
-		_gen_town_3d(res as CityDef)
+	if res is TownDef:
+		_gen_town_3d(res as TownDef)
 		return
 	_despawn_town_npc()
 	var def := res as Grid3DGenDef
@@ -159,7 +159,7 @@ func _add_mesh(pts: PackedVector3Array, color: Color, transparent: bool) -> void
 	_add_mesh_sized(pts, color, Vector3.ONE, transparent)
 
 
-func _add_mesh_sized(pts: PackedVector3Array, color: Color, size: Vector3, transparent := false, emission := Color(0, 0, 0)) -> void:
+func _add_mesh_sized(pts: PackedVector3Array, color: Color, size: Vector3, transparent := false, emission := Color(0, 0, 0), roughness := -1.0) -> void:
 	if pts.is_empty():
 		return
 	var mm := MultiMesh.new()
@@ -173,6 +173,8 @@ func _add_mesh_sized(pts: PackedVector3Array, color: Color, size: Vector3, trans
 	if emission.a > 0.0:
 		mat.emission_enabled = true
 		mat.emission = emission
+	if roughness >= 0.0:
+		mat.roughness = roughness
 	mesh.material = mat
 	mm.mesh = mesh
 	mm.instance_count = pts.size()
@@ -225,7 +227,7 @@ const _DIR6: Array[Vector3i] = [
 
 ## —— 城镇 3D 消费示例：TownLayout → 体块化建筑 + 引擎导航寻路验证 ——
 
-func _gen_town_3d(def: CityDef) -> void:
+func _gen_town_3d(def: TownDef) -> void:
 	var t0 := Time.get_ticks_usec()
 	var layout := PCGTool.generate_town(def, null, int(seed_spin.value))
 	var ms := (Time.get_ticks_usec() - t0) / 1000.0
@@ -244,7 +246,7 @@ func _gen_town_3d(def: CityDef) -> void:
 
 
 ## TownLayout 三层栅格 → MultiMesh 体块（地形起伏贴地 + 道路/建筑/家具 分组着色）
-func _render_town(layout: TownLayout, def: CityDef) -> void:
+func _render_town(layout: TownLayout, def: TownDef) -> void:
 	for child in world.get_children():
 		child.queue_free()
 	var grid: GeneratedGrid = layout.roads_grid
@@ -320,6 +322,22 @@ func _render_town(layout: TownLayout, def: CityDef) -> void:
 				if grid.get_cell(x, z, -1) == int(v):
 					pts.append(to_world.call(x, z))
 		_add_mesh_sized(pts, road_style[v][0], Vector3(1, float(road_style[v][1]), 1))
+	# 人行道：主街邻接空格（纯视觉，浅灰白薄板）
+	var sidewalk_seen := {}
+	var walk_pts := PackedVector3Array()
+	for z in d:
+		for x in w:
+			if grid.get_cell(x, z, -1) != def.road_main_value:
+				continue
+			for dd: Vector2i in [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)]:
+				var nx := x + dd.x
+				var nz := z + dd.y
+				if not grid.in_bounds(nx, nz) or sidewalk_seen.has(Vector2i(nx, nz)):
+					continue
+				if grid.get_cell(nx, nz, -1) == 0 and bg.get_cell(nx, nz, -1) == 0:
+					sidewalk_seen[Vector2i(nx, nz)] = true
+					walk_pts.append(to_world.call(nx, nz))
+	_add_mesh_sized(walk_pts, Color(0.68, 0.66, 0.6), Vector3(1, 0.06, 1))
 	# 广场
 	var plaza_pts := PackedVector3Array()
 	for idx in layout.plaza_cells:
@@ -420,7 +438,8 @@ func _render_town(layout: TownLayout, def: CityDef) -> void:
 		}.get(sname, Color(0.36, 0.23, 0.14))
 		if is_fac_g:
 			col = col.lightened(0.25)
-		_add_mesh_sized(wall_groups[gkey], col, Vector3(1, ln * 1.5 + 0.9, 1))
+		var rough: float = {"木构": 0.9, "石砌": 0.6, "砖混": 0.78}.get(sname, 0.85)
+		_add_mesh_sized(wall_groups[gkey], col, Vector3(1, ln * 1.5 + 0.9, 1), false, Color(0, 0, 0), rough)
 	_add_mesh_sized(floors, Color(0.62, 0.48, 0.3), Vector3(1, 0.1, 1))
 	var roof_win := Color(1.0, 0.88, 0.5)
 	_add_mesh_sized(win_along_x, roof_win, Vector3(0.16, 0.75, 0.7), false, roof_win)
@@ -467,6 +486,19 @@ func _render_town(layout: TownLayout, def: CityDef) -> void:
 		var bv: Vector2i = bench
 		bench_pts.append(to_world.call(bv.x, bv.y))
 	_add_mesh_sized(bench_pts, Color(0.36, 0.24, 0.14), Vector3(0.8, 0.4, 0.8))
+	# 农田条纹（两种作物色薄板交替）
+	var crop_a := PackedVector3Array()
+	var crop_b := PackedVector3Array()
+	for farm in layout.farms:
+		for idx in farm:
+			var fx := int(idx) % layout.roads_grid.width
+			var fz := int(idx) / layout.roads_grid.width
+			if (fx + fz) % 4 < 2:
+				crop_a.append(to_world.call(fx, fz))
+			else:
+				crop_b.append(to_world.call(fx, fz))
+	_add_mesh_sized(crop_a, Color(0.55, 0.5, 0.2), Vector3(1, 0.08, 1))
+	_add_mesh_sized(crop_b, Color(0.45, 0.42, 0.16), Vector3(1, 0.12, 1))
 	# 选址标记柱
 	var site_mark := PackedVector3Array([to_world.call(layout.site.x, layout.site.y)])
 	_add_mesh_sized(site_mark, Color(1.0, 0.25, 0.1), Vector3(1.2, 6.0, 1.2))
@@ -474,7 +506,7 @@ func _render_town(layout: TownLayout, def: CityDef) -> void:
 
 ## 城镇导航：可行走面 = 道路/广场/室内地板，墙体为实体障碍；
 ## 有高度图时按真实地表高度分层（NavBridge 找顶面逻辑天然适配）
-func _build_town_navigation(layout: TownLayout, def: CityDef) -> void:
+func _build_town_navigation(layout: TownLayout, def: TownDef) -> void:
 	var grid: GeneratedGrid = layout.roads_grid
 	var bg: GeneratedGrid = layout.build_grid
 	var w := grid.width
@@ -503,7 +535,7 @@ func _build_town_navigation(layout: TownLayout, def: CityDef) -> void:
 	_test_town_navigation(layout, def)
 
 
-func _test_town_navigation(layout: TownLayout, def: CityDef) -> void:
+func _test_town_navigation(layout: TownLayout, def: TownDef) -> void:
 	await get_tree().create_timer(0.6).timeout
 	if not is_inside_tree():
 		return
@@ -528,7 +560,7 @@ func _test_town_navigation(layout: TownLayout, def: CityDef) -> void:
 
 
 ## 巡逻 NPC：胶囊小人沿各建筑门位循环行走（验证导航面在真实移动下的可用性）
-func _spawn_town_npc(layout: TownLayout, def: CityDef) -> void:
+func _spawn_town_npc(layout: TownLayout, def: TownDef) -> void:
 	_despawn_town_npc()
 	if layout.buildings.size() < 2:
 		return

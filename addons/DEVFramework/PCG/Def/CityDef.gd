@@ -84,6 +84,14 @@ class_name CityDef extends PCGGeneratorDef
 @export_range(1.0, 8.0, 0.5) var tree_min_distance := 2.5
 ## 路灯沿主干道路的间隔（格）
 @export_range(2, 16, 1) var streetlamp_spacing := 6
+## 行道树沿主街的间隔（格；0=不种行道树）
+@export_range(0, 16, 1) var street_tree_spacing := 5
+
+## —— 农田 ——
+## 距选址超过此距离的外围空地才可能转为农田（格）
+@export_range(4, 64, 1) var farm_min_dist := 14
+## 农田连片最小面积（格，低于则保持空地）
+@export_range(8, 512, 4) var farm_min_area := 60
 
 ## —— 贴地放置（有高度图时生效） ——
 ## footprint 四角高差超过此值转桩基(否则切台整平)

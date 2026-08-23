@@ -1,4 +1,4 @@
-@tool
+﻿@tool
 ## PCG 统一入口 — 随机 / 噪声 / 网格 / 散布 / 内容 / 管线
 ##
 ## 设计要点：
@@ -681,35 +681,112 @@ static func _place_random_3d(def: PlacementDef3D, rng: RandomNumberGenerator) ->
 
 ## —— 城镇（S1 选址 / S2 道路网 / S3 街区 / S4 地块细分） ——
 
-## 生成小城镇骨架（同 Def + 同 seed 必复现）。
-## hm 可为 null（平地城镇）；各阶段独立派生 RNG，顺序稳定。
-## 业内流程：地形评分选址 → 贴地道路网(主街A*/次街生长/巷道分割) → 街区提取 → 临街地块细分
-static func generate_town(def: CityDef, hm: HeightMap, seed_base: int) -> TownLayout:
-	var layout := TownLayout.new()
-	layout.roads_grid = GeneratedGrid.create(def.width, def.height, 0)
-	layout.heightmap = hm
-	# 城镇命名（ContentGenDef NAME 模式，复用内容生成积木）
+## 生成小城镇（同 Def + 同 seed 必复现）。hm 可为 null（平地城镇）。
+## 步骤遍历 def.effective_steps()，每步经 TownStepDef.apply(ctx) 委托 PCGTool.step_* 编排函数。
+static func generate_town(def: TownDef, hm: HeightMap, seed_base: int) -> TownLayout:
+	var gctx := TownGenContext.new(def, hm, seed_base)
+	gctx.layout.heightmap = hm
+	# 城镇命名（独立种子槽，不随步骤增减变化）
 	if def.name_gen != null:
-		layout.town_name = generate_name(def.name_gen, make_rng(derive_seed(seed_base, 10)))
-	var site := _town_site(def, hm, make_rng(derive_seed(seed_base, 11)))
-	layout.site = site.pos
-	layout.site_score = site.score
-	_town_main_roads(def, hm, layout, site.main, make_rng(derive_seed(seed_base, 12)))
-	if def.ring_road_enabled:
-		_town_ring_road(def, hm, layout)
-	_town_plaza(def, layout)
-	_town_alley_split(def, hm, layout, make_rng(derive_seed(seed_base, 13)))
-	_town_parcels(def, layout, make_rng(derive_seed(seed_base, 14)))
-	_town_buildings(def, layout, make_rng(derive_seed(seed_base, 15)))
-	_town_interiors(def, layout, make_rng(derive_seed(seed_base, 16)))
-	_town_greenery(def, layout, make_rng(derive_seed(seed_base, 17)))
-	_town_street_furniture(def, layout)
-	_conform_terrain(def, layout)
-	return layout
+		gctx.layout.town_name = generate_name(
+			def.name_gen, make_rng(derive_seed(seed_base, 10)))
+	for s in def.effective_steps():
+		if s == null or not s.enabled:
+			continue
+		s.apply(gctx)
+	return gctx.layout
+
+
+static func town_ring_step(_step: TownRingStep, ctx: TownGenContext) -> void:
+	_town_ring_road(ctx.def, ctx.heightmap, ctx.layout)
+
+
+static func town_alley_step(_step: TownAlleyStep, ctx: TownGenContext) -> void:
+	_town_alley_split(ctx.def, ctx.heightmap, ctx.layout, ctx.next_rng())
+
+
+static func town_plaza_step(step: TownPlazaStep, ctx: TownGenContext) -> void:
+	ctx.def.plaza_radius = step.plaza_radius
+	ctx.def.plaza_feature = step.plaza_feature
+	_town_plaza(ctx.def, ctx.layout)
+
+
+static func town_parcel_step(step: TownParcelStep, ctx: TownGenContext) -> void:
+	var def := ctx.def
+	def.max_block_area = step.max_block_area
+	def.min_block_area = step.min_block_area
+	def.lot_max_area = step.lot_max_area
+	def.lot_min_area = step.lot_min_area
+	_town_parcels(def, ctx.layout, ctx.next_rng())
+
+
+static func town_building_step(step: TownBuildingStep, ctx: TownGenContext) -> void:
+	var def := ctx.def
+	def.houses = step.houses
+	def.facilities = step.facilities
+	def.house_fill_ratio = step.house_fill_ratio
+	def.setback = step.setback
+	def.house_layers_min = step.house_layers_min
+	def.house_layers_max = step.house_layers_max
+	def.house_roof = step.house_roof
+	def.flat_roof_styles = step.flat_roof_styles
+	def.style_table = step.style_table
+	def.build_max_step = step.build_max_step
+	_town_buildings(def, ctx.layout, ctx.next_rng())
+
+
+static func town_interior_step(step: TownInteriorStep, ctx: TownGenContext) -> void:
+	var def := ctx.def
+	def.furniture_tables = step.furniture_tables
+	def.prop_table = step.prop_table
+	def.props_per_building = step.props_per_building
+	_town_interiors(def, ctx.layout, ctx.next_rng())
+
+
+static func town_greenery_step(step: TownGreeneryStep, ctx: TownGenContext) -> void:
+	var def := ctx.def
+	def.tree_count = step.tree_count
+	def.tree_min_distance = step.tree_min_distance
+	def.street_tree_spacing = step.street_tree_spacing
+	_town_greenery(def, ctx.layout, ctx.next_rng())
+
+
+static func town_street_step(step: TownStreetStep, ctx: TownGenContext) -> void:
+	ctx.def.streetlamp_spacing = step.streetlamp_spacing
+	_town_street_furniture(ctx.def, ctx.layout)
+
+
+static func town_farm_step(step: TownFarmStep, ctx: TownGenContext) -> void:
+	var def := ctx.def
+	def.farm_min_dist = step.farm_min_dist
+	def.farm_min_area = step.farm_min_area
+	_town_farms(def, ctx.layout)
+
+
+static func town_conform_step(step: TownConformStep, ctx: TownGenContext) -> void:
+	var def := ctx.def
+	def.road_max_grade = step.road_max_grade
+	def.terrace_blend = step.terrace_blend
+	if not step.enabled:
+		return
+	_conform_terrain(def, ctx.layout)
 
 
 ## S1 选址：最大陆地连通域内抽候选，按 平坦度/近水距离带/陆地占比 打分取最优
-static func _town_site(def: CityDef, hm: HeightMap, rng: RandomNumberGenerator) -> Dictionary:
+static func town_site_step(step: TownSiteStep, ctx: TownGenContext) -> void:
+	var def := ctx.def
+	def.site_candidates = step.site_candidates
+	def.site_radius = step.site_radius
+	def.water_band_min = step.water_band_min
+	def.water_band_max = step.water_band_max
+	var site := _town_site(def, ctx.heightmap, ctx.next_rng())
+	ctx.site = site.pos
+	ctx.site_score = site.score
+	ctx.main_cells = site.main
+
+
+## S1 选址：最大陆地连通域内抽候选，按 平坦度/近水距离带/陆地占比 打分取最优
+static func _town_site(def: TownDef, hm: HeightMap, rng: RandomNumberGenerator) -> Dictionary:
 	var fallback := Vector2i(def.width / 2, def.height / 2)
 	if hm == null or hm.width <= 0 or hm.height <= 0:
 		return {"pos": fallback, "score": 1.0, "main": PackedInt32Array()}
@@ -742,7 +819,7 @@ static func _town_site(def: CityDef, hm: HeightMap, rng: RandomNumberGenerator) 
 
 ## 选址打分：0.45*平坦 + 0.35*近水带宽 + 0.20*陆地占比（半径 R 内采样）
 const _SITE_FLAT_TOL := 0.08
-static func _site_score(def: CityDef, hm: HeightMap, water_dist: PackedFloat32Array, cx: int, cy: int) -> float:
+static func _site_score(def: TownDef, hm: HeightMap, water_dist: PackedFloat32Array, cx: int, cy: int) -> float:
 	var r := def.site_radius
 	var slope_sum := 0.0
 	var slope_n := 0
@@ -800,13 +877,16 @@ static func _distance_field(grid: GeneratedGrid, source_value: int) -> PackedFlo
 
 
 ## S2 主干道路网：主街(site→边缘枢纽 坡度A*) + 次街(沿主街扰动垂直生长)
-static func _town_main_roads(def: CityDef, hm: HeightMap, layout: TownLayout, main_cells: PackedInt32Array, rng: RandomNumberGenerator) -> void:
+static func town_roads_step(step: TownRoadStep, ctx: TownGenContext) -> void:
+	var def: TownDef = ctx.def
+	var layout := ctx.layout
+	var hm := ctx.heightmap
+	var rng := ctx.next_rng()
 	var roads := layout.roads_grid
-	var hub := _edge_hub(def, hm, main_cells, rng)
-	# 主街代价扰动：平地也能弯出自然走向（业内 path perturbation）
-	var main_path := _slope_astar(def, hm, roads, Vector2(layout.site), Vector2(hub), true, rng, 0.4)
+	var hub := _edge_hub(def, hm, ctx.main_cells, rng)
+	var main_path := _slope_astar(def, hm, roads, Vector2(layout.site), Vector2(hub), true, rng, def.main_jitter)
 	if main_path.is_empty():
-		push_warning("PCGTool.generate_town: 主街 A* 无通路，回退直线 L 路。")
+		push_warning("PCGTool.town_roads_step: 主街 A* 无通路，回退直线 L 路。")
 		main_path = _carve_l_path(Vector2(layout.site), Vector2(hub), rng)
 	_stamp_road_layer(roads, main_path, def.main_width, def.road_main_value, hm, def.sea_level, def.bridge_value)
 	layout.road_nodes.append(Vector2(layout.site))
@@ -830,7 +910,7 @@ static func _town_main_roads(def: CityDef, hm: HeightMap, layout: TownLayout, ma
 
 ## 边缘枢纽：有高度图时选「最靠地图边缘的陆地格」（城门/码头，主街不出水）；
 ## 平地时随机挑一条边的随机点
-static func _edge_hub(def: CityDef, hm: HeightMap, main_cells: PackedInt32Array, rng: RandomNumberGenerator) -> Vector2i:
+static func _edge_hub(def: TownDef, hm: HeightMap, main_cells: PackedInt32Array, rng: RandomNumberGenerator) -> Vector2i:
 	if hm != null and not main_cells.is_empty():
 		var w := def.width
 		var h := def.height
@@ -859,7 +939,7 @@ static func _edge_hub(def: CityDef, hm: HeightMap, main_cells: PackedInt32Array,
 
 
 ## 次街贪心生长：直行偏好 + wander 随机弯折；碰到其他路即接入，出界/到长即止
-static func _grow_street(def: CityDef, hm: HeightMap, roads: GeneratedGrid, start: Vector2, dir: Vector2, value: int, max_len: int, rng: RandomNumberGenerator) -> void:
+static func _grow_street(def: TownDef, hm: HeightMap, roads: GeneratedGrid, start: Vector2, dir: Vector2, value: int, max_len: int, rng: RandomNumberGenerator) -> void:
 	var cur := Vector2i(int(round(start.x)), int(round(start.y)))
 	if not roads.in_bounds(cur.x, cur.y):
 		return
@@ -971,7 +1051,7 @@ class _MinHeap:
 
 ## 带坡度代价的 A*（4 邻域）：cost = 1 + k*Δh²；水面=桥代价(禁桥则不通)；已有道路借道×0.4。
 ## jitter>0 时给每格加随机代价扰动（业内 path perturbation，让主街自然弯曲），需传 rng 保证可复现
-static func _slope_astar(def: CityDef, hm: HeightMap, roads: GeneratedGrid, a: Vector2, b: Vector2, allow_bridge: bool, rng: RandomNumberGenerator = null, jitter := 0.0) -> PackedVector2Array:
+static func _slope_astar(def: TownDef, hm: HeightMap, roads: GeneratedGrid, a: Vector2, b: Vector2, allow_bridge: bool, rng: RandomNumberGenerator = null, jitter := 0.0) -> PackedVector2Array:
 	var w := roads.width
 	var h := roads.height
 	var start := Vector2i(clampi(int(a.x), 0, w - 1), clampi(int(a.y), 0, h - 1))
@@ -1045,7 +1125,7 @@ static func manhattan_dist(a: Vector2i, b: Vector2i) -> int:
 ## S3+S2b 街区细分：对道路外包盒做递归空间细分（Parish&Müller 网格化）——
 ## 过大矩形沿长轴中线（抖动）刻一条完整巷道，天然形成闭合街区；
 ## 有高度图时跳过陡坡格、水格按桥规则处理。块提取交给 S4 的 components。
-static func _town_alley_split(def: CityDef, hm: HeightMap, layout: TownLayout, rng: RandomNumberGenerator) -> void:
+static func _town_alley_split(def: TownDef, hm: HeightMap, layout: TownLayout, rng: RandomNumberGenerator) -> void:
 	var roads := layout.roads_grid
 	var bounds := Rect2i()
 	var first := true
@@ -1107,7 +1187,7 @@ static func _town_blocks(roads: GeneratedGrid) -> Array[PackedInt32Array]:
 
 ## S4 地块细分：每街区递归交替切片，直到满足面积/长宽比；无临街的地块丢弃；
 ## 广场格(plaza_cells)不参与细分
-static func _town_parcels(def: CityDef, layout: TownLayout, rng: RandomNumberGenerator) -> void:
+static func _town_parcels(def: TownDef, layout: TownLayout, rng: RandomNumberGenerator) -> void:
 	var roads := layout.roads_grid
 	var plaza := {}
 	for idx in layout.plaza_cells:
@@ -1125,7 +1205,7 @@ static func _town_parcels(def: CityDef, layout: TownLayout, rng: RandomNumberGen
 		_slice_lot(def, roads, cells, rect, 0, rng, layout.parcels)
 
 
-static func _slice_lot(def: CityDef, roads: GeneratedGrid, cells: Dictionary, rect: Rect2i, depth: int, rng: RandomNumberGenerator, out: Array) -> void:
+static func _slice_lot(def: TownDef, roads: GeneratedGrid, cells: Dictionary, rect: Rect2i, depth: int, rng: RandomNumberGenerator, out: Array) -> void:
 	if depth > 14:
 		return
 	var area := cells.size()
@@ -1341,7 +1421,7 @@ static func _mst_edges(hubs: PackedVector2Array, rng: RandomNumberGenerator) -> 
 ## 模板约定：门字符 G 画在最底边墙上。facing(_DIR4 索引 0上1右2下3左) → 使底边转到该朝向的旋转量
 const _FACING_TO_ROT := {2: 0, 3: 1, 0: 2, 1: 3}
 
-static func _town_buildings(def: CityDef, layout: TownLayout, rng: RandomNumberGenerator) -> void:
+static func _town_buildings(def: TownDef, layout: TownLayout, rng: RandomNumberGenerator) -> void:
 	layout.build_grid = GeneratedGrid.create(def.width, def.height, 0)
 	if def.houses.is_empty():
 		return
@@ -1375,7 +1455,7 @@ static func _town_buildings(def: CityDef, layout: TownLayout, rng: RandomNumberG
 
 
 ## 挑未占用最优地块：主街临街(可选偏好) > 面积大 > 距选址近（POI 用）
-static func _best_lot(def: CityDef, layout: TownLayout, used: Dictionary, rng: RandomNumberGenerator, prefer_main := true) -> int:
+static func _best_lot(def: TownDef, layout: TownLayout, used: Dictionary, rng: RandomNumberGenerator, prefer_main := true) -> int:
 	var best := -1
 	var best_score := -INF
 	for li in layout.parcels.size():
@@ -1396,7 +1476,7 @@ static func _best_lot(def: CityDef, layout: TownLayout, used: Dictionary, rng: R
 	return best
 
 
-static func _lot_touches_main(def: CityDef, layout: TownLayout, p: Dictionary) -> bool:
+static func _lot_touches_main(def: TownDef, layout: TownLayout, p: Dictionary) -> bool:
 	var roads := layout.roads_grid
 	for idx in p.cells:
 		var x: int = int(idx) % roads.width
@@ -1408,13 +1488,13 @@ static func _lot_touches_main(def: CityDef, layout: TownLayout, p: Dictionary) -
 
 
 ## 在地块上放一栋建筑：选模板→锚点定位(门格压真实临街格)→校验足迹→印建筑层→记录门位
-static func _place_building(def: CityDef, layout: TownLayout, li: int, type_name: String, bid: int, rng: RandomNumberGenerator) -> bool:
+static func _place_building(def: TownDef, layout: TownLayout, li: int, type_name: String, bid: int, rng: RandomNumberGenerator) -> bool:
 	return _place_from_lists(def, layout, li, type_name, bid, rng, def.houses, null)
 
 
 ## 从指定户型模板列表放置一栋建筑（设施用专属库，住宅用通用库），
 ## 模板按面积降序逐个尝试（同面积随机次序）：大地块优先放大房子，放不下再换小户型兜底
-static func _place_from_lists(def: CityDef, layout: TownLayout, li: int, type_name: String, bid: int, rng: RandomNumberGenerator, tmpl_list: Array[TemplateDef], fac: FacilityDef) -> bool:
+static func _place_from_lists(def: TownDef, layout: TownLayout, li: int, type_name: String, bid: int, rng: RandomNumberGenerator, tmpl_list: Array[TemplateDef], fac: FacilityDef) -> bool:
 	var parcel: Dictionary = layout.parcels[li]
 	var frontage := int(parcel.frontage_dir)
 	if frontage < 0 or not _FACING_TO_ROT.has(frontage):
@@ -1447,7 +1527,7 @@ static func _place_from_lists(def: CityDef, layout: TownLayout, li: int, type_na
 
 ## 单模板单朝向的锚点放置：门格必须压在「沿 facing 方向邻路的真实临街格」上，
 ## 从门格反推建筑位置，保证门外一格必然是道路（包围盒贴边法在不规则地块上会让门朝向落空，已弃用）
-static func _try_place_one(def: CityDef, layout: TownLayout, parcel: Dictionary, tmpl: TemplateDef, facing: int, type_name: String, bid: int, rng: RandomNumberGenerator, li: int, fac: FacilityDef) -> bool:
+static func _try_place_one(def: TownDef, layout: TownLayout, parcel: Dictionary, tmpl: TemplateDef, facing: int, type_name: String, bid: int, rng: RandomNumberGenerator, li: int, fac: FacilityDef) -> bool:
 	var rot: int = _FACING_TO_ROT[facing]
 	var rect: Rect2i = parcel.rect
 	var avail_w := rect.size.x - def.setback * 2
@@ -1574,7 +1654,7 @@ static func _try_place_one(def: CityDef, layout: TownLayout, parcel: Dictionary,
 
 ## 风格分配：邻近继承（12 格内最近已放建筑的风格 70% 概率沿用，形成同街区同风格分区），
 ## 否则从 style_table 加权抽取
-static func _pick_style(def: CityDef, layout: TownLayout, anchor: Vector2i, rng: RandomNumberGenerator) -> String:
+static func _pick_style(def: TownDef, layout: TownLayout, anchor: Vector2i, rng: RandomNumberGenerator) -> String:
 	if def.style_table.is_empty():
 		return ""
 	var best_d := 12 * 12
@@ -1594,7 +1674,7 @@ static func _pick_style(def: CityDef, layout: TownLayout, anchor: Vector2i, rng:
 
 ## 把户型模板按旋转印到建筑层（使用 CityDef 的墙/地板/门值，不走模板自身 char_map）。
 ## 槽位字符(B/T/C/H/S…)与未识别字符一律印为地板——它们只进 interiors 数据，不进栅格
-static func _stamp_building(tmpl: TemplateDef, build: GeneratedGrid, ox: int, oy: int, rotation: int, def: CityDef) -> void:
+static func _stamp_building(tmpl: TemplateDef, build: GeneratedGrid, ox: int, oy: int, rotation: int, def: TownDef) -> void:
 	var mapping := {
 		"#": def.building_wall_value,
 		"G": def.building_door_value,
@@ -1618,7 +1698,7 @@ static func _stamp_building(tmpl: TemplateDef, build: GeneratedGrid, ox: int, oy
 
 ## 城镇边界环路：沿道路覆盖范围外圈刻一圈路，收束路网形成闭合边界；
 ## 触地图边缘的一侧自然开口（主街通向城外）
-static func _town_ring_road(def: CityDef, hm: HeightMap, layout: TownLayout) -> void:
+static func _town_ring_road(def: TownDef, hm: HeightMap, layout: TownLayout) -> void:
 	var roads := layout.roads_grid
 	var bounds := Rect2i()
 	var first := true
@@ -1655,7 +1735,7 @@ static func _town_ring_road(def: CityDef, hm: HeightMap, layout: TownLayout) -> 
 
 ## 广场：选址点周围半径内的空地记入 plaza_cells（不放建筑、地块细分跳过），
 ## 并在广场质心记录中心设施（水井/喷泉…）
-static func _town_plaza(def: CityDef, layout: TownLayout) -> void:
+static func _town_plaza(def: TownDef, layout: TownLayout) -> void:
 	layout.plaza_cells.clear()
 	layout.plaza_center = Vector2i(-1, -1)
 	layout.plaza_item = ""
@@ -1691,7 +1771,7 @@ static func _town_plaza(def: CityDef, layout: TownLayout) -> void:
 
 ## 对每栋建筑：按其户型模板中的槽位字符（FurnitureTableDef.slot_name 配置）抽家具变体，
 ## 装饰物随机撒在剩余地板；最后做「门口内侧净空 + 家具可达性」校验修复（业内 post-placement repair）
-static func _town_interiors(def: CityDef, layout: TownLayout, rng: RandomNumberGenerator) -> void:
+static func _town_interiors(def: TownDef, layout: TownLayout, rng: RandomNumberGenerator) -> void:
 	var tables := {}
 	for ft in def.furniture_tables:
 		if ft != null and not ft.slot_name.is_empty() and not ft.items.is_empty():
@@ -1741,7 +1821,7 @@ static func _town_interiors(def: CityDef, layout: TownLayout, rng: RandomNumberG
 
 ## 院落围栏：建筑 footprint 外一圈、地块内的空格（临街侧留院门开口），
 ## 仅记录数据不进栅格——消费方按 interiors[bid].yard 渲染围栏/小径
-static func _town_yards(def: CityDef, layout: TownLayout) -> void:
+static func _town_yards(def: TownDef, layout: TownLayout) -> void:
 	if layout.build_grid == null:
 		return
 	var build := layout.build_grid
@@ -1785,7 +1865,7 @@ static func _town_yards(def: CityDef, layout: TownLayout) -> void:
 
 ## 室内校验修复：①门口内侧净空（有家具/装饰则移除）②可达性（BFS 从门出发，
 ## 家具与装饰视为阻挡，不可达的物品移除——保证玩家能走到每件家具旁交互）
-static func _town_validate_interiors(def: CityDef, layout: TownLayout) -> void:
+static func _town_validate_interiors(def: TownDef, layout: TownLayout) -> void:
 	var build := layout.build_grid
 	if build == null:
 		return
@@ -1840,7 +1920,7 @@ static func _filter_reachable(items: Array, visited: Dictionary) -> Array:
 
 
 ## 绿化：城镇空地（非道路/建筑/广场）泊松式散布树木，记录到 layout.trees
-static func _town_greenery(def: CityDef, layout: TownLayout, rng: RandomNumberGenerator) -> void:
+static func _town_greenery(def: TownDef, layout: TownLayout, rng: RandomNumberGenerator) -> void:
 	layout.trees.clear()
 	if def.tree_count <= 0:
 		return
@@ -1866,6 +1946,31 @@ static func _town_greenery(def: CityDef, layout: TownLayout, rng: RandomNumberGe
 		candidates[j] = t
 	var min_d2 := def.tree_min_distance * def.tree_min_distance
 	var placed := PackedVector3Array()
+	# 行道树：沿主街每 spacing 格在邻接空格种树（优先于空地散布，避免重复）
+	if def.street_tree_spacing > 0:
+		var walk := 0
+		for y in roads.height:
+			for x in roads.width:
+				if roads.get_cell(x, y, -1) != def.road_main_value:
+					continue
+				walk += 1
+				if walk % def.street_tree_spacing != 0:
+					continue
+				for d in _DIR4:
+					var tx := x + d.x
+					var ty := y + d.y
+					if not roads.in_bounds(tx, ty) or roads.get_cell(tx, ty, -1) != 0 or build.get_cell(tx, ty, -1) != 0:
+						continue
+					var dup := false
+					for p in placed:
+						var ddx := float(p.x - tx)
+						var ddy := float(p.y - ty)
+						if ddx * ddx + ddy * ddy < min_d2:
+							dup = true
+							break
+					if not dup:
+						placed.append(Vector3(tx, ty, 0))
+						layout.trees.append(Vector2i(tx, ty))
 	var attempts := maxi(def.tree_count * 8, 400)
 	for cand in candidates:
 		if placed.size() >= def.tree_count or attempts <= 0:
@@ -1884,7 +1989,7 @@ static func _town_greenery(def: CityDef, layout: TownLayout, rng: RandomNumberGe
 
 
 ## 街具：路灯沿主干道/环路路格取样、贴路边空格；长椅沿广场临路边缘间隔摆放
-static func _town_street_furniture(def: CityDef, layout: TownLayout) -> void:
+static func _town_street_furniture(def: TownDef, layout: TownLayout) -> void:
 	layout.streets = {"lamps": [], "benches": []}
 	if layout.roads_grid == null or def.streetlamp_spacing <= 0:
 		return
@@ -1933,7 +2038,7 @@ static func _town_street_furniture(def: CityDef, layout: TownLayout) -> void:
 
 ## 道路限坡平滑 → 广场/建筑地基整平为锚点 → 向外羽化回写高度场。
 ## 保护规则：水上格(原高<海平面)不回写；陆地格回写后不低于海平面（防填海/挖成水洼）。
-static func _conform_terrain(def: CityDef, layout: TownLayout) -> void:
+static func _conform_terrain(def: TownDef, layout: TownLayout) -> void:
 	if not def.terrain_conform or layout.heightmap == null:
 		return
 	var hm := layout.heightmap
@@ -2031,6 +2136,47 @@ static func _land_safe(orig: float, target: float, sea: float) -> float:
 	if orig < sea:
 		return orig
 	return maxf(target, sea - 0.01)
+
+
+## 农田：距选址超过 farm_min_dist 的连片空地（≥farm_min_area）转农田区，
+## 记入 layout.farms（条纹方向由消费方按格坐标推算）
+static func _town_farms(def: TownDef, layout: TownLayout) -> void:
+	layout.farms.clear()
+	var roads := layout.roads_grid
+	var build := layout.build_grid
+	var w := roads.width
+	# 候选：外围空地（非道路/建筑/广场/树）
+	var cand := {}
+	for y in roads.height:
+		for x in roads.width:
+			var idx := y * w + x
+			if roads.get_cell(x, y, -1) != 0 or build.get_cell(x, y, -1) != 0:
+				continue
+			if Vector2(x, y).distance_to(Vector2(layout.site)) < def.farm_min_dist:
+				continue
+			cand[idx] = true
+	if cand.is_empty():
+		return
+	# 候选集连通域分组
+	var visited := {}
+	for idx in cand:
+		if visited.has(int(idx)):
+			continue
+		var comp := PackedInt32Array()
+		var stack: Array[int] = [int(idx)]
+		visited[int(idx)] = true
+		while not stack.is_empty():
+			var cur: int = stack.pop_back()
+			comp.append(cur)
+			var cx: int = cur % w
+			var cy: int = cur / w
+			for d in _DIR4:
+				var ni: int = (cy + d.y) * w + (cx + d.x)
+				if cand.has(ni) and not visited.has(ni):
+					visited[ni] = true
+					stack.append(ni)
+		if comp.size() >= def.farm_min_area:
+			layout.farms.append(comp)
 
 
 ## —— 模板拼接 ——

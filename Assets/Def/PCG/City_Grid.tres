@@ -1,6 +1,6 @@
 ﻿[gd_resource type="Resource" load_steps=31 format=3]
 
-[ext_resource type="Script" path="res://addons/DEVFramework/PCG/Def/CityDef.gd" id="1_script"]
+[ext_resource type="Script" path="res://addons/DEVFramework/PCG/Def/TownDef.gd" id="1_script"]
 [ext_resource type="Script" path="res://addons/DEVFramework/PCG/Def/TemplateDef.gd" id="2_tmpl_script"]
 [ext_resource type="Script" path="res://addons/DEVFramework/PCG/Def/ContentEntryDef.gd" id="3_entry_script"]
 [ext_resource type="Script" path="res://addons/DEVFramework/PCG/Def/FurnitureTableDef.gd" id="4_ftable_script"]

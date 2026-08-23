@@ -1,4 +1,4 @@
-class_name PCTTownReport extends RefCounted
+﻿class_name PCTTownReport extends RefCounted
 ## 城镇生成质量报告 — 多种子批量统计，输出调参依据
 ##
 ## 运行方式（编辑器执行，结果打印到日志）：
@@ -12,7 +12,7 @@ class_name PCTTownReport extends RefCounted
 const DEFAULT_SEEDS := 10
 
 static func run(seed_count := DEFAULT_SEEDS, seed_start := 20260101) -> Dictionary:
-	var city := load("res://Assets/Def/PCG/City_Grid.tres") as CityDef
+	var city := load("res://Assets/Def/PCG/City_Grid.tres") as TownDef
 	if city == null:
 		push_error("PCTTownReport: 找不到 City_Grid.tres")
 		return {}
@@ -51,7 +51,7 @@ static func run(seed_count := DEFAULT_SEEDS, seed_start := 20260101) -> Dictiona
 	return {"rows": rows, "pass": all_pass}
 
 
-static func _measure(city: CityDef, tl: TownLayout, ms: float, seed: int) -> Dictionary:
+static func _measure(city: TownDef, tl: TownLayout, ms: float, seed: int) -> Dictionary:
 	var fails: Array = []
 	var rg := tl.roads_grid
 	# 门临路率（含边界环路）
@@ -106,14 +106,14 @@ static func _measure(city: CityDef, tl: TownLayout, ms: float, seed: int) -> Dic
 	}
 
 
-static func _count_build_cells(_city: CityDef, tl: TownLayout) -> int:
+static func _count_build_cells(_city: TownDef, tl: TownLayout) -> int:
 	var n := 0
 	for b in tl.buildings:
 		n += int(b.rect.size.x) * int(b.rect.size.y)
 	return n
 
 
-static func _facility_names(city: CityDef) -> Array[String]:
+static func _facility_names(city: TownDef) -> Array[String]:
 	var names: Array[String] = []
 	for fac in city.facilities:
 		if fac != null:

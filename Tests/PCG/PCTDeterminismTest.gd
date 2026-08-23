@@ -1,4 +1,4 @@
-class_name PCTDeterminismTest
+﻿class_name PCTDeterminismTest
 extends RefCounted
 
 ## PCG 确定性测试 — 同 seed 必复现，不同 seed 不同
@@ -58,7 +58,7 @@ static func run() -> void:
 	print("[确定性] 3D WFC 固定格复现: %s" % wfc3_fix_ok)
 
 	# 城镇：同 seed 复现（道路层/选址/地块全一致），不同 seed 不同
-	var city := load("res://Assets/Def/PCG/City_Grid.tres") as CityDef
+	var city := load("res://Assets/Def/PCG/City_Grid.tres") as TownDef
 	var ta := PCGTool.generate_town(city, null, 3)
 	var tb := PCGTool.generate_town(city, null, 3)
 	var tc := PCGTool.generate_town(city, null, 4)

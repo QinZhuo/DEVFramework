@@ -1,4 +1,4 @@
-extends Control
+﻿extends Control
 ## PCG 演示 · 程序化生成功能展示
 ##
 ## 通过 Assets/Def/PCG/ 下的预置配置资源展示四类生成：
@@ -182,8 +182,8 @@ func _gen_grid(seed: int) -> void:
 	if res is TemplateStitchDef:
 		_gen_stitch(res as TemplateStitchDef, seed)
 		return
-	if res is CityDef:
-		_gen_city(res as CityDef, seed)
+	if res is TownDef:
+		_gen_city(res as TownDef, seed)
 		return
 	var def := res as GridGenDef
 	if def == null:
@@ -432,7 +432,7 @@ func _gen_stitch(def: TemplateStitchDef, seed: int) -> void:
 
 ## —— 城镇 ——
 
-func _gen_city(def: CityDef, seed: int) -> void:
+func _gen_city(def: TownDef, seed: int) -> void:
 	brush_row.visible = false
 	anim_row.visible = false
 	var layout := PCGTool.generate_town(def, null, seed)
@@ -460,6 +460,14 @@ func _gen_city(def: CityDef, seed: int) -> void:
 		img.set_pixel(t.x, t.y, Color(0.12, 0.3, 0.1))
 	for lamp in layout.streets.get("lamps", []):
 		img.set_pixel(lamp.x, lamp.y, Color(1.0, 0.9, 0.45))
+	# 农田条纹（两种作物色交替）
+	for fi in layout.farms.size():
+		var farm: PackedInt32Array = layout.farms[fi]
+		for idx in farm:
+			var fx := int(idx) % grid.width
+			var fy := int(idx) / grid.width
+			var crop := Color(0.55, 0.5, 0.2) if (fx + fy) % 4 < 2 else Color(0.45, 0.42, 0.16)
+			img.set_pixel(fx, fy, crop)
 	var palette := {
 		def.road_main_value: Color(0.9, 0.78, 0.4),
 		def.road_sec_value: Color(0.55, 0.56, 0.6),

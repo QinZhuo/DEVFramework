@@ -34,10 +34,12 @@ var town_name := ""
 ## 广场中心设施（水井/喷泉…）位置与名称；item 为空表示无设施
 var plaza_center := Vector2i(-1, -1)
 var plaza_item := ""
-## 树木（格坐标，城镇空地绿化散布）
+## 树木（格坐标，城镇空地绿化散布 + 行道树）
 var trees := PackedVector2Array()
 ## 街具 {"lamps":[路灯格], "benches":[长椅格]}
 var streets := {}
+## 农田区块列表（每项为一片连片农田的格线性索引；条纹方向由消费方按坐标推算）
+var farms: Array = []
 
 ## 道路等级
 enum EdgeClass { MAIN, SECONDARY, ALLEY }
@@ -107,6 +109,7 @@ func to_data() -> Dictionary:
 		"trees": trees,
 		"streets_lamps": lamps,
 		"streets_benches": benches,
+		"farms": farms,
 		"heightmap": heightmap.to_data() if heightmap else null,
 		"town_name": town_name,
 	}
@@ -166,6 +169,9 @@ static func from_data(data: Dictionary) -> TownLayout:
 	t.plaza_center = Vector2i(int(pc[0]), int(pc[1]))
 	t.plaza_item = String(data.get("plaza_item", ""))
 	t.trees = PackedVector2Array(data.get("trees", []))
+	t.farms = []
+	for farm in data.get("farms", []):
+		t.farms.append(PackedInt32Array(farm))
 	for lamp in data.get("streets_lamps", []):
 		if not t.streets.has("lamps"):
 			t.streets["lamps"] = []
