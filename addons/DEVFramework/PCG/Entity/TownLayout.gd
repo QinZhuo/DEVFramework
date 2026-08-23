@@ -1,0 +1,104 @@
+class_name TownLayout extends RefCounted
+## PCG 城镇生成结果 — 纯数据实体（运行时数据）
+##
+## 由 CityDef 城镇管线产出，聚合各阶段中间结果：
+## 选址 / 道路图 / 街区地块 / 建筑（M2）/ 室内家具（M3）。
+## 遵守框架「结果纯数据、渲染解耦」约定；可整体序列化（配合 SaveTool）。
+
+## 城镇选址点（格坐标）
+var site := Vector2i.ZERO
+## 选址评分（0..1，调试/预览用）
+var site_score := 0.0
+## 道路层栅格：空=非道路，值语义由 CityDef 配置（主街/次街/巷道/桥）
+var roads_grid: GeneratedGrid = null
+## 道路图节点（格坐标浮点，与 road_edges 配套）
+var road_nodes := PackedVector2Array()
+## 道路边列表 [{a:int(节点下标), b:int, width:int, cls:int}]，cls 见 EdgeClass
+var road_edges: Array = []
+
+## 地块列表 [{rect:Rect2i(包围盒), cells:PackedInt32Array(格线性索引),
+## frontage_dir:int(-1=无临街，否则为 _DIR4 方向索引 0上1右2下3左)}]
+var parcels: Array = []
+## 建筑层栅格：空=无建筑，值语义由 CityDef 配置（墙/地板/门）
+var build_grid: GeneratedGrid = null
+## 建筑列表 [{id, type, style, rect:Rect2i(足迹), door:Vector2i, facing:int}]
+var buildings: Array = []
+## 室内布局（M3 填充）building_id -> {grid, slots, props}
+
+## 道路等级
+enum EdgeClass { MAIN, SECONDARY, ALLEY }
+
+func get_roads_grid() -> GeneratedGrid:
+	return roads_grid
+
+
+## —— 序列化（与 SaveTool 的 JSON/GZIP 兼容） ——
+
+func to_data() -> Dictionary:
+	var parcel_data: Array = []
+	for p in parcels:
+		parcel_data.append({
+			"rect": [p.rect.position.x, p.rect.position.y, p.rect.size.x, p.rect.size.y],
+			"cells": p.cells,
+			"frontage": int(p.frontage_dir),
+		})
+	var edge_data: Array = []
+	for e in road_edges:
+		edge_data.append({"a": e.a, "b": e.b, "width": e.width, "cls": int(e.cls)})
+	var nodes_data := PackedFloat32Array()
+	for n in road_nodes:
+		nodes_data.append(n.x)
+		nodes_data.append(n.y)
+	var building_data: Array = []
+	for b in buildings:
+		building_data.append({
+			"id": b.id, "type": b.type, "style": b.style,
+			"rect": [b.rect.position.x, b.rect.position.y, b.rect.size.x, b.rect.size.y],
+			"door": [b.door.x, b.door.y], "facing": int(b.facing),
+		})
+	return {
+		"site": [site.x, site.y],
+		"score": site_score,
+		"roads": roads_grid.to_data() if roads_grid else null,
+		"build": build_grid.to_data() if build_grid else null,
+		"nodes": nodes_data,
+		"edges": edge_data,
+		"parcels": parcel_data,
+		"buildings": building_data,
+	}
+
+
+static func from_data(data: Dictionary) -> TownLayout:
+	var t := TownLayout.new()
+	var s: Array = data.get("site", [0, 0])
+	t.site = Vector2i(int(s[0]), int(s[1]))
+	t.site_score = float(data.get("score", 0.0))
+	var rd = data.get("roads")
+	if rd is Dictionary and not (rd as Dictionary).is_empty():
+		t.roads_grid = GeneratedGrid.from_data(rd)
+	var bd = data.get("build")
+	if bd is Dictionary and not (bd as Dictionary).is_empty():
+		t.build_grid = GeneratedGrid.from_data(bd)
+	var nodes := PackedFloat32Array(data.get("nodes", []))
+	for i in range(0, nodes.size(), 2):
+		t.road_nodes.append(Vector2(nodes[i], nodes[i + 1]))
+	for e in data.get("edges", []):
+		t.road_edges.append({
+			"a": int(e.a), "b": int(e.b), "width": int(e.width), "cls": int(e.cls),
+		})
+	for p in data.get("parcels", []):
+		var r: Array = p.rect
+		t.parcels.append({
+			"rect": Rect2i(int(r[0]), int(r[1]), int(r[2]), int(r[3])),
+			"cells": PackedInt32Array(p.cells),
+			"frontage_dir": int(p.frontage),
+		})
+	for b in data.get("buildings", []):
+		var br: Array = b.rect
+		var dr: Array = b.door
+		t.buildings.append({
+			"id": int(b.id), "type": String(b.type), "style": String(b.style),
+			"rect": Rect2i(int(br[0]), int(br[1]), int(br[2]), int(br[3])),
+			"door": Vector2i(int(dr[0]), int(dr[1])), "facing": int(b.facing),
+		})
+	return t

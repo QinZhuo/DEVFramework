@@ -430,21 +430,51 @@ func _gen_stitch(def: TemplateStitchDef, seed: int) -> void:
 	])
 
 
-## —— 城市 ——
+## —— 城镇 ——
 
 func _gen_city(def: CityDef, seed: int) -> void:
 	brush_row.visible = false
 	anim_row.visible = false
-	var grid := PCGTool.generate_city(def, PCGTool.make_rng(seed))
-	var img := PCGTool.grid_to_image(grid, {
-		def.road_value: Color(0.35, 0.38, 0.42),
-		def.building_value: Color(0.55, 0.6, 0.68),
-		def.park_value: Color(0.3, 0.6, 0.35),
-		def.empty_value: Color(0.15, 0.16, 0.2),
-	})
+	var layout := PCGTool.generate_town(def, null, seed)
+	var grid := layout.roads_grid
+	var img := Image.create(grid.width, grid.height, false, Image.FORMAT_RGB8)
+	img.fill(Color(0.16, 0.24, 0.14))
+	for pi in layout.parcels.size():
+		var p = layout.parcels[pi]
+		var c := Color(0.22, 0.3, 0.19) if pi % 2 == 0 else Color(0.26, 0.34, 0.22)
+		if int(p.frontage_dir) < 0:
+			c = c.darkened(0.3)
+		for idx in p.cells:
+			img.set_pixel(idx % grid.width, idx / grid.width, c)
+	var palette := {
+		def.road_main_value: Color(0.9, 0.78, 0.4),
+		def.road_sec_value: Color(0.55, 0.56, 0.6),
+		def.road_alley_value: Color(0.38, 0.39, 0.42),
+		def.bridge_value: Color(0.45, 0.68, 0.85),
+	}
+	for i in grid.cells.size():
+		var v: int = grid.cells[i]
+		if v != 0 and palette.has(v):
+			img.set_pixel(i % grid.width, i / grid.width, palette[v])
+	# 建筑层：墙深褐 / 地板暖木 / 门亮橙
+	if layout.build_grid != null:
+		var bpal := {
+			def.building_wall_value: Color(0.32, 0.2, 0.12),
+			def.building_floor_value: Color(0.62, 0.48, 0.3),
+			def.building_door_value: Color(1.0, 0.62, 0.15),
+		}
+		for i in layout.build_grid.cells.size():
+			var bv: int = layout.build_grid.cells[i]
+			if bv != 0 and bpal.has(bv):
+				img.set_pixel(i % grid.width, i / grid.width, bpal[bv])
+	img.set_pixel(layout.site.x, layout.site.y, Color(1.0, 0.45, 0.3))
 	texture_rect.texture = ImageTexture.create_from_image(_scale_up(img))
-	_log("城市: %s\n建筑 %d ｜ 道路 %d ｜ 公园 %d" % [
-		def.name, grid.count(def.building_value), grid.count(def.road_value), grid.count(def.park_value),
+	var frontage := 0
+	for p in layout.parcels:
+		if int(p.frontage_dir) >= 0:
+			frontage += 1
+	_log("城镇: %s\n选址 %s (评分 %.2f)｜建筑 %d (门临街)｜地块 %d (临街 %d)" % [
+		def.name, layout.site, layout.site_score, layout.buildings.size(), layout.parcels.size(), frontage,
 	])
 
 

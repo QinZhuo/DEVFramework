@@ -49,7 +49,7 @@ static func run() -> void:
 
 	# 3D WFC 固定格：同 seed + 同固定格复现
 	var wfc3_def: Grid3DGenDef = d3s["WFC3D"]
-	var f3 := {Vector3i(2, 2, 2): 0, Vector3i(3, 3, 3): 1, AABB(Vector3(10, 10, 10), Vector3(2, 2, 2)): 1}
+	var f3 := {Vector3i(2, 2, 2): 0, Vector3i(3, 3, 3): 1, AABB(Vector3(10, 10, 10), Vector3(2, 1, 2)): 0}
 	var f3a := PCGTool.generate_grid_3d(wfc3_def, PCGTool.make_rng(5), f3)
 	var f3b := PCGTool.generate_grid_3d(wfc3_def, PCGTool.make_rng(5), f3)
 	var wfc3_fix_ok := f3a.cells == f3b.cells
@@ -57,14 +57,16 @@ static func run() -> void:
 		all_ok = false
 	print("[确定性] 3D WFC 固定格复现: %s" % wfc3_fix_ok)
 
-	# 城市：同 seed 复现
+	# 城镇：同 seed 复现（道路层/选址/地块全一致），不同 seed 不同
 	var city := load("res://Assets/Def/PCG/City_Grid.tres") as CityDef
-	var ca := PCGTool.generate_city(city, PCGTool.make_rng(3))
-	var cb := PCGTool.generate_city(city, PCGTool.make_rng(3))
-	var city_ok := ca.cells == cb.cells
+	var ta := PCGTool.generate_town(city, null, 3)
+	var tb := PCGTool.generate_town(city, null, 3)
+	var tc := PCGTool.generate_town(city, null, 4)
+	var city_ok := ta.roads_grid.cells == tb.roads_grid.cells and ta.site == tb.site \
+		and ta.parcels.size() == tb.parcels.size() and ta.roads_grid.cells != tc.roads_grid.cells
 	if not city_ok:
 		all_ok = false
-	print("[确定性] 城市同 seed 复现: %s" % city_ok)
+	print("[确定性] 城镇同 seed 复现/异 seed 不同: %s" % city_ok)
 
 	# 内容进化：同 seed 复现（进化路径确定性）
 	var evolve := load("res://Assets/Def/PCG/Evolve_Equipment.tres") as ContentEvolveDef

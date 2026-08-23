@@ -1,13 +1,39 @@
-[gd_resource type="Resource" load_steps=2 format=3]
+[gd_resource type="Resource" load_steps=11 format=3]
 
 [ext_resource type="Script" path="res://addons/DEVFramework/PCG/Def/CityDef.gd" id="1_script"]
+[ext_resource type="Script" path="res://addons/DEVFramework/PCG/Def/TemplateDef.gd" id="2_tmpl_script"]
+[ext_resource type="Script" path="res://addons/DEVFramework/PCG/Def/ContentEntryDef.gd" id="3_entry_script"]
+[ext_resource type="Resource" path="res://Assets/Def/PCG/House_Tiny.tres" id="4_house_t"]
+[ext_resource type="Resource" path="res://Assets/Def/PCG/House_Small.tres" id="5_house_s"]
+[ext_resource type="Resource" path="res://Assets/Def/PCG/House_Mid.tres" id="6_house_m"]
+[ext_resource type="Resource" path="res://Assets/Def/PCG/Shop_Large.tres" id="7_shop_l"]
+
+[sub_resource type="Resource" id="poi_tavern"]
+script = ExtResource("3_entry_script")
+name = "酒馆"
+weight = 1.0
+
+[sub_resource type="Resource" id="poi_church"]
+script = ExtResource("3_entry_script")
+name = "教堂"
+weight = 1.0
+
+[sub_resource type="Resource" id="poi_forge"]
+script = ExtResource("3_entry_script")
+name = "铁匠铺"
+weight = 1.0
 
 [resource]
 script = ExtResource("1_script")
+output_key = "town"
 width = 96
 height = 96
-block_size = 12
-road_width = 2
-building_gap = 1
-park_ratio = 0.15
-output_key = "city"
+heightmap_key = ""
+street_spacing_min = 5
+street_spacing_max = 9
+secondary_max_len = 56
+max_block_area = 260
+min_block_area = 32
+house_fill_ratio = 0.85
+houses = Array[ExtResource("2_tmpl_script")]([ExtResource("4_house_t"), ExtResource("5_house_s"), ExtResource("6_house_m"), ExtResource("7_shop_l")])
+poi_table = Array[ExtResource("3_entry_script")]([SubResource("poi_tavern"), SubResource("poi_church"), SubResource("poi_forge")])

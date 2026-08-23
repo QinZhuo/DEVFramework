@@ -18,7 +18,7 @@ addons/DEVFramework/PCG/
 │   ├── TextureGenDef.gd       # 程序化纹理生成器（噪声/云/木纹/砖墙/水面，色带映射）
 │   ├── LSystemDef.gd          # L-System 生长生成器（重写规则 turtle 绘制，线段集输出）
 │   ├── TileDef3D / TileSetDef3D  # 3D WFC 六面 socket 瓦片与瓦片集
-│   ├── CityDef.gd             # 城市街区生成（道路网格 + 建筑/公园）
+│   ├── CityDef.gd             # 城镇生成总控（选址→贴地路网→巷道细分→临街地块，见 docs 设计案）
 │   ├── PlacementDef.gd        # 散布放置器（泊松圆盘/抖动网格/均匀随机，可按网格剔除）
 │   ├── PlacementDef3D.gd      # 3D 散布放置器（3D 泊松/网格/随机，可按 3D 网格剔除）
 │   ├── ContentEntryDef.gd     # 加权表项（物品/事件/怪物等条目）
@@ -299,12 +299,24 @@ var stream: AudioStreamWAV = out["laser"]                # 直接播放/保存
 
 音频生成核心（合成/编曲/风格/示例）在框架音频模块；`AudioTool` 为通用音频管理（播放/总线/保存/查询），两者均非 PCG 专属。
 
-### 5.9 城市与内容进化**CityDef**（城市街区）：道路网格划分街区，街区填充建筑/公园：
+### 5.9 城镇生成与内容进化 **CityDef**（小城镇管线总控）：
+
+S1 地形评分选址 → S2 贴地道路网(主街坡度A*→边缘枢纽 / 次街扰动生长) →
+S2b 递归空间细分刻巷道 → S3 街区提取 → S4 临街地块细分 →
+S5 建筑放置(POI 必有建筑优先分配大地块 / 住宅填充 / 锚点定位保证门临路)；室内家具(M3)见
+`docs/城镇生成管线设计案.md`：
 
 ```gdscript
 var city: CityDef = load("res://Assets/Def/PCG/City_Grid.tres")
-var city_grid := PCGTool.generate_city(city, PCGTool.make_rng(seed))
-# 值语义：road_value=道路 / building_value=建筑 / park_value=公园 / empty=街道
+var layout := PCGTool.generate_town(city, heightmap, seed)   # heightmap 可为 null(平地)
+layout.site                 # 选址点(评分 site_score)
+layout.roads_grid           # 道路层：主街/次街/巷道/桥 值可配(CityDef 导出)
+layout.build_grid           # 建筑层：墙/地板/门 值可配
+layout.buildings            # [{id,type,style,rect,door,facing}]
+layout.parcels              # 地块[{rect, cells, frontage_dir 临街方向, 无临街已丢弃}]
+# 户型模板(TemplateDef)：门字符 G 画在最底边墙上，旋转后自动朝向临街边；
+# POI 表(ContentEntryDef)：weight=数量期望；示例见 City_Grid.tres + House_*.tres
+# 管线内使用：heightmap_key 指向高度图结果键，输出 key/_roads/_build/_site 四个键
 ```
 
 **ContentEvolveDef**（遗传算法进化）：进化出高适应度的组合（如词缀装备），
@@ -437,7 +449,7 @@ w2.get_cell(5, 5)                       # 未改动格由 seed 复现
 
 ## 演示
 
-- `res://Scenes/PCG/PCGDemo.tscn` — 2D 生成展示：噪声层 / 程序化纹理（云/木纹/砖墙/水面）/ 网格（WFC 固定格涂色 + 过程动画、Voronoi、模板拼接、城市）/ 高度图（岛屿/大陆伪彩渲染+侵蚀）/ L-System（分形植物/树）/ 散布 / 内容（含词缀）/ 生物群系 / **河流道路（地形叠加蓝线河道/灰线道路）** / 综合管线
+- `res://Scenes/PCG/PCGDemo.tscn` — 2D 生成展示：噪声层 / 程序化纹理（云/木纹/砖墙/水面）/ 网格（WFC 固定格涂色 + 过程动画、Voronoi、模板拼接）/ **城镇（选址+路网+临街地块预览）** / 高度图（岛屿/大陆伪彩渲染+侵蚀）/ L-System（分形植物/树）/ 散布 / 内容（含词缀）/ 生物群系 / **河流道路（地形叠加蓝线河道/灰线道路）** / 综合管线
 - `res://Scenes/PCG/PCGDemo3D.tscn` — 3D 体素展示：地表高度图 / 3D 细胞洞穴 / 3D WFC，鼠标拖拽旋转查看；已接入导航网格（切换地形即可看到导航统计与寻路实测）
 - `res://Scenes/PCG/ChunkDemo.tscn` — 2D 分块世界：确定性无限世界、同步/异步生成、seed 增量存档
 - `res://Scenes/PCG/ChunkDemo3D.tscn` — 3D 分块世界（地表跨块连续）/ 3D 散布，鼠标拖拽旋转查看；已接入跨 chunk 合并导航网格 + **异步生成开关（勾选后后台并行生成 + 进度条实时显示）**

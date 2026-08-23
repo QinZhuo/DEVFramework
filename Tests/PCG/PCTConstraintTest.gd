@@ -98,17 +98,47 @@ static func run() -> void:
 	all_ok = all_ok and f3_ok
 	print("[约束] 3D WFC 固定格遵守: %s" % f3_ok)
 
-	# 城市：道路网格 + 建筑/公园存在
+	# 城镇：主街存在 + 地块全部临街 + 道路网连通(site 可达地图边缘) + 建筑门临路
 	var city := load("res://Assets/Def/PCG/City_Grid.tres") as CityDef
-	var city_g := PCGTool.generate_city(city, PCGTool.make_rng(7))
-	var city_ok := city_g.count(city.building_value) > 0 and city_g.count(city.road_value) > 0 and city_g.count(city.park_value) > 0
-	# 道路网格应规整：第 0 行 / 第 0 列是道路（road_width 起）
-	for x in city.road_width:
-		if city_g.get_cell(x, 0, -1) != city.road_value:
+	var tl := PCGTool.generate_town(city, null, 7)
+	var rg := tl.roads_grid
+	var bgrid := tl.build_grid
+	var city_ok := rg.count(city.road_main_value) > 0 and tl.parcels.size() > 0 and tl.buildings.size() > 0
+	for parcel in tl.parcels:
+		if int(parcel.frontage_dir) < 0:
 			city_ok = false
+			break
+	var door_road := 0
+	for b in tl.buildings:
+		var dr: Vector2i = b.door
+		if bgrid.get_cell(dr.x, dr.y, -1) != city.building_door_value:
+			continue
+		for d2 in [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)]:
+			if rg.get_cell(dr.x + d2.x, dr.y + d2.y, -1) > 0:
+				door_road += 1
+				break
+	if tl.buildings.size() > 0 and door_road == 0:
+		city_ok = false
+	# BFS：从 site 沿道路格扩散，应触达任一边缘格（对外连通）
+	if city_ok:
+		var seen := {}
+		var queue: Array[Vector2i] = [tl.site]
+		seen[tl.site] = true
+		var reach_edge := false
+		while not queue.is_empty() and not reach_edge:
+			var c: Vector2i = queue.pop_back()
+			if c.x == 0 or c.y == 0 or c.x == rg.width - 1 or c.y == rg.height - 1:
+				reach_edge = true
+				break
+			for d: Vector2i in [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)]:
+				var nx := c + d
+				if rg.in_bounds(nx.x, nx.y) and rg.get_cell(nx.x, nx.y, 0) != 0 and not seen.has(nx):
+					seen[nx] = true
+					queue.append(nx)
+		city_ok = reach_edge
 	all_ok = all_ok and city_ok
-	print("[约束] 城市道路/建筑/公园: %s (建%d 路%d 园%d)" % [
-		city_ok, city_g.count(city.building_value), city_g.count(city.road_value), city_g.count(city.park_value)])
+	print("[约束] 城镇主街/地块临街/路网连通/门临路: %s (主街%d 地块%d 建筑%d 门临路%d)" % [
+		city_ok, rg.count(city.road_main_value), tl.parcels.size(), tl.buildings.size(), door_road])
 
 	# 3D 噪声洞穴跨 chunk 连续（世界坐标 offset）
 	var nc3 := load("res://Assets/Def/PCG/Grid3D_NoiseCave.tres") as Grid3DGenDef
