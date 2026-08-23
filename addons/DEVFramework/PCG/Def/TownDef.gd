@@ -1,6 +1,6 @@
-@tool
+﻿@tool
 class_name TownDef extends PCGGeneratorDef
-## 城镇生成总控 — 可插拔步骤管线（替代原 CityDef 均匀网格填色器）
+## 城镇生成总控 — 可插拔步骤管线（城镇生成总控）
 ##
 ## steps 数组按序执行可插拔的 TownStepDef；留空使用内置标准链。
 ## 不同 steps 组合 + 参数 = 不同风格城镇（平原农耕镇/山地矿镇/渔村…）。

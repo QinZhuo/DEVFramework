@@ -1,4 +1,4 @@
-@tool
+﻿@tool
 class_name FacilityDef extends Resource
 ## 城镇功能设施定义 — 城镇 S5 阶段用（原 PoiDef，POI 为行业黑话故更名）
 ##
@@ -15,7 +15,7 @@ class_name FacilityDef extends Resource
 @export_range(1, 4, 1) var layers := 2
 ## 屋顶类型（gable=双坡 / flat=平顶…，渲染方按此查表选模型）
 @export var roof := "gable"
-## 专属户型模板（门字符 G 画在最底边墙上）；空 = 回退 CityDef.houses
+## 专属户型模板（门字符 G 画在最底边墙上）；空 = 回退 TownDef.houses
 @export var templates: Array[TemplateDef] = []
 
 func _to_string() -> String:

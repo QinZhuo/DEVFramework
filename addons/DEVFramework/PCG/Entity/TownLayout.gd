@@ -1,7 +1,7 @@
-class_name TownLayout extends RefCounted
+﻿class_name TownLayout extends RefCounted
 ## PCG 城镇生成结果 — 纯数据实体（运行时数据）
 ##
-## 由 CityDef 城镇管线产出，聚合各阶段中间结果：
+## 由 TownDef 城镇管线产出，聚合各阶段中间结果：
 ## 选址 / 道路图 / 街区地块 / 建筑（M2）/ 室内家具（M3）。
 ## 遵守框架「结果纯数据、渲染解耦」约定；可整体序列化（配合 SaveTool）。
 
@@ -9,7 +9,7 @@ class_name TownLayout extends RefCounted
 var site := Vector2i.ZERO
 ## 选址评分（0..1，调试/预览用）
 var site_score := 0.0
-## 道路层栅格：空=非道路，值语义由 CityDef 配置（主街/次街/巷道/桥）
+## 道路层栅格：空=非道路，值语义由 TownDef 配置（主街/次街/巷道/桥）
 var roads_grid: GeneratedGrid = null
 ## 道路图节点（格坐标浮点，与 road_edges 配套）
 var road_nodes := PackedVector2Array()
@@ -19,7 +19,7 @@ var road_edges: Array = []
 ## 地块列表 [{rect:Rect2i(包围盒), cells:PackedInt32Array(格线性索引),
 ## frontage_dir:int(-1=无临街，否则为 _DIR4 方向索引 0上1右2下3左)}]
 var parcels: Array = []
-## 建筑层栅格：空=无建筑，值语义由 CityDef 配置（墙/地板/门）
+## 建筑层栅格：空=无建筑，值语义由 TownDef 配置（墙/地板/门）
 var build_grid: GeneratedGrid = null
 ## 建筑列表 [{id, type, style, rect:Rect2i(足迹), door:Vector2i, facing:int}]
 var buildings: Array = []

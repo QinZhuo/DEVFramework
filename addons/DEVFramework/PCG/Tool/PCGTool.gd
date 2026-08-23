@@ -722,23 +722,28 @@ static func town_parcel_step(step: TownParcelStep, ctx: TownGenContext) -> void:
 
 static func town_building_step(step: TownBuildingStep, ctx: TownGenContext) -> void:
 	var def := ctx.def
-	def.houses = step.houses
-	def.facilities = step.facilities
 	def.house_fill_ratio = step.house_fill_ratio
 	def.setback = step.setback
 	def.house_layers_min = step.house_layers_min
 	def.house_layers_max = step.house_layers_max
 	def.house_roof = step.house_roof
-	def.flat_roof_styles = step.flat_roof_styles
-	def.style_table = step.style_table
 	def.build_max_step = step.build_max_step
+	# 库类字段非空才覆盖（允许 tres 全局库与步骤专属库混用）
+	if not step.houses.is_empty():
+		def.houses = step.houses
+	if not step.facilities.is_empty():
+		def.facilities = step.facilities
+	if not step.style_table.is_empty():
+		def.style_table = step.style_table
 	_town_buildings(def, ctx.layout, ctx.next_rng())
 
 
 static func town_interior_step(step: TownInteriorStep, ctx: TownGenContext) -> void:
 	var def := ctx.def
-	def.furniture_tables = step.furniture_tables
-	def.prop_table = step.prop_table
+	if not step.furniture_tables.is_empty():
+		def.furniture_tables = step.furniture_tables
+	if not step.prop_table.is_empty():
+		def.prop_table = step.prop_table
 	def.props_per_building = step.props_per_building
 	_town_interiors(def, ctx.layout, ctx.next_rng())
 
@@ -1672,7 +1677,7 @@ static func _pick_style(def: TownDef, layout: TownLayout, anchor: Vector2i, rng:
 	return pick_weighted(rng, def.style_table).name
 
 
-## 把户型模板按旋转印到建筑层（使用 CityDef 的墙/地板/门值，不走模板自身 char_map）。
+## 把户型模板按旋转印到建筑层（使用 TownDef 的墙/地板/门值，不走模板自身 char_map）。
 ## 槽位字符(B/T/C/H/S…)与未识别字符一律印为地板——它们只进 interiors 数据，不进栅格
 static func _stamp_building(tmpl: TemplateDef, build: GeneratedGrid, ox: int, oy: int, rotation: int, def: TownDef) -> void:
 	var mapping := {
