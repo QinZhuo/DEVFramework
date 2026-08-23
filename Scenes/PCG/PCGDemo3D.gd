@@ -413,6 +413,28 @@ func _render_town(layout: TownLayout, def: CityDef) -> void:
 	_add_mesh_sized(furn, Color(0.72, 0.5, 0.9), Vector3(0.55, 0.55, 0.55))
 	_add_mesh_sized(props, Color(0.42, 0.36, 0.28), Vector3(0.45, 0.45, 0.45))
 	_add_mesh_sized(yard, Color(0.28, 0.19, 0.11), Vector3(0.95, 0.6, 0.3))
+	# 树木(深绿柱冠) / 路灯(灯杆+发光灯头) / 长椅(矮褐凳)
+	var tree_crown := PackedVector3Array()
+	var tree_trunk := PackedVector3Array()
+	for t in layout.trees:
+		tree_trunk.append(to_world.call(t.x, t.y) + Vector3(0, 0.5, 0))
+		tree_crown.append(to_world.call(t.x, t.y) + Vector3(0, 1.4, 0))
+	_add_mesh_sized(tree_trunk, Color(0.32, 0.22, 0.12), Vector3(0.25, 1.0, 0.25))
+	_add_mesh_sized(tree_crown, Color(0.16, 0.38, 0.14), Vector3(1.3, 1.6, 1.3))
+	var lamp_pole := PackedVector3Array()
+	var lamp_head := PackedVector3Array()
+	for lamp in layout.streets.get("lamps", []):
+		var lv: Vector2i = lamp
+		lamp_pole.append(to_world.call(lv.x, lv.y) + Vector3(0, 0.9, 0))
+		lamp_head.append(to_world.call(lv.x, lv.y) + Vector3(0, 1.95, 0))
+	_add_mesh_sized(lamp_pole, Color(0.3, 0.32, 0.35), Vector3(0.15, 1.8, 0.15))
+	var lamp_glow := Color(1.0, 0.85, 0.45)
+	_add_mesh_sized(lamp_head, lamp_glow, Vector3(0.4, 0.3, 0.4), false, lamp_glow)
+	var bench_pts := PackedVector3Array()
+	for bench in layout.streets.get("benches", []):
+		var bv: Vector2i = bench
+		bench_pts.append(to_world.call(bv.x, bv.y))
+	_add_mesh_sized(bench_pts, Color(0.36, 0.24, 0.14), Vector3(0.8, 0.4, 0.8))
 	# 选址标记柱
 	var site_mark := PackedVector3Array([to_world.call(layout.site.x, layout.site.y)])
 	_add_mesh_sized(site_mark, Color(1.0, 0.25, 0.1), Vector3(1.2, 6.0, 1.2))

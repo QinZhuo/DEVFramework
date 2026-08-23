@@ -698,6 +698,8 @@ static func generate_town(def: CityDef, hm: HeightMap, seed_base: int) -> TownLa
 	_town_parcels(def, layout, make_rng(derive_seed(seed_base, 14)))
 	_town_buildings(def, layout, make_rng(derive_seed(seed_base, 15)))
 	_town_interiors(def, layout, make_rng(derive_seed(seed_base, 16)))
+	_town_greenery(def, layout, make_rng(derive_seed(seed_base, 17)))
+	_town_street_furniture(def, layout)
 	return layout
 
 
@@ -1797,6 +1799,96 @@ static func _filter_reachable(items: Array, visited: Dictionary) -> Array:
 				out.append(it)
 				break
 	return out
+
+
+## 绿化：城镇空地（非道路/建筑/广场）泊松式散布树木，记录到 layout.trees
+static func _town_greenery(def: CityDef, layout: TownLayout, rng: RandomNumberGenerator) -> void:
+	layout.trees.clear()
+	if def.tree_count <= 0:
+		return
+	var roads := layout.roads_grid
+	var build := layout.build_grid
+	var plaza := {}
+	for idx in layout.plaza_cells:
+		plaza[int(idx)] = true
+	var candidates: Array[Vector2i] = []
+	for y in roads.height:
+		for x in roads.width:
+			var idx := y * roads.width + x
+			if plaza.has(idx) or roads.get_cell(x, y, -1) != 0 or build.get_cell(x, y, -1) != 0:
+				continue
+			candidates.append(Vector2i(x, y))
+	if candidates.is_empty():
+		return
+	# 洗牌后贪心收下满足最小间距的候选
+	for i in range(candidates.size() - 1, 0, -1):
+		var j := rng.randi_range(0, i)
+		var t := candidates[i]
+		candidates[i] = candidates[j]
+		candidates[j] = t
+	var min_d2 := def.tree_min_distance * def.tree_min_distance
+	var placed := PackedVector3Array()
+	var attempts := maxi(def.tree_count * 8, 400)
+	for cand in candidates:
+		if placed.size() >= def.tree_count or attempts <= 0:
+			break
+		attempts -= 1
+		var ok := true
+		for p in placed:
+			var ddx := float(p.x - cand.x)
+			var ddy := float(p.y - cand.y)
+			if ddx * ddx + ddy * ddy < min_d2:
+				ok = false
+				break
+		if ok:
+			placed.append(Vector3(cand.x, cand.y, 0))
+			layout.trees.append(cand)
+
+
+## 街具：路灯沿主干道/环路路格取样、贴路边空格；长椅沿广场临路边缘间隔摆放
+static func _town_street_furniture(def: CityDef, layout: TownLayout) -> void:
+	layout.streets = {"lamps": [], "benches": []}
+	if layout.roads_grid == null or def.streetlamp_spacing <= 0:
+		return
+	var roads := layout.roads_grid
+	var build := layout.build_grid
+	var used := {}
+	# 路灯：主街/环路每 spacing 个取样，灯位放路的邻接空格
+	var step := maxi(1, def.streetlamp_spacing)
+	var walk := 0
+	for y in roads.height:
+		for x in roads.width:
+			var rv := roads.get_cell(x, y, -1)
+			if rv != def.road_main_value and rv != def.road_ring_value:
+				continue
+			walk += 1
+			if walk % step != 0:
+				continue
+			for ddir in _DIR4:
+				var lx := x + ddir.x
+				var ly := y + ddir.y
+				var li := ly * roads.width + lx
+				if not roads.in_bounds(lx, ly) or used.has(li):
+					continue
+				if roads.get_cell(lx, ly, -1) == 0 and build.get_cell(lx, ly, -1) == 0:
+					layout.streets["lamps"].append(Vector2i(lx, ly))
+					used[li] = true
+					break
+	# 长椅：广场中贴路的边缘格，隔 2 取 1
+	var bench_walk := 0
+	for idx in layout.plaza_cells:
+		var px := int(idx) % roads.width
+		var py := int(idx) / roads.width
+		var edge := false
+		for ddir in _DIR4:
+			if roads.get_cell(px + ddir.x, py + ddir.y, -1) > 0:
+				edge = true
+				break
+		if not edge:
+			continue
+		bench_walk += 1
+		if bench_walk % 2 == 1 and build.get_cell(px, py, -1) == 0:
+			layout.streets["benches"].append(Vector2i(px, py))
 
 
 ## —— 模板拼接 ——

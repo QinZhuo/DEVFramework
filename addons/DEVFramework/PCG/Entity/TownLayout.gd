@@ -30,6 +30,10 @@ var plaza_cells := PackedInt32Array()
 ## 广场中心设施（水井/喷泉…）位置与名称；item 为空表示无设施
 var plaza_center := Vector2i(-1, -1)
 var plaza_item := ""
+## 树木（格坐标，城镇空地绿化散布）
+var trees := PackedVector2Array()
+## 街具 {"lamps":[路灯格], "benches":[长椅格]}
+var streets := {}
 
 ## 道路等级
 enum EdgeClass { MAIN, SECONDARY, ALLEY }
@@ -77,6 +81,12 @@ func to_data() -> Dictionary:
 			yd.append(yc.x)
 			yd.append(yc.y)
 		interior_data[str(k)] = {"slots": sl, "props": pr, "yard": yd}
+	var lamps: Array = []
+	for lamp in streets.get("lamps", []):
+		lamps.append([lamp.x, lamp.y])
+	var benches: Array = []
+	for bench in streets.get("benches", []):
+		benches.append([bench.x, bench.y])
 	return {
 		"site": [site.x, site.y],
 		"score": site_score,
@@ -90,6 +100,9 @@ func to_data() -> Dictionary:
 		"plaza": plaza_cells,
 		"plaza_center": [plaza_center.x, plaza_center.y],
 		"plaza_item": plaza_item,
+		"trees": trees,
+		"streets_lamps": lamps,
+		"streets_benches": benches,
 	}
 
 
@@ -146,4 +159,13 @@ static func from_data(data: Dictionary) -> TownLayout:
 	var pc: Array = data.get("plaza_center", [-1, -1])
 	t.plaza_center = Vector2i(int(pc[0]), int(pc[1]))
 	t.plaza_item = String(data.get("plaza_item", ""))
+	t.trees = PackedVector2Array(data.get("trees", []))
+	for lamp in data.get("streets_lamps", []):
+		if not t.streets.has("lamps"):
+			t.streets["lamps"] = []
+		t.streets["lamps"].append(Vector2i(int(lamp[0]), int(lamp[1])))
+	for bench in data.get("streets_benches", []):
+		if not t.streets.has("benches"):
+			t.streets["benches"] = []
+		t.streets["benches"].append(Vector2i(int(bench[0]), int(bench[1])))
 	return t

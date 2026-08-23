@@ -77,6 +77,14 @@ class_name CityDef extends PCGGeneratorDef
 ## 广场中心设施名（水井/喷泉…，记入 layout.plaza_item；空=无设施）
 @export var plaza_feature := "水井"
 
+## —— 绿化与街具 ——
+## 树木数量上限（城镇空地泊松式散布，实际数量受空地与间距约束）
+@export_range(0, 600, 5) var tree_count := 140
+## 树木最小间距（格）
+@export_range(1.0, 8.0, 0.5) var tree_min_distance := 2.5
+## 路灯沿主干道路的间隔（格）
+@export_range(2, 16, 1) var streetlamp_spacing := 6
+
 ## —— S5 建筑放置 ——
 ## 户型模板库（门字符 G 画在最底边墙上，旋转后门自动朝向临街边）
 @export var houses: Array[TemplateDef] = []

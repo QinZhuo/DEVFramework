@@ -455,6 +455,11 @@ func _gen_city(def: CityDef, seed: int) -> void:
 		for dd in [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)]:
 			if grid.get_cell(pc.x + dd.x, pc.y + dd.y, -1) == 0:
 				img.set_pixel(pc.x + dd.x, pc.y + dd.y, Color(0.4, 0.38, 0.34))
+	# 树木(深绿) / 路灯(暖黄) / 长椅(褐色)
+	for t in layout.trees:
+		img.set_pixel(t.x, t.y, Color(0.12, 0.3, 0.1))
+	for lamp in layout.streets.get("lamps", []):
+		img.set_pixel(lamp.x, lamp.y, Color(1.0, 0.9, 0.45))
 	var palette := {
 		def.road_main_value: Color(0.9, 0.78, 0.4),
 		def.road_sec_value: Color(0.55, 0.56, 0.6),
