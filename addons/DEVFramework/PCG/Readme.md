@@ -458,7 +458,7 @@ w2.get_cell(5, 5)                       # 未改动格由 seed 复现
 ## 演示
 
 - `res://Scenes/PCG/PCGDemo.tscn` — 2D 生成展示：噪声层 / 程序化纹理（云/木纹/砖墙/水面）/ 网格（WFC 固定格涂色 + 过程动画、Voronoi、模板拼接）/ **城镇（选址+路网+临街地块预览）** / 高度图（岛屿/大陆伪彩渲染+侵蚀）/ L-System（分形植物/树）/ 散布 / 内容（含词缀）/ 生物群系 / **河流道路（地形叠加蓝线河道/灰线道路）** / 综合管线
-- `res://Scenes/PCG/PCGDemo3D.tscn` — 3D 体素展示：地表高度图 / 3D 细胞洞穴 / 3D WFC，鼠标拖拽旋转查看；已接入导航网格（切换地形即可看到导航统计与寻路实测）
+- `res://Scenes/PCG/PCGDemo3D.tscn` — 3D 体素展示：地表高度图 / 3D 细胞洞穴 / 3D WFC / **城镇（TownLayout→体块建筑群：程序化天空盒+双层屋顶+发光窗+定向门板+道路/广场/环路/家具着色；墙体为导航障碍，门到门寻路实测）**，鼠标拖拽旋转查看
 - `res://Scenes/PCG/ChunkDemo.tscn` — 2D 分块世界：确定性无限世界、同步/异步生成、seed 增量存档
 - `res://Scenes/PCG/ChunkDemo3D.tscn` — 3D 分块世界（地表跨块连续）/ 3D 散布，鼠标拖拽旋转查看；已接入跨 chunk 合并导航网格 + **异步生成开关（勾选后后台并行生成 + 进度条实时显示）**
 - `res://Scenes/PCG/NavPatrolDemo.tscn` — **NPC 三态 AI + RVO 避障演示**：PCG 地表/洞穴地形 + `NavigationAgent3D` NPC 自动巡逻/追逐玩家/近距离逃跑（引擎原生连续寻路，洞穴多层经斜坡上下连通）；黄色球是 `NavigationObstacle3D` 动态障碍，方向键移动，NPC 用 RVO 实时避让；绿色玩家 WASD 控制
