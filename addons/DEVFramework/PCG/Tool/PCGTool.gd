@@ -1492,11 +1492,6 @@ static func _lot_touches_main(def: TownDef, layout: TownLayout, p: Dictionary) -
 	return false
 
 
-## 在地块上放一栋建筑：选模板→锚点定位(门格压真实临街格)→校验足迹→印建筑层→记录门位
-static func _place_building(def: TownDef, layout: TownLayout, li: int, type_name: String, bid: int, rng: RandomNumberGenerator) -> bool:
-	return _place_from_lists(def, layout, li, type_name, bid, rng, def.houses, null)
-
-
 ## 从指定户型模板列表放置一栋建筑（设施用专属库，住宅用通用库），
 ## 模板按面积降序逐个尝试（同面积随机次序）：大地块优先放大房子，放不下再换小户型兜底
 static func _place_from_lists(def: TownDef, layout: TownLayout, li: int, type_name: String, bid: int, rng: RandomNumberGenerator, tmpl_list: Array[TemplateDef], fac: FacilityDef) -> bool:
