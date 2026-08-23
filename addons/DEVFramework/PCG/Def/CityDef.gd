@@ -74,6 +74,8 @@ class_name CityDef extends PCGGeneratorDef
 @export_range(0, 12, 1) var plaza_radius := 4
 ## 广场格值（仅数据记录 layout.plaza_cells，渲染消费方按此着色；0=不启用）
 @export var plaza_value := 11
+## 广场中心设施名（水井/喷泉…，记入 layout.plaza_item；空=无设施）
+@export var plaza_feature := "水井"
 
 ## —— S5 建筑放置 ——
 ## 户型模板库（门字符 G 画在最底边墙上，旋转后门自动朝向临街边）

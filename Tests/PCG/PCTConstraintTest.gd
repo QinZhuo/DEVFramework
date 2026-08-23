@@ -132,6 +132,23 @@ static func run() -> void:
 				block_door = true
 	if furniture_total == 0 or block_door:
 		city_ok = false
+	# TownLayout 序列化往返（存档约定依赖）
+	var tl_data := tl.to_data()
+	var tl2 := TownLayout.from_data(tl_data)
+	var ser_ok := tl2.site == tl.site and tl2.buildings.size() == tl.buildings.size() \
+		and tl2.parcels.size() == tl.parcels.size() and tl2.interiors.size() == tl.interiors.size() \
+		and (tl2.roads_grid == null) == (tl.roads_grid == null) \
+		and tl2.plaza_cells.size() == tl.plaza_cells.size()
+	if ser_ok and tl2.roads_grid != null:
+		ser_ok = tl2.roads_grid.cells == tl.roads_grid.cells
+	if ser_ok and tl2.build_grid != null:
+		ser_ok = tl2.build_grid.cells == tl.build_grid.cells
+	if ser_ok:
+		for b2 in tl2.buildings:
+			if int(b2.layers) < 1 or String(b2.roof).is_empty():
+				ser_ok = false
+				break
+	city_ok = city_ok and ser_ok
 	# BFS：从 site 沿道路格扩散，应触达任一边缘格（对外连通）
 	if city_ok:
 		var seen := {}
@@ -150,8 +167,8 @@ static func run() -> void:
 					queue.append(nx)
 		city_ok = reach_edge
 	all_ok = all_ok and city_ok
-	print("[约束] 城镇主街/地块临街/路网连通/门临路/室内家具: %s (主街%d 地块%d 建筑%d 门临路%d 家具%d)" % [
-		city_ok, rg.count(city.road_main_value), tl.parcels.size(), tl.buildings.size(), door_road, furniture_total])
+	print("[约束] 城镇主街/临街/连通/门路/家具/序列化: %s (主街%d 建筑%d 门路%d 家具%d 广场设施=%s)" % [
+		city_ok, rg.count(city.road_main_value), tl.buildings.size(), door_road, furniture_total, str(tl.plaza_item)])
 
 	# 3D 噪声洞穴跨 chunk 连续（世界坐标 offset）
 	var nc3 := load("res://Assets/Def/PCG/Grid3D_NoiseCave.tres") as Grid3DGenDef

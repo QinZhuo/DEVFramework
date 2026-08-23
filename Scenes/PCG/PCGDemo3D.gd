@@ -291,6 +291,12 @@ func _render_town(layout: TownLayout, def: CityDef) -> void:
 	for idx in layout.plaza_cells:
 		plaza_pts.append(to_world.call(int(idx) % w, int(idx) / w))
 	_add_mesh_sized(plaza_pts, Color(0.6, 0.58, 0.52), Vector3(1, 0.14, 1))
+	# 广场中心设施（石台+立柱）
+	if layout.plaza_center.x >= 0 and not layout.plaza_item.is_empty():
+		var pcw: Vector3 = to_world.call(layout.plaza_center.x, layout.plaza_center.y)
+		_add_box(pcw + Vector3(0, 0.25, 0), Vector3(1.6, 0.35, 1.6), Color(0.52, 0.5, 0.46))
+		_add_box(pcw + Vector3(0, 1.1, 0), Vector3(0.55, 1.7, 0.55), Color(0.62, 0.6, 0.56))
+		_add_box(pcw + Vector3(0, 2.1, 0), Vector3(0.9, 0.22, 0.9), Color(0.45, 0.43, 0.4))
 	# 建筑：墙体按 (类型, 层数) 分组（高度=层数语义），地板薄板
 	var wall_groups := {}  # "fac_2"/"house_1" → pts
 	var fac_cells := {}

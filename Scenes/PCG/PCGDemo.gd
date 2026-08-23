@@ -446,9 +446,15 @@ func _gen_city(def: CityDef, seed: int) -> void:
 			c = c.darkened(0.3)
 		for idx in p.cells:
 			img.set_pixel(idx % grid.width, idx / grid.width, c)
-	# 广场石板色
+	# 广场石板色 + 中心设施
 	for idx in layout.plaza_cells:
 		img.set_pixel(idx % grid.width, idx / grid.width, Color(0.6, 0.58, 0.52))
+	if layout.plaza_center.x >= 0 and not layout.plaza_item.is_empty():
+		var pc := layout.plaza_center
+		img.set_pixel(pc.x, pc.y, Color(0.25, 0.22, 0.2))
+		for dd in [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)]:
+			if grid.get_cell(pc.x + dd.x, pc.y + dd.y, -1) == 0:
+				img.set_pixel(pc.x + dd.x, pc.y + dd.y, Color(0.4, 0.38, 0.34))
 	var palette := {
 		def.road_main_value: Color(0.9, 0.78, 0.4),
 		def.road_sec_value: Color(0.55, 0.56, 0.6),

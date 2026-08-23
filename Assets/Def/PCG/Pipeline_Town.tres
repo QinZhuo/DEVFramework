@@ -1,0 +1,10 @@
+[gd_resource type="Resource" load_steps=4 format=3]
+
+[ext_resource type="Script" path="res://addons/DEVFramework/PCG/Def/PCGDef.gd" id="1_script"]
+[ext_resource type="Resource" uid="uid://djcd663ttqr0a" path="res://Assets/Def/PCG/HeightMap_Island.tres" id="2_heightmap"]
+[ext_resource type="Resource" path="res://Assets/Def/PCG/City_Grid.tres" id="3_city"]
+
+[resource]
+script = ExtResource("1_script")
+seed = 20260811
+generators = Array[PCGGeneratorDef]([ExtResource("2_heightmap"), ExtResource("3_city")])

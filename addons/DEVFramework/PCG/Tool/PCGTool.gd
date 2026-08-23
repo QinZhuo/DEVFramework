@@ -1613,13 +1613,17 @@ static func _town_ring_road(def: CityDef, hm: HeightMap, layout: TownLayout) -> 
 		roads.set_cell(c.x, c.y, def.road_ring_value)
 
 
-## 广场：选址点周围半径内的空地记入 plaza_cells（不放建筑、地块细分跳过）
+## 广场：选址点周围半径内的空地记入 plaza_cells（不放建筑、地块细分跳过），
+## 并在广场质心记录中心设施（水井/喷泉…）
 static func _town_plaza(def: CityDef, layout: TownLayout) -> void:
 	layout.plaza_cells.clear()
+	layout.plaza_center = Vector2i(-1, -1)
+	layout.plaza_item = ""
 	if def.plaza_radius <= 0 or layout.roads_grid == null:
 		return
 	var roads := layout.roads_grid
 	var r := def.plaza_radius
+	var sum := Vector2.ZERO
 	for dy in range(-r, r + 1):
 		for dx in range(-r, r + 1):
 			if dx * dx + dy * dy > r * r:
@@ -1628,6 +1632,19 @@ static func _town_plaza(def: CityDef, layout: TownLayout) -> void:
 			var y := layout.site.y + dy
 			if roads.in_bounds(x, y) and roads.get_cell(x, y, -1) == 0:
 				layout.plaza_cells.append(y * roads.width + x)
+				sum += Vector2(x, y)
+	if not layout.plaza_cells.is_empty():
+		var centroid := sum / float(layout.plaza_cells.size())
+		# 质心吸附到最近的广场格
+		var best := layout.plaza_cells[0]
+		var best_d := INF
+		for idx in layout.plaza_cells:
+			var dd := Vector2(int(idx) % roads.width, int(idx) / roads.width).distance_squared_to(centroid)
+			if dd < best_d:
+				best_d = dd
+				best = idx
+		layout.plaza_center = Vector2i(int(best) % roads.width, int(best) / roads.width)
+		layout.plaza_item = def.plaza_feature
 
 
 ## —— S6 室内布局 + 家具摆放 ——

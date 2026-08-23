@@ -31,6 +31,7 @@
 [ext_resource type="Resource" path="res://Assets/Def/PCG/Evolve_Equipment.tres" id="c5"]
 [ext_resource type="Resource" path="res://Assets/Def/PCG/Biome_World.tres" id="b1"]
 [ext_resource type="Resource" path="res://Assets/Def/PCG/Pipeline_World.tres" id="pl1"]
+[ext_resource type="Resource" path="res://Assets/Def/PCG/Pipeline_Town.tres" id="pl2"]
 [ext_resource type="Resource" path="res://Assets/Def/PCG/River_Terrain.tres" id="r1"]
 [ext_resource type="Resource" path="res://Assets/Def/PCG/Road_Network.tres" id="r2"]
 
@@ -63,7 +64,7 @@ grid_defs = Array[Resource]([ExtResource("g1"), ExtResource("g2"), ExtResource("
 placement_defs = Array[Resource]([ExtResource("p1"), ExtResource("p2")])
 content_defs = Array[Resource]([ExtResource("c1"), ExtResource("c2"), ExtResource("c3"), ExtResource("c4"), ExtResource("c5")])
 biome_defs = Array[Resource]([ExtResource("b1")])
-pipeline_defs = Array[Resource]([ExtResource("pl1")])
+pipeline_defs = Array[Resource]([ExtResource("pl1"), ExtResource("pl2")])
 path_defs = Array[Resource]([ExtResource("r1"), ExtResource("r2")])
 
 [node name="TextureRect" type="TextureRect" parent="."]

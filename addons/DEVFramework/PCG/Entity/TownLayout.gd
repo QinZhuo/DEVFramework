@@ -27,6 +27,9 @@ var buildings: Array = []
 var interiors := {}
 ## 广场格（线性索引，site 周围空地；不放建筑）
 var plaza_cells := PackedInt32Array()
+## 广场中心设施（水井/喷泉…）位置与名称；item 为空表示无设施
+var plaza_center := Vector2i(-1, -1)
+var plaza_item := ""
 
 ## 道路等级
 enum EdgeClass { MAIN, SECONDARY, ALLEY }
@@ -85,6 +88,8 @@ func to_data() -> Dictionary:
 		"buildings": building_data,
 		"interiors": interior_data,
 		"plaza": plaza_cells,
+		"plaza_center": [plaza_center.x, plaza_center.y],
+		"plaza_item": plaza_item,
 	}
 
 
@@ -138,4 +143,7 @@ static func from_data(data: Dictionary) -> TownLayout:
 			yard.append(Vector2i(yd[yi], yd[yi + 1]))
 		t.interiors[int(k)] = {"slots": slots, "props": props, "yard": yard}
 	t.plaza_cells = PackedInt32Array(data.get("plaza", []))
+	var pc: Array = data.get("plaza_center", [-1, -1])
+	t.plaza_center = Vector2i(int(pc[0]), int(pc[1]))
+	t.plaza_item = String(data.get("plaza_item", ""))
 	return t
