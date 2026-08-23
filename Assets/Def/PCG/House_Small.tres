@@ -4,5 +4,5 @@
 
 [resource]
 script = ExtResource("1_script")
-lines = PackedStringArray("#####", "#...#", "#...#", "##G##")
+lines = PackedStringArray("######", "#B..T#", "#...C#", "#....#", "##G###")
 weight = 1.0

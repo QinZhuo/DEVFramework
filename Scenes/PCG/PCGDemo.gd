@@ -446,17 +446,21 @@ func _gen_city(def: CityDef, seed: int) -> void:
 			c = c.darkened(0.3)
 		for idx in p.cells:
 			img.set_pixel(idx % grid.width, idx / grid.width, c)
+	# 广场石板色
+	for idx in layout.plaza_cells:
+		img.set_pixel(idx % grid.width, idx / grid.width, Color(0.6, 0.58, 0.52))
 	var palette := {
 		def.road_main_value: Color(0.9, 0.78, 0.4),
 		def.road_sec_value: Color(0.55, 0.56, 0.6),
 		def.road_alley_value: Color(0.38, 0.39, 0.42),
 		def.bridge_value: Color(0.45, 0.68, 0.85),
+		def.road_ring_value: Color(0.72, 0.6, 0.35),
 	}
 	for i in grid.cells.size():
 		var v: int = grid.cells[i]
 		if v != 0 and palette.has(v):
 			img.set_pixel(i % grid.width, i / grid.width, palette[v])
-	# 建筑层：墙深褐 / 地板暖木 / 门亮橙
+	# 建筑层：墙深褐 / 地板暖木 / 门亮橙；POI(非住宅)墙体用石灰色区分
 	if layout.build_grid != null:
 		var bpal := {
 			def.building_wall_value: Color(0.32, 0.2, 0.12),
@@ -467,14 +471,37 @@ func _gen_city(def: CityDef, seed: int) -> void:
 			var bv: int = layout.build_grid.cells[i]
 			if bv != 0 and bpal.has(bv):
 				img.set_pixel(i % grid.width, i / grid.width, bpal[bv])
+		for bd in layout.buildings:
+			if String(bd.type) == "住宅":
+				continue
+			var r2: Rect2i = bd.rect
+			for yy in range(r2.position.y, r2.end.y):
+				for xx in range(r2.position.x, r2.end.x):
+					if layout.build_grid.get_cell(xx, yy, -1) == def.building_wall_value:
+						img.set_pixel(xx, yy, Color(0.45, 0.47, 0.55))
+	# 家具(紫) 与 装饰物(灰褐) 与 院落围栏(深褐点)
+	for k in layout.interiors:
+		var v: Dictionary = layout.interiors[k]
+		for sit in v.slots:
+			var fc: Vector2i = sit.cell
+			img.set_pixel(fc.x, fc.y, Color(0.72, 0.5, 0.9))
+		for pit in v.props:
+			var pc: Vector2i = pit.cell
+			img.set_pixel(pc.x, pc.y, Color(0.42, 0.36, 0.28))
+		for yc in v.get("yard", []):
+			var yv: Vector2i = yc
+			img.set_pixel(yv.x, yv.y, Color(0.28, 0.19, 0.11))
 	img.set_pixel(layout.site.x, layout.site.y, Color(1.0, 0.45, 0.3))
 	texture_rect.texture = ImageTexture.create_from_image(_scale_up(img))
 	var frontage := 0
 	for p in layout.parcels:
 		if int(p.frontage_dir) >= 0:
 			frontage += 1
-	_log("城镇: %s\n选址 %s (评分 %.2f)｜建筑 %d (门临街)｜地块 %d (临街 %d)" % [
-		def.name, layout.site, layout.site_score, layout.buildings.size(), layout.parcels.size(), frontage,
+	var furniture_n := 0
+	for k in layout.interiors:
+		furniture_n += (layout.interiors[k].slots as Array).size()
+	_log("城镇: %s\n建筑 %d｜家具 %d｜地块 %d (临街 %d)" % [
+		def.name, layout.buildings.size(), furniture_n, layout.parcels.size(), frontage,
 	])
 
 

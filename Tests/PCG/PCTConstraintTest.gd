@@ -119,6 +119,19 @@ static func run() -> void:
 				break
 	if tl.buildings.size() > 0 and door_road == 0:
 		city_ok = false
+	# 室内：家具有产出且不堵门（门口内侧净空）
+	var furniture_total := 0
+	var block_door := false
+	for k in tl.interiors:
+		var iv: Dictionary = tl.interiors[k]
+		furniture_total += (iv.slots as Array).size()
+		var binfo: Dictionary = tl.buildings[k]
+		var inner: Vector2i = (binfo.door as Vector2i) - [Vector2i(0, -1), Vector2i(1, 0), Vector2i(0, 1), Vector2i(-1, 0)][int(binfo.facing)]
+		for sit in iv.slots:
+			if Vector2i(sit.cell) == inner:
+				block_door = true
+	if furniture_total == 0 or block_door:
+		city_ok = false
 	# BFS：从 site 沿道路格扩散，应触达任一边缘格（对外连通）
 	if city_ok:
 		var seen := {}
@@ -137,8 +150,8 @@ static func run() -> void:
 					queue.append(nx)
 		city_ok = reach_edge
 	all_ok = all_ok and city_ok
-	print("[约束] 城镇主街/地块临街/路网连通/门临路: %s (主街%d 地块%d 建筑%d 门临路%d)" % [
-		city_ok, rg.count(city.road_main_value), tl.parcels.size(), tl.buildings.size(), door_road])
+	print("[约束] 城镇主街/地块临街/路网连通/门临路/室内家具: %s (主街%d 地块%d 建筑%d 门临路%d 家具%d)" % [
+		city_ok, rg.count(city.road_main_value), tl.parcels.size(), tl.buildings.size(), door_road, furniture_total])
 
 	# 3D 噪声洞穴跨 chunk 连续（世界坐标 offset）
 	var nc3 := load("res://Assets/Def/PCG/Grid3D_NoiseCave.tres") as Grid3DGenDef

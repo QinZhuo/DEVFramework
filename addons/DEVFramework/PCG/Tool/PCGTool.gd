@@ -691,9 +691,13 @@ static func generate_town(def: CityDef, hm: HeightMap, seed_base: int) -> TownLa
 	layout.site = site.pos
 	layout.site_score = site.score
 	_town_main_roads(def, hm, layout, site.main, make_rng(derive_seed(seed_base, 12)))
+	if def.ring_road_enabled:
+		_town_ring_road(def, hm, layout)
+	_town_plaza(def, layout)
 	_town_alley_split(def, hm, layout, make_rng(derive_seed(seed_base, 13)))
 	_town_parcels(def, layout, make_rng(derive_seed(seed_base, 14)))
 	_town_buildings(def, layout, make_rng(derive_seed(seed_base, 15)))
+	_town_interiors(def, layout, make_rng(derive_seed(seed_base, 16)))
 	return layout
 
 
@@ -1094,16 +1098,23 @@ static func _town_blocks(roads: GeneratedGrid) -> Array[PackedInt32Array]:
 	return sep.components(0)
 
 
-## S4 地块细分：每街区递归交替切片，直到满足面积/长宽比；无临街的地块丢弃
+## S4 地块细分：每街区递归交替切片，直到满足面积/长宽比；无临街的地块丢弃；
+## 广场格(plaza_cells)不参与细分
 static func _town_parcels(def: CityDef, layout: TownLayout, rng: RandomNumberGenerator) -> void:
 	var roads := layout.roads_grid
+	var plaza := {}
+	for idx in layout.plaza_cells:
+		plaza[int(idx)] = true
 	for block in _town_blocks(roads):
 		if block.size() < def.min_block_area:
 			continue
 		var rect := _bounds_of(block, roads.width)
 		var cells := {}
 		for idx in block:
-			cells[idx] = true
+			if not plaza.has(int(idx)):
+				cells[idx] = true
+		if cells.is_empty():
+			continue
 		_slice_lot(def, roads, cells, rect, 0, rng, layout.parcels)
 
 
@@ -1332,15 +1343,18 @@ static func _town_buildings(def: CityDef, layout: TownLayout, rng: RandomNumberG
 	for poi in def.poi_table:
 		if poi == null:
 			continue
-		# weight = 数量期望：整数部分必出，小数部分按概率出 1 栋
-		var count := int(maxf(poi.weight, 0.0))
-		if rng.randf() < maxf(poi.weight, 0.0) - float(count):
+		# count = 数量期望：整数部分必出，小数部分按概率额外 +1
+		var count := int(maxf(poi.count, 0.0))
+		if rng.randf() < maxf(poi.count, 0.0) - float(count):
 			count += 1
+		var tmpl_list: Array[TemplateDef] = poi.templates if not poi.templates.is_empty() else def.houses
 		for k in count:
-			var lot := _best_lot(def, layout, used, rng)
+			var lot := _best_lot(def, layout, used, rng, poi.prefer_main_street)
 			if lot < 0:
 				break
-			if _place_building(def, layout, lot, String(poi.name), bid, rng):
+			# 专属户型优先，放不下回退通用库兜底（保证「必有」语义）
+			if _place_from_lists(def, layout, lot, String(poi.poi_name), bid, rng, tmpl_list) \
+					or _place_from_lists(def, layout, lot, String(poi.poi_name), bid, rng, def.houses):
 				used[lot] = true
 				bid += 1
 	for li in layout.parcels.size():
@@ -1348,13 +1362,13 @@ static func _town_buildings(def: CityDef, layout: TownLayout, rng: RandomNumberG
 			continue
 		if rng.randf() > def.house_fill_ratio:
 			continue
-		if _place_building(def, layout, li, "住宅", bid, rng):
+		if _place_from_lists(def, layout, li, "住宅", bid, rng, def.houses):
 			used[li] = true
 			bid += 1
 
 
-## 挑未占用最优地块：主街临街 > 面积大 > 距选址近（POI 用）
-static func _best_lot(def: CityDef, layout: TownLayout, used: Dictionary, rng: RandomNumberGenerator) -> int:
+## 挑未占用最优地块：主街临街(可选偏好) > 面积大 > 距选址近（POI 用）
+static func _best_lot(def: CityDef, layout: TownLayout, used: Dictionary, rng: RandomNumberGenerator, prefer_main := true) -> int:
 	var best := -1
 	var best_score := -INF
 	for li in layout.parcels.size():
@@ -1364,7 +1378,7 @@ static func _best_lot(def: CityDef, layout: TownLayout, used: Dictionary, rng: R
 		if int(p.frontage_dir) < 0:
 			continue
 		var score := float((p.cells as PackedInt32Array).size())
-		if _lot_touches_main(def, layout, p):
+		if prefer_main and _lot_touches_main(def, layout, p):
 			score += 10000.0
 		var c: Vector2i = (p.rect as Rect2i).get_center()
 		score -= Vector2(c).distance_to(Vector2(layout.site)) * 2.0
@@ -1388,34 +1402,59 @@ static func _lot_touches_main(def: CityDef, layout: TownLayout, p: Dictionary) -
 
 ## 在地块上放一栋建筑：选模板→锚点定位(门格压真实临街格)→校验足迹→印建筑层→记录门位
 static func _place_building(def: CityDef, layout: TownLayout, li: int, type_name: String, bid: int, rng: RandomNumberGenerator) -> bool:
+	return _place_from_lists(def, layout, li, type_name, bid, rng, def.houses)
+
+
+## 从指定户型模板列表放置一栋建筑（POI 用专属库，住宅用通用库），
+## 模板按面积降序逐个尝试（同面积随机次序）：大地块优先放大房子，放不下再换小户型兜底
+static func _place_from_lists(def: CityDef, layout: TownLayout, li: int, type_name: String, bid: int, rng: RandomNumberGenerator, tmpl_list: Array[TemplateDef]) -> bool:
 	var parcel: Dictionary = layout.parcels[li]
-	var facing := int(parcel.frontage_dir)
-	if facing < 0 or not _FACING_TO_ROT.has(facing):
+	var frontage := int(parcel.frontage_dir)
+	if frontage < 0 or not _FACING_TO_ROT.has(frontage):
 		return false
+	var rect: Rect2i = parcel.rect
+	# 模板按面积降序尝试（同面积随机次序）：大地块优先放 大房子，放不下再换小户型兜底
+	var scored: Array = []
+	for t in tmpl_list:
+		if t == null or t.lines.is_empty():
+			continue
+		var sz := t.get_size()
+		scored.append({"t": t, "key": float(sz.x * sz.y) + rng.randf_range(0.0, 0.5)})
+	if scored.is_empty():
+		return false
+	scored.sort_custom(func(a, b): return float(b.key) < float(a.key))
+	# 朝向尝试顺序：临街方向优先，其余方向补充（拐角地块多面临街时提高成功率）
+	var dirs: Array[int] = [frontage]
+	for d in [0, 1, 2, 3]:
+		if d != frontage:
+			dirs.append(d)
+	for entry in scored:
+		var tmpl: TemplateDef = entry.t
+		for facing in dirs:
+			if not _FACING_TO_ROT.has(facing):
+				continue
+			if _try_place_one(def, layout, parcel, tmpl, facing, type_name, bid, rng, li):
+				return true
+	return false
+
+
+## 单模板单朝向的锚点放置：门格必须压在「沿 facing 方向邻路的真实临街格」上，
+## 从门格反推建筑位置，保证门外一格必然是道路（包围盒贴边法在不规则地块上会让门朝向落空，已弃用）
+static func _try_place_one(def: CityDef, layout: TownLayout, parcel: Dictionary, tmpl: TemplateDef, facing: int, type_name: String, bid: int, rng: RandomNumberGenerator, li: int) -> bool:
 	var rot: int = _FACING_TO_ROT[facing]
 	var rect: Rect2i = parcel.rect
 	var avail_w := rect.size.x - def.setback * 2
 	var avail_h := rect.size.y - def.setback * 2
 	if avail_w <= 0 or avail_h <= 0:
 		return false
-	var candidates: Array[TemplateDef] = []
-	for t in def.houses:
-		if t == null:
-			continue
-		var sz := t.get_rotated_size(rot)
-		if sz.x <= avail_w and sz.y <= avail_h:
-			candidates.append(t)
-	if candidates.is_empty():
-		return false
-	var tmpl := candidates[rng.randi_range(0, candidates.size() - 1)]
 	var sz2 := tmpl.get_rotated_size(rot)
 	var fw := sz2.x
 	var fh := sz2.y
+	if fw > avail_w and fh > avail_h and fw > avail_h and fh > avail_w:
+		return false
 	var roads := layout.roads_grid
 	var dir_v: Vector2i = _DIR4[facing]
 	var build := layout.build_grid
-	# 锚点定位：门格必须压在「沿 facing 方向邻路的真实临街格」上，从门格反推建筑位置，
-	# 保证门外一格必然是道路（包围盒贴边法在不规则地块上会让门朝向落空，已弃用）
 	var door_off := Vector2i(-1, -1)
 	var tsize := tmpl.get_size()
 	for ly in tmpl.lines.size():
@@ -1474,17 +1513,39 @@ static func _place_building(def: CityDef, layout: TownLayout, li: int, type_name
 		door = footprint.get_center()
 		build.set_cell(door.x, door.y, def.building_floor_value)
 	layout.buildings.append({
-		"id": bid, "type": type_name, "style": "",
+		"id": bid, "type": type_name, "style": _pick_style(def, layout, footprint.get_center(), rng),
 		"rect": footprint, "door": door, "facing": facing,
+		"template": tmpl.resource_path,
+		"_tmpl": tmpl, "lot": li,
 	})
 	return true
 
 
-## 把户型模板按旋转印到建筑层（使用 CityDef 的墙/地板/门值，不走模板自身 char_map）
+## 风格分配：邻近继承（12 格内最近已放建筑的风格 70% 概率沿用，形成同街区同风格分区），
+## 否则从 style_table 加权抽取
+static func _pick_style(def: CityDef, layout: TownLayout, anchor: Vector2i, rng: RandomNumberGenerator) -> String:
+	if def.style_table.is_empty():
+		return ""
+	var best_d := 12 * 12
+	var near_style := ""
+	for b in layout.buildings:
+		var st := String(b.style)
+		if st.is_empty():
+			continue
+		var dd: int = (b.rect as Rect2i).get_center().distance_squared_to(anchor)
+		if dd < best_d:
+			best_d = dd
+			near_style = st
+	if not near_style.is_empty() and rng.randf() < 0.7:
+		return near_style
+	return pick_weighted(rng, def.style_table).name
+
+
+## 把户型模板按旋转印到建筑层（使用 CityDef 的墙/地板/门值，不走模板自身 char_map）。
+## 槽位字符(B/T/C/H/S…)与未识别字符一律印为地板——它们只进 interiors 数据，不进栅格
 static func _stamp_building(tmpl: TemplateDef, build: GeneratedGrid, ox: int, oy: int, rotation: int, def: CityDef) -> void:
 	var mapping := {
 		"#": def.building_wall_value,
-		".": def.building_floor_value,
 		"G": def.building_door_value,
 	}
 	rotation = posmod(rotation, 4)
@@ -1493,10 +1554,219 @@ static func _stamp_building(tmpl: TemplateDef, build: GeneratedGrid, ox: int, oy
 		var line := tmpl.lines[y]
 		for x in line.length():
 			var ch := line[x]
-			if not mapping.has(ch):
+			if ch == " ":
 				continue
+			var v := def.building_floor_value
+			if mapping.has(ch):
+				v = int(mapping[ch])
 			var np := TemplateDef._rot_point(Vector2i(x, y), size, rotation)
-			build.set_cell(ox + np.x, oy + np.y, int(mapping[ch]))
+			build.set_cell(ox + np.x, oy + np.y, v)
+
+
+## —— 边缘打磨（广场 / 边界环路 / 院落围栏） ——
+
+## 城镇边界环路：沿道路覆盖范围外圈刻一圈路，收束路网形成闭合边界；
+## 触地图边缘的一侧自然开口（主街通向城外）
+static func _town_ring_road(def: CityDef, hm: HeightMap, layout: TownLayout) -> void:
+	var roads := layout.roads_grid
+	var bounds := Rect2i()
+	var first := true
+	for y in roads.height:
+		for x in roads.width:
+			if roads.get_cell(x, y, 0) != 0:
+				if first:
+					bounds = Rect2i(x, y, 1, 1)
+					first = false
+				else:
+					bounds = bounds.expand(Vector2i(x, y))
+	if first:
+		return
+	# 环路矩形：外包盒外扩，但与地图边缘保持 1 格间距（贴边侧不封口）
+	var r := bounds.grow(2).intersection(Rect2i(1, 1, roads.width - 2, roads.height - 2))
+	if r.size.x < 4 or r.size.y < 4:
+		return
+	var edge_cells: Array[Vector2i] = []
+	for x in range(r.position.x, r.end.x):
+		edge_cells.append(Vector2i(x, r.position.y))
+		edge_cells.append(Vector2i(x, r.end.y - 1))
+	for y in range(r.position.y + 1, r.end.y - 1):
+		edge_cells.append(Vector2i(r.position.x, y))
+		edge_cells.append(Vector2i(r.end.x - 1, y))
+	for c in edge_cells:
+		if roads.get_cell(c.x, c.y, 0) != 0:
+			continue
+		if hm != null and not def.bridge_allowed and hm.get_height(c.x, c.y, 1.0) < def.sea_level:
+			continue
+		roads.set_cell(c.x, c.y, def.road_ring_value)
+
+
+## 广场：选址点周围半径内的空地记入 plaza_cells（不放建筑、地块细分跳过）
+static func _town_plaza(def: CityDef, layout: TownLayout) -> void:
+	layout.plaza_cells.clear()
+	if def.plaza_radius <= 0 or layout.roads_grid == null:
+		return
+	var roads := layout.roads_grid
+	var r := def.plaza_radius
+	for dy in range(-r, r + 1):
+		for dx in range(-r, r + 1):
+			if dx * dx + dy * dy > r * r:
+				continue
+			var x := layout.site.x + dx
+			var y := layout.site.y + dy
+			if roads.in_bounds(x, y) and roads.get_cell(x, y, -1) == 0:
+				layout.plaza_cells.append(y * roads.width + x)
+
+
+## —— S6 室内布局 + 家具摆放 ——
+
+## 对每栋建筑：按其户型模板中的槽位字符（FurnitureTableDef.slot_name 配置）抽家具变体，
+## 装饰物随机撒在剩余地板；最后做「门口内侧净空 + 家具可达性」校验修复（业内 post-placement repair）
+static func _town_interiors(def: CityDef, layout: TownLayout, rng: RandomNumberGenerator) -> void:
+	var tables := {}
+	for ft in def.furniture_tables:
+		if ft != null and not ft.slot_name.is_empty() and not ft.items.is_empty():
+			tables[ft.slot_name] = ft.items
+	if tables.is_empty() or layout.build_grid == null:
+		return
+	var build := layout.build_grid
+	for b in layout.buildings:
+		var tmpl: TemplateDef = b.get("_tmpl")
+		if tmpl == null:
+			continue
+		var rot: int = _FACING_TO_ROT.get(int(b.facing), 0)
+		var rect: Rect2i = b.rect
+		var tsize := tmpl.get_size()
+		var slots: Array = []
+		var occupied := {}
+		for y in tmpl.lines.size():
+			var line := tmpl.lines[y]
+			for x in line.length():
+				var ch := line[x]
+				if ch == "#" or ch == "." or ch == "G" or not tables.has(ch):
+					continue
+				var np := TemplateDef._rot_point(Vector2i(x, y), tsize, rot)
+				var cell := Vector2i(rect.position.x + np.x, rect.position.y + np.y)
+				if build.get_cell(cell.x, cell.y, -1) != def.building_floor_value:
+					continue
+				slots.append({"cell": cell, "item": pick_weighted(rng, tables[ch]).name})
+				occupied[cell.y * def.width + cell.x] = true
+		var free_cells: Array[Vector2i] = []
+		for yy in range(rect.position.y, rect.end.y):
+			for xx in range(rect.position.x, rect.end.x):
+				var idx := yy * def.width + xx
+				if build.get_cell(xx, yy, -1) == def.building_floor_value and not occupied.has(idx):
+					free_cells.append(Vector2i(xx, yy))
+		var props: Array = []
+		for k in mini(def.props_per_building, free_cells.size()):
+			if def.prop_table.is_empty():
+				break
+			var fi := rng.randi_range(0, free_cells.size() - 1)
+			var pc := free_cells[fi]
+			free_cells.remove_at(fi)
+			props.append({"cell": pc, "item": pick_weighted(rng, def.prop_table).name})
+		layout.interiors[int(b.id)] = {"slots": slots, "props": props}
+	_town_validate_interiors(def, layout)
+	_town_yards(def, layout)
+
+
+## 院落围栏：建筑 footprint 外一圈、地块内的空格（临街侧留院门开口），
+## 仅记录数据不进栅格——消费方按 interiors[bid].yard 渲染围栏/小径
+static func _town_yards(def: CityDef, layout: TownLayout) -> void:
+	if layout.build_grid == null:
+		return
+	var build := layout.build_grid
+	for b in layout.buildings:
+		var iv: Dictionary = layout.interiors.get(int(b.id), {})
+		var li: int = int(b.get("lot", -1))
+		if li < 0 or li >= layout.parcels.size():
+			continue
+		var parcel: Dictionary = layout.parcels[li]
+		var fp: Rect2i = b.rect
+		var facing: int = int(b.facing)
+		var yard: Array = []
+		for idx in parcel.cells:
+			var c := Vector2i(int(idx) % def.width, int(idx) / def.width)
+			if c.x >= fp.position.x and c.x < fp.end.x and c.y >= fp.position.y and c.y < fp.end.y:
+				continue
+			if build.get_cell(c.x, c.y, -1) != 0:
+				continue
+			var dx := maxi(maxi(fp.position.x - c.x, c.x - fp.end.x + 1), 0)
+			var dy := maxi(maxi(fp.position.y - c.y, c.y - fp.end.y + 1), 0)
+			if dx + dy != 1:
+				continue
+			match facing:
+				0:
+					if c.y < fp.position.y:
+						continue
+				2:
+					if c.y >= fp.end.y:
+						continue
+				1:
+					if c.x >= fp.end.x:
+						continue
+				3:
+					if c.x < fp.position.x:
+						continue
+			yard.append(c)
+		if not yard.is_empty():
+			iv["yard"] = yard
+			layout.interiors[int(b.id)] = iv
+
+
+## 室内校验修复：①门口内侧净空（有家具/装饰则移除）②可达性（BFS 从门出发，
+## 家具与装饰视为阻挡，不可达的物品移除——保证玩家能走到每件家具旁交互）
+static func _town_validate_interiors(def: CityDef, layout: TownLayout) -> void:
+	var build := layout.build_grid
+	if build == null:
+		return
+	for b in layout.buildings:
+		var data: Dictionary = layout.interiors.get(int(b.id), {})
+		if data.is_empty():
+			continue
+		var door: Vector2i = b.door
+		var inner: Vector2i = door - _DIR4[int(b.facing)]
+		var slots: Array = data.slots
+		var props: Array = data.props
+		var slots2: Array = []
+		for s in slots:
+			if s.cell != inner:
+				slots2.append(s)
+		var props2: Array = []
+		for p in props:
+			if p.cell != inner:
+				props2.append(p)
+		var blocked := {}
+		for s in slots2:
+			blocked[s.cell] = true
+		for p in props2:
+			blocked[p.cell] = true
+		var floor_set := {}
+		for yy in range(b.rect.position.y, b.rect.end.y):
+			for xx in range(b.rect.position.x, b.rect.end.x):
+				if build.get_cell(xx, yy, -1) == def.building_floor_value:
+					floor_set[Vector2i(xx, yy)] = true
+		var visited := {door: true}
+		var queue: Array[Vector2i] = [door]
+		while not queue.is_empty():
+			var c: Vector2i = queue.pop_back()
+			for d in _DIR4:
+				var n: Vector2i = c + d
+				if floor_set.has(n) and not blocked.has(n) and not visited.has(n):
+					visited[n] = true
+					queue.append(n)
+		data.slots = _filter_reachable(slots2, visited)
+		data.props = _filter_reachable(props2, visited)
+
+
+static func _filter_reachable(items: Array, visited: Dictionary) -> Array:
+	var out: Array = []
+	for it in items:
+		var cell: Vector2i = it.cell
+		for d in _DIR4:
+			if visited.has(cell + d):
+				out.append(it)
+				break
+	return out
 
 
 ## —— 模板拼接 ——

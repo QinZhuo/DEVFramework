@@ -45,6 +45,8 @@ class_name CityDef extends PCGGeneratorDef
 @export var bridge_allowed := true
 ## 跨水的额外代价（越高越不愿架桥）
 @export_range(1.0, 64.0, 0.5) var bridge_cost := 10.0
+## 是否修建城镇边界环路（沿道路覆盖范围外圈一圈路，收束路网）
+@export var ring_road_enabled := true
 
 ## —— S3/S4 街区与地块 ——
 ## 街区面积超过此值则挖巷道分割
@@ -64,21 +66,39 @@ class_name CityDef extends PCGGeneratorDef
 @export var road_alley_value := 5
 ## 水上路段（桥）
 @export var bridge_value := 6
+## 边界环路（roads 层）
+@export var road_ring_value := 10
+
+## —— 广场 ——
+## 选址点周围半径（格）内的空地划为广场（不放建筑，地块细分跳过）
+@export_range(0, 12, 1) var plaza_radius := 4
+## 广场格值（仅数据记录 layout.plaza_cells，渲染消费方按此着色；0=不启用）
+@export var plaza_value := 11
 
 ## —— S5 建筑放置 ——
-## 户型模板库（门字符 G 画在模板最底边墙上，旋转后门自动朝向临街边）
+## 户型模板库（门字符 G 画在最底边墙上，旋转后门自动朝向临街边）
 @export var houses: Array[TemplateDef] = []
-## POI 表（必有建筑：name=类型名，weight=数量期望，整数部分必出、小数部分按概率）
-@export var poi_table: Array[ContentEntryDef] = []
+## POI 功能建筑表（酒馆/教堂/铁匠铺…：数量期望 + 主街偏好 + 专属户型）
+@export var poi_table: Array[PoiDef] = []
 ## 其余地块的住宅填充比例
 @export_range(0.0, 1.0, 0.01) var house_fill_ratio := 0.8
 ## 建筑足迹距地块边缘的退线（格）
 @export_range(0, 4, 1) var setback := 1
+## 建筑风格加权表（name=风格名；同街区邻近建筑倾向同风格）
+@export var style_table: Array[ContentEntryDef] = []
 
 ## —— 值语义（build 层栅格） ——
 @export var building_wall_value := 7
 @export var building_floor_value := 8
 @export var building_door_value := 9
+
+## —— S6 室内布局 + 家具 ——
+## 家具槽位表：slot_name=模板中的槽位字符，items=该槽位可抽的家具变体
+@export var furniture_tables: Array[FurnitureTableDef] = []
+## 自由装饰物加权表（散布在室内剩余空地）
+@export var prop_table: Array[ContentEntryDef] = []
+## 每栋建筑最多散布几个装饰物
+@export_range(0, 8, 1) var props_per_building := 3
 
 func generate(ctx: PCGContext) -> void:
 	var hm: HeightMap = null

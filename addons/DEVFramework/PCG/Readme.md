@@ -303,8 +303,9 @@ var stream: AudioStreamWAV = out["laser"]                # 直接播放/保存
 
 S1 地形评分选址 → S2 贴地道路网(主街坡度A*→边缘枢纽 / 次街扰动生长) →
 S2b 递归空间细分刻巷道 → S3 街区提取 → S4 临街地块细分 →
-S5 建筑放置(POI 必有建筑优先分配大地块 / 住宅填充 / 锚点定位保证门临路)；室内家具(M3)见
-`docs/城镇生成管线设计案.md`：
+S5 建筑放置(POI 必有建筑优先 / 住宅填充 / 锚点定位保证门临路) →
+S6 室内家具(户型槽位字符抽变体 + 自由装饰散布 + 门口净空/可达性校验修复)。
+设计全案见 `docs/城镇生成管线设计案.md`：
 
 ```gdscript
 var city: CityDef = load("res://Assets/Def/PCG/City_Grid.tres")
@@ -312,10 +313,17 @@ var layout := PCGTool.generate_town(city, heightmap, seed)   # heightmap 可为 
 layout.site                 # 选址点(评分 site_score)
 layout.roads_grid           # 道路层：主街/次街/巷道/桥 值可配(CityDef 导出)
 layout.build_grid           # 建筑层：墙/地板/门 值可配
-layout.buildings            # [{id,type,style,rect,door,facing}]
+layout.buildings            # [{id,type,style,rect,door,facing,template}]
 layout.parcels              # 地块[{rect, cells, frontage_dir 临街方向, 无临街已丢弃}]
-# 户型模板(TemplateDef)：门字符 G 画在最底边墙上，旋转后自动朝向临街边；
-# POI 表(ContentEntryDef)：weight=数量期望；示例见 City_Grid.tres + House_*.tres
+layout.interiors            # building_id -> {slots:[{cell,item}], props:[...], yard:[围栏格]}
+layout.plaza_cells          # 广场格（site 周围空地，不放建筑）
+# 户型模板(TemplateDef)：G=门(画在最底边墙)，B/T/C/H/S 等字符=家具槽位；
+# 槽位表(FurnitureTableDef)：slot_name=槽位字符，items 加权抽家具变体；
+# POI 定义(PoiDef)：poi_name/count(数量期望)/prefer_main_street/templates(专属户型，空回退 houses)；
+# 风格分区(style_table)：邻近建筑 70% 概率继承同风格，形成同街区同风格；
+# 边缘要素：ring_road_enabled 边界环路(road_ring_value)、plaza_radius/plaza_value 广场、
+#           院落围栏(interiors[bid].yard，临街侧留院门开口)；
+# 示例全套见 City_Grid.tres + House_*/Poi_*/Furniture_*.tres
 # 管线内使用：heightmap_key 指向高度图结果键，输出 key/_roads/_build/_site 四个键
 ```
 

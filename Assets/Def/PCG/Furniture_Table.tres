@@ -1,0 +1,19 @@
+[gd_resource type="Resource" script_class="FurnitureTableDef" load_steps=5 format=3]
+
+[ext_resource type="Script" path="res://addons/DEVFramework/PCG/Def/FurnitureTableDef.gd" id="1_script"]
+[ext_resource type="Script" path="res://addons/DEVFramework/PCG/Def/ContentEntryDef.gd" id="2_entry"]
+
+[sub_resource type="Resource" id="table_wood"]
+script = ExtResource("2_entry")
+name = "木桌"
+weight = 3.0
+
+[sub_resource type="Resource" id="table_round"]
+script = ExtResource("2_entry")
+name = "圆桌"
+weight = 1.0
+
+[resource]
+script = ExtResource("1_script")
+slot_name = "T"
+items = Array[ExtResource("2_entry")]([SubResource("table_wood"), SubResource("table_round")])

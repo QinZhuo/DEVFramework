@@ -23,7 +23,10 @@ var parcels: Array = []
 var build_grid: GeneratedGrid = null
 ## 建筑列表 [{id, type, style, rect:Rect2i(足迹), door:Vector2i, facing:int}]
 var buildings: Array = []
-## 室内布局（M3 填充）building_id -> {grid, slots, props}
+## 室内布局 building_id -> {slots:[{cell,item}], props:[{cell,item}], yard:[Vector2i]}
+var interiors := {}
+## 广场格（线性索引，site 周围空地；不放建筑）
+var plaza_cells := PackedInt32Array()
 
 ## 道路等级
 enum EdgeClass { MAIN, SECONDARY, ALLEY }
@@ -56,6 +59,20 @@ func to_data() -> Dictionary:
 			"rect": [b.rect.position.x, b.rect.position.y, b.rect.size.x, b.rect.size.y],
 			"door": [b.door.x, b.door.y], "facing": int(b.facing),
 		})
+	var interior_data := {}
+	for k in interiors:
+		var v: Dictionary = interiors[k]
+		var sl: Array = []
+		for sit in v.slots:
+			sl.append({"cell": [sit.cell.x, sit.cell.y], "item": String(sit.item)})
+		var pr: Array = []
+		for pit in v.props:
+			pr.append({"cell": [pit.cell.x, pit.cell.y], "item": String(pit.item)})
+		var yd := PackedInt32Array()
+		for yc in v.get("yard", []):
+			yd.append(yc.x)
+			yd.append(yc.y)
+		interior_data[str(k)] = {"slots": sl, "props": pr, "yard": yd}
 	return {
 		"site": [site.x, site.y],
 		"score": site_score,
@@ -65,6 +82,8 @@ func to_data() -> Dictionary:
 		"edges": edge_data,
 		"parcels": parcel_data,
 		"buildings": building_data,
+		"interiors": interior_data,
+		"plaza": plaza_cells,
 	}
 
 
@@ -101,4 +120,20 @@ static func from_data(data: Dictionary) -> TownLayout:
 			"rect": Rect2i(int(br[0]), int(br[1]), int(br[2]), int(br[3])),
 			"door": Vector2i(int(dr[0]), int(dr[1])), "facing": int(b.facing),
 		})
+	for k in data.get("interiors", {}):
+		var v: Dictionary = data.interiors[k]
+		var slots: Array = []
+		for sit in v.slots:
+			var sc: Array = sit.cell
+			slots.append({"cell": Vector2i(int(sc[0]), int(sc[1])), "item": String(sit.item)})
+		var props: Array = []
+		for pit in v.props:
+			var pc: Array = pit.cell
+			props.append({"cell": Vector2i(int(pc[0]), int(pc[1])), "item": String(pit.item)})
+		var yd := PackedInt32Array(v.get("yard", []))
+		var yard: Array = []
+		for yi in range(0, yd.size(), 2):
+			yard.append(Vector2i(yd[yi], yd[yi + 1]))
+		t.interiors[int(k)] = {"slots": slots, "props": props, "yard": yard}
+	t.plaza_cells = PackedInt32Array(data.get("plaza", []))
 	return t
