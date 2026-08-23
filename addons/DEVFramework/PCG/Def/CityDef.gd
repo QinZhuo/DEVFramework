@@ -110,13 +110,15 @@ class_name CityDef extends PCGGeneratorDef
 @export var style_table: Array[ContentEntryDef] = []
 
 ## —— 建筑语义（跨项目成立的事实，渲染方据此解释外观） ——
-## 住宅随机层数下限/上限
+## 住宅随机层数下限/上限（实际层数受距选址距离衰减：中心高外围矮）
 @export_range(1, 4, 1) var house_layers_min := 1
-@export_range(1, 4, 1) var house_layers_max := 2
+@export_range(1, 4, 1) var house_layers_max := 3
 ## 住宅默认屋顶类型（gable=双坡；渲染方按此查表选模型）
 @export var house_roof := "gable"
 ## 这些风格强制平顶（如 石砌/砖混 搭配平顶更合理）
 @export var flat_roof_styles: Array[String] = ["石砌", "砖混"]
+## 城镇命名生成器（ContentGenDef NAME 模式：前缀+后缀拼地名）；空 = 不命名
+@export var name_gen: ContentGenDef
 
 ## —— 值语义（build 层栅格） ——
 @export var building_wall_value := 7

@@ -688,6 +688,9 @@ static func generate_town(def: CityDef, hm: HeightMap, seed_base: int) -> TownLa
 	var layout := TownLayout.new()
 	layout.roads_grid = GeneratedGrid.create(def.width, def.height, 0)
 	layout.heightmap = hm
+	# 城镇命名（ContentGenDef NAME 模式，复用内容生成积木）
+	if def.name_gen != null:
+		layout.town_name = generate_name(def.name_gen, make_rng(derive_seed(seed_base, 10)))
 	var site := _town_site(def, hm, make_rng(derive_seed(seed_base, 11)))
 	layout.site = site.pos
 	layout.site_score = site.score
@@ -1547,7 +1550,13 @@ static func _try_place_one(def: CityDef, layout: TownLayout, parcel: Dictionary,
 		layers = clampi(fac.layers, 1, 4)
 		roof = fac.roof
 	else:
-		layers = rng.randi_range(maxi(1, def.house_layers_min), maxi(1, def.house_layers_max))
+		# 住宅层数：中心高外围矮的自然天际线（距选址越远越矮）+ 少量随机上浮
+		var dist := Vector2(footprint.get_center()).distance_to(Vector2(layout.site))
+		var t := clampf(1.0 - dist / maxf(1.0, def.width * 0.5), 0.0, 1.0)
+		layers = def.house_layers_min + int(round(t * (def.house_layers_max - def.house_layers_min)))
+		if rng.randf() < 0.25:
+			layers += 1
+		layers = clampi(layers, def.house_layers_min, def.house_layers_max)
 		roof = def.house_roof
 	var style := _pick_style(def, layout, footprint.get_center(), rng)
 	if def.flat_roof_styles.has(style):

@@ -29,6 +29,8 @@ var interiors := {}
 var plaza_cells := PackedInt32Array()
 ## 地形高度场（透传或回写后的最终地形；消费方 y = sample(x,y) × height_scale）
 var heightmap: HeightMap = null
+## 城镇名（ContentGenDef NAME 模式生成；空 = 未配置命名）
+var town_name := ""
 ## 广场中心设施（水井/喷泉…）位置与名称；item 为空表示无设施
 var plaza_center := Vector2i(-1, -1)
 var plaza_item := ""
@@ -106,6 +108,7 @@ func to_data() -> Dictionary:
 		"streets_lamps": lamps,
 		"streets_benches": benches,
 		"heightmap": heightmap.to_data() if heightmap else null,
+		"town_name": town_name,
 	}
 
 
@@ -174,4 +177,5 @@ static func from_data(data: Dictionary) -> TownLayout:
 	var hmd = data.get("heightmap")
 	if hmd is Dictionary and not (hmd as Dictionary).is_empty():
 		t.heightmap = HeightMap.from_data(hmd)
+	t.town_name = String(data.get("town_name", ""))
 	return t

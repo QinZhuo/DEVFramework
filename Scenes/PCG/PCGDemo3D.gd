@@ -237,7 +237,8 @@ func _gen_town_3d(def: CityDef) -> void:
 		if String(b.type) != "住宅":
 			poi += 1
 	_log("城镇 3D: %s\n建筑 %d (设施 %d)｜地块 %d｜环路 %d 格\n生成 %.0fms ／ 鼠标左键拖拽旋转" % [
-		def.name, layout.buildings.size(), poi, layout.parcels.size(),
+		layout.town_name if not layout.town_name.is_empty() else def.name,
+		layout.buildings.size(), poi, layout.parcels.size(),
 		layout.roads_grid.count(def.road_ring_value), ms,
 	])
 
@@ -382,20 +383,25 @@ func _render_town(layout: TownLayout, def: CityDef) -> void:
 							else:
 								win_along_z.append(wp)
 							break
-		# 屋顶与桩基支撑
+		# 屋顶按语义类型 + 风格色：gable 双坡(檐+脊)；flat 平顶女儿墙
+		var roof_pair: Array = {
+			"木构": [Color(0.5, 0.22, 0.14), Color(0.56, 0.28, 0.17)],
+			"石砌": [Color(0.42, 0.46, 0.58), Color(0.48, 0.52, 0.62)],
+			"砖混": [Color(0.45, 0.2, 0.16), Color(0.52, 0.26, 0.2)],
+		}.get(String(b.style), [Color(0.46, 0.19, 0.13), Color(0.54, 0.24, 0.16)])
 		var rc: Vector3 = to_world.call(rect.get_center().x, rect.get_center().y)
 		rc.y = gy
 		if String(b.roof) == "flat":
 			_add_box(rc + Vector3(0, top_h + 0.18, 0),
 					Vector3(rect.size.x + 0.2, 0.35, rect.size.y + 0.2),
-					Color(0.4, 0.44, 0.52) if is_fac else Color(0.45, 0.32, 0.24))
+					Color(0.4, 0.44, 0.52) if is_fac else (roof_pair[0] as Color).lightened(0.1))
 		else:
-			_add_box(rc + Vector3(0, top_h + 0.12, 0),
-					Vector3(rect.size.x + 0.6, 0.24, rect.size.y + 0.6),
-					Color(0.42, 0.46, 0.58) if is_fac else Color(0.5, 0.22, 0.14))
-			_add_box(rc + Vector3(0, top_h + 0.48, 0),
-					Vector3(maxf(1.0, rect.size.x * 0.55), 0.5, maxf(1.0, rect.size.y * 0.55)),
-					Color(0.48, 0.52, 0.62) if is_fac else Color(0.56, 0.28, 0.17))
+			var eave_size := Vector3(rect.size.x + 0.6, 0.24, rect.size.y + 0.6)
+			var ridge_size := Vector3(maxf(1.0, rect.size.x * 0.55), 0.5, maxf(1.0, rect.size.y * 0.55))
+			_add_box(rc + Vector3(0, top_h + 0.12, 0), eave_size,
+					(roof_pair[1] as Color).lightened(0.25) if is_fac else roof_pair[0])
+			_add_box(rc + Vector3(0, top_h + 0.48, 0), ridge_size,
+					(roof_pair[1] as Color).lightened(0.2) if is_fac else roof_pair[1])
 		if String(b.foundation) == "stilt":
 			for corner in [rect.position, Vector2i(rect.end.x - 1, rect.position.y),
 					Vector2i(rect.position.x, rect.end.y - 1), rect.end - Vector2i.ONE]:

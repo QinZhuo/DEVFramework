@@ -1,0 +1,8 @@
+[gd_resource type="Resource" script_class="ContentGenDef" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://addons/DEVFramework/PCG/Def/ContentGenDef.gd" id="1_script"]
+
+[resource]
+script = ExtResource("1_script")
+prefixes = PackedStringArray("灰岩", "白杨", "溪谷", "铁杉", "雾松", "红叶", "石桥", "青麦", "落霞", "古井")
+suffixes = PackedStringArray("镇", "村", "屯", "坞")
