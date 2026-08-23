@@ -18,7 +18,8 @@ addons/DEVFramework/PCG/
 │   ├── TextureGenDef.gd       # 程序化纹理生成器（噪声/云/木纹/砖墙/水面，色带映射）
 │   ├── LSystemDef.gd          # L-System 生长生成器（重写规则 turtle 绘制，线段集输出）
 │   ├── TileDef3D / TileSetDef3D  # 3D WFC 六面 socket 瓦片与瓦片集
-│   ├── CityDef.gd             # 城镇生成总控（选址→贴地路网→巷道细分→临街地块，见 docs 设计案）
+│   ├── TownDef.gd             # 城镇生成总控（可插拔步骤链：选址→贴地路网→环路→巷道→广场→地块→建筑→室内→绿化→街具→农田→地形回写）
+│   ├── TownStepDef.gd         # 城镇步骤抽象基类（steps/ 子目录 12 个可插拔步骤，见 docs 设计案）
 │   ├── PlacementDef.gd        # 散布放置器（泊松圆盘/抖动网格/均匀随机，可按网格剔除）
 │   ├── PlacementDef3D.gd      # 3D 散布放置器（3D 泊松/网格/随机，可按 3D 网格剔除）
 │   ├── ContentEntryDef.gd     # 加权表项（物品/事件/怪物等条目）
@@ -299,32 +300,35 @@ var stream: AudioStreamWAV = out["laser"]                # 直接播放/保存
 
 音频生成核心（合成/编曲/风格/示例）在框架音频模块；`AudioTool` 为通用音频管理（播放/总线/保存/查询），两者均非 PCG 专属。
 
-### 5.9 城镇生成与内容进化 **CityDef**（小城镇管线总控）：
+### 5.9 城镇生成与内容进化 **TownDef**（可插拔步骤管线总控）：
 
 S1 地形评分选址 → S2 贴地道路网(主街坡度A*→边缘枢纽 / 次街扰动生长) →
-S2b 递归空间细分刻巷道 → S3 街区提取 → S4 临街地块细分 →
-S5 建筑放置(POI 必有建筑优先 / 住宅填充 / 锚点定位保证门临路) →
-S6 室内家具(户型槽位字符抽变体 + 自由装饰散布 + 门口净空/可达性校验修复)。
-设计全案见 `docs/城镇生成管线设计案.md`：
+环路 → S2b 递归空间细分刻巷道 → 广场(中心设施) → S3 街区提取 → S4 临街地块细分 →
+S5 建筑放置(设施优先 / 住宅填充 / 锚点定位保证门临路 / 切台·桩基贴地) →
+S6 室内家具(槽位抽变体 + 装饰散布 + 校验修复) + 院落围栏 →
+绿化散布 + 行道树 + 街具(路灯/长椅) + 农田条纹 + V1 地形回写。
+设计全案见 `docs/城镇生成管线设计案.md`、贴地方案见 `docs/城镇贴地放置技术方案.md`：
 
 ```gdscript
-var city: CityDef = load("res://Assets/Def/PCG/City_Grid.tres")
-var layout := PCGTool.generate_town(city, heightmap, seed)   # heightmap 可为 null(平地)
-layout.site                 # 选址点(评分 site_score)
-layout.roads_grid           # 道路层：主街/次街/巷道/桥 值可配(CityDef 导出)
-layout.build_grid           # 建筑层：墙/地板/门 值可配
-layout.buildings            # [{id,type,style,rect,door,facing,layers(层数),roof(gable/flat),template}]
-layout.parcels              # 地块[{rect, cells, frontage_dir 临街方向, 无临街已丢弃}]
-layout.interiors            # building_id -> {slots:[{cell,item}], props:[...], yard:[围栏格]}
-layout.plaza_cells          # 广场格（site 周围空地，不放建筑）
+var town: TownDef = load("res://Assets/Def/PCG/City_Grid.tres")
+var layout := PCGTool.generate_town(town, heightmap, seed)   # heightmap 可为 null(平地)
+layout.town_name             # 城镇名(ContentGenDef NAME 模式生成)
+layout.site                  # 选址点(评分 site_score)
+layout.roads_grid            # 道路层：主街/次街/巷道/桥/环路 值可配(TownDef 导出)
+layout.build_grid            # 建筑层：墙/地板/门 值可配
+layout.buildings             # [{id,type,style,rect,door,facing,layers(层数),roof(gable/flat),foundation(terrace/stilt)}]
+layout.parcels               # 地块[{rect, cells, frontage_dir 临街方向, 无临街已丢弃}]
+layout.interiors             # building_id -> {slots:[{cell,item}], props:[...], yard:[围栏格]}
+layout.trees                 # 树木格(空地散布+行道树)
+layout.streets               # {"lamps":[路灯], "benches":[长椅]}
+layout.farms                 # 农田区块数组(每项为连片格线性索引)
+# 可插拔步骤：TownDef.steps 留空=内置标准链；每个 TownStepDef 子类自带参数可单独配置；
+# 不同 steps 组合+参数 = 不同风格城镇(农耕镇/山地矿镇/渔村…)
 # 户型模板(TemplateDef)：G=门(画在最底边墙)，B/T/C/H/S 等字符=家具槽位；
 # 槽位表(FurnitureTableDef)：slot_name=槽位字符，items 加权抽家具变体；
-# POI 定义(PoiDef→FacilityDef)：facility_name/count(数量期望)/prefer_main_street/layers(层数)/roof(屋顶类型)/templates(专属户型，空回退 houses)；
+# 设施定义(FacilityDef)：facility_name/count(数量期望)/prefer_main_street/layers/roof/templates(专属户型，空回退 houses)；
 # 风格分区(style_table)：邻近建筑 70% 概率继承同风格，形成同街区同风格；
-# 住宅层数/屋顶：house_layers_min/max + house_roof；flat_roof_styles 中的风格强制平顶；
-# 边缘要素：ring_road_enabled 边界环路(road_ring_value)、plaza_radius/plaza_value 广场、
-#           院落围栏(interiors[bid].yard，临街侧留院门开口)；
-# 示例全套见 City_Grid.tres + House_*/Poi_*/Furniture_*.tres
+# 示例全套见 City_Grid.tres + House_*/Building_*/Furniture_*.tres
 # 管线内使用：heightmap_key 指向高度图结果键，输出 key/_roads/_build/_site 四个键
 ```
 

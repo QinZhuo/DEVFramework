@@ -71,9 +71,11 @@ func _generate() -> void:
 		_log("请配置 grid3d_defs")
 		return
 	if res is TownDef:
+		_set_title("PCG 3D 演示 · 城镇")
 		_gen_town_3d(res as TownDef)
 		return
 	_despawn_town_npc()
+	_set_title("PCG 3D 演示 · 体素")
 	var def := res as Grid3DGenDef
 	var fixed := {}
 	var fixed_note := ""
@@ -616,10 +618,6 @@ func _physics_process(delta: float) -> void:
 		_npc.move_and_slide()
 
 
-func _log(msg: String) -> void:
-	log_box.text = msg
-
-
 func _add_box(center: Vector3, size: Vector3, color: Color) -> void:
 	var mi := MeshInstance3D.new()
 	var bm := BoxMesh.new()
@@ -629,3 +627,13 @@ func _add_box(center: Vector3, size: Vector3, color: Color) -> void:
 	mi.mesh = bm
 	mi.position = center
 	world.add_child(mi)
+
+
+func _set_title(t: String) -> void:
+	var label := get_node_or_null("UI/Panel/VBox/Title")
+	if label != null:
+		label.text = t
+
+
+func _log(msg: String) -> void:
+	log_box.text = msg

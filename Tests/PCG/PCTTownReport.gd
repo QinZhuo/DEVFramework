@@ -11,6 +11,51 @@
 
 const DEFAULT_SEEDS := 10
 
+## 参数扫描：批量对比不同 lot_max_area × secondary_max_len 组合的城镇质量，
+## 输出利用率/建筑密度/门临路率对照表——调参依据一键复扫
+## 用法: PCTTownReport.run_sweep()  或  PCTTownReport.run_sweep([60,100,150], [40,56])
+static func run_sweep(lot_areas: Array = [80, 120, 160, 220], sec_lens: Array = [40, 56, 72], seeds := 4) -> void:
+	var city := load("res://Assets/Def/PCG/City_Grid.tres") as TownDef
+	if city == null:
+		push_error("PCTTownReport.run_sweep: 找不到 City_Grid.tres")
+		return
+	print("== 城镇参数扫描 (lot_max_area × secondary_max_len, 每组 %d 种子) ==" % seeds)
+	print("%-8s %-8s %-10s %-8s %-8s %-8s" % ["lot", "secLen", "利用率", "建筑", "门临路", "耗时ms"])
+	var best_use := -1.0
+	var best_key := ""
+	for lot in lot_areas:
+		for sl in sec_lens:
+			city.lot_max_area = float(lot)
+			city.secondary_max_len = float(sl)
+			var use_sum := 0.0
+			var bld_sum := 0.0
+			var door_ok := 0
+			var door_all := 0
+			var ms_sum := 0.0
+			for i in seeds:
+				var seed := 90210 + i * 131
+				var t0 := Time.get_ticks_usec()
+				var tl: TownLayout = PCGTool.generate_town(city, null, seed)
+				ms_sum += (Time.get_ticks_usec() - t0) / 1000.0
+				use_sum += _lot_usage(tl)
+				bld_sum += tl.buildings.size()
+				door_all += tl.buildings.size()
+				var rg := tl.roads_grid
+				for b in tl.buildings:
+					var dr: Vector2i = b.door
+					for d: Vector2i in [Vector2i(0, -1), Vector2i(1, 0), Vector2i(0, 1), Vector2i(0, -1)]:
+						if rg.get_cell(dr.x + d.x, dr.y + d.y, -9) > 0:
+							door_ok += 1
+							break
+			var use_avg := use_sum / float(seeds)
+			var door_rate := float(door_ok) / maxf(1.0, float(door_all))
+			if use_avg > best_use and door_rate >= 0.99:
+				best_use = use_avg
+				best_key = "lot=%d sec=%d" % [lot, sl]
+			print("%-8d %-8d %-9.0f%% %-8.1f %-7.0f%% %.0f" % [
+				lot, sl, use_avg * 100.0, bld_sum / float(seeds), door_rate * 100.0, ms_sum / float(seeds)])
+	print("== 扫描完成 · 最优组合(利用率最高且门临路>=99%%): %s (%.0f%%) ==" % [best_key, best_use * 100.0])
+
 static func run(seed_count := DEFAULT_SEEDS, seed_start := 20260101) -> Dictionary:
 	var city := load("res://Assets/Def/PCG/City_Grid.tres") as TownDef
 	if city == null:
@@ -154,3 +199,14 @@ static func _summarize(rows: Array) -> Dictionary:
 	sum["poi_kinds_present"] = kinds
 	sum["poi_names"] = names
 	return sum
+
+
+## 单镇地块利用率：建筑足迹格 / 临街地块总格
+static func _lot_usage(tl: TownLayout) -> float:
+	var build_cells := 0
+	for b in tl.buildings:
+		build_cells += int(b.rect.size.x) * int(b.rect.size.y)
+	var lot_cells := 0
+	for p in tl.parcels:
+		lot_cells += int((p.cells as PackedInt32Array).size())
+	return build_cells / maxf(1.0, float(lot_cells))
