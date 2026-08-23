@@ -9,4 +9,6 @@ script = ExtResource("1_script")
 facility_name = "酒馆"
 count = 1.0
 prefer_main_street = true
+layers = 2
+roof = "gable"
 templates = Array[ExtResource("2_tmpl_script")]([ExtResource("3_tmpl")])

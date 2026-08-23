@@ -291,27 +291,33 @@ func _render_town(layout: TownLayout, def: CityDef) -> void:
 	for idx in layout.plaza_cells:
 		plaza_pts.append(to_world.call(int(idx) % w, int(idx) / w))
 	_add_mesh_sized(plaza_pts, Color(0.6, 0.58, 0.52), Vector3(1, 0.14, 1))
-	# 建筑：住宅墙(深褐) 与 设施墙(石灰) 分组；地板薄板；门橙柱
-	var house_walls := PackedVector3Array()
-	var fac_walls := PackedVector3Array()
+	# 建筑：墙体按 (类型, 层数) 分组（高度=层数语义），地板薄板
+	var wall_groups := {}  # "fac_2"/"house_1" → pts
 	var fac_cells := {}
 	var house_cells := {}
+	var layers_of := {}  # 墙格 → 该建筑层数
 	for b in layout.buildings:
 		var target := fac_cells if String(b.type) != "住宅" else house_cells
 		for yy in range(b.rect.position.y, b.rect.end.y):
 			for xx in range(b.rect.position.x, b.rect.end.x):
 				target[Vector2i(xx, yy)] = true
+				layers_of[Vector2i(xx, yy)] = int(b.layers)
 	var floors := PackedVector3Array()
 	for z in d:
 		for x in w:
 			var c := Vector2i(x, z)
 			var v := bg.get_cell(x, z, -1)
 			if v == def.building_wall_value:
-				(house_walls if house_cells.has(c) else fac_walls).append(to_world.call(x, z))
+				var gkey := ("fac_" if fac_cells.has(c) else "house_") + str(int(layers_of.get(c, 1)))
+				if not wall_groups.has(gkey):
+					wall_groups[gkey] = PackedVector3Array()
+				wall_groups[gkey].append(to_world.call(x, z))
 			elif v == def.building_floor_value:
 				floors.append(to_world.call(x, z))
-	_add_mesh_sized(house_walls, Color(0.36, 0.23, 0.14), Vector3(1, 2.4, 1))
-	_add_mesh_sized(fac_walls, Color(0.55, 0.57, 0.65), Vector3(1, 3.0, 1))
+	for gkey in wall_groups:
+		var is_fac_g: bool = String(gkey).begins_with("fac")
+		var ln: int = int(String(gkey).get_slice("_", 1))
+		_add_mesh_sized(wall_groups[gkey], Color(0.55, 0.57, 0.65) if is_fac_g else Color(0.36, 0.23, 0.14), Vector3(1, ln * 1.5 + 0.9, 1))
 	_add_mesh_sized(floors, Color(0.62, 0.48, 0.3), Vector3(1, 0.1, 1))
 	# 屋顶（屋檐板+屋脊）、发光窗、定向门板
 	var win_along_x := PackedVector3Array()
@@ -322,31 +328,38 @@ func _render_town(layout: TownLayout, def: CityDef) -> void:
 		var is_fac := String(b.type) != "住宅"
 		var wall_set: Dictionary = fac_cells if is_fac else house_cells
 		var rect: Rect2i = b.rect
-		var top_h := 3.0 if is_fac else 2.4
+		var blayers: int = int(b.layers)
+		var top_h := blayers * 1.5 + 0.9
 		var center: Vector3 = to_world.call(rect.get_center().x, rect.get_center().y)
 		var eave_y := top_h + 0.12
 		var ridge_y := eave_y + 0.36
 		var eave_size := Vector3(rect.size.x + 0.6, 0.24, rect.size.y + 0.6)
 		var ridge_size := Vector3(maxf(1.0, rect.size.x * 0.55), 0.5, maxf(1.0, rect.size.y * 0.55))
-		# 逐栋独立节点（屋顶尺寸随户型变化，无法共享 MultiMesh）
-		var is_house := not is_fac
-		_add_box(Vector3(center.x, eave_y, center.z), eave_size,
-				Color(0.42, 0.46, 0.58) if is_fac else Color(0.5, 0.22, 0.14))
-		_add_box(Vector3(center.x, ridge_y, center.z), ridge_size,
-				Color(0.48, 0.52, 0.62) if is_fac else Color(0.56, 0.28, 0.17))
-		# 发光窗：墙格棋盘间隔，贴暴露面外侧（按暴露轴分薄板方向）
-		for yy in range(rect.position.y, rect.end.y):
-			for xx in range(rect.position.x, rect.end.x):
-				if not wall_set.has(Vector2i(xx, yy)) or (xx + yy) % 2 == 1:
-					continue
-				for dd: Vector2i in [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)]:
-					if not wall_set.has(Vector2i(xx + dd.x, yy + dd.y)):
-						var wp: Vector3 = to_world.call(xx, yy) + Vector3(dd.x * 0.53, 1.5, dd.y * 0.53)
-						if dd.x != 0:
-							win_along_x.append(wp)
-						else:
-							win_along_z.append(wp)
-						break
+		# 屋顶按语义类型：gable 双坡(檐+脊)；flat 平顶只留檐口女儿墙
+		if String(b.roof) == "flat":
+			_add_box(Vector3(center.x, eave_y, center.z),
+					Vector3(rect.size.x + 0.2, 0.35, rect.size.y + 0.2),
+					Color(0.4, 0.44, 0.52) if is_fac else Color(0.45, 0.32, 0.24))
+		else:
+			_add_box(Vector3(center.x, eave_y, center.z), eave_size,
+					Color(0.42, 0.46, 0.58) if is_fac else Color(0.5, 0.22, 0.14))
+			_add_box(Vector3(center.x, ridge_y, center.z), ridge_size,
+					Color(0.48, 0.52, 0.62) if is_fac else Color(0.56, 0.28, 0.17))
+		# 发光窗：每层一排、棋盘间隔，贴暴露面外侧（按暴露轴分薄板方向）
+		for row in maxi(1, blayers - (0 if is_fac else 0)):
+			var wy := 1.15 + row * 1.5
+			for yy in range(rect.position.y, rect.end.y):
+				for xx in range(rect.position.x, rect.end.x):
+					if not wall_set.has(Vector2i(xx, yy)) or (xx + yy + row) % 2 == 1:
+						continue
+					for dd: Vector2i in [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)]:
+						if not wall_set.has(Vector2i(xx + dd.x, yy + dd.y)):
+							var wp: Vector3 = to_world.call(xx, yy) + Vector3(dd.x * 0.53, wy, dd.y * 0.53)
+							if dd.x != 0:
+								win_along_x.append(wp)
+							else:
+								win_along_z.append(wp)
+							break
 		# 定向门板（薄轴与墙面垂直）
 		var dr: Vector2i = b.door
 		var dp: Vector3 = to_world.call(dr.x, dr.y) + Vector3(0, 0.05, 0)

@@ -87,6 +87,15 @@ class_name CityDef extends PCGGeneratorDef
 ## 建筑风格加权表（name=风格名；同街区邻近建筑倾向同风格）
 @export var style_table: Array[ContentEntryDef] = []
 
+## —— 建筑语义（跨项目成立的事实，渲染方据此解释外观） ——
+## 住宅随机层数下限/上限
+@export_range(1, 4, 1) var house_layers_min := 1
+@export_range(1, 4, 1) var house_layers_max := 2
+## 住宅默认屋顶类型（gable=双坡；渲染方按此查表选模型）
+@export var house_roof := "gable"
+## 这些风格强制平顶（如 石砌/砖混 搭配平顶更合理）
+@export var flat_roof_styles: Array[String] = ["石砌", "砖混"]
+
 ## —— 值语义（build 层栅格） ——
 @export var building_wall_value := 7
 @export var building_floor_value := 8

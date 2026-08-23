@@ -313,14 +313,15 @@ var layout := PCGTool.generate_town(city, heightmap, seed)   # heightmap 可为 
 layout.site                 # 选址点(评分 site_score)
 layout.roads_grid           # 道路层：主街/次街/巷道/桥 值可配(CityDef 导出)
 layout.build_grid           # 建筑层：墙/地板/门 值可配
-layout.buildings            # [{id,type,style,rect,door,facing,template}]
+layout.buildings            # [{id,type,style,rect,door,facing,layers(层数),roof(gable/flat),template}]
 layout.parcels              # 地块[{rect, cells, frontage_dir 临街方向, 无临街已丢弃}]
 layout.interiors            # building_id -> {slots:[{cell,item}], props:[...], yard:[围栏格]}
 layout.plaza_cells          # 广场格（site 周围空地，不放建筑）
 # 户型模板(TemplateDef)：G=门(画在最底边墙)，B/T/C/H/S 等字符=家具槽位；
 # 槽位表(FurnitureTableDef)：slot_name=槽位字符，items 加权抽家具变体；
-# POI 定义(PoiDef)：poi_name/count(数量期望)/prefer_main_street/templates(专属户型，空回退 houses)；
+# POI 定义(PoiDef→FacilityDef)：facility_name/count(数量期望)/prefer_main_street/layers(层数)/roof(屋顶类型)/templates(专属户型，空回退 houses)；
 # 风格分区(style_table)：邻近建筑 70% 概率继承同风格，形成同街区同风格；
+# 住宅层数/屋顶：house_layers_min/max + house_roof；flat_roof_styles 中的风格强制平顶；
 # 边缘要素：ring_road_enabled 边界环路(road_ring_value)、plaza_radius/plaza_value 广场、
 #           院落围栏(interiors[bid].yard，临街侧留院门开口)；
 # 示例全套见 City_Grid.tres + House_*/Poi_*/Furniture_*.tres

@@ -11,6 +11,10 @@ class_name FacilityDef extends Resource
 @export_range(0.0, 20.0, 0.1) var count := 1.0
 ## 选址是否偏好主街临街大地块
 @export var prefer_main_street := true
+## 建筑层数（跨项目语义：渲染方据此定体块高度）
+@export_range(1, 4, 1) var layers := 2
+## 屋顶类型（gable=双坡 / flat=平顶…，渲染方按此查表选模型）
+@export var roof := "gable"
 ## 专属户型模板（门字符 G 画在最底边墙上）；空 = 回退 CityDef.houses
 @export var templates: Array[TemplateDef] = []
 

@@ -1353,8 +1353,8 @@ static func _town_buildings(def: CityDef, layout: TownLayout, rng: RandomNumberG
 			if lot < 0:
 				break
 			# 专属户型优先，放不下回退通用库兜底（保证「必有」语义）
-			if _place_from_lists(def, layout, lot, String(fac.facility_name), bid, rng, tmpl_list) \
-					or _place_from_lists(def, layout, lot, String(fac.facility_name), bid, rng, def.houses):
+			if _place_from_lists(def, layout, lot, String(fac.facility_name), bid, rng, tmpl_list, fac) \
+					or _place_from_lists(def, layout, lot, String(fac.facility_name), bid, rng, def.houses, fac):
 				used[lot] = true
 				bid += 1
 	for li in layout.parcels.size():
@@ -1362,7 +1362,7 @@ static func _town_buildings(def: CityDef, layout: TownLayout, rng: RandomNumberG
 			continue
 		if rng.randf() > def.house_fill_ratio:
 			continue
-		if _place_from_lists(def, layout, li, "住宅", bid, rng, def.houses):
+		if _place_from_lists(def, layout, li, "住宅", bid, rng, def.houses, null):
 			used[li] = true
 			bid += 1
 
@@ -1402,12 +1402,12 @@ static func _lot_touches_main(def: CityDef, layout: TownLayout, p: Dictionary) -
 
 ## 在地块上放一栋建筑：选模板→锚点定位(门格压真实临街格)→校验足迹→印建筑层→记录门位
 static func _place_building(def: CityDef, layout: TownLayout, li: int, type_name: String, bid: int, rng: RandomNumberGenerator) -> bool:
-	return _place_from_lists(def, layout, li, type_name, bid, rng, def.houses)
+	return _place_from_lists(def, layout, li, type_name, bid, rng, def.houses, null)
 
 
-## 从指定户型模板列表放置一栋建筑（POI 用专属库，住宅用通用库），
+## 从指定户型模板列表放置一栋建筑（设施用专属库，住宅用通用库），
 ## 模板按面积降序逐个尝试（同面积随机次序）：大地块优先放大房子，放不下再换小户型兜底
-static func _place_from_lists(def: CityDef, layout: TownLayout, li: int, type_name: String, bid: int, rng: RandomNumberGenerator, tmpl_list: Array[TemplateDef]) -> bool:
+static func _place_from_lists(def: CityDef, layout: TownLayout, li: int, type_name: String, bid: int, rng: RandomNumberGenerator, tmpl_list: Array[TemplateDef], fac: FacilityDef) -> bool:
 	var parcel: Dictionary = layout.parcels[li]
 	var frontage := int(parcel.frontage_dir)
 	if frontage < 0 or not _FACING_TO_ROT.has(frontage):
@@ -1433,14 +1433,14 @@ static func _place_from_lists(def: CityDef, layout: TownLayout, li: int, type_na
 		for facing in dirs:
 			if not _FACING_TO_ROT.has(facing):
 				continue
-			if _try_place_one(def, layout, parcel, tmpl, facing, type_name, bid, rng, li):
+			if _try_place_one(def, layout, parcel, tmpl, facing, type_name, bid, rng, li, fac):
 				return true
 	return false
 
 
 ## 单模板单朝向的锚点放置：门格必须压在「沿 facing 方向邻路的真实临街格」上，
 ## 从门格反推建筑位置，保证门外一格必然是道路（包围盒贴边法在不规则地块上会让门朝向落空，已弃用）
-static func _try_place_one(def: CityDef, layout: TownLayout, parcel: Dictionary, tmpl: TemplateDef, facing: int, type_name: String, bid: int, rng: RandomNumberGenerator, li: int) -> bool:
+static func _try_place_one(def: CityDef, layout: TownLayout, parcel: Dictionary, tmpl: TemplateDef, facing: int, type_name: String, bid: int, rng: RandomNumberGenerator, li: int, fac: FacilityDef) -> bool:
 	var rot: int = _FACING_TO_ROT[facing]
 	var rect: Rect2i = parcel.rect
 	var avail_w := rect.size.x - def.setback * 2
@@ -1512,9 +1512,22 @@ static func _try_place_one(def: CityDef, layout: TownLayout, parcel: Dictionary,
 	if door.x < 0:
 		door = footprint.get_center()
 		build.set_cell(door.x, door.y, def.building_floor_value)
+	# 建筑语义：层数与屋顶类型（跨项目成立的事实，渲染方据此解释外观）
+	var layers := 0
+	var roof := ""
+	if fac != null:
+		layers = clampi(fac.layers, 1, 4)
+		roof = fac.roof
+	else:
+		layers = rng.randi_range(maxi(1, def.house_layers_min), maxi(1, def.house_layers_max))
+		roof = def.house_roof
+	var style := _pick_style(def, layout, footprint.get_center(), rng)
+	if def.flat_roof_styles.has(style):
+		roof = "flat"
 	layout.buildings.append({
-		"id": bid, "type": type_name, "style": _pick_style(def, layout, footprint.get_center(), rng),
+		"id": bid, "type": type_name, "style": style,
 		"rect": footprint, "door": door, "facing": facing,
+		"layers": layers, "roof": roof,
 		"template": tmpl.resource_path,
 		"_tmpl": tmpl, "lot": li,
 	})

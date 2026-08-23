@@ -58,6 +58,7 @@ func to_data() -> Dictionary:
 			"id": b.id, "type": b.type, "style": b.style,
 			"rect": [b.rect.position.x, b.rect.position.y, b.rect.size.x, b.rect.size.y],
 			"door": [b.door.x, b.door.y], "facing": int(b.facing),
+			"layers": int(b.layers), "roof": String(b.roof),
 		})
 	var interior_data := {}
 	for k in interiors:
@@ -119,6 +120,7 @@ static func from_data(data: Dictionary) -> TownLayout:
 			"id": int(b.id), "type": String(b.type), "style": String(b.style),
 			"rect": Rect2i(int(br[0]), int(br[1]), int(br[2]), int(br[3])),
 			"door": Vector2i(int(dr[0]), int(dr[1])), "facing": int(b.facing),
+			"layers": int(b.get("layers", 1)), "roof": String(b.get("roof", "gable")),
 		})
 	for k in data.get("interiors", {}):
 		var v: Dictionary = data.interiors[k]
