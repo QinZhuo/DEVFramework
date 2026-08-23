@@ -466,25 +466,35 @@ func _gen_city(def: CityDef, seed: int) -> void:
 		var v: int = grid.cells[i]
 		if v != 0 and palette.has(v):
 			img.set_pixel(i % grid.width, i / grid.width, palette[v])
-	# 建筑层：墙深褐 / 地板暖木 / 门亮橙；POI(非住宅)墙体用石灰色区分
+	# 建筑层：墙体按风格着色（木构深褐/石砌灰白/砖混红棕），设施石灰；地板暖木；门亮橙
 	if layout.build_grid != null:
-		var bpal := {
-			def.building_wall_value: Color(0.32, 0.2, 0.12),
-			def.building_floor_value: Color(0.62, 0.48, 0.3),
-			def.building_door_value: Color(1.0, 0.62, 0.15),
+		var style_wall := {
+			"木构": Color(0.32, 0.2, 0.12),
+			"石砌": Color(0.5, 0.5, 0.48),
+			"砖混": Color(0.45, 0.24, 0.18),
 		}
+		var cell_style := {}
+		for bd in layout.buildings:
+			var tag := String(bd.style) + ("|F" if String(bd.type) != "住宅" else "")
+			for yy in range(bd.rect.position.y, bd.rect.end.y):
+				for xx in range(bd.rect.position.x, bd.rect.end.x):
+					cell_style[Vector2i(xx, yy)] = tag
 		for i in layout.build_grid.cells.size():
 			var bv: int = layout.build_grid.cells[i]
-			if bv != 0 and bpal.has(bv):
-				img.set_pixel(i % grid.width, i / grid.width, bpal[bv])
-		for bd in layout.buildings:
-			if String(bd.type) == "住宅":
+			var col := Color(0.36, 0.23, 0.14)
+			var cpos := Vector2i(i % grid.width, i / grid.width)
+			if bv == def.building_wall_value:
+				var tag: String = cell_style.get(cpos, "")
+				col = style_wall.get(tag.trim_suffix("|F"), col)
+				if tag.ends_with("|F"):
+					col = col.lightened(0.3)
+			elif bv == def.building_floor_value:
+				col = Color(0.62, 0.48, 0.3)
+			elif bv == def.building_door_value:
+				col = Color(1.0, 0.62, 0.15)
+			else:
 				continue
-			var r2: Rect2i = bd.rect
-			for yy in range(r2.position.y, r2.end.y):
-				for xx in range(r2.position.x, r2.end.x):
-					if layout.build_grid.get_cell(xx, yy, -1) == def.building_wall_value:
-						img.set_pixel(xx, yy, Color(0.45, 0.47, 0.55))
+			img.set_pixel(cpos.x, cpos.y, col)
 	# 家具(紫) 与 装饰物(灰褐) 与 院落围栏(深褐点)
 	for k in layout.interiors:
 		var v: Dictionary = layout.interiors[k]

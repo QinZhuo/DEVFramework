@@ -65,6 +65,7 @@ street_spacing_max = 9
 secondary_max_len = 56
 max_block_area = 260
 min_block_area = 32
+lot_max_area = 60
 house_fill_ratio = 0.85
 houses = Array[ExtResource("2_tmpl_script")]([ExtResource("6_house_t"), ExtResource("7_house_s"), ExtResource("8_house_m"), ExtResource("9_shop_l")])
 facilities = Array[ExtResource("5_fac_script")]([ExtResource("21_fac_tavern"), ExtResource("22_fac_church"), ExtResource("23_fac_forge")])

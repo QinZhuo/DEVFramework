@@ -15,6 +15,11 @@ extends Node3D
 
 var _yaw := 0.7
 var _pitch := 0.25
+## 城镇模式巡逻 NPC（消费 TownLayout 门位数据做街头行走演示）
+var _npc: CharacterBody3D = null
+var _npc_agent: NavigationAgent3D = null
+var _npc_targets := PackedVector3Array()
+var _npc_idx := 0
 
 
 func _ready() -> void:
@@ -68,6 +73,7 @@ func _generate() -> void:
 	if res is CityDef:
 		_gen_town_3d(res as CityDef)
 		return
+	_despawn_town_npc()
 	var def := res as Grid3DGenDef
 	var fixed := {}
 	var fixed_note := ""
@@ -297,33 +303,44 @@ func _render_town(layout: TownLayout, def: CityDef) -> void:
 		_add_box(pcw + Vector3(0, 0.25, 0), Vector3(1.6, 0.35, 1.6), Color(0.52, 0.5, 0.46))
 		_add_box(pcw + Vector3(0, 1.1, 0), Vector3(0.55, 1.7, 0.55), Color(0.62, 0.6, 0.56))
 		_add_box(pcw + Vector3(0, 2.1, 0), Vector3(0.9, 0.22, 0.9), Color(0.45, 0.43, 0.4))
-	# 建筑：墙体按 (类型, 层数) 分组（高度=层数语义），地板薄板
-	var wall_groups := {}  # "fac_2"/"house_1" → pts
+	# 建筑：墙体按 (类型, 层数, 风格) 分组（高度=层数语义、颜色=风格语义），地板薄板
+	var wall_groups := {}  # "fac_2_石砌" → pts
 	var fac_cells := {}
 	var house_cells := {}
 	var layers_of := {}  # 墙格 → 该建筑层数
+	var style_of := {}   # 墙格 → 该建筑风格
+	var style_wall := {
+		"木构": Color(0.36, 0.23, 0.14),
+		"石砌": Color(0.55, 0.55, 0.52),
+		"砖混": Color(0.5, 0.28, 0.2),
+	}
 	for b in layout.buildings:
 		var target := fac_cells if String(b.type) != "住宅" else house_cells
 		for yy in range(b.rect.position.y, b.rect.end.y):
 			for xx in range(b.rect.position.x, b.rect.end.x):
 				target[Vector2i(xx, yy)] = true
 				layers_of[Vector2i(xx, yy)] = int(b.layers)
+				style_of[Vector2i(xx, yy)] = String(b.style)
 	var floors := PackedVector3Array()
 	for z in d:
 		for x in w:
 			var c := Vector2i(x, z)
 			var v := bg.get_cell(x, z, -1)
 			if v == def.building_wall_value:
-				var gkey := ("fac_" if fac_cells.has(c) else "house_") + str(int(layers_of.get(c, 1)))
+				var gkey := ("F_" if fac_cells.has(c) else "H_") + str(int(layers_of.get(c, 1))) + "_" + String(style_of.get(c, ""))
 				if not wall_groups.has(gkey):
 					wall_groups[gkey] = PackedVector3Array()
 				wall_groups[gkey].append(to_world.call(x, z))
 			elif v == def.building_floor_value:
 				floors.append(to_world.call(x, z))
 	for gkey in wall_groups:
-		var is_fac_g: bool = String(gkey).begins_with("fac")
+		var is_fac_g: bool = String(gkey).begins_with("F_")
 		var ln: int = int(String(gkey).get_slice("_", 1))
-		_add_mesh_sized(wall_groups[gkey], Color(0.55, 0.57, 0.65) if is_fac_g else Color(0.36, 0.23, 0.14), Vector3(1, ln * 1.5 + 0.9, 1))
+		var sname: String = String(gkey).get_slice("_", 2)
+		var col: Color = style_wall.get(sname, Color(0.36, 0.23, 0.14))
+		if is_fac_g:
+			col = col.lightened(0.25)
+		_add_mesh_sized(wall_groups[gkey], col, Vector3(1, ln * 1.5 + 0.9, 1))
 	_add_mesh_sized(floors, Color(0.62, 0.48, 0.3), Vector3(1, 0.1, 1))
 	# 屋顶（屋檐板+屋脊）、发光窗、定向门板
 	var win_along_x := PackedVector3Array()
@@ -446,6 +463,64 @@ func _test_town_navigation(layout: TownLayout, def: CityDef) -> void:
 		mesh.get_vertices().size(), mesh.get_polygon_count(),
 		"OK" if path.size() > 1 else "FAIL", path.size(),
 	])
+	_spawn_town_npc(layout, def)
+
+
+## 巡逻 NPC：胶囊小人沿各建筑门位循环行走（验证导航面在真实移动下的可用性）
+func _spawn_town_npc(layout: TownLayout, def: CityDef) -> void:
+	_despawn_town_npc()
+	if layout.buildings.size() < 2:
+		return
+	var off := Vector3(-layout.roads_grid.width / 2.0 + 0.5, 0.2, -layout.roads_grid.height / 2.0 + 0.5)
+	_npc = CharacterBody3D.new()
+	var col := CollisionShape3D.new()
+	var cap := CapsuleShape3D.new()
+	cap.radius = 0.55
+	cap.height = 2.0
+	col.shape = cap
+	_npc.add_child(col)
+	var mi := MeshInstance3D.new()
+	var cm := CapsuleMesh.new()
+	cm.radius = 0.55
+	cm.height = 2.0
+	cm.material = StandardMaterial3D.new()
+	cm.material.albedo_color = Color(1.0, 0.5, 0.15)
+	mi.mesh = cm
+	mi.position.y = 1.05
+	_npc.add_child(mi)
+	_npc_agent = NavigationAgent3D.new()
+	_npc_agent.radius = 0.5
+	_npc.add_child(_npc_agent)
+	world.add_child(_npc)
+	for b in layout.buildings:
+		var dr: Vector2i = b.door
+		_npc_targets.append(Vector3(dr.x, 0, dr.y) + off)
+	_npc.global_position = _npc_targets[0] + Vector3(0, 0.6, 0)
+	_npc_idx = 1 % _npc_targets.size()
+	_npc_agent.target_position = _npc_targets[_npc_idx]
+
+
+func _despawn_town_npc() -> void:
+	if _npc != null and is_instance_valid(_npc):
+		_npc.queue_free()
+	_npc = null
+	_npc_agent = null
+	_npc_targets = PackedVector3Array()
+
+
+func _physics_process(delta: float) -> void:
+	if _npc == null or _npc_agent == null or not is_instance_valid(_npc):
+		return
+	if _npc_agent.is_navigation_finished():
+		_npc_idx = (_npc_idx + 1) % _npc_targets.size()
+		_npc_agent.target_position = _npc_targets[_npc_idx]
+		return
+	var next := _npc_agent.get_next_path_position()
+	var dir := next - _npc.global_position
+	dir.y = 0.0
+	if dir.length() > 0.05:
+		_npc.velocity = dir.normalized() * 3.0
+		_npc.move_and_slide()
 
 
 func _log(msg: String) -> void:
