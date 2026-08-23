@@ -509,6 +509,7 @@ WFC 演示小贴士：切到「网格」选 WFC 配置，左侧选「刷子」�
 | `PCTConstraintTest` | 迷宫/BSP/模板/3D 洞穴连通域=1、3D WFC 交替无违规、泊松最小间距、序列化往返、增量存档 |
 | `PCTBenchmarkTest` | 各算法耗时基准（GDScript 参考值） |
 | `PCGNativeTest` | **框架级共享原生库**：7 个原生类加载+方法校验、侵蚀/热侵蚀/2D/3D WFC/动画器/L-System/洞穴功能正确性、同 seed 可复现、缺库报错路径 |
+| `PCTTownReport` | **城镇质量报告**：多种子批量统计（门临路率/设施齐全率/地块利用率/连通性/耗时），PASS/FAIL 输出调参依据 |
 
 运行方式（在编辑器执行，结果打印到日志）：
 ```gdscript
@@ -516,6 +517,7 @@ PCTDeterminismTest.run()
 PCTConstraintTest.run()
 PCTBenchmarkTest.run()
 PCGNativeTest.run()
+PCTTownReport.run()          # 城镇质量报告（可传种子数与起始种子）
 ```
 
 **当前基准参考**（64 位桌面，C++ 版）：WFC 64×64 约 72ms、200×200 约 6.5s；3D 地表 8ms、3D 洞穴 3ms、3D WFC 16³ 75ms；侵蚀 5 万液滴+热侵蚀 96×96 约 59ms；分块世界 49 chunk 269ms；综合管线 112ms。

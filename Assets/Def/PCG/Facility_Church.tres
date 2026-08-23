@@ -1,0 +1,12 @@
+﻿[gd_resource type="Resource" script_class="FacilityDef" load_steps=4 format=3]
+
+[ext_resource type="Script" path="res://addons/DEVFramework/PCG/Def/FacilityDef.gd" id="1_script"]
+[ext_resource type="Script" path="res://addons/DEVFramework/PCG/Def/TemplateDef.gd" id="2_tmpl_script"]
+[ext_resource type="Resource" path="res://Assets/Def/PCG/Building_Church.tres" id="3_tmpl"]
+
+[resource]
+script = ExtResource("1_script")
+facility_name = "教堂"
+count = 1.0
+prefer_main_street = true
+templates = Array[ExtResource("2_tmpl_script")]([ExtResource("3_tmpl")])

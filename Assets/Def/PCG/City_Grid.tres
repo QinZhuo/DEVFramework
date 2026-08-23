@@ -1,10 +1,10 @@
-[gd_resource type="Resource" load_steps=30 format=3]
+﻿[gd_resource type="Resource" load_steps=30 format=3]
 
 [ext_resource type="Script" path="res://addons/DEVFramework/PCG/Def/CityDef.gd" id="1_script"]
 [ext_resource type="Script" path="res://addons/DEVFramework/PCG/Def/TemplateDef.gd" id="2_tmpl_script"]
 [ext_resource type="Script" path="res://addons/DEVFramework/PCG/Def/ContentEntryDef.gd" id="3_entry_script"]
 [ext_resource type="Script" path="res://addons/DEVFramework/PCG/Def/FurnitureTableDef.gd" id="4_ftable_script"]
-[ext_resource type="Script" path="res://addons/DEVFramework/PCG/Def/PoiDef.gd" id="5_poi_script"]
+[ext_resource type="Script" path="res://addons/DEVFramework/PCG/Def/FacilityDef.gd" id="5_fac_script"]
 [ext_resource type="Resource" path="res://Assets/Def/PCG/House_Tiny.tres" id="6_house_t"]
 [ext_resource type="Resource" path="res://Assets/Def/PCG/House_Small.tres" id="7_house_s"]
 [ext_resource type="Resource" path="res://Assets/Def/PCG/House_Mid.tres" id="8_house_m"]
@@ -20,9 +20,9 @@
 [ext_resource type="Resource" path="res://Assets/Def/PCG/Furniture_Pew.tres" id="18_fpew"]
 [ext_resource type="Resource" path="res://Assets/Def/PCG/Furniture_Anvil.tres" id="19_fanvil"]
 [ext_resource type="Resource" path="res://Assets/Def/PCG/Furniture_Rack.tres" id="20_frack"]
-[ext_resource type="Resource" path="res://Assets/Def/PCG/Poi_Tavern_Def.tres" id="21_poi_tavern"]
-[ext_resource type="Resource" path="res://Assets/Def/PCG/Poi_Church_Def.tres" id="22_poi_church"]
-[ext_resource type="Resource" path="res://Assets/Def/PCG/Poi_Forge_Def.tres" id="23_poi_forge"]
+[ext_resource type="Resource" path="res://Assets/Def/PCG/Facility_Tavern.tres" id="21_fac_tavern"]
+[ext_resource type="Resource" path="res://Assets/Def/PCG/Facility_Church.tres" id="22_fac_church"]
+[ext_resource type="Resource" path="res://Assets/Def/PCG/Facility_Forge.tres" id="23_fac_forge"]
 
 [sub_resource type="Resource" id="prop_barrel"]
 script = ExtResource("3_entry_script")
@@ -67,7 +67,7 @@ max_block_area = 260
 min_block_area = 32
 house_fill_ratio = 0.85
 houses = Array[ExtResource("2_tmpl_script")]([ExtResource("6_house_t"), ExtResource("7_house_s"), ExtResource("8_house_m"), ExtResource("9_shop_l")])
-poi_table = Array[ExtResource("5_poi_script")]([ExtResource("21_poi_tavern"), ExtResource("22_poi_church"), ExtResource("23_poi_forge")])
+facilities = Array[ExtResource("5_fac_script")]([ExtResource("21_fac_tavern"), ExtResource("22_fac_church"), ExtResource("23_fac_forge")])
 style_table = Array[ExtResource("3_entry_script")]([SubResource("style_wood"), SubResource("style_stone"), SubResource("style_brick")])
 furniture_tables = Array[ExtResource("4_ftable_script")]([ExtResource("10_fbed"), ExtResource("11_ftable"), ExtResource("12_fchair"), ExtResource("13_fstove"), ExtResource("14_fshelf"), ExtResource("15_fbar"), ExtResource("16_fbarrel"), ExtResource("17_faltar"), ExtResource("18_fpew"), ExtResource("19_fanvil"), ExtResource("20_frack")])
 prop_table = Array[ExtResource("3_entry_script")]([SubResource("prop_barrel"), SubResource("prop_plant"), SubResource("prop_crate")])

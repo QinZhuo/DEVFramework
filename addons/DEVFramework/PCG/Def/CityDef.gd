@@ -78,8 +78,8 @@ class_name CityDef extends PCGGeneratorDef
 ## —— S5 建筑放置 ——
 ## 户型模板库（门字符 G 画在最底边墙上，旋转后门自动朝向临街边）
 @export var houses: Array[TemplateDef] = []
-## POI 功能建筑表（酒馆/教堂/铁匠铺…：数量期望 + 主街偏好 + 专属户型）
-@export var poi_table: Array[PoiDef] = []
+## 功能设施表（酒馆/教堂/铁匠铺…：数量期望 + 主街偏好 + 专属户型）
+@export var facilities: Array[FacilityDef] = []
 ## 其余地块的住宅填充比例
 @export_range(0.0, 1.0, 0.01) var house_fill_ratio := 0.8
 ## 建筑足迹距地块边缘的退线（格）

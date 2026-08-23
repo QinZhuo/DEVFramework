@@ -1340,21 +1340,21 @@ static func _town_buildings(def: CityDef, layout: TownLayout, rng: RandomNumberG
 		return
 	var used := {}
 	var bid := 0
-	for poi in def.poi_table:
-		if poi == null:
+	for fac in def.facilities:
+		if fac == null:
 			continue
 		# count = 数量期望：整数部分必出，小数部分按概率额外 +1
-		var count := int(maxf(poi.count, 0.0))
-		if rng.randf() < maxf(poi.count, 0.0) - float(count):
+		var count := int(maxf(fac.count, 0.0))
+		if rng.randf() < maxf(fac.count, 0.0) - float(count):
 			count += 1
-		var tmpl_list: Array[TemplateDef] = poi.templates if not poi.templates.is_empty() else def.houses
+		var tmpl_list: Array[TemplateDef] = fac.templates if not fac.templates.is_empty() else def.houses
 		for k in count:
-			var lot := _best_lot(def, layout, used, rng, poi.prefer_main_street)
+			var lot := _best_lot(def, layout, used, rng, fac.prefer_main_street)
 			if lot < 0:
 				break
 			# 专属户型优先，放不下回退通用库兜底（保证「必有」语义）
-			if _place_from_lists(def, layout, lot, String(poi.poi_name), bid, rng, tmpl_list) \
-					or _place_from_lists(def, layout, lot, String(poi.poi_name), bid, rng, def.houses):
+			if _place_from_lists(def, layout, lot, String(fac.facility_name), bid, rng, tmpl_list) \
+					or _place_from_lists(def, layout, lot, String(fac.facility_name), bid, rng, def.houses):
 				used[lot] = true
 				bid += 1
 	for li in layout.parcels.size():
