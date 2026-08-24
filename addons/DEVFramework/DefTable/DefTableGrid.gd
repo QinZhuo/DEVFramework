@@ -108,36 +108,33 @@ func row_index_at(y: float) -> int:
 	return lo
 
 
-## 由 Container 在布局时调用, 将子节点按行主序摆放(使用预计算行高)。
+## 由 Container 在布局时调用。
+## 行容器模型: 子节点 = 行 Control(meta: row_index / cell_parked), 一次摆整行;
+## 单元格是行容器的子节点, 在行内由 View 定点摆放, 不经此排序。
 func sort_children() -> void:
 	var ncols := column_widths.size()
 	if ncols == 0:
 		_cached_minimum_size = Vector2(0.0, 0.0)
 		return
 
+	var w := 0.0
+	for cw in column_widths:
+		w += cw
 	for child in get_children():
-		if not (child is Control):
-			continue
 		var c := child as Control
-		# 池中停泊的格子(已移出裁剪区)不参与摆位, 避免全局重排扫过死节点
+		if c == null:
+			continue
+		# 停泊中的行(已移出裁剪区)不参与摆位
 		if bool(c.get_meta(&"cell_parked", false)):
 			continue
-		var meta := c.get_meta(&"cell_pos", Vector2i(-1, -1)) as Vector2i
-		# cell_pos.x 是全局列索引, 布局时用网格内列索引(减去 column_offset)
-		var gi := meta.x - column_offset
-		if meta.y < 0 or meta.y >= total_rows or gi < 0 or gi >= ncols:
+		var ri := int(c.get_meta(&"row_index", -1))
+		if ri < 0 or ri >= total_rows:
 			continue
-		# row_heights 已由 set_row_heights 统一钳制到 MIN_ROW_HEIGHT, 直接使用即可;
-		# 越界行兜底也用同一最小值, 保证偏移与渲染一致
-		var h := row_heights[meta.y] if meta.y < row_heights.size() else MIN_ROW_HEIGHT
-		fit_child_in_rect(c, Rect2(
-			Vector2(column_offsets[gi], row_offsets[meta.y] if meta.y < row_offsets.size() else 0.0),
-			Vector2(column_widths[gi], h)))
+		var h := row_heights[ri] if ri < row_heights.size() else MIN_ROW_HEIGHT
+		var y := row_offsets[ri] if ri < row_offsets.size() else 0.0
+		fit_child_in_rect(c, Rect2(Vector2(0.0, y), Vector2(maxf(w, size.x), h)))
 
-	var total_w := 0.0
-	for w in column_widths:
-		total_w += w
 	var total_h := 0.0
 	for h in row_heights:
 		total_h += h
-	_cached_minimum_size = Vector2(total_w, total_h)
+	_cached_minimum_size = Vector2(w, total_h)

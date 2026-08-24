@@ -856,7 +856,9 @@ func _update_visible_rows(force_rebuild: bool = false) -> void:
 		acc += grid.row_heights[new_first + vis_count]
 		vis_count += 1
 	var new_last := mini(new_first + vis_count + 1, rows.size())
-	if not force_rebuild and new_first == first_row and new_last == last_row:
+	# 列窗口先于早退计算: 纯水平滚动不改行窗口, 仍需走列增删
+	var cols_changed := _compute_visible_cols()
+	if not force_rebuild and new_first == first_row and new_last == last_row and not cols_changed:
 		return
 
 	first_row = new_first
@@ -869,8 +871,7 @@ func _update_visible_rows(force_rebuild: bool = false) -> void:
 	var frozen_widths: Array[float] = [column_widths[0]]
 	frozen_grid.configure(frozen_widths, rows.size())
 
-	# 行身份模型: 出窗行回收入池, 进场行物化+填充。
-	# 留在窗口内的行零成本保留(不再全量重填 RichTextLabel), 滚动工作量 ∝ 进出场行数而非窗口总量
+	# 双轴虚拟化: 出窗行整行回收入池; 进场行物化(收编池行携带格); 水平变化时逐行增删列
 	for row in _live_rows.keys():
 		if int(row) < first_row or int(row) >= last_row:
 			_recycle_row(int(row))
@@ -878,36 +879,44 @@ func _update_visible_rows(force_rebuild: bool = false) -> void:
 		var created := not _live_rows.has(row)
 		if created:
 			_materialize_row(row)
+		elif cols_changed:
+			_sync_row_cells(row)
 		if created or force_rebuild:
 			_fill_row(row)
 
 	_update_selection_visuals()
 
 
-## ======= 行身份复用 + Kind 分桶对象池 =======
-## 格子跟随行号(而非固定屏幕槽位)。池按显示类型分桶: 目录切换后列类型不同也不会错位;
-## 上限防内存增长。离场行 remove_child 后入池保活, 进场行取池或新建。
+## ======= 行容器 + 双轴虚拟化 + 两级对象池 =======
+## 垂直: 每行一个行容器(Control), 进出窗口只做 1 次节点停泊/摆位(194 格 → 1 节点)
+## 水平: 列窗口化, 仅物化与水平视口相交的列(194 列不再全量建格)
+## 行池: 整行回收时其格子原样随行入池(零逐格开销), 复用时按新窗口收编/裁剪/校验类型
+## 格池: 列窗口收缩拆出的散格(已脱离父节点), 供任意行补格; Kind 分桶防跨目录类型错位
 
-## 已物化行: row -> {"main": Array[DefTableCell], "frozen": DefTableCell}
+## 已物化行: row -> {"ctl": Control行容器, "frozen": DefTableCell, "cells": Dictionary(col->cell)}
 var _live_rows := {}
-## 单元格池: key=主格m/冻结格f + Kind。格子保持挂树仅隐藏复用,
-## 规避 RTL 反复 remove/add_child 的入树巨额成本(Godot #7510 社区实测方案)
-var _cell_pool := {}
+var _row_pool: Array = []      # 空闲行容器(携带上次生命周期的格子)
+var _cell_pool := {}           # key m{kind}/f{kind} -> Array[DefTableCell](已脱离父节点)
 const CELL_POOL_MAX_PER_KIND := 512
-## 停泊位置: ScrollContainer 裁剪区之外(无绘制/无输入), 复用时定点摆位拉回
-const CELL_PARK_POS := Vector2(-100000, -100000)
+const ROW_POOL_MAX := 48
+## 停泊 X: ScrollContainer 裁剪区之外(无绘制无输入); Y 同理由整行停泊复用
+const CELL_PARK_X := -100000.0
+
+var _first_col := 0   # 水平可见全局列范围 [_first_col, _last_col)
+var _last_col := 0
 
 
 func _pool_key(frozen: bool, kind: int) -> StringName:
 	return StringName(("f" if frozen else "m") + str(kind))
 
 
+## 散格入池(脱离父节点): 打停泊标记+移出裁剪区, 复用时由调用方重新挂载摆位
 func _pool_give_cell(cell: DefTableCellClass, frozen: bool) -> void:
-	# 不出树、不动可见性: 打停泊标记并移出 ScrollContainer 裁剪区。
-	# 移位比可见开关便宜约 7 倍(实测 1.3μs/格 vs 10μs/格), 且裁剪区外无绘制无输入;
-	# 布局遍历靠 cell_parked 标记跳过。复用时由 _fill_row 定点摆位并清除标记。
 	cell.set_meta(&"cell_parked", true)
-	cell.position = CELL_PARK_POS
+	cell.position = Vector2(CELL_PARK_X, CELL_PARK_X)
+	var p := cell.get_parent()
+	if p != null:
+		p.remove_child(cell)
 	var key := _pool_key(frozen, cell.kind)
 	var bucket: Array = _cell_pool.get(key, [])
 	if bucket.is_empty():
@@ -918,16 +927,17 @@ func _pool_give_cell(cell: DefTableCellClass, frozen: bool) -> void:
 		cell.queue_free()
 
 
-func _pool_take_cell(col: int, frozen: bool) -> DefTableCellClass:
-	var target: Container = frozen_grid if frozen else grid
+## 取散格(池空则新建); 由调用方提供目标父节点完成挂载
+func _pool_take_cell(col: int, frozen: bool, target_parent: Node) -> DefTableCellClass:
 	var bucket: Array = _cell_pool.get(_pool_key(frozen, _display_kind(col)), [])
 	while not bucket.is_empty():
 		var c: DefTableCellClass = bucket.pop_back()
-		if is_instance_valid(c) and c.get_parent() == target:
+		if is_instance_valid(c) and c.get_parent() == null:
 			c.set_meta(&"cell_parked", false)
+			target_parent.add_child(c)
 			return c
 	var cell := _make_cell(Vector2i(col, 0))
-	target.add_child(cell)
+	target_parent.add_child(cell)
 	return cell
 
 
@@ -940,69 +950,172 @@ func _recycle_row(row: int) -> void:
 	var entry: Dictionary = _live_rows.get(row, {})
 	if entry.is_empty():
 		return
-	for c in entry.get("main", []):
-		if is_instance_valid(c):
-			_pool_give_cell(c, false)
+	var ctl: Control = entry.get("ctl")
+	if ctl != null and is_instance_valid(ctl):
+		# 整行停泊: 格子随行原样保留(零逐格开销), 复用时按新窗口收编/裁剪
+		ctl.set_meta(&"cell_parked", true)
+		ctl.position = Vector2(CELL_PARK_X, CELL_PARK_X)
+		if _row_pool.size() < ROW_POOL_MAX:
+			_row_pool.append(ctl)
+		else:
+			ctl.queue_free()
 	var f: DefTableCellClass = entry.get("frozen")
 	if f != null and is_instance_valid(f):
 		_pool_give_cell(f, true)
 	_live_rows.erase(row)
 
 
+## 取行容器(池中行携带的旧格子由本函数后继流程收编或裁剪)
+func _take_row() -> Control:
+	while not _row_pool.is_empty():
+		var c: Control = _row_pool.pop_back()
+		if is_instance_valid(c):
+			c.set_meta(&"cell_parked", false)
+			return c
+	var ctl := Control.new()
+	ctl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	grid.add_child(ctl)
+	return ctl
+
+
 func _materialize_row(row: int) -> void:
-	var main_cells: Array = []
-	for col in range(1, columns.size()):
-		main_cells.append(_pool_take_cell(col, false))
-	var fcell := _pool_take_cell(0, true)
-	_live_rows[row] = {"main": main_cells, "frozen": fcell}
+	var ctl := _take_row()
+	var rh: float = grid.row_heights[row] if row < grid.row_heights.size() else 32.0
+	grid.fit_child_in_rect(ctl, Rect2(
+		Vector2(0.0, grid.row_offsets[row] if row < grid.row_offsets.size() else 0.0),
+		Vector2(_scroll_total_width(), rh)))
+	ctl.set_meta(&"row_index", row)
+	var fcell := _pool_take_cell(0, true, frozen_grid)
+	frozen_grid.fit_child_in_rect(fcell, Rect2(
+		Vector2(0.0, frozen_grid.row_offsets[row] if row < frozen_grid.row_offsets.size() else 0.0),
+		Vector2(column_widths[0], frozen_grid.row_heights[row] if row < frozen_grid.row_heights.size() else 32.0)))
+	var cells := {}
+	_live_rows[row] = {"ctl": ctl, "frozen": fcell, "cells": cells}
+	# 收编行容器携带的旧格子: 列在新窗口内且类型匹配 → 直接复用(内容稍后统一填充)
+	for child in ctl.get_children():
+		var c := child as DefTableCellClass
+		if c == null:
+			continue
+		var pc: Vector2i = c.get_meta(&"cell_pos", Vector2i(-1, -1))
+		if pc.x >= _first_col and pc.x < _last_col and c.kind == _display_kind(pc.x):
+			cells[pc.x] = c
+		else:
+			_pool_give_cell(c, false)
+	for col in range(_first_col, _last_col):
+		if not cells.has(col):
+			cells[col] = _pool_take_cell(col, false, ctl)
 
 
-## 填充一行的全部单元格(主格按全局列索引 1..n-1, 冻结格为列 0)。
-## 定点 fit_child_in_rect 摆位(实测 2.9ms/行) 替代全量 sort_children(9ms), 滚动路径不再触发全局重排
+## 确保行内 col 列有正确类型的格子并摆位(类型不符=跨目录旧格 → 换新)
+func _attach_cell(ctl: Control, cells: Dictionary, row: int, col: int) -> DefTableCellClass:
+	var cell: DefTableCellClass = cells.get(col)
+	var want_kind: int = _display_kind(col)
+	if cell != null and (not is_instance_valid(cell) or cell.kind != want_kind):
+		_pool_give_cell(cell, false)
+		cell = null
+	if cell == null:
+		cell = _pool_take_cell(col, false, ctl)
+	cell.position = Vector2(grid.column_offsets[col - 1], 0.0)
+	cell.size = Vector2(column_widths[col], ctl.size.y)
+	return cell
+
+
+## 水平窗口变化: 对既有行做列增删(新增格立即填充)。返回新增数
+func _sync_row_cells(row: int) -> int:
+	var entry: Dictionary = _live_rows.get(row, {})
+	if entry.is_empty():
+		return 0
+	var ctl: Control = entry.get("ctl")
+	var cells: Dictionary = entry.get("cells")
+	var added := 0
+	for col in cells.keys():
+		if int(col) < _first_col or int(col) >= _last_col:
+			_pool_give_cell(cells[col], false)
+			cells.erase(col)
+	for col in range(_first_col, _last_col):
+		if cells.has(col):
+			continue
+		cells[col] = _attach_cell(ctl, cells, row, col)
+		_fill_cell(cells[col], Vector2i(int(col), row), _row_tint_for(row))
+		added += 1
+	return added
+
+
+## 填充一行的全部在窗单元格(行容器定点摆位一次; 格子在行内静态 x 偏移)
 func _fill_row(row: int) -> void:
 	var entry: Dictionary = _live_rows.get(row, {})
 	if entry.is_empty() or row >= rows.size():
 		return
 	var tint := _row_tint_for(row)
+	var ctl: Control = entry.get("ctl")
+	var rh: float = grid.row_heights[row] if row < grid.row_heights.size() else 32.0
+	ctl.set_meta(&"row_index", row)
+	ctl.size = Vector2(_scroll_total_width(), rh)
+	grid.fit_child_in_rect(ctl, Rect2(
+		Vector2(0.0, grid.row_offsets[row] if row < grid.row_offsets.size() else 0.0),
+		Vector2(_scroll_total_width(), rh)))
 	var f: DefTableCellClass = entry.get("frozen")
 	if f != null and is_instance_valid(f):
 		frozen_grid.fit_child_in_rect(f, Rect2(
 			Vector2(0.0, frozen_grid.row_offsets[row] if row < frozen_grid.row_offsets.size() else 0.0),
 			Vector2(column_widths[0], frozen_grid.row_heights[row] if row < frozen_grid.row_heights.size() else 32.0)))
 		_fill_cell(f, Vector2i(0, row), tint)
-	var mains: Array = entry.get("main", [])
-	var rh: float = grid.row_heights[row] if row < grid.row_heights.size() else 32.0
-	var ry: float = grid.row_offsets[row] if row < grid.row_offsets.size() else 0.0
-	for i in mains.size():
-		var cell: DefTableCellClass = mains[i]
+	var cells: Dictionary = entry.get("cells")
+	for col in cells:
+		var cell: DefTableCellClass = cells[col]
 		if not is_instance_valid(cell):
 			continue
-		var col: int = 1 + i
-		grid.fit_child_in_rect(cell, Rect2(
-			Vector2(grid.column_offsets[col - 1], ry),
-			Vector2(column_widths[col], rh)))
-		_fill_cell(cell, Vector2i(col, row), tint)
+		var ci: int = int(col)
+		cell.position = Vector2(grid.column_offsets[ci - 1], 0.0)
+		cell.size = Vector2(column_widths[ci], rh)
+		_fill_cell(cell, Vector2i(ci, row), tint)
+
+
+## 计算水平可见列窗口。返回是否变化
+func _compute_visible_cols() -> bool:
+	var prev_first := _first_col
+	var prev_last := _last_col
+	_first_col = 0
+	_last_col = 0
+	if columns.size() <= 1:
+		_first_col = 1
+		_last_col = 1
+		return prev_first != 1 or prev_last != 1
+	var hx := float(grid_scroll.scroll_horizontal)
+	var vw := maxf(grid_scroll.size.x, 1.0)
+	var offs: Array = grid.column_offsets   # 局部索引 0..n-2, 已含末端累计值
+	for i in range(offs.size() - 1):
+		if float(offs[i + 1]) <= hx:
+			continue
+		if float(offs[i]) >= hx + vw:
+			break
+		if _first_col == 0:
+			_first_col = i + 1
+		_last_col = i + 2
+	# 左右各留 1 列缓冲, 平滑水平滚动
+	_first_col = clampi(_first_col - 1, 1, maxi(columns.size() - 1, 1))
+	_last_col = clampi(_last_col + 1, _first_col + 1, columns.size())
+	return _first_col != prev_first or _last_col != prev_last
 
 
 ## 滚动停止后补拉可见 RESOURCE 格预览(滚动中延迟的请求在此统一发出)
 func _backfill_resource_previews() -> void:
 	if editor_interface == null or editor_interface.get_resource_previewer() == null:
 		return
-	var res_cols: Array = []
+	var res_cols := {}
 	for col in range(1, columns.size()):
 		if _display_kind(col) == DefTableCellClass.Kind.RESOURCE:
-			res_cols.append(col)
+			res_cols[col] = true
 	if res_cols.is_empty():
 		return
 	for row in _live_rows:
 		if int(row) >= rows.size():
 			continue
-		var mains: Array = _live_rows[row].get("main", [])
-		for col in res_cols:
-			var idx: int = int(col) - 1
-			if idx >= mains.size():
+		var cells: Dictionary = _live_rows[row].get("cells")
+		for col in cells:
+			if not res_cols.has(col):
 				continue
-			var cell: DefTableCellClass = mains[idx]
+			var cell: DefTableCellClass = cells[col]
 			if not is_instance_valid(cell) or str(cell.get_meta(&"preview_path", "")) != "":
 				continue
 			var v = _get_value(rows[int(row)], int(col))
@@ -1216,7 +1329,7 @@ func _set_cell_selected(cell_pos: Vector2i, selected: bool) -> void:
 
 
 ## 定位单元格节点(冻结列或滚动网格), 不可见返回 null。
-## 行身份模型: 从 _live_rows 按行直接取格, 不依赖子节点顺序
+## 行容器+列虚拟化模型: 从 _live_rows 按行取, 主格查 cells 字典(仅物化列存在)
 func _get_cell_node(cell_pos: Vector2i) -> DefTableCellClass:
 	if not _live_rows.has(cell_pos.y):
 		return null
@@ -1224,12 +1337,10 @@ func _get_cell_node(cell_pos: Vector2i) -> DefTableCellClass:
 	if cell_pos.x == 0:
 		var f: DefTableCellClass = entry.get("frozen")
 		return f if is_instance_valid(f) else null
-	var idx := cell_pos.x - 1
-	var mains: Array = entry.get("main", [])
-	if idx < 0 or idx >= mains.size():
-		return null
-	var c: DefTableCellClass = mains[idx]
-	return c if is_instance_valid(c) else null
+	var c = entry.get("cells", {}).get(cell_pos.x)
+	if c != null and is_instance_valid(c):
+		return c
+	return null
 
 
 func _deselect_all() -> void:
@@ -1280,7 +1391,7 @@ func _select_cells_to(pos: Vector2i) -> void:
 
 
 func _update_selection_visuals() -> void:
-	# 空选早退(最常见路径); 非空时按 _live_rows 行身份遍历, 不扫全量子节点
+	# 空选早退(最常见路径); 非空时按 _live_rows 行身份遍历(仅物化列存在)
 	if edited_cells.is_empty():
 		return
 	for row in _live_rows:
@@ -1288,11 +1399,11 @@ func _update_selection_visuals() -> void:
 		var f = entry.get("frozen")
 		if f != null and is_instance_valid(f):
 			f.set_selected(Vector2i(0, row) in edited_cells)
-		var mains: Array = entry.get("main", [])
-		for i in mains.size():
-			var c = mains[i]
+		var cells: Dictionary = entry.get("cells")
+		for col in cells:
+			var c = cells[col]
 			if is_instance_valid(c):
-				c.set_selected(Vector2i(1 + i, row) in edited_cells)
+				c.set_selected(Vector2i(int(col), row) in edited_cells)
 
 
 func _update_sel_label() -> void:
@@ -1347,6 +1458,8 @@ func _on_h_scroll(v: float) -> void:
 	_syncing_scroll = true
 	header_scroll.set_h_scroll(int(v))
 	_syncing_scroll = false
+	# 水平滚动 → 列窗口增删(经统一防抖, 与垂直共用一次重建)
+	_schedule_scroll_update()
 
 
 ## 表头横向滚动反向同步(兜底: 任何表头滚动变化都回到主网格, 保证表头与数据列不错位)
