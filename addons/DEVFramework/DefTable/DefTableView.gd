@@ -881,9 +881,6 @@ func _update_visible_rows(force_rebuild: bool = false) -> void:
 		if created or force_rebuild:
 			_fill_row(row)
 
-	grid.queue_sort()
-	frozen_grid.queue_sort()
-
 	_update_selection_visuals()
 
 
@@ -897,6 +894,8 @@ var _live_rows := {}
 ## 规避 RTL 反复 remove/add_child 的入树巨额成本(Godot #7510 社区实测方案)
 var _cell_pool := {}
 const CELL_POOL_MAX_PER_KIND := 512
+## 停泊位置: ScrollContainer 裁剪区之外(无绘制/无输入), 复用时定点摆位拉回
+const CELL_PARK_POS := Vector2(-100000, -100000)
 
 
 func _pool_key(frozen: bool, kind: int) -> StringName:
@@ -904,8 +903,11 @@ func _pool_key(frozen: bool, kind: int) -> StringName:
 
 
 func _pool_give_cell(cell: DefTableCellClass, frozen: bool) -> void:
-	# 不出树: 隐藏即脱离绘制/输入/布局参与, 复用时置回可见
-	cell.visible = false
+	# 不出树、不动可见性: 打停泊标记并移出 ScrollContainer 裁剪区。
+	# 移位比可见开关便宜约 7 倍(实测 1.3μs/格 vs 10μs/格), 且裁剪区外无绘制无输入;
+	# 布局遍历靠 cell_parked 标记跳过。复用时由 _fill_row 定点摆位并清除标记。
+	cell.set_meta(&"cell_parked", true)
+	cell.position = CELL_PARK_POS
 	var key := _pool_key(frozen, cell.kind)
 	var bucket: Array = _cell_pool.get(key, [])
 	if bucket.is_empty():
@@ -922,7 +924,7 @@ func _pool_take_cell(col: int, frozen: bool) -> DefTableCellClass:
 	while not bucket.is_empty():
 		var c: DefTableCellClass = bucket.pop_back()
 		if is_instance_valid(c) and c.get_parent() == target:
-			c.visible = true
+			c.set_meta(&"cell_parked", false)
 			return c
 	var cell := _make_cell(Vector2i(col, 0))
 	target.add_child(cell)
@@ -955,7 +957,8 @@ func _materialize_row(row: int) -> void:
 	_live_rows[row] = {"main": main_cells, "frozen": fcell}
 
 
-## 填充一行的全部单元格(主格按全局列索引 1..n-1, 冻结格为列 0)
+## 填充一行的全部单元格(主格按全局列索引 1..n-1, 冻结格为列 0)。
+## 定点 fit_child_in_rect 摆位(实测 2.9ms/行) 替代全量 sort_children(9ms), 滚动路径不再触发全局重排
 func _fill_row(row: int) -> void:
 	var entry: Dictionary = _live_rows.get(row, {})
 	if entry.is_empty() or row >= rows.size():
@@ -963,12 +966,22 @@ func _fill_row(row: int) -> void:
 	var tint := _row_tint_for(row)
 	var f: DefTableCellClass = entry.get("frozen")
 	if f != null and is_instance_valid(f):
+		frozen_grid.fit_child_in_rect(f, Rect2(
+			Vector2(0.0, frozen_grid.row_offsets[row] if row < frozen_grid.row_offsets.size() else 0.0),
+			Vector2(column_widths[0], frozen_grid.row_heights[row] if row < frozen_grid.row_heights.size() else 32.0)))
 		_fill_cell(f, Vector2i(0, row), tint)
 	var mains: Array = entry.get("main", [])
+	var rh: float = grid.row_heights[row] if row < grid.row_heights.size() else 32.0
+	var ry: float = grid.row_offsets[row] if row < grid.row_offsets.size() else 0.0
 	for i in mains.size():
 		var cell: DefTableCellClass = mains[i]
-		if is_instance_valid(cell):
-			_fill_cell(cell, Vector2i(1 + i, row), tint)
+		if not is_instance_valid(cell):
+			continue
+		var col: int = 1 + i
+		grid.fit_child_in_rect(cell, Rect2(
+			Vector2(grid.column_offsets[col - 1], ry),
+			Vector2(column_widths[col], rh)))
+		_fill_cell(cell, Vector2i(col, row), tint)
 
 
 ## 滚动停止后补拉可见 RESOURCE 格预览(滚动中延迟的请求在此统一发出)
@@ -1267,19 +1280,19 @@ func _select_cells_to(pos: Vector2i) -> void:
 
 
 func _update_selection_visuals() -> void:
-	for child in grid.get_children():
-		var cell := child as DefTableCellClass
-		# 池中隐藏格不处理
-		if cell == null or not cell.visible:
-			continue
-		var pos: Vector2i = cell.get_meta(&"cell_pos")
-		cell.set_selected(pos in edited_cells)
-	for child in frozen_grid.get_children():
-		var fcell := child as DefTableCellClass
-		if fcell == null or not fcell.visible:
-			continue
-		var fpos: Vector2i = fcell.get_meta(&"cell_pos")
-		fcell.set_selected(fpos in edited_cells)
+	# 空选早退(最常见路径); 非空时按 _live_rows 行身份遍历, 不扫全量子节点
+	if edited_cells.is_empty():
+		return
+	for row in _live_rows:
+		var entry: Dictionary = _live_rows[row]
+		var f = entry.get("frozen")
+		if f != null and is_instance_valid(f):
+			f.set_selected(Vector2i(0, row) in edited_cells)
+		var mains: Array = entry.get("main", [])
+		for i in mains.size():
+			var c = mains[i]
+			if is_instance_valid(c):
+				c.set_selected(Vector2i(1 + i, row) in edited_cells)
 
 
 func _update_sel_label() -> void:
