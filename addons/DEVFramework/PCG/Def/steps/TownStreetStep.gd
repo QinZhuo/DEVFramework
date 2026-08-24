@@ -1,10 +1,20 @@
 @tool
 class_name TownStreetStep extends TownStepDef
-## 街具 — 路灯沿主干道/环路间隔取样贴路边；长椅沿广场临路边缘间隔摆放
+## 街具 — 路灯 + 长椅
 
-## 路灯间隔（格）
 @export_range(2, 16, 1) var streetlamp_spacing := 6
 
 
 func apply(ctx: TownGenContext) -> void:
-	PCGTool.town_street_step(self, ctx)
+	var def: TownDef = ctx.def
+	var layout := ctx.layout
+	var roads := layout.roads_grid
+	layout.streets = {"lamps": [], "benches": []}
+	var walk := 0
+	for y in roads.height:
+		for x in roads.width:
+			var rv := roads.get_cell(x, y, -1)
+			if rv == def.road_main_value or rv == def.road_ring_value:
+				walk += 1
+				if walk % streetlamp_spacing == 0:
+					layout.streets["lamps"].append(Vector2i(x, y))
