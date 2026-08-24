@@ -5,6 +5,8 @@
 ## 算法与 2D 相同思想（噪声高度图 / 细胞自动机），验证 PCG 的 3D 基石。
 
 @export var grid3d_defs: Array[Resource] = []
+## 城镇生成的地形高度图(默认山地=复杂地形验证; 置 null 可切平地)。运行时可由外部赋值注入。
+@export var town_heightmap_def: HeightMapDef = preload("res://Assets/Def/PCG/HeightMap_Mountain.tres")
 
 @onready var camera: Camera3D = %Camera3D
 @onready var world: Node3D = %World
@@ -231,7 +233,11 @@ const _DIR6: Array[Vector3i] = [
 
 func _gen_town_3d(def: TownDef) -> void:
 	var t0 := Time.get_ticks_usec()
-	var layout := PCGTool.generate_town(def, null, int(seed_spin.value))
+	# 复杂地形: 注入 town_heightmap_def 即可让城镇贴地生成(坡度A*主街/切台/桩基/回写)
+	var hm: HeightMap = null
+	if town_heightmap_def != null:
+		hm = PCGTool.generate_heightmap(town_heightmap_def, PCGTool.make_rng(int(seed_spin.value)))
+	var layout := PCGTool.generate_town(def, hm, int(seed_spin.value))
 	var ms := (Time.get_ticks_usec() - t0) / 1000.0
 	_render_town(layout, def)
 	_build_town_navigation(layout, def)
@@ -315,7 +321,7 @@ func _render_town(layout: TownLayout, def: TownDef) -> void:
 		def.road_sec_value: [Color(0.5, 0.52, 0.56), 0.15],
 		def.road_alley_value: [Color(0.36, 0.38, 0.42), 0.13],
 		def.road_ring_value: [Color(0.72, 0.6, 0.35), 0.15],
-		def.bridge_value: [Color(0.45, 0.68, 0.85), 0.2],
+		def.bridge_value: [Color(0.5, 0.38, 0.24), 0.25],
 	}
 	for v in road_style:
 		var pts := PackedVector3Array()

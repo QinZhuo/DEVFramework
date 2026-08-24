@@ -22,6 +22,8 @@ enum Mode {
 @export var biome_defs: Array[Resource] = []
 @export var pipeline_defs: Array[Resource] = []
 @export var path_defs: Array[Resource] = []
+## 城镇生成的地形高度图(默认山地=复杂地形验证; 置 null 可切平地)
+@export var city_heightmap_def: HeightMapDef = preload("res://Assets/Def/PCG/HeightMap_Mountain.tres")
 
 @onready var texture_rect: TextureRect = %TextureRect
 @onready var mode_option: OptionButton = %ModeOption
@@ -435,13 +437,27 @@ func _gen_stitch(def: TemplateStitchDef, seed: int) -> void:
 func _gen_city(def: TownDef, seed: int) -> void:
 	brush_row.visible = false
 	anim_row.visible = false
-	var layout := PCGTool.generate_town(def, null, seed)
+	# 复杂地形验证: 通过 mcp/eval 设 city_heightmap_def 即可让城镇生成在山地高度图上
+	# (贴地A*主街/切台/桩基/地形回写全链路生效); 默认 null=平地。
+	var hm: HeightMap = null
+	if city_heightmap_def != null:
+		hm = PCGTool.generate_heightmap(city_heightmap_def, PCGTool.make_rng(seed))
+	var layout := PCGTool.generate_town(def, hm, seed)
 	var grid := layout.roads_grid
 	var img := Image.create(grid.width, grid.height, false, Image.FORMAT_RGB8)
 	img.fill(Color(0.16, 0.24, 0.14))
 	for pi in layout.parcels.size():
 		var p = layout.parcels[pi]
-		var c := Color(0.22, 0.3, 0.19) if pi % 2 == 0 else Color(0.26, 0.34, 0.22)
+		# 分区着色: 市集=暖黄 / 贵族=蓝灰 / 民居=绿系斑马
+		var ward: String = str(p.get("ward", ""))
+		var c: Color
+		match ward:
+			"market":
+				c = Color(0.62, 0.5, 0.1)
+			"noble":
+				c = Color(0.16, 0.3, 0.55)
+			_:
+				c = Color(0.2, 0.32, 0.16) if pi % 2 == 0 else Color(0.25, 0.37, 0.19)
 		if int(p.frontage_dir) < 0:
 			c = c.darkened(0.3)
 		for idx in p.cells:
@@ -468,11 +484,13 @@ func _gen_city(def: TownDef, seed: int) -> void:
 			var fy := int(idx) / grid.width
 			var crop := Color(0.55, 0.5, 0.2) if (fx + fy) % 4 < 2 else Color(0.45, 0.42, 0.16)
 			img.set_pixel(fx, fy, crop)
+	for g in layout.gates:
+		img.set_pixel(g.pos.x, g.pos.y, Color(0.9, 0.55, 0.2))
 	var palette := {
 		def.road_main_value: Color(0.9, 0.78, 0.4),
 		def.road_sec_value: Color(0.55, 0.56, 0.6),
 		def.road_alley_value: Color(0.38, 0.39, 0.42),
-		def.bridge_value: Color(0.45, 0.68, 0.85),
+		def.bridge_value: Color(0.5, 0.36, 0.22),
 		def.road_ring_value: Color(0.72, 0.6, 0.35),
 	}
 	for i in grid.cells.size():
@@ -508,6 +526,15 @@ func _gen_city(def: TownDef, seed: int) -> void:
 			else:
 				continue
 			img.set_pixel(cpos.x, cpos.y, col)
+	# 城墙(醒目石灰蓝) — 必须在建筑样式通道之后重刷, 否则墙格被建筑色覆盖
+	if layout.walls_grid != null:
+		var wg: GeneratedGrid = layout.walls_grid
+		for yy in wg.height:
+			for xx in wg.width:
+				if wg.get_cell(xx, yy, 0) != 0:
+					img.set_pixel(xx, yy, Color(0.25, 0.42, 0.55))
+	for g in layout.gates:
+		img.set_pixel(g.pos.x, g.pos.y, Color(1.0, 0.5, 0.1))
 	# 家具(紫) 与 装饰物(灰褐) 与 院落围栏(深褐点)
 	for k in layout.interiors:
 		var v: Dictionary = layout.interiors[k]

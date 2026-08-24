@@ -44,18 +44,18 @@ weight = 2.0
 
 [sub_resource type="Resource" id="style_wood"]
 script = ExtResource("3_entry_script")
-name = "木构"
-weight = 5.0
+name = "混凝土"
+weight = 4.0
 
 [sub_resource type="Resource" id="style_stone"]
 script = ExtResource("3_entry_script")
-name = "石砌"
-weight = 3.0
+name = "玻璃幕墙"
+weight = 2.0
 
 [sub_resource type="Resource" id="style_brick"]
 script = ExtResource("3_entry_script")
 name = "砖混"
-weight = 2.0
+weight = 3.0
 
 [resource]
 script = ExtResource("1_script")
@@ -63,6 +63,12 @@ output_key = "town"
 width = 96
 height = 96
 heightmap_key = "heightmap"
+sea_level = 0.42
+plaza_feature = "中心喷泉"
+house_roof = "flat"
+house_layers_min = 2
+house_layers_max = 4
+flat_roof_styles = Array[String](["混凝土", "玻璃幕墙", "砖混"])
 street_spacing_min = 5
 street_spacing_max = 9
 secondary_max_len = 56

@@ -85,6 +85,18 @@ class_name TownDef extends PCGGeneratorDef
 ## [农田]
 @export_range(4, 64, 1) var farm_min_dist := 14
 @export_range(8, 512, 4) var farm_min_area := 60
+## [均衡] 环路收口后对路网稀疏象限补生次街的轮数（0=关闭）
+@export_range(0, 6, 1) var infill_passes := 3
+## 象限最低路格密度阈值（该象限路格数/象限面积，低于即触发补生长）
+@export_range(0.0, 0.25, 0.005) var infill_min_density := 0.05
+## [分区] 启用语义分区（市集/贵族/民居，写入 parcels[i].ward 与 layout.wards）
+@export var enable_wards := true
+## [城墙] 启用城墙+城门（墙写入 build 层；门洞记录到 layout.gates）
+@export var enable_walls := true
+## 主街城门之外额外开设的小门数
+@export_range(0, 4, 1) var extra_gates := 1
+## [贴地] 岸线建设容差：角部低于海平面但在容差内 → 桩基跨水而非弃建（山地/水岸规模关键）
+@export_range(0.0, 0.2, 0.01) var shore_build_tolerance := 0.08
 ## [回写]
 @export_range(0.02, 0.3, 0.01) var road_max_grade := 0.1
 @export_range(0, 6, 1) var terrace_blend := 3
@@ -119,7 +131,9 @@ static func default_steps() -> Array[TownStepDef]:
 	list.append(TownAlleyStep.new())
 	list.append(TownPlazaStep.new())
 	list.append(TownParcelStep.new())
+	list.append(TownWardStep.new())
 	list.append(TownBuildingStep.new())
+	list.append(TownWallStep.new())
 	list.append(TownInteriorStep.new())
 	list.append(TownGreeneryStep.new())
 	list.append(TownStreetStep.new())

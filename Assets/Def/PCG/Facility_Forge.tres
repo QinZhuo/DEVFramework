@@ -6,7 +6,7 @@
 
 [resource]
 script = ExtResource("1_script")
-facility_name = "铁匠铺"
+facility_name = "维修站"
 count = 1.0
 prefer_main_street = true
 layers = 1

@@ -40,6 +40,15 @@ var trees := PackedVector2Array()
 var streets := {}
 ## 农田区块列表（每项为一片连片农田的格线性索引；条纹方向由消费方按坐标推算）
 var farms: Array = []
+## 城墙层栅格（空=无城墙；非零=墙格，已写入 build 层同值供回写/渲染复用）
+var walls_grid: GeneratedGrid = null
+## 城门列表 [{"pos":Vector2i, "edge":"N/E/S/W"}]（主街必开；亦是 NPC 进出锚点）
+var gates: Array = []
+## 语义分区统计 {"market"/"noble"/"common": {"type":String, "parcels":int}}
+## （逐地块标签在 parcels[i].ward）
+var wards: Dictionary = {}
+## 城墙四角塔楼位（格坐标，数据预留；消费方自渲染）
+var wall_towers := PackedVector2Array()
 
 ## 道路等级
 enum EdgeClass { MAIN, SECONDARY, ALLEY }
@@ -57,6 +66,7 @@ func to_data() -> Dictionary:
 			"rect": [p.rect.position.x, p.rect.position.y, p.rect.size.x, p.rect.size.y],
 			"cells": p.cells,
 			"frontage": int(p.frontage_dir),
+			"ward": String(p.get("ward", "")),
 		})
 	var edge_data: Array = []
 	for e in road_edges:
@@ -112,6 +122,10 @@ func to_data() -> Dictionary:
 		"farms": farms,
 		"heightmap": heightmap.to_data() if heightmap else null,
 		"town_name": town_name,
+		"walls": walls_grid.to_data() if walls_grid else null,
+		"gates": gates,
+		"wards": wards,
+		"wall_towers": wall_towers,
 	}
 
 
@@ -139,6 +153,7 @@ static func from_data(data: Dictionary) -> TownLayout:
 			"rect": Rect2i(int(r[0]), int(r[1]), int(r[2]), int(r[3])),
 			"cells": PackedInt32Array(p.cells),
 			"frontage_dir": int(p.frontage),
+			"ward": String(p.get("ward", "")),
 		})
 	for b in data.get("buildings", []):
 		var br: Array = b.rect
@@ -184,4 +199,13 @@ static func from_data(data: Dictionary) -> TownLayout:
 	if hmd is Dictionary and not (hmd as Dictionary).is_empty():
 		t.heightmap = HeightMap.from_data(hmd)
 	t.town_name = String(data.get("town_name", ""))
+	var wd = data.get("walls")
+	if wd is Dictionary and not (wd as Dictionary).is_empty():
+		t.walls_grid = GeneratedGrid.from_data(wd)
+	for g in data.get("gates", []):
+		t.gates.append({"pos": Vector2i(int(g.pos.x), int(g.pos.y)), "edge": String(g.edge)})
+	t.wards = data.get("wards", {})
+	t.wall_towers = PackedVector2Array()
+	for t2 in data.get("wall_towers", []):
+		t.wall_towers.append(Vector2(int(t2.x), int(t2.y)))
 	return t
