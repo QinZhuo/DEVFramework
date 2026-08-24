@@ -119,6 +119,9 @@ func sort_children() -> void:
 		if not (child is Control):
 			continue
 		var c := child as Control
+		# 池中隐藏的格子不参与摆位(保持挂树但脱离布局)
+		if not c.visible:
+			continue
 		var meta := c.get_meta(&"cell_pos", Vector2i(-1, -1)) as Vector2i
 		# cell_pos.x 是全局列索引, 布局时用网格内列索引(减去 column_offset)
 		var gi := meta.x - column_offset

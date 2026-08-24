@@ -258,14 +258,10 @@ func _load_dir(path: String) -> void:
 	tl.stop()
 
 
-## 清空网格中所有单元格节点(目录切换/列结构变化时调用)
+## 清空网格中所有单元格节点(目录切换/列结构变化时调用)。
+## 行身份模型: 全部回收入池而非销毁(池按 Kind 分桶, 跨目录复用类型安全)
 func _clear_grid_cells() -> void:
-	for child in grid.get_children().duplicate():
-		grid.remove_child(child)
-		child.queue_free()
-	for child in frozen_grid.get_children().duplicate():
-		frozen_grid.remove_child(child)
-		child.queue_free()
+	_recycle_all_rows()
 	first_row = 0
 	last_row = 0
 
@@ -843,14 +839,9 @@ func _update_visible_rows(force_rebuild: bool = false) -> void:
 	var t_start := Time.get_ticks_usec()
 	_fill_count = 0
 	if columns.size() == 0 or rows.size() == 0:
-		for child in grid.get_children():
-			child.queue_free()
-		for child in frozen_grid.get_children():
-			child.queue_free()
-		var scroll_w: Array[float] = _scroll_column_widths()
-		grid.configure(scroll_w, 0)
-		# 空目录(如尚未添加数据的 Condition)会走到这里; 三元返回的无类型 [] 无法赋给
-		# Array[float], 必须显式 append 构造
+		_recycle_all_rows()
+		# 无类型 [] 字面量无法赋给 Array[float] 形参, 必须显式构造(见 _scroll_column_widths)
+		grid.configure(_scroll_column_widths(), 0)
 		var fw: Array[float] = []
 		if columns.size() > 0:
 			fw.append(column_widths[0])
@@ -871,50 +862,139 @@ func _update_visible_rows(force_rebuild: bool = false) -> void:
 	first_row = new_first
 	last_row = new_last
 
-	# 可滚动网格: 列 1..n-1 (cell_pos.x 为全局列索引, 布局时减去 column_offset=1)
-	var scroll_cols := columns.size() - 1
+	# 网格总行数/列宽配置(供滚动定位与布局); 冻结列宽需显式构造类型化数组
 	grid.column_offset = 1
 	grid.configure(_scroll_column_widths(), rows.size())
-	var visible_count := (last_row - first_row) * scroll_cols
-	while grid.get_child_count() > visible_count:
-		var last := grid.get_child(grid.get_child_count() - 1)
-		grid.remove_child(last)
-		last.queue_free()
-	while grid.get_child_count() < visible_count:
-		var i := grid.get_child_count()
-		var pos := Vector2i(1 + i % scroll_cols, first_row + i / scroll_cols)
-		grid.add_child(_make_cell(pos))
-
-	for i in visible_count:
-		var cell := grid.get_child(i) as DefTableCellClass
-		var pos := Vector2i(1 + i % scroll_cols, first_row + i / scroll_cols)
-		cell.custom_minimum_size = Vector2(column_widths[pos.x], grid.row_heights[pos.y])
-		# 颜色行染色: 颜色列的值染色其右侧单元格背景(参考 resources_spreadsheet_view)
-		var tint := _row_tint_for(pos.y)
-		_fill_cell(cell, pos, tint)
-	grid.queue_sort()
-
-	# 冻结网格: 列 0 (首列 name), 不随横向滚动, 纵向与主网格同步
-	var frozen_widths: Array[float] = [column_widths[0]]
 	frozen_grid.column_offset = 0
+	var frozen_widths: Array[float] = [column_widths[0]]
 	frozen_grid.configure(frozen_widths, rows.size())
-	var frozen_count := last_row - first_row
-	while frozen_grid.get_child_count() > frozen_count:
-		var fl := frozen_grid.get_child(frozen_grid.get_child_count() - 1)
-		frozen_grid.remove_child(fl)
-		fl.queue_free()
-	while frozen_grid.get_child_count() < frozen_count:
-		var fi := frozen_grid.get_child_count()
-		frozen_grid.add_child(_make_cell(Vector2i(0, first_row + fi)))
-	for fi in frozen_count:
-		var fcell := frozen_grid.get_child(fi) as DefTableCellClass
-		var fpos := Vector2i(0, first_row + fi)
-		fcell.custom_minimum_size = Vector2(column_widths[0], frozen_grid.row_heights[fpos.y])
-		var ftint := _row_tint_for(fpos.y)
-		_fill_cell(fcell, fpos, ftint)
+
+	# 行身份模型: 出窗行回收入池, 进场行物化+填充。
+	# 留在窗口内的行零成本保留(不再全量重填 RichTextLabel), 滚动工作量 ∝ 进出场行数而非窗口总量
+	for row in _live_rows.keys():
+		if int(row) < first_row or int(row) >= last_row:
+			_recycle_row(int(row))
+	for row in range(first_row, last_row):
+		var created := not _live_rows.has(row)
+		if created:
+			_materialize_row(row)
+		if created or force_rebuild:
+			_fill_row(row)
+
+	grid.queue_sort()
 	frozen_grid.queue_sort()
 
 	_update_selection_visuals()
+
+
+## ======= 行身份复用 + Kind 分桶对象池 =======
+## 格子跟随行号(而非固定屏幕槽位)。池按显示类型分桶: 目录切换后列类型不同也不会错位;
+## 上限防内存增长。离场行 remove_child 后入池保活, 进场行取池或新建。
+
+## 已物化行: row -> {"main": Array[DefTableCell], "frozen": DefTableCell}
+var _live_rows := {}
+## 单元格池: key=主格m/冻结格f + Kind。格子保持挂树仅隐藏复用,
+## 规避 RTL 反复 remove/add_child 的入树巨额成本(Godot #7510 社区实测方案)
+var _cell_pool := {}
+const CELL_POOL_MAX_PER_KIND := 512
+
+
+func _pool_key(frozen: bool, kind: int) -> StringName:
+	return StringName(("f" if frozen else "m") + str(kind))
+
+
+func _pool_give_cell(cell: DefTableCellClass, frozen: bool) -> void:
+	# 不出树: 隐藏即脱离绘制/输入/布局参与, 复用时置回可见
+	cell.visible = false
+	var key := _pool_key(frozen, cell.kind)
+	var bucket: Array = _cell_pool.get(key, [])
+	if bucket.is_empty():
+		_cell_pool[key] = bucket
+	if bucket.size() < CELL_POOL_MAX_PER_KIND:
+		bucket.append(cell)
+	else:
+		cell.queue_free()
+
+
+func _pool_take_cell(col: int, frozen: bool) -> DefTableCellClass:
+	var target: Container = frozen_grid if frozen else grid
+	var bucket: Array = _cell_pool.get(_pool_key(frozen, _display_kind(col)), [])
+	while not bucket.is_empty():
+		var c: DefTableCellClass = bucket.pop_back()
+		if is_instance_valid(c) and c.get_parent() == target:
+			c.visible = true
+			return c
+	var cell := _make_cell(Vector2i(col, 0))
+	target.add_child(cell)
+	return cell
+
+
+func _recycle_all_rows() -> void:
+	for row in _live_rows.keys():
+		_recycle_row(int(row))
+
+
+func _recycle_row(row: int) -> void:
+	var entry: Dictionary = _live_rows.get(row, {})
+	if entry.is_empty():
+		return
+	for c in entry.get("main", []):
+		if is_instance_valid(c):
+			_pool_give_cell(c, false)
+	var f: DefTableCellClass = entry.get("frozen")
+	if f != null and is_instance_valid(f):
+		_pool_give_cell(f, true)
+	_live_rows.erase(row)
+
+
+func _materialize_row(row: int) -> void:
+	var main_cells: Array = []
+	for col in range(1, columns.size()):
+		main_cells.append(_pool_take_cell(col, false))
+	var fcell := _pool_take_cell(0, true)
+	_live_rows[row] = {"main": main_cells, "frozen": fcell}
+
+
+## 填充一行的全部单元格(主格按全局列索引 1..n-1, 冻结格为列 0)
+func _fill_row(row: int) -> void:
+	var entry: Dictionary = _live_rows.get(row, {})
+	if entry.is_empty() or row >= rows.size():
+		return
+	var tint := _row_tint_for(row)
+	var f: DefTableCellClass = entry.get("frozen")
+	if f != null and is_instance_valid(f):
+		_fill_cell(f, Vector2i(0, row), tint)
+	var mains: Array = entry.get("main", [])
+	for i in mains.size():
+		var cell: DefTableCellClass = mains[i]
+		if is_instance_valid(cell):
+			_fill_cell(cell, Vector2i(1 + i, row), tint)
+
+
+## 滚动停止后补拉可见 RESOURCE 格预览(滚动中延迟的请求在此统一发出)
+func _backfill_resource_previews() -> void:
+	if editor_interface == null or editor_interface.get_resource_previewer() == null:
+		return
+	var res_cols: Array = []
+	for col in range(1, columns.size()):
+		if _display_kind(col) == DefTableCellClass.Kind.RESOURCE:
+			res_cols.append(col)
+	if res_cols.is_empty():
+		return
+	for row in _live_rows:
+		if int(row) >= rows.size():
+			continue
+		var mains: Array = _live_rows[row].get("main", [])
+		for col in res_cols:
+			var idx: int = int(col) - 1
+			if idx >= mains.size():
+				continue
+			var cell: DefTableCellClass = mains[idx]
+			if not is_instance_valid(cell) or str(cell.get_meta(&"preview_path", "")) != "":
+				continue
+			var v = _get_value(rows[int(row)], int(col))
+			if v is Resource:
+				_request_resource_preview(cell, v)
 
 
 ## 行染色(don-tnowe row stylization): 取该行首个有效 Color 值, 低透明度染整行;
@@ -1122,18 +1202,21 @@ func _set_cell_selected(cell_pos: Vector2i, selected: bool) -> void:
 		node.set_selected(selected)
 
 
-## 定位单元格节点(冻结列或滚动网格), 不可见返回 null
+## 定位单元格节点(冻结列或滚动网格), 不可见返回 null。
+## 行身份模型: 从 _live_rows 按行直接取格, 不依赖子节点顺序
 func _get_cell_node(cell_pos: Vector2i) -> DefTableCellClass:
-	var is_frozen := cell_pos.x == 0
-	var target := frozen_grid if is_frozen else grid
-	var cols := 1 if is_frozen else maxi(columns.size() - 1, 1)
-	var row_in_view := cell_pos.y - first_row
-	if row_in_view < 0 or row_in_view >= (last_row - first_row):
+	if not _live_rows.has(cell_pos.y):
 		return null
-	var idx := row_in_view * cols + (0 if is_frozen else cell_pos.x - 1)
-	if idx >= 0 and idx < target.get_child_count():
-		return target.get_child(idx) as DefTableCellClass
-	return null
+	var entry: Dictionary = _live_rows[cell_pos.y]
+	if cell_pos.x == 0:
+		var f: DefTableCellClass = entry.get("frozen")
+		return f if is_instance_valid(f) else null
+	var idx := cell_pos.x - 1
+	var mains: Array = entry.get("main", [])
+	if idx < 0 or idx >= mains.size():
+		return null
+	var c: DefTableCellClass = mains[idx]
+	return c if is_instance_valid(c) else null
 
 
 func _deselect_all() -> void:
@@ -1186,13 +1269,14 @@ func _select_cells_to(pos: Vector2i) -> void:
 func _update_selection_visuals() -> void:
 	for child in grid.get_children():
 		var cell := child as DefTableCellClass
-		if cell == null:
+		# 池中隐藏格不处理
+		if cell == null or not cell.visible:
 			continue
 		var pos: Vector2i = cell.get_meta(&"cell_pos")
 		cell.set_selected(pos in edited_cells)
 	for child in frozen_grid.get_children():
 		var fcell := child as DefTableCellClass
-		if fcell == null:
+		if fcell == null or not fcell.visible:
 			continue
 		var fpos: Vector2i = fcell.get_meta(&"cell_pos")
 		fcell.set_selected(fpos in edited_cells)
@@ -1216,12 +1300,7 @@ func _on_v_scroll(_v: float) -> void:
 		_syncing_scroll = true
 		frozen_grid_scroll.scroll_vertical = grid_scroll.scroll_vertical
 		_syncing_scroll = false
-	# 防抖：滚动中只更新位置，下一帧统一重建(合并同一帧内的多次滚动事件)
-	if not _scroll_frame_pending:
-		_scroll_frame_pending = true
-		_update_visible_rows.call_deferred()
-	else:
-		_update_visible_rows()
+	_schedule_scroll_update()
 
 
 func _on_frozen_v_scroll(v: float) -> void:
@@ -1230,11 +1309,23 @@ func _on_frozen_v_scroll(v: float) -> void:
 	_syncing_scroll = true
 	grid_scroll.scroll_vertical = frozen_grid_scroll.scroll_vertical
 	_syncing_scroll = false
-	if not _scroll_frame_pending:
-		_scroll_frame_pending = true
-		_update_visible_rows.call_deferred()
-	else:
-		_update_visible_rows()
+	_schedule_scroll_update()
+
+
+## 滚动统一入口: 防抖合并同帧多次事件(下一帧统一重建), 并安排"停止检测"补拉预览。
+## 原实现 _scroll_frame_pending 只置位不复位, 首次滚动后预览请求被永久禁用(bug), 此处一并修复。
+var _scroll_seq := 0
+
+func _schedule_scroll_update() -> void:
+	_scroll_frame_pending = true
+	_scroll_seq += 1
+	var seq := _scroll_seq
+	_update_visible_rows.call_deferred()
+	await get_tree().create_timer(0.12).timeout
+	if seq == _scroll_seq and _scroll_frame_pending:
+		# 120ms 内无新滚动事件: 视为已停止, 复位标志并补拉可见资源格预览
+		_scroll_frame_pending = false
+		_backfill_resource_previews()
 
 
 func _on_h_scroll(v: float) -> void:

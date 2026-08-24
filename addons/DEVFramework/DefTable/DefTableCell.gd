@@ -237,12 +237,17 @@ func _build_resource_cell() -> void:
 	_content = box
 
 
+## 上次填充的文本(同值跳过守卫): 池复用/滚动重填时避免 RichTextLabel 同文重解析
+var _last_text := ""
+
+
 ## 设置内容值。text 为已格式化的展示文本。
 func set_value_text(text: String) -> void:
 	if kind == Kind.COLOR:
 		return
-	if _content == null:
+	if _content == null or text == _last_text:
 		return
+	_last_text = text
 	match kind:
 		Kind.RESOURCE:
 			var lb := _content.get_node_or_null(NodePath("Label")) as RichTextLabel
