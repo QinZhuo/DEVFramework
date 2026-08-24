@@ -1530,8 +1530,21 @@ static func _place_from_lists(def: TownDef, layout: TownLayout, li: int, type_na
 static func _try_place_one(def: TownDef, layout: TownLayout, parcel: Dictionary, tmpl: TemplateDef, facing: int, type_name: String, bid: int, rng: RandomNumberGenerator, li: int, fac: FacilityDef) -> bool:
 	var rot: int = _FACING_TO_ROT[facing]
 	var rect: Rect2i = parcel.rect
-	var avail_w := rect.size.x - def.setback * 2
-	var avail_h := rect.size.y - def.setback * 2
+	# 分向退线：临街面不退（门贴路），其余方向各退 side/rear 退线
+	var side_setback := 1
+	var rear_setback := 2
+	var front_setback := 0
+	var avail_w: int
+	var avail_h: int
+	match facing:
+		0, 2:
+			avail_w = rect.size.x - side_setback * 2
+			avail_h = rect.size.y - rear_setback - front_setback if facing == 2 else rect.size.y - front_setback
+		1, 3:
+			avail_h = rect.size.y - side_setback * 2
+			avail_w = rect.size.x - rear_setback - front_setback if facing == 1 else rect.size.x - front_setback
+	if avail_w <= 0 or avail_h <= 0:
+		return false
 	if avail_w <= 0 or avail_h <= 0:
 		return false
 	var sz2 := tmpl.get_rotated_size(rot)
