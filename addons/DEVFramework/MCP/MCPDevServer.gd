@@ -505,7 +505,7 @@ func _register_dev_tools() -> void:
 		_call_reload_project)
 
 	_add_tool("eval_code",
-		"在编辑器进程执行GDScript(查值/调工具/验证逻辑)。可return返回值, print进get_logs。包装为Node方法, 可用get_tree()/get_node()。缩进自动归一化。字符串内换行用char(10)勿用'\\n'(JSON会拆行)。",
+		"在编辑器进程执行GDScript(查值/调工具/验证逻辑)。可return返回值, print进get_logs。支持await(协程等待完成后返回真实值)。包装为Node方法, 可用get_tree()/get_node()。缩进自动归一化。字符串内换行用char(10)勿用'\\n'(JSON会拆行)。",
 		{"type": "object", "properties": {"code": {"type": "string", "description": "要执行的 GDScript 代码(方法体内容, 缩进由服务器自动处理)"}}},
 		_call_eval_code)
 
@@ -1469,7 +1469,10 @@ func _call_call_node_method(args: Dictionary) -> Dictionary:
 	var converted_args: Array = []
 	for arg in args_arr:
 		converted_args.append(_auto_convert_arg(arg))
+	# 方法体含 await 时 callv 返回协程状态对象: 等待完成取真实返回值(同步方法不进此分支)(同步方法不进此分支)
 	var result: Variant = node.callv(method, converted_args)
+	if result is Object and result.get_class() == "GDScriptFunctionState":
+		result = await result
 	return _ok("已调用 %s.%s() -> %s" % [path, method, str(result)])
 
 
@@ -2087,7 +2090,13 @@ func _call_eval_code(args: Dictionary) -> Dictionary:
 	var root := get_tree().root
 	if root:
 		root.add_child(inst)
+	# 代码含 await 即为协程: 不带 await 的调用会立即返回协程状态对象,
+	# 必须等待完成才能拿到真实返回值。类型名未暴露给 GDScript(不能 is 检查),
+	# 用运行时反射判断(GDScriptFunctionState 条件分支为官方推荐防御模式,
+	# 同步代码不进此分支, 无额外开销)。挂起风险由外层超时护栏(wire/HTTP 客户端)兜底。
 	var result: Variant = inst.call("_mcp_run")
+	if result is Object and result.get_class() == "GDScriptFunctionState":
+		result = await result
 	if root:
 		inst.queue_free()
 	# 收集本次运行产生的运行期错误(若代码 halt, 也会反映为错误入队)
@@ -2727,6 +2736,9 @@ func _resolve_node(path: String) -> Node:
 	var root := _edited_root()
 	if root == null:
 		return null
+	# 运行时额外支持全局绝对路径(/root/...), 可触达 autoload 单例; 编辑器语义不变
+	if not Engine.is_editor_hint() and path.begins_with("/root"):
+		return get_node_or_null(path)
 	if path == "root" or path == "/" or path == str(root.name):
 		return root
 	if path.begins_with("@"):
@@ -2948,7 +2960,7 @@ func _register_runtime_tools() -> void:
 		_call_take_screenshot)
 
 	_register_game_play_tool("game_eval",
-		"在游戏进程执行GDScript代码, 可访问游戏场景树(get_tree()/get_node()/get_viewport()等), 读运行状态/改变量/触发逻辑。可return返回值。get_node相对路径基于eval实例, 访问场景节点用绝对路径/root/场景名/子路径或get_tree().current_scene.get_node(...)。",
+		"在游戏进程执行GDScript代码, 可访问游戏场景树(get_tree()/get_node()/get_viewport()等), 读运行状态/改变量/触发逻辑。可return返回值, 支持await。get_node相对路径基于eval实例, 访问场景节点用绝对路径/root/场景名/子路径或get_tree().current_scene.get_node(...)。",
 		{"type": "object", "properties": {"code": _code_arg()}},
 		_call_eval_code,
 		func(args): return await _call_game_eval_proxy(args))
@@ -2976,6 +2988,44 @@ func _register_runtime_tools() -> void:
 		_auto_verify_schema(),
 		_runtime_auto_verify,
 		func(args): return await _call_auto_verify(args))
+
+	_register_game_play_tool("get_game_scene_tree",
+		"获取游戏运行中的实时场景树(以当前场景为根, 含名称/类型, 可选关键属性)。与编辑器版 get_scene_tree 区分: 本工具读的是运行中的活实例(位置/可见性等为实时值)。理解运行状态/找活节点路径用。",
+		{"type": "object", "properties": {
+			"max_depth": {"type": "integer", "description": "最大展开深度, 默认 8"},
+			"include_properties": {"type": "boolean", "description": "是否附带前3层节点的关键属性, 默认 false"}
+		}},
+		_runtime_get_scene_tree,
+		func(args): return await _call_runtime_proxy("get_game_scene_tree", args))
+
+	_register_game_play_tool("get_game_node_info",
+		"获取游戏运行中节点的实时属性。path 支持: 当前场景相对路径('Player'/'Main/Player')、'/root/'开头全局绝对路径(可访问 autoload)、'@'开头按唯一名深搜。与编辑场景版 get_node_info 区分。",
+		{"type": "object", "properties": {"path": _path_arg("运行中节点的路径")}, "required": ["path"]},
+		_call_get_node_info,
+		func(args): return await _call_runtime_proxy("get_game_node_info", args))
+
+	_register_game_play_tool("call_game_node_method",
+		"调用游戏运行中节点的方法(实时调试触发: 播放动画/切换状态等)。args 以数组传参, 字符串参数自动转换 Vector2/Vector3/Color 等类型。",
+		{"type": "object", "properties": {
+			"path": _path_arg("运行中节点的路径(同 get_game_node_info)"),
+			"method": {"type": "string", "description": "方法名"},
+			"args": {"type": "array", "description": "参数数组"}
+		}},
+		_call_call_node_method,
+		func(args): return await _call_runtime_proxy("call_game_node_method", args))
+
+
+## 运行时: 获取游戏正在运行的场景树(_edited_root 在游戏进程内返回 current_scene)。
+## 复用编辑器版的遍历与属性提取, 保证两种模式输出格式一致。
+func _runtime_get_scene_tree(args: Dictionary) -> Dictionary:
+	var root := _edited_root()
+	if root == null:
+		return _fail("游戏场景尚未就绪(get_tree().current_scene 为空)")
+	var max_depth: int = int(args.get("max_depth", 8))
+	var include_props: bool = _to_bool(args.get("include_properties", false))
+	var lines: Array = []
+	_walk_scene_tree(root, 0, max_depth, include_props, lines)
+	return _ok("\n".join(lines))
 
 
 ## 递归收集可见节点信息(运行时模式, 游戏进程内坐标天然正确)
@@ -3267,7 +3317,7 @@ func _runtime_auto_verify(args: Dictionary) -> Dictionary:
 					step["status"] = "action_error"
 					step["message"] = str(r3.get("text", ""))
 			"eval":
-				var r4: Dictionary = _call_eval_code({"code": str(op.get("code", ""))})
+				var r4: Dictionary = await _call_eval_code({"code": str(op.get("code", ""))})
 				step["result"] = str(r4.get("text", ""))
 				if r4.get("is_error", false):
 					step["status"] = "action_error"
@@ -3350,7 +3400,7 @@ func _poll_until(op: Dictionary, deadline: int) -> bool:
 	var start := Time.get_ticks_msec()
 	var poll_deadline := mini(deadline, start + timeout_ms)
 	while Time.get_ticks_msec() < poll_deadline:
-		var r: Dictionary = _call_eval_code({"code": code})
+		var r: Dictionary = await _call_eval_code({"code": code})
 		if not r.get("is_error", false):
 			if _eval_returned_true(str(r.get("text", ""))):
 				return true

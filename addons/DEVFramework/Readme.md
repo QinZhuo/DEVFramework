@@ -665,6 +665,9 @@ claude mcp list        # 查看已配置
 | `get_node_info` | 读取编辑场景中指定节点属性列表及当前值 |
 | `set_node_property` | 修改编辑场景中节点属性（经 UndoRedo 提交，可 Ctrl+Z 撤销；保存才写回 .tscn）|
 | `call_node_method` | 触发编辑场景中节点方法 |
+| `get_game_scene_tree` | **运行时**：获取游戏运行中的实时场景树（活实例的名称/类型/实时属性）|
+| `get_game_node_info` | **运行时**：读取运行中节点的实时属性（支持相对路径 / `/root/` 绝对路径含 autoload / `@` 唯一名深搜）|
+| `call_game_node_method` | **运行时**：调用运行中节点的方法（播放动画/切换状态等实时调试触发；支持含 await 的协程方法）|
 | `add_node` | 向编辑场景添加节点/实例化子场景（UndoRedo 可撤销）|
 | `remove_node` / `duplicate_node` | 删除 / 复制场景节点（含子树，UndoRedo 可撤销）|
 | `set_node_transform` | 设置节点位置/旋转/缩放（2D/3D）|
@@ -676,7 +679,7 @@ claude mcp list        # 查看已配置
 | `get_project_settings` | 主场景/autoload/输入映射/图层命名等关键配置 |
 | `run_game` / `stop_game` | 独立进程启动/停止游戏（日志并入 `get_logs`）|
 | `reload_project` | **重载项目**：重建全局类缓存（新 `class_name` 立即注册）+ 重扫资源；可选重载当前场景 |
-| `eval_code` | 在编辑器内执行一段 GDScript 代码并返回结果（print 进 `get_logs`）|
+| `eval_code` | 在编辑器内执行一段 GDScript 代码并返回结果（print 进 `get_logs`；**支持 await**，协程代码等待完成后返回真实值）|
 | `get_global_classes` | 列出已注册的全部全局类（含路径/基类）|
 | `open_scene` | 在编辑器打开指定场景 |
 | `set_main_scene` | 设置项目主场景并保存 |
