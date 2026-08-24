@@ -232,7 +232,6 @@ func _on_filesystem_changed() -> void:
 func _load_dir(path: String) -> void:
 	if path == "":
 		return
-	var t := LogTool.timer("DefTable", "加载 %s" % path.get_file())
 	var all_tres := _collect_tres_recursive(path)
 	var loaded: Array[Resource] = []
 	for p in all_tres:
@@ -241,8 +240,6 @@ func _load_dir(path: String) -> void:
 			if res != null and _is_def(res):
 				loaded.append(res)
 	rows = loaded
-	t.stop()
-	var tl := LogTool.timer("DefTable", "布局 %d 行" % rows.size())
 	_build_columns()
 	_sort_rows()
 	_compute_row_tints()
@@ -255,7 +252,6 @@ func _load_dir(path: String) -> void:
 	count_label.text = "共 %d 个 Def" % rows.size()
 	sel_label.text = "未选中"
 	edited_cells.clear()
-	tl.stop()
 
 
 ## 清空网格中所有单元格节点(目录切换/列结构变化时调用)。
@@ -593,7 +589,6 @@ func _compare_values(a, b) -> bool:
 ##   · 仅含显式换行的内容做 RTL 实测撑行; 单行内容(BBCode 与否)固定行高,
 ##     由 RichTextLabel 在单元格内自动换行+裁剪 —— 避免 O(单元格数) 次 RTL 全排版卡帧
 func _compute_layout() -> void:
-	var t := LogTool.timer("DefTable", "布局 %s (%d 行)" % [_current_dir.get_file(), rows.size()])
 	var font := get_theme_font("font", "Label")
 	var fsize := get_theme_font_size("font", "Label")
 	if font == null:
@@ -644,7 +639,6 @@ func _compute_layout() -> void:
 	frozen_grid.set_row_heights(heights)
 	# 冻结首列宽度跟随 name 列
 	frozen_grid.custom_minimum_size = Vector2(column_widths[0], 0)
-	t.stop()
 
 
 ## 用复用 RichTextLabel(进树 + reset_size 同步测量)计算 BBCode 文本高度
@@ -892,6 +886,14 @@ func _update_visible_rows(force_rebuild: bool = false) -> void:
 ## 水平: 列窗口化, 仅物化与水平视口相交的列(194 列不再全量建格)
 ## 行池: 整行回收时其格子原样随行入池(零逐格开销), 复用时按新窗口收编/裁剪/校验类型
 ## 格池: 列窗口收缩拆出的散格(已脱离父节点), 供任意行补格; Kind 分桶防跨目录类型错位
+##
+## ⚠ 尺寸钳制陷阱(曾导致快速滚动后格子重叠的伪影):
+##   Control.size 赋值会被 custom_minimum_size 向上钳制(effective = max(size, minsize))。
+##   池化格子在上一任行可能被 _fill_cell 写入大行高的 minsize; 复用到矮行时
+##   先设 size 再由 _fill_cell 修正 minsize 的顺序来不及 —— size 已被顶成旧大值,
+##   格子溢出压到相邻行, 视觉上"部分重叠"。
+##   约定: 任何对池化格子的 size 赋值前, 必须先把 custom_minimum_size 归零
+##   (见 _attach_cell / _fill_row), minsize 由随后的 _fill_cell 写入正确行高。
 
 ## 已物化行: row -> {"ctl": Control行容器, "frozen": DefTableCell, "cells": Dictionary(col->cell)}
 var _live_rows := {}

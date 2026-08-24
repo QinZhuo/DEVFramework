@@ -6,6 +6,11 @@
 ##   - Sel    : 选中高亮
 ##   - Content: 内容节点(由子类创建)
 ## 参考 resources_spreadsheet_view 的 cell_editor 类型化架构。
+##
+## ⚠ 池化复用与尺寸钳制: 单元格在 View 的两级对象池中跨行/跨目录复用,
+##   上一任行的 custom_minimum_size 会把新 size 向上钳制成旧行高(视觉重叠伪影)。
+##   约定: 复用侧设 size 前必须先归零 minsize(View 侧 _attach_cell/_fill_row 已处理);
+##   本类不自行维护 minsize, 其值始终由 View 的 _fill_cell 按当前行高写入。
 class_name DefTableCell
 extends Control
 
