@@ -1015,6 +1015,8 @@ func _attach_cell(ctl: Control, cells: Dictionary, row: int, col: int) -> DefTab
 		cell = null
 	if cell == null:
 		cell = _pool_take_cell(col, false, ctl)
+	# 先解除上一任行高遗留的 minsize 钳制, 否则 size 会被向上钳成旧值(重叠伪影根因)
+	cell.custom_minimum_size = Vector2.ZERO
 	cell.position = Vector2(grid.column_offsets[col - 1], 0.0)
 	cell.size = Vector2(column_widths[col], ctl.size.y)
 	return cell
@@ -1056,6 +1058,7 @@ func _fill_row(row: int) -> void:
 		Vector2(_scroll_total_width(), rh)))
 	var f: DefTableCellClass = entry.get("frozen")
 	if f != null and is_instance_valid(f):
+		f.custom_minimum_size = Vector2.ZERO
 		frozen_grid.fit_child_in_rect(f, Rect2(
 			Vector2(0.0, frozen_grid.row_offsets[row] if row < frozen_grid.row_offsets.size() else 0.0),
 			Vector2(column_widths[0], frozen_grid.row_heights[row] if row < frozen_grid.row_heights.size() else 32.0)))
@@ -1066,6 +1069,8 @@ func _fill_row(row: int) -> void:
 		if not is_instance_valid(cell):
 			continue
 		var ci: int = int(col)
+		# 同 _attach_cell: 先清 minsize 钳制再设尺寸
+		cell.custom_minimum_size = Vector2.ZERO
 		cell.position = Vector2(grid.column_offsets[ci - 1], 0.0)
 		cell.size = Vector2(column_widths[ci], rh)
 		_fill_cell(cell, Vector2i(ci, row), tint)
