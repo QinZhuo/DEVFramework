@@ -1,0 +1,66 @@
+[gd_resource type="Resource" load_steps=31 format=3]
+
+[ext_resource type="Script" path="res://addons/DEVFramework/PCG/Def/TownDef.gd" id="1_script"]
+[ext_resource type="Script" path="res://addons/DEVFramework/PCG/Def/TemplateDef.gd" id="2_tmpl_script"]
+[ext_resource type="Script" path="res://addons/DEVFramework/PCG/Def/ContentEntryDef.gd" id="3_entry_script"]
+[ext_resource type="Script" path="res://addons/DEVFramework/PCG/Def/FurnitureTableDef.gd" id="4_ftable_script"]
+[ext_resource type="Script" path="res://addons/DEVFramework/PCG/Def/FacilityDef.gd" id="5_fac_script"]
+[ext_resource type="Resource" path="res://Assets/Def/PCG/House_Hut.tres" id="6_house_h"]
+[ext_resource type="Resource" path="res://Assets/Def/PCG/House_Tiny.tres" id="7_house_t"]
+[ext_resource type="Resource" path="res://Assets/Def/PCG/House_Small.tres" id="8_house_s"]
+[ext_resource type="Resource" path="res://Assets/Def/PCG/Furniture_Bed.tres" id="9_fbed"]
+[ext_resource type="Resource" path="res://Assets/Def/PCG/Furniture_Stove.tres" id="10_fstove"]
+[ext_resource type="Resource" path="res://Assets/Def/PCG/Furniture_Anvil.tres" id="11_fanvil"]
+[ext_resource type="Resource" path="res://Assets/Def/PCG/Furniture_Rack.tres" id="12_frack"]
+
+[sub_resource type="Resource" id="poi_forge"]
+script = ExtResource("5_fac_script")
+facility_name = "铁匠铺"
+count = 1.0
+prefer_main_street = true
+
+[sub_resource type="Resource" id="poi_supply"]
+script = ExtResource("5_fac_script")
+facility_name = "补给站"
+count = 1.0
+prefer_main_street = true
+
+[sub_resource type="Resource" id="style_stone"]
+script = ExtResource("3_entry_script")
+name = "石砌"
+weight = 8.0
+
+[sub_resource type="Resource" id="style_wood"]
+script = ExtResource("3_entry_script")
+name = "木构"
+weight = 2.0
+
+[sub_resource type="Resource" id="prop_crate"]
+script = ExtResource("3_entry_script")
+name = "矿石箱"
+weight = 5.0
+
+[sub_resource type="Resource" id="prop_pick"]
+script = ExtResource("3_entry_script")
+name = "矿镐"
+weight = 2.0
+
+[resource]
+script = ExtResource("1_script")
+output_key = "town_mountain"
+width = 96
+height = 96
+heightmap_key = ""
+sea_level = 0.3
+plaza_radius = 2
+tree_count = 30
+street_tree_spacing = 0
+lot_max_area = 80
+lot_min_area = 12
+house_fill_ratio = 0.95
+houses = Array[ExtResource("2_tmpl_script")]([ExtResource("6_house_h"), ExtResource("7_house_t"), ExtResource("8_house_s")])
+facilities = Array[ExtResource("5_fac_script")]([SubResource("poi_forge"), SubResource("poi_supply")])
+style_table = Array[ExtResource("3_entry_script")]([SubResource("style_stone"), SubResource("style_wood")])
+furniture_tables = Array[ExtResource("4_ftable_script")]([ExtResource("9_fbed"), ExtResource("10_fstove"), ExtResource("11_fanvil"), ExtResource("12_frack")])
+prop_table = Array[ExtResource("3_entry_script")]([SubResource("prop_crate"), SubResource("prop_pick")])
+props_per_building = 2
