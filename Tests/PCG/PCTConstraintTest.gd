@@ -149,6 +149,20 @@ static func run() -> void:
 				ser_ok = false
 				break
 	city_ok = city_ok and ser_ok
+	# 可插拔步骤：禁用 FarmStep 后农田应为空，其余不受影响
+	var city2 := load("res://Assets/Def/PCG/City_Grid.tres") as TownDef
+	var steps_mod: Array[TownStepDef] = city2.effective_steps()
+	for st in steps_mod:
+		if st is TownFarmStep:
+			st.enabled = false
+	city2.steps = steps_mod
+	var tl_nf := PCGTool.generate_town(city2, null, 7)
+	var farm_empty: bool = tl_nf.farms.is_empty()
+	var bld_ok: bool = tl_nf.buildings.size() > 20
+	city_ok = city_ok and farm_empty and bld_ok
+	print("[约束] 步骤禁用Farm: %s (建筑%d 农田空=%s)" % [
+		str(farm_empty), tl_nf.buildings.size(), str(farm_empty)])
+	city2.steps = []  # 恢复默认链
 	# BFS：从 site 沿道路格扩散，应触达任一边缘格（对外连通）
 	if city_ok:
 		var seen := {}

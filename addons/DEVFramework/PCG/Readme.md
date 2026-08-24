@@ -19,7 +19,22 @@ addons/DEVFramework/PCG/
 │   ├── LSystemDef.gd          # L-System 生长生成器（重写规则 turtle 绘制，线段集输出）
 │   ├── TileDef3D / TileSetDef3D  # 3D WFC 六面 socket 瓦片与瓦片集
 │   ├── TownDef.gd             # 城镇生成总控（可插拔步骤链：选址→贴地路网→环路→巷道→广场→地块→建筑→室内→绿化→街具→农田→地形回写）
-│   ├── TownStepDef.gd         # 城镇步骤抽象基类（steps/ 子目录 12 个可插拔步骤，见 docs 设计案）
+│   ├── TownStepDef.gd         # 城镇步骤抽象基类
+│   ├── steps/                   # 城镇可插拔步骤（12 个，见 docs/城镇生成管线设计案.md）
+│   │   ├── TownSiteStep.gd    # 选址（地形评分）
+│   │   ├── TownRoadStep.gd    # 道路网（主街坡度A* + 次街生长）
+│   │   ├── TownRingStep.gd    # 边界环路
+│   │   ├── TownAlleyStep.gd   # 巷道细分
+│   │   ├── TownPlazaStep.gd   # 广场 + 中心设施
+│   │   ├── TownParcelStep.gd  # 临街地块细分
+│   │   ├── TownBuildingStep.gd # 建筑放置（锚点定位 + 分向退线）
+│   │   ├── TownInteriorStep.gd # 室内家具 + 校验修复
+│   │   ├── TownGreeneryStep.gd # 绿化散布 + 行道树
+│   │   ├── TownStreetStep.gd  # 街具（路灯/长椅）
+│   │   ├── TownFarmStep.gd    # 农田条纹区
+│   │   └── TownConformStep.gd # V1 地形回写（cut & fill）
+│   ├── FacilityDef.gd          # 功能设施定义（酒馆/教堂…：数量/偏好/专属户型）
+│   ├── FurnitureTableDef.gd    # 家具槽位加权表
 │   ├── PlacementDef.gd        # 散布放置器（泊松圆盘/抖动网格/均匀随机，可按网格剔除）
 │   ├── PlacementDef3D.gd      # 3D 散布放置器（3D 泊松/网格/随机，可按 3D 网格剔除）
 │   ├── ContentEntryDef.gd     # 加权表项（物品/事件/怪物等条目）
@@ -40,9 +55,11 @@ addons/DEVFramework/PCG/
 │   ├── ChunkedWorld.gd        # 2D 分块世界（seed+chunk 坐标确定性懒生成，seed+增量存档）
 │   ├── ChunkedWorld3D.gd      # 3D 分块世界（统一噪声种子 + 世界坐标偏移，地表跨块连续，seed+增量存档）
 │   ├── WFCAnimator.gd         # WFC 过程动画器（分步观测-传播 + 波函数渲染）
+│   ├── TownLayout.gd           # 城镇生成结果（选址/道路图/地块/建筑/室内/绿化/街具/农田/地形）
+│   ├── TownGenContext.gd       # 城镇步骤共享上下文（TownStepDef 间传递数据）
 │   └── PCGContext.gd          # 管线上下文（rng / 结果字典）
 └── Tool/
-    └── PCGTool.gd             # 统一入口（随机/噪声/网格/群系/散布/内容/管线/异步）
+    └── PCGTool.gd             # 统一入口（随机/噪声/网格/群系/散布/内容/管线/异步/城镇算法）
 ```
 
 ## 快速上手
