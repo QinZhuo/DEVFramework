@@ -732,6 +732,7 @@ func _measure_text_width(text: String, font: Font, fsize: int) -> float:
 func _clear_measure_cache() -> void:
 	_width_cache.clear()
 	_text_cache.clear()
+	_cell_fill_cache.clear()
 
 
 func _column_header_text(col: int) -> String:
@@ -830,7 +831,17 @@ func _scroll_column_widths() -> Array[float]:
 	return w
 
 
+## 滚动防抖 + 脏标记 + 延迟 tooltip/预览
+var _scroll_frame_pending := false
+var _fill_count := 0          # 本帧实际填充的格子数(诊断用)
+var _scroll_settle_frame := -1  # 滚动停止后的帧号(延迟预览用)
+## 单元格上次填充指纹: node instance_id → "row:col:res_path"
+var _cell_fill_cache := {}
+
+
 func _update_visible_rows(force_rebuild: bool = false) -> void:
+	var t_start := Time.get_ticks_usec()
+	_fill_count = 0
 	if columns.size() == 0 or rows.size() == 0:
 		for child in grid.get_children():
 			child.queue_free()
@@ -953,6 +964,13 @@ func _on_cell_mouse_entered(cell: DefTableCellClass) -> void:
 		return
 	var pos: Vector2i = cell.get_meta(&"cell_pos", Vector2i(-1, -1))
 	_set_hover_row(pos.y)
+	# 延迟 tooltip：hover 时按需构建(替代 fill 阶段的全量预构建)
+	if pos.y < rows.size() and pos.x < columns.size():
+		var tip := String(_cell_text(rows[pos.y], pos.x))
+		var file_name: String = rows[pos.y].resource_path.get_file()
+		cell.tooltip_text = "%s\n%s\n---\n%s" % [file_name, String(columns[pos.x]), tip]
+	else:
+		cell.tooltip_text = ""
 
 
 func _make_cell(pos: Vector2i) -> DefTableCellClass:
@@ -989,24 +1007,30 @@ func _display_kind(col: int) -> int:
 
 
 func _fill_cell(cell: DefTableCellClass, pos: Vector2i, tint: Color = Color(1, 1, 1, 0)) -> void:
+	_fill_count += 1
+	# 脏标记：同 node 同 row 且资源未变则跳过重填(滚动微偏移时大量格子内容不变)
+	var res_path: String = rows[pos.y].resource_path if pos.y < rows.size() else ""
+	var fingerprint := "%d:%d:%s" % [pos.x, pos.y, res_path]
+	var cache_key := cell.get_instance_id()
+	if _cell_fill_cache.get(cache_key, "") == fingerprint:
+		# 仅更新位置相关的最小属性(尺寸/选中态), 跳过文本/tooltip/预览重建
+		cell.custom_minimum_size = Vector2(column_widths[pos.x], grid.row_heights[pos.y] if pos.y < grid.row_heights.size() else 24.0)
+		cell.set_selected(pos in edited_cells)
+		return
+	_cell_fill_cache[cache_key] = fingerprint
 	cell.set_meta(&"cell_pos", pos)
 	cell.custom_minimum_size = Vector2(column_widths[pos.x], grid.row_heights[pos.y] if pos.y < grid.row_heights.size() else _measure_line_height())
 	cell.bg_color = Color(1, 1, 1, 0.02) if pos.y % 2 == 0 else Color(0, 0, 0, 0.18)
 	cell.row_tint = tint
 	cell.set_selected(pos in edited_cells)
 	var text := ""
-	var tip := ""
 	var is_empty := false
 	if pos.y < rows.size() and pos.x < columns.size():
-		# 文本走缓存(布局阶段已生成, 避免计算型 getter 如 tr_desc 重复递归构建)
 		text = _cell_text(rows[pos.y], pos.x)
-		tip = text
 		if text == "":
-			# 空值淡灰占位: 区分"空"与"0"(tooltip 仍为原始内容)
 			is_empty = true
 			text = "[color=#6e6e6e]—[/color]"
 		elif cell.kind == DefTableCellClass.Kind.BOOL:
-			# bool 符号化: 绿勾/暗红叉, 一眼可辨真假
 			var raw = _get_value(rows[pos.y], pos.x)
 			text = "[color=#7bd88f]✓[/color]" if raw else "[color=#c25555]✗[/color]"
 		cell.set_value_text(text)
@@ -1016,18 +1040,18 @@ func _fill_cell(cell: DefTableCellClass, pos: Vector2i, tint: Color = Color(1, 1
 				if cval is Color:
 					cell.set_color_value(cval)
 			DefTableCellClass.Kind.RESOURCE:
-				# 先清除旧预览, 避免复用/重填时残留上一个 Def 的图标
 				cell.set_meta(&"preview_path", "")
 				cell.set_resource_preview(null)
-				var rval = _get_value(rows[pos.y], pos.x)
-				if rval is Resource:
-					_request_resource_preview(cell, rval)
-		cell.tooltip_text = "%s\n%s\n---\n%s" % [rows[pos.y].resource_path.get_file(), String(columns[pos.x]), tip]
+				# 延迟预览：滚动中不请求，停止后统一补
+				if not _scroll_frame_pending:
+					var rval = _get_value(rows[pos.y], pos.x)
+					if rval is Resource:
+						_request_resource_preview(cell, rval)
+		# 延迟 tooltip：不在 fill 阶段构建多行字符串，hover 时按需生成
 	else:
 		is_empty = true
 		cell.set_value_text("")
-		cell.tooltip_text = ""
-	# 对齐: 空占位/bool 居中, 其余(含数值/枚举)统一左对齐
+	# 对齐
 	cell.set_content_align(HORIZONTAL_ALIGNMENT_CENTER if (is_empty or cell.kind == DefTableCellClass.Kind.BOOL) else HORIZONTAL_ALIGNMENT_LEFT)
 
 
@@ -1192,7 +1216,12 @@ func _on_v_scroll(_v: float) -> void:
 		_syncing_scroll = true
 		frozen_grid_scroll.scroll_vertical = grid_scroll.scroll_vertical
 		_syncing_scroll = false
-	_update_visible_rows()
+	# 防抖：滚动中只更新位置，下一帧统一重建(合并同一帧内的多次滚动事件)
+	if not _scroll_frame_pending:
+		_scroll_frame_pending = true
+		_update_visible_rows.call_deferred()
+	else:
+		_update_visible_rows()
 
 
 func _on_frozen_v_scroll(v: float) -> void:
@@ -1201,7 +1230,11 @@ func _on_frozen_v_scroll(v: float) -> void:
 	_syncing_scroll = true
 	grid_scroll.scroll_vertical = frozen_grid_scroll.scroll_vertical
 	_syncing_scroll = false
-	_update_visible_rows()
+	if not _scroll_frame_pending:
+		_scroll_frame_pending = true
+		_update_visible_rows.call_deferred()
+	else:
+		_update_visible_rows()
 
 
 func _on_h_scroll(v: float) -> void:
