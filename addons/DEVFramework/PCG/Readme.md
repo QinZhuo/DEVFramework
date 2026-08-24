@@ -346,6 +346,8 @@ layout.farms                 # 农田区块数组(每项为连片格线性索引
 # 设施定义(FacilityDef)：facility_name/count(数量期望)/prefer_main_street/layers/roof/templates(专属户型，空回退 houses)；
 # 风格分区(style_table)：邻近建筑 70% 概率继承同风格，形成同街区同风格；
 # 示例全套见 City_Grid.tres + House_*/Building_*/Furniture_*.tres
+# 风格变体示范：Town_MountainMine.tres（山地矿镇——石砌为主/无农田/小广场矿井口/补给站+铁匠铺）
+#               创建新风格 = 复制 tres + 改参数，零新代码
 # 管线内使用：heightmap_key 指向高度图结果键，输出 key/_roads/_build/_site 四个键
 ```
 
