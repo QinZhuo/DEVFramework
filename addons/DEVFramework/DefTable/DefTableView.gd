@@ -732,7 +732,21 @@ func _measure_text_width(text: String, font: Font, fsize: int) -> float:
 func _clear_measure_cache() -> void:
 	_width_cache.clear()
 	_text_cache.clear()
-	_cell_fill_cache.clear()
+	for c in _main_pool:
+		c.queue_free()
+	for c in _frozen_pool:
+		c.queue_free()
+	_main_pool.clear()
+	_frozen_pool.clear()
+
+
+## 从池中取出 cell（信号连接在首次创建时已建立，池化复用无需重连）
+func _pool_take(pool: Array[Control], pos: Vector2i) -> Control:
+	if pool.is_empty():
+		return null
+	var cell := pool.pop_back() as Control
+	cell.set_meta(&"cell_pos", pos)
+	return cell
 
 
 func _column_header_text(col: int) -> String:
@@ -831,17 +845,18 @@ func _scroll_column_widths() -> Array[float]:
 	return w
 
 
-## 滚动防抖 + 脏标记 + 延迟 tooltip/预览
+## 滚动防抖 + 脏标记 + 延迟 tooltip/预览 + Cell 池化
 var _scroll_frame_pending := false
-var _fill_count := 0          # 本帧实际填充的格子数(诊断用)
-var _scroll_settle_frame := -1  # 滚动停止后的帧号(延迟预览用)
-## 单元格上次填充指纹: node instance_id → "row:col:res_path"
-var _cell_fill_cache := {}
+## Cell 池化：滚动中回收的节点(按列类型分组)，避免反复 new/free RichTextLabel 等重控件
+var _main_pool: Array[Control] = []
+var _frozen_pool: Array[Control] = []
+## 性能计时
+var _last_update_us := 0
+var _last_fill_count := 0
 
 
 func _update_visible_rows(force_rebuild: bool = false) -> void:
 	var t_start := Time.get_ticks_usec()
-	_fill_count = 0
 	if columns.size() == 0 or rows.size() == 0:
 		for child in grid.get_children():
 			child.queue_free()
@@ -871,30 +886,34 @@ func _update_visible_rows(force_rebuild: bool = false) -> void:
 	first_row = new_first
 	last_row = new_last
 
-	# 可滚动网格: 列 1..n-1 (cell_pos.x 为全局列索引, 布局时减去 column_offset=1)
+	# 可滚动网格: 池化复用(不销毁/新建节点)
 	var scroll_cols := columns.size() - 1
 	grid.column_offset = 1
 	grid.configure(_scroll_column_widths(), rows.size())
 	var visible_count := (last_row - first_row) * scroll_cols
+	# 回收多余的到池
 	while grid.get_child_count() > visible_count:
 		var last := grid.get_child(grid.get_child_count() - 1)
 		grid.remove_child(last)
-		last.queue_free()
+		_main_pool.append(last)
+	# 从池补足缺的
 	while grid.get_child_count() < visible_count:
 		var i := grid.get_child_count()
 		var pos := Vector2i(1 + i % scroll_cols, first_row + i / scroll_cols)
-		grid.add_child(_make_cell(pos))
+		var cell := _pool_take(_main_pool, pos)
+		if cell == null:
+			cell = _make_cell(pos)
+		grid.add_child(cell)
 
 	for i in visible_count:
 		var cell := grid.get_child(i) as DefTableCellClass
 		var pos := Vector2i(1 + i % scroll_cols, first_row + i / scroll_cols)
 		cell.custom_minimum_size = Vector2(column_widths[pos.x], grid.row_heights[pos.y])
-		# 颜色行染色: 颜色列的值染色其右侧单元格背景(参考 resources_spreadsheet_view)
 		var tint := _row_tint_for(pos.y)
 		_fill_cell(cell, pos, tint)
 	grid.queue_sort()
 
-	# 冻结网格: 列 0 (首列 name), 不随横向滚动, 纵向与主网格同步
+	# 冻结网格: 同样池化
 	var frozen_widths: Array[float] = [column_widths[0]]
 	frozen_grid.column_offset = 0
 	frozen_grid.configure(frozen_widths, rows.size())
@@ -902,10 +921,14 @@ func _update_visible_rows(force_rebuild: bool = false) -> void:
 	while frozen_grid.get_child_count() > frozen_count:
 		var fl := frozen_grid.get_child(frozen_grid.get_child_count() - 1)
 		frozen_grid.remove_child(fl)
-		fl.queue_free()
+		_frozen_pool.append(fl)
 	while frozen_grid.get_child_count() < frozen_count:
 		var fi := frozen_grid.get_child_count()
-		frozen_grid.add_child(_make_cell(Vector2i(0, first_row + fi)))
+		var fpos := Vector2i(0, first_row + fi)
+		var fcell := _pool_take(_frozen_pool, fpos)
+		if fcell == null:
+			fcell = _make_cell(fpos)
+		frozen_grid.add_child(fcell)
 	for fi in frozen_count:
 		var fcell := frozen_grid.get_child(fi) as DefTableCellClass
 		var fpos := Vector2i(0, first_row + fi)
@@ -915,6 +938,9 @@ func _update_visible_rows(force_rebuild: bool = false) -> void:
 	frozen_grid.queue_sort()
 
 	_update_selection_visuals()
+	var elapsed := Time.get_ticks_usec() - t_start
+	if elapsed > 8000:
+		print("[DefTable perf] update_rows: %dms" % [elapsed / 1000])
 
 
 ## 行染色(don-tnowe row stylization): 取该行首个有效 Color 值, 低透明度染整行;
@@ -1007,19 +1033,9 @@ func _display_kind(col: int) -> int:
 
 
 func _fill_cell(cell: DefTableCellClass, pos: Vector2i, tint: Color = Color(1, 1, 1, 0)) -> void:
-	_fill_count += 1
-	# 脏标记：同 node 同 row 且资源未变则跳过重填(滚动微偏移时大量格子内容不变)
-	var res_path: String = rows[pos.y].resource_path if pos.y < rows.size() else ""
-	var fingerprint := "%d:%d:%s" % [pos.x, pos.y, res_path]
-	var cache_key := cell.get_instance_id()
-	if _cell_fill_cache.get(cache_key, "") == fingerprint:
-		# 仅更新位置相关的最小属性(尺寸/选中态), 跳过文本/tooltip/预览重建
-		cell.custom_minimum_size = Vector2(column_widths[pos.x], grid.row_heights[pos.y] if pos.y < grid.row_heights.size() else 24.0)
-		cell.set_selected(pos in edited_cells)
-		return
-	_cell_fill_cache[cache_key] = fingerprint
 	cell.set_meta(&"cell_pos", pos)
-	cell.custom_minimum_size = Vector2(column_widths[pos.x], grid.row_heights[pos.y] if pos.y < grid.row_heights.size() else _measure_line_height())
+	var row_h: float = grid.row_heights[pos.y] if pos.y < grid.row_heights.size() else _measure_line_height()
+	cell.custom_minimum_size = Vector2(column_widths[pos.x], row_h)
 	cell.bg_color = Color(1, 1, 1, 0.02) if pos.y % 2 == 0 else Color(0, 0, 0, 0.18)
 	cell.row_tint = tint
 	cell.set_selected(pos in edited_cells)
@@ -1032,7 +1048,7 @@ func _fill_cell(cell: DefTableCellClass, pos: Vector2i, tint: Color = Color(1, 1
 			text = "[color=#6e6e6e]—[/color]"
 		elif cell.kind == DefTableCellClass.Kind.BOOL:
 			var raw = _get_value(rows[pos.y], pos.x)
-			text = "[color=#7bd88f]✓[/color]" if raw else "[color=#c25555]✗[/color]"
+			text = "✓" if raw else "✗"
 		cell.set_value_text(text)
 		match cell.kind:
 			DefTableCellClass.Kind.COLOR:
@@ -1042,17 +1058,20 @@ func _fill_cell(cell: DefTableCellClass, pos: Vector2i, tint: Color = Color(1, 1
 			DefTableCellClass.Kind.RESOURCE:
 				cell.set_meta(&"preview_path", "")
 				cell.set_resource_preview(null)
-				# 延迟预览：滚动中不请求，停止后统一补
 				if not _scroll_frame_pending:
 					var rval = _get_value(rows[pos.y], pos.x)
 					if rval is Resource:
 						_request_resource_preview(cell, rval)
-		# 延迟 tooltip：不在 fill 阶段构建多行字符串，hover 时按需生成
 	else:
 		is_empty = true
 		cell.set_value_text("")
-	# 对齐
-	cell.set_content_align(HORIZONTAL_ALIGNMENT_CENTER if (is_empty or cell.kind == DefTableCellClass.Kind.BOOL) else HORIZONTAL_ALIGNMENT_LEFT)
+	if is_empty or cell.kind == DefTableCellClass.Kind.BOOL:
+		cell.set_content_align(HORIZONTAL_ALIGNMENT_CENTER)
+	elif cell.kind == DefTableCellClass.Kind.NUMBER or cell.kind == DefTableCellClass.Kind.ENUM:
+		cell.set_content_align(HORIZONTAL_ALIGNMENT_LEFT)
+	# 延迟 tooltip：hover 时按需生成（_on_cell_mouse_entered）
+	var file_name: String = rows[pos.y].resource_path.get_file() if pos.y < rows.size() else ""
+	cell.tooltip_text = "%s\n%s" % [file_name, String(columns[pos.x])] if pos.y < rows.size() else ""
 
 
 ## 取单元格展示文本(带缓存): 计算型 getter 属性(如 EntityDef.tr_desc 递归构建整棵
