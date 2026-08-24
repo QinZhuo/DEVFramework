@@ -682,19 +682,78 @@ static func _place_random_3d(def: PlacementDef3D, rng: RandomNumberGenerator) ->
 ## —— 城镇（S1 选址 / S2 道路网 / S3 街区 / S4 地块细分） ——
 
 ## 生成小城镇（同 Def + 同 seed 必复现）。hm 可为 null（平地城镇）。
-## 步骤遍历 def.effective_steps()，每步经 TownStepDef.apply(ctx) 委托 PCGTool.step_* 编排函数。
+## def 参数容器值反向注入步骤实例（tres 配置生效），然后统一走 step.apply 执行。
 static func generate_town(def: TownDef, hm: HeightMap, seed_base: int) -> TownLayout:
 	var gctx := TownGenContext.new(def, hm, seed_base)
 	gctx.layout.heightmap = hm
-	# 城镇命名（独立种子槽，不随步骤增减变化）
 	if def.name_gen != null:
 		gctx.layout.town_name = generate_name(
 			def.name_gen, make_rng(derive_seed(seed_base, 10)))
-	for s in def.effective_steps():
+	var steps_arr := def.effective_steps()
+	_sync_def_to_steps(def, steps_arr)
+	for s in steps_arr:
 		if s == null or not s.enabled:
 			continue
 		s.apply(gctx)
 	return gctx.layout
+
+
+## 反向同步：def 参数容器 → 同类型 step 实例（使 tres 配置在默认链下生效）
+static func _sync_def_to_steps(def: TownDef, steps_arr: Array[TownStepDef]) -> void:
+	for s in steps_arr:
+		if s is TownSiteStep:
+			s.site_candidates = def.site_candidates
+			s.site_radius = def.site_radius
+			s.water_band_min = def.water_band_min
+			s.water_band_max = def.water_band_max
+		elif s is TownRoadStep:
+			s.main_width = def.main_width
+			s.street_spacing_min = def.street_spacing_min
+			s.street_spacing_max = def.street_spacing_max
+			s.secondary_max_len = def.secondary_max_len
+			s.slope_cost_k = def.slope_cost_k
+		elif s is TownPlazaStep:
+			s.plaza_radius = def.plaza_radius
+			s.plaza_feature = def.plaza_feature
+		elif s is TownParcelStep:
+			s.max_block_area = def.max_block_area
+			s.min_block_area = def.min_block_area
+			s.lot_max_area = def.lot_max_area
+			s.lot_min_area = def.lot_min_area
+		elif s is TownBuildingStep:
+			if def.houses.size() > 0:
+				s.houses = def.houses
+			if def.facilities.size() > 0:
+				s.facilities = def.facilities
+			s.house_fill_ratio = def.house_fill_ratio
+			s.house_layers_min = def.house_layers_min
+			s.house_layers_max = def.house_layers_max
+			s.house_roof = def.house_roof
+			if def.flat_roof_styles.size() > 0:
+				s.flat_roof_styles = def.flat_roof_styles
+			if def.style_table.size() > 0:
+				s.style_table = def.style_table
+			s.build_max_step = def.build_max_step
+		elif s is TownInteriorStep:
+			if def.furniture_tables.size() > 0:
+				s.furniture_tables = def.furniture_tables
+			if def.prop_table.size() > 0:
+				s.prop_table = def.prop_table
+			s.props_per_building = def.props_per_building
+		elif s is TownGreeneryStep:
+			s.tree_count = def.tree_count
+			s.tree_min_distance = def.tree_min_distance
+			s.street_tree_spacing = def.street_tree_spacing
+		elif s is TownStreetStep:
+			s.streetlamp_spacing = def.streetlamp_spacing
+		elif s is TownFarmStep:
+			s.farm_min_dist = def.farm_min_dist
+			s.farm_min_area = def.farm_min_area
+		elif s is TownConformStep:
+			s.road_max_grade = def.road_max_grade
+			s.terrace_blend = def.terrace_blend
+
+
 
 
 static func town_ring_step(_step: TownRingStep, ctx: TownGenContext) -> void:
