@@ -724,12 +724,16 @@ claude mcp list        # 查看已配置
 | `click` | `x, y` | 模拟点击（复用 `simulate_click`）|
 | `drag` | `from_x, from_y, to_x, to_y` | 模拟拖拽 |
 | `key` | `key` | 模拟按键 |
-| `eval` | `code` | 执行 GDScript，结果记入 step |
+| `eval` | `code` | 执行 GDScript，结果记入 step（支持 await）|
 | `poll` | `code, timeout_ms, interval_ms` | **轮询直到条件满足**（等异步/动画结果，探测期 eval 错误不计入验证）|
 | `screenshot` | `capture_type` | 截图（结果含路径）|
+| `game_tree` | `max_depth, include_properties, expect_contains, expect_not_contains` | **运行时场景树快照 + 结构断言**：期望内容缺失或禁止内容出现即该步 fail |
+| `node_info` | `path, expect_contains, expect_not_contains` | 运行时节点实时属性快照 + 断言 |
+
+> 断言参数（`expect_contains` / `expect_not_contains`）支持字符串或字符串数组；`game_tree` 断言作用于树文本（含节点名/类型），`node_info` 断言作用于属性 JSON 文本。
 
 **判定与模式**：
-- `verdict=pass/fail`；`first_error_step` 指向出错操作下标，`steps[i].status/errors` 给出定位。
+- `verdict=pass/fail`；`first_failed_step` 指向首个失败操作（断言失败/动作报错/轮询超时），`first_error_step` 指向首个运行期脚本错误步骤，`steps[i].status/errors/message` 给出定位。
 - `stop_on_error=true`（hard）任一步出错立即停；`false`（soft）跑完全部步骤再汇总。
 - `retries>0` 失败自动重启场景重跑（排除 flaky）；**曾失败但最终通过会标 `was_flaky=true`**（警惕被时序掩盖的潜在 bug），返回 `retry_history`。
 - `prev_snapshot`（由上次返回的 `scene_deps` 提供）可检测**场景依赖（脚本/配置/图片/音频等）是否变化**，结果含 `deps_changed`。
