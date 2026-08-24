@@ -243,59 +243,6 @@ static func grid_to_image(grid: GeneratedGrid, palette: Dictionary = {}) -> Imag
 ## 各层用独立派生种子保证互不干扰且可复现；0..1 连续高度输出
 ## 流程：原始混合值 → 岛屿掩膜 → 整体 min-max 归一化 → 曲线（保证岛屿中心必达 max_height）
 static func generate_heightmap(def: HeightMapDef, rng: RandomNumberGenerator) -> HeightMap:
-	var hm := PCGTool.generate_heightmap_base(def, rng)
-	# —— 后处理链（按序执行；热侵蚀已在 base 内通过原生库处理） ——
-	if def.river_count > 0:
-		_heightmap_carve_rivers(hm, def, rng)
-	if def.terrace_levels > 0:
-		_heightmap_terrace(hm, def.terrace_levels)
-	return hm
-
-
-## 河流雕刻：从高地沿最陡下降刻出河道
-static func _heightmap_carve_rivers(hm: HeightMap, def: HeightMapDef, rng: RandomNumberGenerator) -> void:
-	var w := hm.width
-	var h := hm.height
-	for _river_i in def.river_count:
-		var x := rng.randi_range(2, w - 3)
-		var y := rng.randi_range(2, h - 3)
-		var max_steps := int(w * 1.5)
-		for _s in max_steps:
-			hm.heights[y * w + x] = maxf(0.0, hm.heights[y * w + x] - 0.03)
-			for dwd in range(-(def.river_width - 1), def.river_width):
-				for dhd in range(-(def.river_width - 1), def.river_width):
-					var nxx := clampi(x + dwd, 0, w - 1)
-					var nyy := clampi(y + dhd, 0, h - 1)
-					if absi(dwd) + absi(dhd) < def.river_width:
-						hm.heights[nyy * w + nxx] = maxf(0.0, hm.heights[nyy * w + nxx] - 0.02)
-			var best_d := 0.001
-			var best_x := x
-			var best_y := y
-			for dd: Vector2i in [Vector2i(0,-1), Vector2i(1,0), Vector2i(0,1), Vector2i(-1,0),
-					Vector2i(1,-1), Vector2i(-1,-1), Vector2i(1,1), Vector2i(-1,1)]:
-				var nx: int = x + dd.x
-				var ny: int = y + dd.y
-				if nx < 1 or ny < 1 or nx >= w - 1 or ny >= h - 1:
-					continue
-				var diff: float = hm.heights[y * w + x] - hm.heights[ny * w + nx]
-				if diff > best_d:
-					best_d = diff
-					best_x = nx
-					best_y = ny
-			if best_x == x and best_y == y:
-				break
-			x = best_x
-			y = best_y
-
-
-## 台地化：将高度场量化为 N 级台阶
-static func _heightmap_terrace(hm: HeightMap, levels: int) -> void:
-	for i in hm.heights.size():
-		hm.heights[i] = floorf(hm.heights[i] * levels) / float(levels)
-
-
-## 基础高度图生成（噪声叠加 + 掩膜 + 归一化 + 侵蚀），不含后处理
-static func generate_heightmap_base(def: HeightMapDef, rng: RandomNumberGenerator) -> HeightMap:
 	var seed := rng.seed + def.seed_offset
 	var hm := HeightMap.create(def.width, def.height)
 	var base_n: FastNoiseLite = def.base_layer.build_noise(seed + 101) if def.base_layer else null
@@ -2977,6 +2924,30 @@ static func _gen3d_wfc(grid: GeneratedGrid3D, def: Grid3DGenDef, rng: RandomNumb
 		return
 	grid.cells = out
 
+## 降级随机填充后重新应用固定格（保证约束不丢失）
+static func _apply_wfc_fixed_3d(grid: GeneratedGrid3D, def: Grid3DGenDef, fixed: Dictionary) -> void:
+	var tiles := def.tile_set3d.tiles if def.tile_set3d else []
+	var n := tiles.size()
+	var merged := {}
+	for key in def.wfc_fixed_cells:
+		merged[key] = def.wfc_fixed_cells[key]
+	for key in fixed:
+		merged[key] = fixed[key]
+	for key in merged:
+		var tile_idx := int(merged[key])
+		if tile_idx < 0 or tile_idx >= n:
+			continue
+		if key is AABB:
+			var bb := key as AABB
+			for k in range(int(bb.position.z), int(bb.end.z)):
+				for j in range(int(bb.position.y), int(bb.end.y)):
+					for i in range(int(bb.position.x), int(bb.end.x)):
+						grid.set_cell(i, j, k, tile_idx)
+			continue
+		var idx := _wfc3d_fixed_index(grid, key)
+		if idx >= 0:
+			grid.cells[idx] = tile_idx
+
 ## 解析 3D 固定格 key 为线性索引（支持 Vector3i / int / "x,y,z"）
 static func _wfc3d_fixed_index(grid: GeneratedGrid3D, key) -> int:
 	if key is Vector3i:
@@ -3057,6 +3028,29 @@ static func _gen_wfc(grid: GeneratedGrid, def: GridGenDef, rng: RandomNumberGene
 		grid.fill(def.solid_value)
 		return
 	grid.cells = out
+
+## 降级随机填充后重新应用固定格（保证约束不丢失）
+static func _apply_wfc_fixed_2d(grid: GeneratedGrid, def: GridGenDef, fixed: Dictionary) -> void:
+	var tiles := def.tile_set.tiles if def.tile_set else []
+	var n := tiles.size()
+	var merged := {}
+	for key in def.wfc_fixed_cells:
+		merged[key] = def.wfc_fixed_cells[key]
+	for key in fixed:
+		merged[key] = fixed[key]
+	for key in merged:
+		var tile_idx := int(merged[key])
+		if tile_idx < 0 or tile_idx >= n:
+			continue
+		if key is Rect2i:
+			var r := key as Rect2i
+			for y in range(maxi(0, r.position.y), mini(grid.height, r.end.y)):
+				for x in range(maxi(0, r.position.x), mini(grid.width, r.end.x)):
+					grid.set_cell(x, y, tile_idx)
+			continue
+		var idx := _wfc_fixed_index(grid, key)
+		if idx >= 0:
+			grid.cells[idx] = tile_idx
 
 
 ## 解析固定格 key 为线性索引（支持 Vector2i / int / "x,y"）

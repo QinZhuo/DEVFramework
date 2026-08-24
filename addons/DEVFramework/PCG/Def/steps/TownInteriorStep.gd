@@ -1,44 +1,14 @@
 @tool
 class_name TownInteriorStep extends TownStepDef
-## 室内家具 + 院落围栏
+## 室内布局 — 户型模板槽位抽家具变体 + 自由装饰散布 + 门口净空/可达性校验修复 + 院落围栏
 
+## 家具槽位表：slot_name=模板中的槽位字符，items=该槽位可抽的家具变体
 @export var furniture_tables: Array[FurnitureTableDef] = []
+## 自由装饰物加权表（散布在室内剩余空地）
 @export var prop_table: Array[ContentEntryDef] = []
+## 每栋建筑最多散布几个装饰物
 @export_range(0, 8, 1) var props_per_building := 3
 
 
 func apply(ctx: TownGenContext) -> void:
-	var def: TownDef = ctx.def
-	var layout := ctx.layout
-	if furniture_tables.is_empty() or layout.build_grid == null: return
-	var tables := {}
-	for ft in furniture_tables:
-		if ft != null and not ft.slot_name.is_empty() and not ft.items.is_empty():
-			tables[ft.slot_name] = ft.items
-	var rng := ctx.next_rng()
-	var build := layout.build_grid
-	for b in layout.buildings:
-		var slots: Array = []; var occupied := {}
-		for yy in range(b.rect.position.y, b.rect.end.y):
-			for xx in range(b.rect.position.x, b.rect.end.x):
-				var v := build.get_cell(xx, yy, -1)
-				if v != def.building_floor_value: continue
-				for slot_ch in tables:
-					var r := rng.randf()
-					if r < 0.3:
-						slots.append({"cell": Vector2i(xx, yy), "item": PCGTool.pick_weighted(rng, tables[slot_ch]).name})
-						occupied[Vector2i(xx, yy)] = true
-						break
-		var props: Array = []
-		var free: Array[Vector2i] = []
-		for yy in range(b.rect.position.y, b.rect.end.y):
-			for xx in range(b.rect.position.x, b.rect.end.x):
-				var c := Vector2i(xx, yy)
-				if build.get_cell(xx, yy, -1) == def.building_floor_value and not occupied.has(c):
-					free.append(c)
-		for _i in mini(props_per_building, free.size()):
-			if prop_table.is_empty(): break
-			var fi := rng.randi_range(0, free.size() - 1)
-			props.append({"cell": free[fi], "item": PCGTool.pick_weighted(rng, prop_table).name})
-			free.remove_at(fi)
-		layout.interiors[int(b.id)] = {"slots": slots, "props": props}
+	PCGTool.town_interior_step(self, ctx)
