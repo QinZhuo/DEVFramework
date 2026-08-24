@@ -1551,9 +1551,6 @@ static func _try_place_one(def: TownDef, layout: TownLayout, parcel: Dictionary,
 			break
 	if door_off.x < 0:
 		return false
-	var cells_set := {}
-	for idx in parcel.cells:
-		cells_set[idx] = true
 	var anchors: Array[Vector2i] = []
 	for idx in parcel.cells:
 		var ax: int = int(idx) % def.width
@@ -1574,7 +1571,8 @@ static func _try_place_one(def: TownDef, layout: TownLayout, parcel: Dictionary,
 		var ok := true
 		for yy in range(pos.y, pos.y + fh):
 			for xx in range(pos.x, pos.x + fw):
-				if not cells_set.has(yy * def.width + xx) or build.get_cell(xx, yy, -1) != 0:
+				# 允许扩展到相邻空地(非道路/非建筑)，仅硬性禁止压路与重叠
+				if roads.get_cell(xx, yy, -1) != 0 or build.get_cell(xx, yy, -1) != 0:
 					ok = false
 					break
 			if not ok:
