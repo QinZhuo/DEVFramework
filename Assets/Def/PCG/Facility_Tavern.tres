@@ -1,4 +1,4 @@
-﻿[gd_resource type="Resource" script_class="FacilityDef" load_steps=4 format=3]
+[gd_resource type="Resource" script_class="FacilityDef" load_steps=4 format=3]
 
 [ext_resource type="Script" path="res://addons/DEVFramework/PCG/Def/FacilityDef.gd" id="1_script"]
 [ext_resource type="Script" path="res://addons/DEVFramework/PCG/Def/TemplateDef.gd" id="2_tmpl_script"]
