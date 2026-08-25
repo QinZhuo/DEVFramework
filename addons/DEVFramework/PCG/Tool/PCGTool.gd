@@ -1002,39 +1002,27 @@ static func town_arterial_step(step: TownArterialStep, ctx: TownGenContext) -> v
 
 
 static func _town_arterials(def: TownDef, hm: HeightMap, layout: TownLayout, rng: RandomNumberGenerator) -> void:
-	# 控制点法: 起终点+1~2 个大间隔控制点, 段间 octilinear(轴向+45°)连接,
-	# 长直线少弯折——替代逐格抖动的碎弯波浪。
-	# 控制点偏移量与 x 间距成比例(jitter=0.33 时可达纯 45° 斜段)
+	# 现实主干道绝大部分笔直: 60% 全程无控制点, 40% 带一个温和控制点
+	# (偏移≈段长 10~20%, 转角<15°), 不做斜穿全图的大弯
 	for i in def.arterial_h_count:
 		var y0 := int(round((i + 1.0) / (def.arterial_h_count + 1.0) * def.height)) + rng.randi_range(-4, 4)
 		y0 = clampi(y0, 4, def.height - 5)
 		var wps := PackedVector2Array([Vector2(1, y0)])
-		# 大部分干道全程笔直(60%), 少数带 1 个控制点形成一段斜向
-		var ctrl_n := 0 if rng.randf() < 0.6 else 1
-		var prev_y := float(y0)
-		var x_span := def.width / float(ctrl_n + 1)
-		for c in ctrl_n:
-			var cx := def.width * ((c + 1.0) / (ctrl_n + 1))
-			prev_y = clampf(prev_y + (rng.randf_range(0.55, 1.0) if rng.randf() < 0.5 else -rng.randf_range(0.55, 1.0)) \
-					* x_span * clampf(def.arterial_jitter * 3.0, 0.15, 1.0), 4.0, def.height - 5.0)
-			wps.append(Vector2(cx, prev_y))
-		wps.append(Vector2(def.width - 2, clampf(prev_y + (rng.randf_range(0.55, 1.0) if rng.randf() < 0.5 else -rng.randf_range(0.55, 1.0)) \
-				* x_span * clampf(def.arterial_jitter * 3.0, 0.15, 1.0), 4.0, def.height - 5.0)))
+		if rng.randf() < 0.4:
+			var cx := def.width * rng.randf_range(0.35, 0.65)
+			var cy := clampf(y0 + rng.randf_range(-1.0, 1.0) * def.width * (0.05 + def.arterial_jitter * 0.35), 4.0, def.height - 5.0)
+			wps.append(Vector2(cx, cy))
+		wps.append(Vector2(def.width - 2, y0))
 		_stamp_arterial_line(def, hm, layout, wps, rng)
 	for i in def.arterial_v_count:
 		var x0 := int(round((i + 1.0) / (def.arterial_v_count + 1.0) * def.width)) + rng.randi_range(-4, 4)
 		x0 = clampi(x0, 4, def.width - 5)
 		var wps := PackedVector2Array([Vector2(x0, 1)])
-		var ctrl_n := 0 if rng.randf() < 0.6 else 1
-		var prev_x := float(x0)
-		var y_span := def.height / float(ctrl_n + 1)
-		for c in ctrl_n:
-			var cz := def.height * ((c + 1.0) / (ctrl_n + 1))
-			prev_x = clampf(prev_x + (rng.randf_range(0.55, 1.0) if rng.randf() < 0.5 else -rng.randf_range(0.55, 1.0)) \
-					* y_span * clampf(def.arterial_jitter * 3.0, 0.15, 1.0), 4.0, def.width - 5.0)
-			wps.append(Vector2(prev_x, cz))
-		wps.append(Vector2(clampf(prev_x + (rng.randf_range(0.55, 1.0) if rng.randf() < 0.5 else -rng.randf_range(0.55, 1.0)) \
-				* y_span * clampf(def.arterial_jitter * 3.0, 0.15, 1.0), 4.0, def.width - 5.0), def.height - 2))
+		if rng.randf() < 0.4:
+			var cz := def.height * rng.randf_range(0.35, 0.65)
+			var cx := clampf(x0 + rng.randf_range(-1.0, 1.0) * def.height * (0.05 + def.arterial_jitter * 0.35), 4.0, def.width - 5.0)
+			wps.append(Vector2(cx, cz))
+		wps.append(Vector2(x0, def.height - 2))
 		_stamp_arterial_line(def, hm, layout, wps, rng)
 
 
@@ -1155,18 +1143,32 @@ static func town_roads_step(step: TownRoadStep, ctx: TownGenContext) -> void:
 	if main_path.is_empty():
 		push_warning("PCGTool.town_roads_step: 主街 A* 无通路，回退直线 L 路。")
 		main_path = _carve_l_path(Vector2(layout.site), Vector2(hub), rng)
-	# Octilinear 简化: 主街化为极少数长直段(横/竖/45°斜), 拐点≤3——现实道路以笔直为主
-	var wps := _octilinear_waypoints(main_path, maxi(4, def.road_min_segment), 2.4, 3)
-	_stamp_octi_path(def, hm, layout, wps, def.main_width, def.road_main_value, TownLayout.EdgeClass.MAIN)
-	# 次街生长锚点沿简化后航点的实际折线取样
-	var spacing := rng.randi_range(maxi(2, def.street_spacing_min), maxi(3, def.street_spacing_max))
-	var grow_path := PackedVector2Array()
+	# 主街: 完整印刷 A* 路径(保证 4 邻域连通); 图数据用 octilinear 航点
+	# (横/竖/45° 长直段)供标线/导航消费——低 jitter 下 A* 本身已接近笔直
+	_stamp_road_layer(roads, main_path, def.main_width, def.road_main_value, hm, def.sea_level, def.bridge_value)
+	var raw_wps := _octilinear_waypoints(main_path, maxi(4, def.road_min_segment), 2.4, 3)
+	# 去重 + 保证首尾为 site/hub
+	var clean := PackedVector2Array([main_path[0]])
+	for k in range(1, raw_wps.size()):
+		if raw_wps[k] != clean[clean.size() - 1]:
+			clean.append(raw_wps[k])
+	if clean[clean.size() - 1] != main_path[main_path.size() - 1]:
+		clean.append(main_path[main_path.size() - 1])
+	var wps := clean
+	var start_idx := layout.road_nodes.size()
+	for wp in wps:
+		layout.road_nodes.append(wp)
 	for s in wps.size() - 1:
-		grow_path.append_array(_octi_segment(wps[s], wps[s + 1]))
+		layout.road_edges.append({
+			"a": start_idx + s, "b": start_idx + s + 1,
+			"width": def.main_width, "cls": TownLayout.EdgeClass.MAIN,
+		})
+	# 次街生长锚点沿主街实际路径取样
+	var spacing := rng.randi_range(maxi(2, def.street_spacing_min), maxi(3, def.street_spacing_max))
 	var i := spacing
-	while i < grow_path.size() - 1:
-		var p := grow_path[i]
-		var nxt := grow_path[mini(i + 1, grow_path.size() - 1)]
+	while i < main_path.size() - 1:
+		var p := main_path[i]
+		var nxt := main_path[mini(i + 1, main_path.size() - 1)]
 		var seg := (nxt - p)
 		var perp := Vector2(-seg.y, seg.x).normalized()
 		for side in [-1.0, 1.0]:
@@ -1469,6 +1471,16 @@ static func _town_alley_split(def: TownDef, hm: HeightMap, layout: TownLayout, r
 			b = Rect2i(Vector2i(r.position.x, cut_pos + 1), Vector2i(r.size.x, r.end.y - cut_pos - 1))
 		stack.append(a)
 		stack.append(b)
+	# 收尾清理: 仅抹除 ≤24 格的孤立小碎片(悬空巷道尾巴),
+	# 大分量一律保留(主街/干道/环路各自成网, 后续步骤可自然交汇)
+	var solid := GeneratedGrid.create(roads.width, roads.height, 0)
+	for i in roads.cells.size():
+		if roads.cells[i] != 0:
+			solid.cells[i] = 1
+	for c in solid.components(1):
+		if c.size() <= 24:
+			for idx in c:
+				roads.cells[idx] = 0
 
 
 ## 街区提取：非道路连通域（复用 components）
@@ -2252,13 +2264,16 @@ static func _town_walls(def: TownDef, layout: TownLayout, rng: RandomNumberGener
 				best_e = it[1]
 		gate_pos[best_p] = true
 		gate_edge[best_p] = best_e
-	# 筑墙(跳过城门/已占用/水面); 城门统一在此记录
+	# 筑墙(跳过城门/已占用/水面/道路格); 城门统一在此记录
+	# 墙遇路自动留口(路格不筑墙), 杜绝城墙横在街道上
 	for it in perim:
 		var pos: Vector2i = it[0]
 		if gate_pos.has(pos):
 			layout.gates.append({"pos": pos, "edge": it[1]})
 			continue
 		if build.get_cell(pos.x, pos.y, 0) != 0:
+			continue
+		if roads.get_cell(pos.x, pos.y, 0) != 0:
 			continue
 		# 水面不筑墙(护城河/水门缺口)
 		if layout.heightmap != null and layout.heightmap.get_height(pos.x, pos.y, 1.0) < def.sea_level:
@@ -2287,6 +2302,9 @@ static func _town_walls(def: TownDef, layout: TownLayout, rng: RandomNumberGener
 			if not roads.in_bounds(cur.x, cur.y):
 				break
 			if roads.get_cell(cur.x, cur.y, 0) != 0:
+				break
+			# 引道不穿建筑(建筑层已占用即止)
+			if build.get_cell(cur.x, cur.y, 0) != 0:
 				break
 			var under := layout.heightmap != null and layout.heightmap.get_height(cur.x, cur.y, 1.0) < def.sea_level
 			if under and not def.bridge_allowed:

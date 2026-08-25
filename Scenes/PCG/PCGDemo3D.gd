@@ -394,84 +394,79 @@ func _render_town(layout: TownLayout, def: TownDef) -> void:
 				if grid.get_cell(x, z, -1) == int(v):
 					pts.append(to_world.call(x, z))
 		_add_mesh_sized(pts, road_style[v][0], Vector3(1, float(road_style[v][1]), 1))
-	# 主街中央黄色虚线: 沿 road_edges 主街折线撒点(天然居中), 按段向选择横/纵块
+	# 主街中央黄色虚线 / 干道双黄实线 / 斑马线:
+	# 全部先按 octilinear 两段式展开 road_edges 折线(与道路印刷一致), 标线才不脱轨
 	var dash_h := PackedVector3Array()
 	var dash_v := PackedVector3Array()
-	for e in layout.road_edges:
-		if int(e.cls) != TownLayout.EdgeClass.MAIN:
-			continue
-		var a := layout.road_nodes[int(e.a)]
-		var bp := layout.road_nodes[int(e.b)]
-		var horizontal := absf(bp.x - a.x) >= absf(bp.y - a.y)
-		var seg_n := maxi(1, int(a.distance_to(bp) / 1.3))
-		for k in seg_n:
-			if k % 2 != 0:
-				continue
-			var p := a.lerp(bp, float(k) / float(seg_n))
-			var wp: Vector3 = to_world.call(int(roundf(p.x)), int(roundf(p.y))) + Vector3(0, 0.52, 0)
-			if horizontal:
-				dash_h.append(wp)
-			else:
-				dash_v.append(wp)
-	_add_mesh_sized(dash_h, Color(1.0, 0.85, 0.2), Vector3(0.78, 0.09, 0.24), false, Color(1.0, 0.85, 0.2))
-	_add_mesh_sized(dash_v, Color(1.0, 0.85, 0.2), Vector3(0.24, 0.09, 0.78), false, Color(1.0, 0.85, 0.2))
-	# 干道(Arterial)双黄实线: 沿折线两条平行线, 主干道视觉标识
 	var dbl_y_h := PackedVector3Array()
 	var dbl_y_v := PackedVector3Array()
-	for e in layout.road_edges:
-		if int(e.cls) != TownLayout.EdgeClass.ARTERIAL:
-			continue
-		var a2 := layout.road_nodes[int(e.a)]
-		var b2 := layout.road_nodes[int(e.b)]
-		var horiz := absf(b2.x - a2.x) >= absf(b2.y - a2.y)
-		var n2 := maxi(1, int(a2.distance_to(b2)))
-		for k in n2 + 1:
-			var p := a2.lerp(b2, float(k) / float(n2))
-			for off in [-0.62, 0.62]:
-				if horiz:
-					dbl_y_h.append(to_world.call(int(roundf(p.x)), int(roundf(p.y))) + Vector3(0, 0.56, off))
-				else:
-					dbl_y_v.append(to_world.call(int(roundf(p.x)), int(roundf(p.y))) + Vector3(off, 0.56, 0))
-	_add_mesh_sized(dbl_y_h, Color(1.0, 0.8, 0.1), Vector3(1.0, 0.09, 0.13), false, Color(1.0, 0.8, 0.1))
-	_add_mesh_sized(dbl_y_v, Color(1.0, 0.8, 0.1), Vector3(0.13, 0.09, 1.0), false, Color(1.0, 0.8, 0.1))
-	# 干道-支路交叉口斑马线: 白条长轴平行车行方向, 跨路宽排布
 	var zebra_h := PackedVector3Array()
 	var zebra_v := PackedVector3Array()
-	var zebra_seen := {}
+	var line_seen := {}
 	for e in layout.road_edges:
-		if int(e.cls) != TownLayout.EdgeClass.ARTERIAL:
+		if int(e.cls) != TownLayout.EdgeClass.MAIN and int(e.cls) != TownLayout.EdgeClass.ARTERIAL:
 			continue
-		var az := layout.road_nodes[int(e.a)]
-		var bz := layout.road_nodes[int(e.b)]
-		var horiz := absf(bz.x - az.x) >= absf(bz.y - az.y)
-		var n3 := maxi(1, int(az.distance_to(bz)))
-		var hw := int(e.width) / 2
-		for k in n3 + 1:
-			var p := az.lerp(bz, float(k) / float(n3))
-			var gx := int(roundf(p.x))
-			var gz := int(roundf(p.y))
-			if zebra_seen.has(Vector2i(gx, gz)):
-				continue
-			var cross := false
-			for s in [-hw - 1, hw + 1]:
-				var v: int
+		var is_art := int(e.cls) == TownLayout.EdgeClass.ARTERIAL
+		var a := layout.road_nodes[int(e.a)]
+		var bp := layout.road_nodes[int(e.b)]
+		var poly := _octi_expand(a, bp)
+		var horiz := absf(bp.x - a.x) >= absf(bp.y - a.y)
+		# 展开 poly 为整数格中心序列(去重)
+		var cells: Array = []
+		for s in poly.size() - 1:
+			var pa := poly[s]
+			var pb := poly[s + 1]
+			var steps := maxi(1, int(pa.distance_to(pb) * 2.0))
+			for k in steps + (1 if s == poly.size() - 2 else 0):
+				var gp := Vector2i(roundf(lerpf(pa.x, pb.x, float(k) / float(steps))), roundf(lerpf(pa.y, pb.y, float(k) / float(steps))))
+				if cells.is_empty() or cells[cells.size() - 1] != gp:
+					cells.append(gp)
+				# 斑马线入口检测(仅干道, 每格一次)
+				if is_art and not line_seen.has(gp):
+					line_seen[gp] = true
+					var hwz := int(e.width) / 2
+					var cross := false
+					for sz in [-hwz - 1, hwz + 1]:
+						var v: int
+						if horiz:
+							v = grid.get_cell(gp.x, gp.y + sz, -1)
+						else:
+							v = grid.get_cell(gp.x + sz, gp.y, -1)
+						if v != 0 and v != def.road_arterial_value and v != def.bridge_value:
+							cross = true
+					if cross:
+						for st in 7:
+							var o := -1.8 + float(st) * 0.6
+							if absf(o) > float(hwz):
+								break
+							if horiz:
+								zebra_h.append(to_world.call(gp.x, gp.y) + Vector3(0, 0.52, o))
+							else:
+								zebra_v.append(to_world.call(gp.x, gp.y) + Vector3(o, 0.52, 0))
+		# 主街虚线: 沿格序列隔一放一
+		if not is_art:
+			for ci in range(0, cells.size(), 2):
+				var gp2: Vector2i = cells[ci]
+				var wp: Vector3 = to_world.call(gp2.x, gp2.y) + Vector3(0, 0.52, 0)
 				if horiz:
-					v = grid.get_cell(gx, gz + s, -1)
+					dash_h.append(wp)
 				else:
-					v = grid.get_cell(gx + s, gz, -1)
-				if v != 0 and v != def.road_arterial_value and v != def.bridge_value:
-					cross = true
-			if not cross:
-				continue
-			zebra_seen[Vector2i(gx, gz)] = true
-			for st in 7:
-				var o := -1.8 + float(st) * 0.6
-				if absf(o) > float(hw):
-					break
+					dash_v.append(wp)
+		else:
+			# 干道双黄实线: 每格两条平行线
+			for ci in cells.size():
+				var gp3: Vector2i = cells[ci]
+				var base3: Vector3 = to_world.call(gp3.x, gp3.y)
 				if horiz:
-					zebra_h.append(to_world.call(gx, gz) + Vector3(0, 0.52, o))
+					dbl_y_h.append(base3 + Vector3(0, 0.56, -0.62))
+					dbl_y_h.append(base3 + Vector3(0, 0.56, 0.62))
 				else:
-					zebra_v.append(to_world.call(gx, gz) + Vector3(o, 0.52, 0))
+					dbl_y_v.append(base3 + Vector3(-0.62, 0.56, 0))
+					dbl_y_v.append(base3 + Vector3(0.62, 0.56, 0))
+	_add_mesh_sized(dash_h, Color(1.0, 0.85, 0.2), Vector3(0.78, 0.09, 0.24), false, Color(1.0, 0.85, 0.2))
+	_add_mesh_sized(dash_v, Color(1.0, 0.85, 0.2), Vector3(0.24, 0.09, 0.78), false, Color(1.0, 0.85, 0.2))
+	_add_mesh_sized(dbl_y_h, Color(1.0, 0.8, 0.1), Vector3(1.0, 0.09, 0.13), false, Color(1.0, 0.8, 0.1))
+	_add_mesh_sized(dbl_y_v, Color(1.0, 0.8, 0.1), Vector3(0.13, 0.09, 1.0), false, Color(1.0, 0.8, 0.1))
 	_add_mesh_sized(zebra_h, Color(0.92, 0.92, 0.88), Vector3(0.5, 0.07, 0.34), false, Color(0.7, 0.7, 0.68))
 	_add_mesh_sized(zebra_v, Color(0.92, 0.92, 0.88), Vector3(0.34, 0.07, 0.5), false, Color(0.7, 0.7, 0.68))
 	# 人行道：主街邻接空格（浅灰白, 半嵌入）
@@ -1030,6 +1025,21 @@ func _add_box(center: Vector3, size: Vector3, color: Color, emission := Color(0,
 	mi.mesh = bm
 	mi.position = center
 	world.add_child(mi)
+
+
+## octilinear 两段式展开(与 PCGTool._octi_segment 一致): 标线沿实际道路折线撒点不脱轨
+func _octi_expand(a: Vector2, b: Vector2) -> PackedVector2Array:
+	var dx := b.x - a.x
+	var dy := b.y - a.y
+	var adx := absf(dx)
+	var ady := absf(dy)
+	var out := PackedVector2Array([a])
+	if adx > ady:
+		out.append(Vector2(a.x + dx - signf(dx) * ady, a.y))
+	elif ady > adx:
+		out.append(Vector2(a.x, a.y + dy - signf(dy) * adx))
+	out.append(b)
+	return out
 
 
 ## 天空/环境光：白天=蓝天+强环境光；夜景(N 键)=深夜蓝+暗环境+冷月光, 自发光元素主导
