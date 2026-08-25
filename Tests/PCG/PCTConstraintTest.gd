@@ -236,4 +236,48 @@ static func run() -> void:
 	print("[约束] 城镇存档 SaveTool GZIP 往返: %s (建筑%d 站点%d)" % [
 		town_save_ok, tl_back.buildings.size(), (tl_back.streets.get("bus_stops", []) as Array).size()])
 
+	# 多种子批量审计: 20 种子逐项断言——无压路/门临路/连通边缘/有建筑产出
+	var audit_ok := true
+	var audit_detail := ""
+	for seed in [42, 7, 777, 1, 2, 3, 5, 8, 13, 21, 99, 123, 256, 512, 1000, 4096, 8888, 20260, 31415, 99999]:
+		var ta := PCGTool.generate_town(city, null, seed)
+		var trg := ta.roads_grid
+		var tbg := ta.build_grid
+		var ov := 0
+		for i in tbg.cells.size():
+			var bv: int = tbg.cells[i]
+			if (bv == city.building_wall_value or bv == city.building_floor_value or bv == city.building_door_value) \
+					and trg.cells[i] != 0:
+				ov += 1
+		var dr_cnt := 0
+		for b in ta.buildings:
+			var dr: Vector2i = b.door
+			if tbg.get_cell(dr.x, dr.y, -1) != city.building_door_value:
+				continue
+			for d2 in [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)]:
+				if trg.get_cell(dr.x + d2.x, dr.y + d2.y, -1) > 0:
+					dr_cnt += 1
+					break
+		var seen_a := {}
+		var q: Array[Vector2i] = [ta.site]
+		seen_a[ta.site] = true
+		var reach := false
+		while not q.is_empty() and not reach:
+			var c: Vector2i = q.pop_back()
+			if c.x == 0 or c.y == 0 or c.x == trg.width - 1 or c.y == trg.height - 1:
+				reach = true
+				break
+			for d in [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)]:
+				var nx: Vector2i = c + d
+				if trg.in_bounds(nx.x, nx.y) and not seen_a.has(nx) and trg.get_cell(nx.x, nx.y, 0) != 0:
+					seen_a[nx] = true
+					q.append(nx)
+		var bld_min: bool = ta.buildings.size() >= 20
+		if ov > 0 or ta.buildings.is_empty() or not bld_min or not reach:
+			audit_ok = false
+			audit_detail += " [seed%d 压路%d 门临路%d/%d 连通%s 建筑%d]" % [
+				seed, ov, dr_cnt, ta.buildings.size(), reach, ta.buildings.size()]
+	all_ok = all_ok and audit_ok
+	print("[约束] 多种子批量审计(20种子): %s%s" % [audit_ok, audit_detail])
+
 	print("== 约束测试 %s ==" % ("全部通过" if all_ok else "存在失败"))
