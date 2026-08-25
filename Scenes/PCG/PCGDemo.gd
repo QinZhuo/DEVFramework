@@ -60,6 +60,33 @@ func _ready() -> void:
 	anim_reset.pressed.connect(_on_anim_reset)
 	texture_rect.gui_input.connect(_on_texture_gui_input)
 	_reload_sub_options()
+	_build_city_legend()
+
+
+## 城镇布局图例(颜色↔语义对照, 解决"分不清颜色代表什么")
+func _build_city_legend() -> void:
+	var legend := HBoxContainer.new()
+	legend.name = "CityLegend"
+	legend.add_theme_constant_override("separation", 6)
+	var entries := [
+		["雪峰", Color(0.82, 0.84, 0.88)], ["山地", Color(0.5, 0.46, 0.42)],
+		["草地", Color(0.36, 0.52, 0.3)], ["水域", Color(0.2, 0.4, 0.7)],
+		["市集", Color(0.62, 0.5, 0.1)], ["贵族", Color(0.16, 0.3, 0.55)],
+		["民居", Color(0.22, 0.34, 0.17)], ["主街", Color(0.55, 0.56, 0.6)],
+		["城墙", Color(0.25, 0.42, 0.55)], ["城门", Color(1.0, 0.5, 0.1)],
+		["桥", Color(0.5, 0.36, 0.22)], ["农田", Color(0.5, 0.46, 0.18)],
+	]
+	for e in entries:
+		var sw := ColorRect.new()
+		sw.custom_minimum_size = Vector2(12, 12)
+		sw.color = e[1]
+		legend.add_child(sw)
+		var lb := Label.new()
+		lb.text = str(e[0])
+		lb.add_theme_font_size_override("font_size", 11)
+		legend.add_child(lb)
+	log_box.get_parent().add_child(legend)
+	log_box.get_parent().move_child(legend, 1)
 
 
 func _process(_delta: float) -> void:
@@ -445,7 +472,14 @@ func _gen_city(def: TownDef, seed: int) -> void:
 	var layout := PCGTool.generate_town(def, hm, seed)
 	var grid := layout.roads_grid
 	var img := Image.create(grid.width, grid.height, false, Image.FORMAT_RGB8)
-	img.fill(Color(0.16, 0.24, 0.14))
+	# 地貌底图(高度伪彩: 海→滩→草→岩→雪): 城镇周边自然地貌变化一目了然
+	if layout.heightmap != null:
+		var hmb: HeightMap = layout.heightmap
+		for yy in grid.height:
+			for xx in grid.width:
+				img.set_pixel(xx, yy, _terrain_color(hmb.get_height(xx, yy), def.sea_level))
+	else:
+		img.fill(Color(0.16, 0.24, 0.14))
 	for pi in layout.parcels.size():
 		var p = layout.parcels[pi]
 		# 分区着色: 市集=暖黄 / 贵族=蓝灰 / 民居=绿系斑马
@@ -471,27 +505,39 @@ func _gen_city(def: TownDef, seed: int) -> void:
 		for dd in [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)]:
 			if grid.get_cell(pc.x + dd.x, pc.y + dd.y, -1) == 0:
 				img.set_pixel(pc.x + dd.x, pc.y + dd.y, Color(0.4, 0.38, 0.34))
-	# 树木(深绿) / 路灯(暖黄) / 长椅(褐色)
+	# 树木(深绿, 不种水里) / 路灯(暖黄)
+	var hmc: HeightMap = layout.heightmap
 	for t in layout.trees:
-		img.set_pixel(t.x, t.y, Color(0.12, 0.3, 0.1))
+		if hmc == null or hmc.get_height(t.x, t.y, 1.0) >= def.sea_level:
+			img.set_pixel(t.x, t.y, Color(0.12, 0.3, 0.1))
 	for lamp in layout.streets.get("lamps", []):
 		img.set_pixel(lamp.x, lamp.y, Color(1.0, 0.9, 0.45))
-	# 农田条纹（两种作物色交替）
+	# 农田条纹(按地块长边方向排布, 告别全局斜杠感)
 	for fi in layout.farms.size():
 		var farm: PackedInt32Array = layout.farms[fi]
+		var minx := 999999
+		var miny := 999999
+		var maxx := -1
+		var maxy := -1
+		for idx in farm:
+			var fx0 := int(idx) % grid.width
+			var fy0 := int(idx) / grid.width
+			minx = mini(minx, fx0)
+			maxx = maxi(maxx, fx0)
+			miny = mini(miny, fy0)
+			maxy = maxi(maxy, fy0)
+		var vertical := (maxx - minx) >= (maxy - miny)
 		for idx in farm:
 			var fx := int(idx) % grid.width
 			var fy := int(idx) / grid.width
-			var crop := Color(0.55, 0.5, 0.2) if (fx + fy) % 4 < 2 else Color(0.45, 0.42, 0.16)
-			img.set_pixel(fx, fy, crop)
-	for g in layout.gates:
-		img.set_pixel(g.pos.x, g.pos.y, Color(0.9, 0.55, 0.2))
+			var stripe := (fx if vertical else fy) % 4 < 2
+			img.set_pixel(fx, fy, Color(0.55, 0.5, 0.2) if stripe else Color(0.45, 0.42, 0.16))
 	var palette := {
-		def.road_main_value: Color(0.9, 0.78, 0.4),
-		def.road_sec_value: Color(0.55, 0.56, 0.6),
-		def.road_alley_value: Color(0.38, 0.39, 0.42),
+		def.road_main_value: Color(0.55, 0.56, 0.6),
+		def.road_sec_value: Color(0.48, 0.49, 0.53),
+		def.road_alley_value: Color(0.4, 0.41, 0.45),
 		def.bridge_value: Color(0.5, 0.36, 0.22),
-		def.road_ring_value: Color(0.72, 0.6, 0.35),
+		def.road_ring_value: Color(0.52, 0.53, 0.57),
 	}
 	for i in grid.cells.size():
 		var v: int = grid.cells[i]
@@ -559,6 +605,21 @@ func _gen_city(def: TownDef, seed: int) -> void:
 	_log("城镇: %s\n建筑 %d｜家具 %d｜地块 %d (临街 %d)" % [
 		def.name, layout.buildings.size(), furniture_n, layout.parcels.size(), frontage,
 	])
+
+
+## 高度→地貌色（与 3D demo 地形柱分层语义一致: 水/滩/草/岩/雪）
+func _terrain_color(h: float, sea_level: float) -> Color:
+	if h < sea_level:
+		var t := clampf(h / maxf(0.001, sea_level), 0.0, 1.0)
+		return Color(0.15, 0.4, 0.7).lerp(Color(0.38, 0.58, 0.78), t)
+	if h < sea_level + 0.04:
+		return Color(0.85, 0.8, 0.5)
+	if h < sea_level + 0.18:
+		var g := (h - sea_level) / 0.18
+		return Color(0.36, 0.52, 0.3).lerp(Color(0.42, 0.52, 0.32), g)
+	if h < sea_level + 0.38:
+		return Color(0.5, 0.46, 0.42)
+	return Color(0.82, 0.84, 0.88)
 
 
 ## —— 河流 / 道路 ——

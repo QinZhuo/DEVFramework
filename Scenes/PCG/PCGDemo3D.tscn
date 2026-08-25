@@ -6,6 +6,7 @@
 [ext_resource type="Resource" path="res://Assets/Def/PCG/Grid3D_Surface.tres" id="s1"]
 [ext_resource type="Resource" path="res://Assets/Def/PCG/Grid3D_WFC.tres" id="w1"]
 [ext_resource type="Resource" path="res://Assets/Def/PCG/City_Grid.tres" id="t1"]
+[ext_resource type="Resource" path="res://Assets/Def/PCG/Town_MountainMine.tres" id="t2"]
 
 [sub_resource type="Environment" id="Environment_3d"]
 background_mode = 2
@@ -29,7 +30,7 @@ corner_radius_bottom_left = 8
 
 [node name="PCGDemo3D" type="Node3D" unique_id=1007255166]
 script = ExtResource("1_demo")
-grid3d_defs = Array[Resource]([ExtResource("s1"), ExtResource("c1"), ExtResource("w1"), ExtResource("n1"), ExtResource("t1")])
+grid3d_defs = Array[Resource]([ExtResource("s1"), ExtResource("c1"), ExtResource("w1"), ExtResource("n1"), ExtResource("t1"), ExtResource("t2")])
 
 [node name="World" type="Node3D" parent="." unique_id=1886445507]
 unique_name_in_owner = true
@@ -95,7 +96,7 @@ unique_name_in_owner = true
 layout_mode = 2
 size_flags_horizontal = 3
 max_value = 2147483647.0
-value = 20260811.0
+value = 42.0
 
 [node name="RegenButton" type="Button" parent="UI/Panel/VBox/RowSeed" unique_id=2044334561]
 layout_mode = 2
