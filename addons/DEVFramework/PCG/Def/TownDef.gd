@@ -55,6 +55,11 @@ class_name TownDef extends PCGGeneratorDef
 @export_range(0.0, 1.0, 0.01) var street_wander := 0.3
 @export_range(0.0, 2.0, 0.05) var main_jitter := 0.4
 @export_range(0.0, 4.0, 0.05) var slope_cost_k := 1.5
+## [Octilinear 八方向约束] 主街 A* 路径简化的最小直线段长（格）：
+## 简化后道路只含 横/竖/45°斜 的长直段, 告别逐格碎弯
+@export_range(4, 24, 1) var road_min_segment := 8
+## 次街转向后最少直行格数（避免七扭八歪的碎弯）
+@export_range(1, 16, 1) var street_min_run := 5
 ## [干道] 横穿主干道条数(0=关闭)：一横一纵即得"车行主干道穿城"的现代城区骨架。
 ## 业内参照 Cities: Skylines 路网分级——先 Arterial 骨架再向下生长次街/巷道,
 ## 干道宽阔平直(低抖动)、交叉口稀疏、街区放大。

@@ -220,4 +220,20 @@ static func run() -> void:
 	all_ok = all_ok and cave_conn_ok
 	print("[约束] 细胞洞穴任意 seed 空连通域==1: %s" % cave_conn_ok)
 
+	# 城镇存档集成: TownLayout → SaveTool GZIP 落盘 → 加载 → from_data 往返一致
+	var save_path := "user://pcg_test/town_layout.save"
+	SaveTool.save_data(save_path, tl.to_data(), SaveTool.Mode.GZIP)
+	var loaded_data = SaveTool.load_data(save_path, SaveTool.Mode.GZIP)
+	var tl_back := TownLayout.from_data(loaded_data if loaded_data is Dictionary else {})
+	var town_save_ok: bool = tl_back != null \
+			and tl_back.buildings.size() == tl.buildings.size() \
+			and tl_back.site == tl.site \
+			and tl_back.roads_grid != null and tl_back.roads_grid.cells == tl.roads_grid.cells \
+			and (tl_back.streets.get("bus_stops", []) as Array).size() == (tl.streets.get("bus_stops", []) as Array).size() \
+			and tl_back.bushes == tl.bushes
+	SaveTool.delete_data(save_path, SaveTool.Mode.GZIP)
+	all_ok = all_ok and town_save_ok
+	print("[约束] 城镇存档 SaveTool GZIP 往返: %s (建筑%d 站点%d)" % [
+		town_save_ok, tl_back.buildings.size(), (tl_back.streets.get("bus_stops", []) as Array).size()])
+
 	print("== 约束测试 %s ==" % ("全部通过" if all_ok else "存在失败"))

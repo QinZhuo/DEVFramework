@@ -28,6 +28,8 @@ var _npc_idx := 0
 var _night := false
 ## 干道车流（沿 ARTERIAL 折线循环行驶的低多边形汽车）
 var _traffic_cars: Array = []
+## 最近一次生成的城镇布局（S/L 存档热键的数据源）
+var _last_layout: TownLayout = null
 
 
 func _ready() -> void:
@@ -53,8 +55,27 @@ func _input(event: InputEvent) -> void:
 		elif event.button_index == MOUSE_BUTTON_WHEEL_DOWN:
 			_zoom = clampf(_zoom * 1.14, 0.35, 2.5)
 			_update_camera()
-	elif event is InputEventKey and event.pressed and event.keycode == KEY_N:
-		_toggle_night()
+	elif event is InputEventKey and event.pressed:
+		if event.keycode == KEY_N:
+			_toggle_night()
+		elif event.keycode == KEY_S and _last_layout != null:
+			var err := SaveTool.save_data("user://save/town_demo.save", _last_layout.to_data(), SaveTool.Mode.GZIP)
+			_log_tail("存档 %s (%s)" % ["OK" if err == OK else "失败", "user://save/town_demo.save"])
+		elif event.keycode == KEY_L:
+			var data = SaveTool.load_data("user://save/town_demo.save", SaveTool.Mode.GZIP)
+			if data is Dictionary:
+				var tl := TownLayout.from_data(data)
+				if def_of_current() is TownDef:
+					_render_town(tl, def_of_current())
+					_build_town_navigation(tl, def_of_current())
+					_log_tail("读档 OK: 建筑 %d" % tl.buildings.size())
+			else:
+				_log_tail("无存档可加载")
+
+
+## 当前选中的 Def（供存档加载后重渲染）
+func def_of_current() -> Resource:
+	return _selected_res()
 
 
 func _update_camera() -> void:
@@ -253,6 +274,7 @@ func _gen_town_3d(def: TownDef) -> void:
 	if town_heightmap_def != null:
 		hm = PCGTool.generate_heightmap(town_heightmap_def, PCGTool.make_rng(int(seed_spin.value)))
 	var layout := PCGTool.generate_town(def, hm, int(seed_spin.value))
+	_last_layout = layout
 	var ms := (Time.get_ticks_usec() - t0) / 1000.0
 	_render_town(layout, def)
 	_build_town_navigation(layout, def)
