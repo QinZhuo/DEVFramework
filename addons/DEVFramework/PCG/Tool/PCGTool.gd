@@ -270,9 +270,9 @@ static func generate_heightmap(def: HeightMapDef, rng: RandomNumberGenerator) ->
 				h /= total_w
 			else:
 				h = 0.5
-			# 岛屿掩膜：边缘压向海平面
+			# 岛屿掩膜：按强度向"边缘沉海"混合（0=无掩膜, 1=全强度）
 			if def.island_strength > 0.0:
-				h *= _island_falloff(x, y, def)
+				h *= lerpf(1.0, _island_falloff(x, y, def), clampf(def.island_strength, 0.0, 1.0))
 			raw[y * def.width + x] = h
 			lo = minf(lo, h)
 			hi = maxf(hi, h)
@@ -746,6 +746,8 @@ static func _sync_def_to_steps(def: TownDef, steps_arr: Array[TownStepDef]) -> v
 			s.street_tree_spacing = def.street_tree_spacing
 		elif s is TownStreetStep:
 			s.streetlamp_spacing = def.streetlamp_spacing
+			s.set("bin_spacing", def.get("bin_spacing"))
+			s.set("bus_stop_spacing", def.get("bus_stop_spacing"))
 		elif s is TownFarmStep:
 			s.farm_min_dist = def.farm_min_dist
 			s.farm_min_area = def.farm_min_area
@@ -841,6 +843,9 @@ static func town_greenery_step(step: TownGreeneryStep, ctx: TownGenContext) -> v
 
 static func town_street_step(step: TownStreetStep, ctx: TownGenContext) -> void:
 	ctx.def.streetlamp_spacing = step.streetlamp_spacing
+	ctx.def.set("bin_spacing", step.bin_spacing)
+	ctx.def.set("bus_stop_spacing", step.bus_stop_spacing)
+	ctx.def.set("adboard_spacing", step.adboard_spacing)
 	_town_street_furniture(ctx.def, ctx.layout)
 
 
@@ -890,10 +895,23 @@ static func _town_site(def: TownDef, hm: HeightMap, rng: RandomNumberGenerator) 
 		if c.size() > main.size():
 			main = c
 	var water_dist := _distance_field(land, 0)
-	var best_idx: int = main[0]
+	# 候选采样: 评分窗口(site_radius)须完整落在地图内, 避免城镇贴边被截断;
+	# 全部候选越界时回退不过滤(小地图兜底)
+	var m := mini(def.site_radius, mini(land.width, land.height) / 2)
+	var cands := PackedInt32Array()
+	var cands_all := PackedInt32Array()
+	for idx in main:
+		cands_all.append(idx)
+		var sx := idx % land.width
+		var sy := idx / land.width
+		if sx >= m and sy >= m and sx < land.width - m and sy < land.height - m:
+			cands.append(idx)
+	if cands.is_empty():
+		cands = cands_all
+	var best_idx: int = cands[0]
 	var best_score := -INF
 	for k in maxi(1, def.site_candidates):
-		var idx: int = main[rng.randi_range(0, main.size() - 1)]
+		var idx: int = cands[rng.randi_range(0, cands.size() - 1)]
 		var s := _site_score(def, hm, water_dist, idx % land.width, idx / land.width)
 		if s > best_score:
 			best_score = s
@@ -905,12 +923,15 @@ static func _town_site(def: TownDef, hm: HeightMap, rng: RandomNumberGenerator) 
 	}
 
 
-## 选址打分：0.45*平坦 + 0.35*近水带宽 + 0.20*陆地占比（半径 R 内采样）
+## 选址打分：0.55*平坦(含陡峭强惩罚) + 0.30*近水带宽 + 0.15*陆地占比（半径 R 内采样）
+## 城镇应落在平缓地: 候选内最大坡度超过硬阈值即大幅降权, 杜绝"建在山腰上"
 const _SITE_FLAT_TOL := 0.08
+const _SITE_HARD_SLOPE := 0.14
 static func _site_score(def: TownDef, hm: HeightMap, water_dist: PackedFloat32Array, cx: int, cy: int) -> float:
 	var r := def.site_radius
 	var slope_sum := 0.0
 	var slope_n := 0
+	var slope_max := 0.0
 	var land_n := 0
 	var total := 0
 	for dy in range(-r, r + 1, 2):
@@ -920,11 +941,15 @@ static func _site_score(def: TownDef, hm: HeightMap, water_dist: PackedFloat32Ar
 			if not hm.in_bounds(x, y):
 				continue
 			total += 1
-			slope_sum += hm.slope(x, y)
+			var sl := hm.slope(x, y)
+			slope_sum += sl
+			slope_max = maxf(slope_max, sl)
 			slope_n += 1
 			if hm.heights[y * hm.width + x] >= def.sea_level:
 				land_n += 1
 	var flat := clampf(1.0 - (slope_sum / maxf(1.0, slope_n)) / _SITE_FLAT_TOL, 0.0, 1.0)
+	if slope_max > _SITE_HARD_SLOPE:
+		flat *= 0.25
 	var ratio := float(land_n) / maxf(1, total)
 	var d := water_dist[cy * hm.width + cx]
 	var ws := 1.0
@@ -933,7 +958,7 @@ static func _site_score(def: TownDef, hm: HeightMap, water_dist: PackedFloat32Ar
 			ws = d / maxf(1.0, float(def.water_band_min))
 		elif d > def.water_band_max:
 			ws = clampf(1.0 - (d - def.water_band_max) / maxf(8.0, float(def.water_band_max)), 0.0, 1.0)
-	return 0.45 * flat + 0.35 * ws + 0.20 * ratio
+	return 0.55 * flat + 0.30 * ws + 0.15 * ratio
 
 
 ## 多源 BFS 距离场：到最近 source_value 格的 4 邻域步数（不可达=INF）
@@ -965,6 +990,75 @@ static func _distance_field(grid: GeneratedGrid, source_value: int) -> PackedFlo
 
 
 ## S2 主干道路网：主街(site→边缘枢纽 坡度A*) + 次街(沿主街扰动垂直生长)
+## S2b 横穿主干道(Arterial)：宽阔平直的车行骨架 + 沿线集散次街生长
+## 业内参照 CS:Skylines 路网分级——先 Arterial 后 Collector/Local, 街区由此放大。
+static func town_arterial_step(step: TownArterialStep, ctx: TownGenContext) -> void:
+	var def: TownDef = ctx.def
+	if def.arterial_h_count <= 0 and def.arterial_v_count <= 0:
+		return
+	_town_arterials(def, ctx.heightmap, ctx.layout, ctx.next_rng())
+
+
+static func _town_arterials(def: TownDef, hm: HeightMap, layout: TownLayout, rng: RandomNumberGenerator) -> void:
+	var roads := layout.roads_grid
+	for i in def.arterial_h_count:
+		var y := int(round((i + 1.0) / (def.arterial_h_count + 1.0) * def.height)) + rng.randi_range(-4, 4)
+		var path := PackedVector2Array()
+		var cur := Vector2(1.0, float(clampi(y, 3, def.height - 4)))
+		path.append(cur)
+		while cur.x < def.width - 2:
+			cur.x += 1.0
+			if rng.randf() < def.arterial_jitter * 0.5:
+				cur.y += [-1.0, 1.0][rng.randi_range(0, 1)]
+			cur.y = clampf(cur.y, 3.0, def.height - 4.0)
+			path.append(cur)
+		_stamp_arterial_line(def, hm, layout, path, rng)
+	for i in def.arterial_v_count:
+		var x := int(round((i + 1.0) / (def.arterial_v_count + 1.0) * def.width)) + rng.randi_range(-4, 4)
+		var path := PackedVector2Array()
+		var cur := Vector2(float(clampi(x, 3, def.width - 4)), 1.0)
+		path.append(cur)
+		while cur.y < def.height - 2:
+			cur.y += 1.0
+			if rng.randf() < def.arterial_jitter * 0.5:
+				cur.x += [-1.0, 1.0][rng.randi_range(0, 1)]
+			cur.x = clampf(cur.x, 3.0, def.width - 4.0)
+			path.append(cur)
+		_stamp_arterial_line(def, hm, layout, path, rng)
+
+
+## 单条干道：印层 + 折线分段入图(cls=ARTERIAL, 每5格一节点保真弯道) + 沿线集散次街生长
+static func _stamp_arterial_line(def: TownDef, hm: HeightMap, layout: TownLayout, path: PackedVector2Array, rng: RandomNumberGenerator) -> void:
+	if path.size() < 4:
+		return
+	var roads := layout.roads_grid
+	_stamp_road_layer(roads, path, def.arterial_width, def.road_arterial_value, hm, def.sea_level, def.bridge_value)
+	var start_idx := layout.road_nodes.size()
+	for k in path.size():
+		if k % 5 == 0 or k == path.size() - 1:
+			layout.road_nodes.append(path[k])
+	var seg_n := layout.road_nodes.size() - start_idx
+	for s in seg_n - 1:
+		layout.road_edges.append({
+			"a": start_idx + s, "b": start_idx + s + 1,
+			"width": def.arterial_width, "cls": TownLayout.EdgeClass.ARTERIAL,
+		})
+	var spacing := maxi(4, def.arterial_collector_spacing)
+	var i := spacing
+	while i < path.size() - 2:
+		var p := path[i]
+		var nxt := path[i + 1]
+		var seg := nxt - p
+		var perp := Vector2(-seg.y, seg.x).normalized()
+		for side in [-1.0, 1.0]:
+			if rng.randf() < 0.15:
+				continue
+			var dir: Vector2 = perp * side
+			var start := p + dir * (def.arterial_width * 0.5 + 1.0)
+			_grow_street(def, hm, roads, start, dir, def.road_sec_value, def.secondary_max_len, rng)
+		i += spacing
+
+
 static func town_roads_step(step: TownRoadStep, ctx: TownGenContext) -> void:
 	var def: TownDef = ctx.def
 	var layout := ctx.layout
@@ -1752,6 +1846,10 @@ static func _try_place_one(def: TownDef, layout: TownLayout, parcel: Dictionary,
 	var style := _pick_style(def, layout, footprint.get_center(), rng)
 	if def.flat_roof_styles.has(style):
 		roof = "flat"
+	# 沿主干道贴线的住宅 → 商铺语义(底层商业界面), 层数 +1(临街楼更高)
+	if type_name == "住宅" and _footprint_touches_arterial(def, layout, footprint):
+		type_name = "商铺"
+		layers = clampi(layers + 1, 1, 8)
 	layout.buildings.append({
 		"id": bid, "type": type_name, "style": style,
 		"rect": footprint, "door": door, "facing": facing,
@@ -1761,6 +1859,16 @@ static func _try_place_one(def: TownDef, layout: TownLayout, parcel: Dictionary,
 		"_tmpl": tmpl, "lot": li,
 	})
 	return true
+
+
+## footprint 外扩 1 格是否接触主干道格（沿街商业界面的判定依据）
+static func _footprint_touches_arterial(def: TownDef, layout: TownLayout, footprint: Rect2i) -> bool:
+	var roads := layout.roads_grid
+	for yy in range(maxi(0, footprint.position.y - 1), mini(roads.height, footprint.end.y + 1)):
+		for xx in range(maxi(0, footprint.position.x - 1), mini(roads.width, footprint.end.x + 1)):
+			if roads.get_cell(xx, yy, -1) == def.road_arterial_value:
+				return true
+	return false
 
 
 ## 风格分配：邻近继承（12 格内最近已放建筑的风格 70% 概率沿用，形成同街区同风格分区），
@@ -2284,6 +2392,7 @@ static func _filter_reachable(items: Array, visited: Dictionary) -> Array:
 ## 绿化：城镇空地（非道路/建筑/广场）泊松式散布树木，记录到 layout.trees
 static func _town_greenery(def: TownDef, layout: TownLayout, rng: RandomNumberGenerator) -> void:
 	layout.trees.clear()
+	layout.bushes.clear()
 	if def.tree_count <= 0:
 		return
 	var roads := layout.roads_grid
@@ -2348,11 +2457,33 @@ static func _town_greenery(def: TownDef, layout: TownLayout, rng: RandomNumberGe
 		if ok:
 			placed.append(Vector3(cand.x, cand.y, 0))
 			layout.trees.append(cand)
+	# 灌木绿带: 沿主干道两侧人行带每 3 格一丛(低矮绿化, 独立于乔木间距)
+	var bush_walk := 0
+	var bush_used := {}
+	for y in roads.height:
+		for x in roads.width:
+			if roads.get_cell(x, y, -1) != def.road_arterial_value:
+				continue
+			bush_walk += 1
+			if bush_walk % 3 != 0:
+				continue
+			for d in _DIR4:
+				var bx := x + d.x
+				var by := y + d.y
+				var bi := by * roads.width + bx
+				if not roads.in_bounds(bx, by) or bush_used.has(bi):
+					continue
+				if roads.get_cell(bx, by, -1) == 0 and build.get_cell(bx, by, -1) == 0 \
+						and not plaza.has(by * roads.width + bx):
+					layout.bushes.append(Vector2i(bx, by))
+					bush_used[bi] = true
+					break
 
 
-## 街具：路灯沿主干道/环路路格取样、贴路边空格；长椅沿广场临路边缘间隔摆放
+## 街具：路灯沿主干道/环路路格取样、贴路边空格；长椅沿广场临路边缘间隔摆放；
+## 垃圾桶/消防栓沿主街与干道路缘；公交站/广告牌沿干道折线间隔设置
 static func _town_street_furniture(def: TownDef, layout: TownLayout) -> void:
-	layout.streets = {"lamps": [], "benches": []}
+	layout.streets = {"lamps": [], "benches": [], "bins": [], "bus_stops": [], "hydrants": [], "adboards": []}
 	if layout.roads_grid == null or def.streetlamp_spacing <= 0:
 		return
 	var roads := layout.roads_grid
@@ -2364,7 +2495,7 @@ static func _town_street_furniture(def: TownDef, layout: TownLayout) -> void:
 	for y in roads.height:
 		for x in roads.width:
 			var rv := roads.get_cell(x, y, -1)
-			if rv != def.road_main_value and rv != def.road_ring_value:
+			if rv != def.road_main_value and rv != def.road_ring_value and rv != def.road_arterial_value:
 				continue
 			walk += 1
 			if walk % step != 0:
@@ -2379,7 +2510,7 @@ static func _town_street_furniture(def: TownDef, layout: TownLayout) -> void:
 					layout.streets["lamps"].append(Vector2i(lx, ly))
 					used[li] = true
 					break
-	# 长椅：广场中贴路的边缘格，隔 2 取 1
+	# 长椅：广场中贴路的边缘格隔 2 取 1 + 干道路缘每 14 格一张(与垃圾桶错开)
 	var bench_walk := 0
 	for idx in layout.plaza_cells:
 		var px := int(idx) % roads.width
@@ -2394,6 +2525,131 @@ static func _town_street_furniture(def: TownDef, layout: TownLayout) -> void:
 		bench_walk += 1
 		if bench_walk % 2 == 1 and build.get_cell(px, py, -1) == 0:
 			layout.streets["benches"].append(Vector2i(px, py))
+	var street_bench_walk := 0
+	for y in roads.height:
+		for x in roads.width:
+			var rv := roads.get_cell(x, y, -1)
+			if rv != def.road_main_value and rv != def.road_arterial_value:
+				continue
+			street_bench_walk += 1
+			if street_bench_walk % 14 != 0:
+				continue
+			for ddir in _DIR4:
+				var lx := x + ddir.x
+				var ly := y + ddir.y
+				var li := ly * roads.width + lx
+				if not roads.in_bounds(lx, ly) or used.has(li):
+					continue
+				if roads.get_cell(lx, ly, -1) == 0 and build.get_cell(lx, ly, -1) == 0:
+					layout.streets["benches"].append(Vector2i(lx, ly))
+					used[li] = true
+					break
+	# 垃圾桶: 主街/干道路缘空格, 每 bin_spacing 取样(与路灯错开)
+	var bin_step := maxi(3, def.bin_spacing)
+	var bin_walk := 0
+	for y in roads.height:
+		for x in roads.width:
+			var rv := roads.get_cell(x, y, -1)
+			if rv != def.road_main_value and rv != def.road_arterial_value:
+				continue
+			bin_walk += 1
+			if bin_walk % bin_step != 0:
+				continue
+			for ddir in _DIR4:
+				var lx := x + ddir.x
+				var ly := y + ddir.y
+				var li := ly * roads.width + lx
+				if not roads.in_bounds(lx, ly) or used.has(li):
+					continue
+				if roads.get_cell(lx, ly, -1) == 0 and build.get_cell(lx, ly, -1) == 0:
+					layout.streets["bins"].append(Vector2i(lx, ly))
+					used[li] = true
+					break
+	# 公交站: 沿 ARTERIAL 折线每 bus_stop_spacing 格取样, 站位取路侧空格
+	var stop_step := maxi(6, def.bus_stop_spacing)
+	var stop_walk := 0
+	for e in layout.road_edges:
+		if int(e.cls) != TownLayout.EdgeClass.ARTERIAL:
+			continue
+		var a := layout.road_nodes[int(e.a)]
+		var b := layout.road_nodes[int(e.b)]
+		var n := maxi(1, int(a.distance_to(b)))
+		for k in n + 1:
+			stop_walk += 1
+			if stop_walk % stop_step != 0:
+				continue
+			var p := a.lerp(b, float(k) / float(n))
+			var gx := int(roundf(p.x))
+			var gy := int(roundf(p.y))
+			var hw := int(e.width) / 2
+			for s in [-hw - 2, hw + 2]:
+				var sx: int = gx if absf(b.x - a.x) >= absf(b.y - a.y) else gx + s
+				var sy: int = gy + s if absf(b.x - a.x) >= absf(b.y - a.y) else gy
+				var li := sy * roads.width + sx
+				if not roads.in_bounds(sx, sy) or used.has(li):
+					continue
+				if roads.get_cell(sx, sy, -1) == 0 and build.get_cell(sx, sy, -1) == 0:
+					layout.streets["bus_stops"].append(Vector2i(sx, sy))
+					used[li] = true
+					break
+	# 消防栓: 干道路缘空格, 每 bin_spacing 取样(与垃圾桶同频但由 used 集合自然错开)
+	var hyd_step := maxi(5, def.bin_spacing)
+	var hyd_walk := 0
+	for y in roads.height:
+		for x in roads.width:
+			if roads.get_cell(x, y, -1) != def.road_arterial_value:
+				continue
+			hyd_walk += 1
+			if hyd_walk % hyd_step != 0:
+				continue
+			for ddir in _DIR4:
+				var hx := x + ddir.x
+				var hy := y + ddir.y
+				var hi := hy * roads.width + hx
+				if not roads.in_bounds(hx, hy) or used.has(hi):
+					continue
+				if roads.get_cell(hx, hy, -1) == 0 and build.get_cell(hx, hy, -1) == 0:
+					layout.streets["hydrants"].append(Vector2i(hx, hy))
+					used[hi] = true
+					break
+	# 广告牌: 沿 ARTERIAL 折线大间隔取样(垂直元素, 与公交站错开)
+	var ad_step := maxi(10, def.adboard_spacing / 2)
+	var ad_walk := 0
+	for e in layout.road_edges:
+		if int(e.cls) != TownLayout.EdgeClass.ARTERIAL:
+			continue
+		var a := layout.road_nodes[int(e.a)]
+		var b := layout.road_nodes[int(e.b)]
+		var n := maxi(1, int(a.distance_to(b)))
+		for k in n + 1:
+			ad_walk += 1
+			if ad_walk % ad_step != 0:
+				continue
+			var p := a.lerp(b, float(k) / float(n))
+			var gx := int(roundf(p.x))
+			var gy := int(roundf(p.y))
+			var hw := int(e.width) / 2
+			for s in [-hw - 3, hw + 3]:
+				var sx: int = gx if absf(b.x - a.x) >= absf(b.y - a.y) else gx + s
+				var sy: int = gy + s if absf(b.x - a.x) >= absf(b.y - a.y) else gy
+				var li := sy * roads.width + sx
+				if not roads.in_bounds(sx, sy) or used.has(li):
+					continue
+				if roads.get_cell(sx, sy, -1) == 0 and build.get_cell(sx, sy, -1) == 0 \
+						and not _near_arterial_occupied(def, layout, Vector2i(sx, sy), 2):
+					layout.streets["adboards"].append(Vector2i(sx, sy))
+					used[li] = true
+					break
+
+
+## 该格周围 margin 格内是否已有建筑(广告牌不贴楼)
+static func _near_arterial_occupied(_def: TownDef, layout: TownLayout, pos: Vector2i, margin: int) -> bool:
+	var build := layout.build_grid
+	for yy in range(pos.y - margin, pos.y + margin + 1):
+		for xx in range(pos.x - margin, pos.x + margin + 1):
+			if build.get_cell(xx, yy, -1) != 0:
+				return true
+	return false
 
 
 ## —— V1 地形回写（cut & fill） ——

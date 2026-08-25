@@ -25,6 +25,8 @@ class_name TownDef extends PCGGeneratorDef
 @export var road_alley_value := 5
 @export var bridge_value := 6
 @export var road_ring_value := 10
+## 横穿主干道(Arterial)格值：宽阔平直的车行骨架, 现代城区感核心
+@export var road_arterial_value := 12
 
 ## —— 值语义（build 层栅格） ——
 @export var building_wall_value := 7
@@ -53,6 +55,16 @@ class_name TownDef extends PCGGeneratorDef
 @export_range(0.0, 1.0, 0.01) var street_wander := 0.3
 @export_range(0.0, 2.0, 0.05) var main_jitter := 0.4
 @export_range(0.0, 4.0, 0.05) var slope_cost_k := 1.5
+## [干道] 横穿主干道条数(0=关闭)：一横一纵即得"车行主干道穿城"的现代城区骨架。
+## 业内参照 Cities: Skylines 路网分级——先 Arterial 骨架再向下生长次街/巷道,
+## 干道宽阔平直(低抖动)、交叉口稀疏、街区放大。
+@export_range(0, 3, 1) var arterial_h_count := 0
+@export_range(0, 3, 1) var arterial_v_count := 0
+@export_range(2, 5, 1) var arterial_width := 3
+## 干道路径抖动幅度(远小于主街, 保证平直可通行感)
+@export_range(0.0, 1.5, 0.05) var arterial_jitter := 0.25
+## 沿干道两侧生长集散次街的间距(格)
+@export_range(6, 32, 1) var arterial_collector_spacing := 12
 ## [广场]
 @export_range(0, 12, 1) var plaza_radius := 4
 @export var plaza_feature := "水井"
@@ -66,8 +78,8 @@ class_name TownDef extends PCGGeneratorDef
 @export var facilities: Array[FacilityDef] = []
 @export_range(0.0, 1.0, 0.01) var house_fill_ratio := 0.85
 @export_range(0, 4, 1) var setback := 1
-@export_range(1, 4, 1) var house_layers_min := 1
-@export_range(1, 4, 1) var house_layers_max := 3
+@export_range(1, 8, 1) var house_layers_min := 1
+@export_range(1, 8, 1) var house_layers_max := 3
 @export var house_roof := "gable"
 @export var flat_roof_styles: Array[String] = ["石砌", "砖混"]
 @export var style_table: Array[ContentEntryDef] = []
@@ -82,6 +94,12 @@ class_name TownDef extends PCGGeneratorDef
 @export_range(0, 16, 1) var street_tree_spacing := 5
 ## [街具]
 @export_range(2, 16, 1) var streetlamp_spacing := 6
+## 垃圾桶沿主街/干道的取样间距（格）
+@export_range(4, 24, 1) var bin_spacing := 9
+## 公交站沿干道的取样间距（格）
+@export_range(8, 32, 1) var bus_stop_spacing := 18
+## 广告牌沿干道的取样间距（格）
+@export_range(16, 64, 2) var adboard_spacing := 32
 ## [农田]
 @export_range(4, 64, 1) var farm_min_dist := 14
 @export_range(8, 512, 4) var farm_min_area := 60
@@ -127,6 +145,7 @@ static func default_steps() -> Array[TownStepDef]:
 	var list: Array[TownStepDef] = []
 	list.append(TownSiteStep.new())
 	list.append(TownRoadStep.new())
+	list.append(TownArterialStep.new())
 	list.append(TownRingStep.new())
 	list.append(TownAlleyStep.new())
 	list.append(TownPlazaStep.new())

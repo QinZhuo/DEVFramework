@@ -36,7 +36,10 @@ var plaza_center := Vector2i(-1, -1)
 var plaza_item := ""
 ## 树木（格坐标，城镇空地绿化散布 + 行道树）
 var trees := PackedVector2Array()
-## 街具 {"lamps":[路灯格], "benches":[长椅格]}
+## 灌木丛（格坐标，主干道两侧绿带低矮绿化）
+var bushes := PackedVector2Array()
+## 街具 {"lamps":[路灯格], "benches":[长椅格], "bins":[垃圾桶格],
+##       "bus_stops":[公交站格], "hydrants":[消防栓格], "adboards":[广告牌格]}
 var streets := {}
 ## 农田区块列表（每项为一片连片农田的格线性索引；条纹方向由消费方按坐标推算）
 var farms: Array = []
@@ -51,7 +54,7 @@ var wards: Dictionary = {}
 var wall_towers := PackedVector2Array()
 
 ## 道路等级
-enum EdgeClass { MAIN, SECONDARY, ALLEY }
+enum EdgeClass { MAIN, SECONDARY, ALLEY, ARTERIAL }
 
 func get_roads_grid() -> GeneratedGrid:
 	return roads_grid
@@ -82,6 +85,8 @@ func to_data() -> Dictionary:
 			"rect": [b.rect.position.x, b.rect.position.y, b.rect.size.x, b.rect.size.y],
 			"door": [b.door.x, b.door.y], "facing": int(b.facing),
 			"layers": int(b.layers), "roof": String(b.roof),
+			"ground_y": float(b.get("ground_y", 0.0)),
+			"foundation": String(b.get("foundation", "terrace")),
 		})
 	var interior_data := {}
 	for k in interiors:
@@ -103,6 +108,18 @@ func to_data() -> Dictionary:
 	var benches: Array = []
 	for bench in streets.get("benches", []):
 		benches.append([bench.x, bench.y])
+	var bins: Array = []
+	for bin in streets.get("bins", []):
+		bins.append([bin.x, bin.y])
+	var bus_stops: Array = []
+	for stop in streets.get("bus_stops", []):
+		bus_stops.append([stop.x, stop.y])
+	var hydrants: Array = []
+	for hyd in streets.get("hydrants", []):
+		hydrants.append([hyd.x, hyd.y])
+	var adboards: Array = []
+	for adb in streets.get("adboards", []):
+		adboards.append([adb.x, adb.y])
 	return {
 		"site": [site.x, site.y],
 		"score": site_score,
@@ -117,8 +134,13 @@ func to_data() -> Dictionary:
 		"plaza_center": [plaza_center.x, plaza_center.y],
 		"plaza_item": plaza_item,
 		"trees": trees,
+		"bushes": bushes,
 		"streets_lamps": lamps,
 		"streets_benches": benches,
+		"streets_bins": bins,
+		"streets_bus_stops": bus_stops,
+		"streets_hydrants": hydrants,
+		"streets_adboards": adboards,
 		"farms": farms,
 		"heightmap": heightmap.to_data() if heightmap else null,
 		"town_name": town_name,
@@ -163,6 +185,8 @@ static func from_data(data: Dictionary) -> TownLayout:
 			"rect": Rect2i(int(br[0]), int(br[1]), int(br[2]), int(br[3])),
 			"door": Vector2i(int(dr[0]), int(dr[1])), "facing": int(b.facing),
 			"layers": int(b.get("layers", 1)), "roof": String(b.get("roof", "gable")),
+			"ground_y": float(b.get("ground_y", 0.0)),
+			"foundation": String(b.get("foundation", "terrace")),
 		})
 	for k in data.get("interiors", {}):
 		var v: Dictionary = data.interiors[k]
@@ -184,6 +208,7 @@ static func from_data(data: Dictionary) -> TownLayout:
 	t.plaza_center = Vector2i(int(pc[0]), int(pc[1]))
 	t.plaza_item = String(data.get("plaza_item", ""))
 	t.trees = PackedVector2Array(data.get("trees", []))
+	t.bushes = PackedVector2Array(data.get("bushes", []))
 	t.farms = []
 	for farm in data.get("farms", []):
 		t.farms.append(PackedInt32Array(farm))
@@ -195,6 +220,22 @@ static func from_data(data: Dictionary) -> TownLayout:
 		if not t.streets.has("benches"):
 			t.streets["benches"] = []
 		t.streets["benches"].append(Vector2i(int(bench[0]), int(bench[1])))
+	for bin in data.get("streets_bins", []):
+		if not t.streets.has("bins"):
+			t.streets["bins"] = []
+		t.streets["bins"].append(Vector2i(int(bin[0]), int(bin[1])))
+	for stop in data.get("streets_bus_stops", []):
+		if not t.streets.has("bus_stops"):
+			t.streets["bus_stops"] = []
+		t.streets["bus_stops"].append(Vector2i(int(stop[0]), int(stop[1])))
+	for hyd in data.get("streets_hydrants", []):
+		if not t.streets.has("hydrants"):
+			t.streets["hydrants"] = []
+		t.streets["hydrants"].append(Vector2i(int(hyd[0]), int(hyd[1])))
+	for adb in data.get("streets_adboards", []):
+		if not t.streets.has("adboards"):
+			t.streets["adboards"] = []
+		t.streets["adboards"].append(Vector2i(int(adb[0]), int(adb[1])))
 	var hmd = data.get("heightmap")
 	if hmd is Dictionary and not (hmd as Dictionary).is_empty():
 		t.heightmap = HeightMap.from_data(hmd)
