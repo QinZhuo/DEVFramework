@@ -24,6 +24,10 @@ var _npc: CharacterBody3D = null
 var _npc_agent: NavigationAgent3D = null
 var _npc_targets := PackedVector3Array()
 var _npc_idx := 0
+## 夜景模式（N 键切换：夜空+暗环境光，窗灯/路灯/招牌/广告牌自发光主导）
+var _night := false
+## 干道车流（沿 ARTERIAL 折线循环行驶的低多边形汽车）
+var _traffic_cars: Array = []
 
 
 func _ready() -> void:
@@ -49,6 +53,8 @@ func _input(event: InputEvent) -> void:
 		elif event.button_index == MOUSE_BUTTON_WHEEL_DOWN:
 			_zoom = clampf(_zoom * 1.14, 0.35, 2.5)
 			_update_camera()
+	elif event is InputEventKey and event.pressed and event.keycode == KEY_N:
+		_toggle_night()
 
 
 func _update_camera() -> void:
@@ -255,7 +261,7 @@ func _gen_town_3d(def: TownDef) -> void:
 	for b in layout.buildings:
 		if String(b.type) != "住宅":
 			poi += 1
-	_log("城镇 3D: %s\n建筑 %d (设施 %d)｜地块 %d｜环路 %d 格\n生成 %.0fms ／ 左键拖拽旋转·滚轮缩放" % [
+	_log("城镇 3D: %s\n建筑 %d (设施 %d)｜地块 %d｜环路 %d 格\n生成 %.0fms ／ 拖拽旋转·滚轮缩放·N键夜景" % [
 		layout.town_name if not layout.town_name.is_empty() else def.name,
 		layout.buildings.size(), poi, layout.parcels.size(),
 		layout.roads_grid.count(def.road_ring_value), ms,
@@ -274,21 +280,7 @@ func _render_town(layout: TownLayout, def: TownDef) -> void:
 	var hm := layout.heightmap
 	# 天空盒+环境光（城镇模式专用氛围）
 	var env := get_node_or_null("Env") as WorldEnvironment
-	if env:
-		var sky := Sky.new()
-		var smat := ProceduralSkyMaterial.new()
-		smat.sky_top_color = Color(0.32, 0.52, 0.85)
-		smat.sky_horizon_color = Color(0.72, 0.8, 0.9)
-		smat.ground_bottom_color = Color(0.3, 0.33, 0.36)
-		smat.ground_horizon_color = Color(0.66, 0.73, 0.82)
-		sky.sky_material = smat
-		env.environment.background_mode = Environment.BG_SKY
-		env.environment.sky = sky
-		env.environment.ambient_light_source = Environment.AMBIENT_SOURCE_SKY
-		env.environment.ambient_light_energy = 1.3
-	var sun := get_node_or_null("Sun") as DirectionalLight3D
-	if sun:
-		sun.light_energy = 1.5
+	_apply_sky(_night)
 	# 格坐标 → 世界坐标（y 取地表高度；无高度图时为 0）
 	var to_world := func(x: int, z: int) -> Vector3:
 		var h: float = hm.sample(x, z) if hm != null else 0.0
@@ -585,10 +577,10 @@ func _render_town(layout: TownLayout, def: TownDef) -> void:
 			][posmod(int(b.id), 4)]
 			if dvec.x != 0:
 				_add_box(ec + Vector3(dvec.x * 0.42, 2.62, 0), Vector3(0.72, 0.14, edge_len * 0.96), Color(0.34, 0.21, 0.12))
-				_add_box(ec + Vector3(dvec.x * 0.58, 3.25, 0), Vector3(0.16, 0.72, edge_len * 0.86), sign_col)
+				_add_box(ec + Vector3(dvec.x * 0.58, 3.25, 0), Vector3(0.16, 0.72, edge_len * 0.86), sign_col, sign_col * 0.3)
 			else:
 				_add_box(ec + Vector3(0, 2.62, dvec.y * 0.42), Vector3(edge_len * 0.96, 0.14, 0.72), Color(0.34, 0.21, 0.12))
-				_add_box(ec + Vector3(0, 3.25, dvec.y * 0.58), Vector3(edge_len * 0.86, 0.72, 0.16), sign_col)
+				_add_box(ec + Vector3(0, 3.25, dvec.y * 0.58), Vector3(edge_len * 0.86, 0.72, 0.16), sign_col, sign_col * 0.3)
 		# 发光窗：每层一排、棋盘间隔、贴暴露面外侧(wy 为相对 gy 的偏移, 勿再加第二次基准高)
 		for row in maxi(1, blayers):
 			var wy := 1.15 + row * 1.5
@@ -770,8 +762,9 @@ func _render_town(layout: TownLayout, def: TownDef) -> void:
 		_add_box(ap + Vector3(0.55, 0.75, 0), Vector3(0.14, 1.5, 0.14), Color(0.32, 0.32, 0.36))
 		var board_cols := [Color(0.9, 0.35, 0.3), Color(0.25, 0.5, 0.85)]
 		for half in [-1, 1]:
+			var bc: Color = board_cols[(half + 1) / 2]
 			_add_box(ap + Vector3(float(half) * 0.72, 1.95, 0),
-					Vector3(1.42, 1.5, 0.12), board_cols[(half + 1) / 2])
+					Vector3(1.42, 1.5, 0.12), bc, bc * 0.35)
 			_add_box(ap + Vector3(float(half) * 0.72, 2.76, 0), Vector3(1.46, 0.08, 0.16), Color(0.92, 0.92, 0.9))
 	# 农田条纹（两种作物色薄板交替）
 	var crop_a := PackedVector3Array()
@@ -789,6 +782,88 @@ func _render_town(layout: TownLayout, def: TownDef) -> void:
 	# 选址标记柱
 	var site_mark := PackedVector3Array([to_world.call(layout.site.x, layout.site.y)])
 	_add_mesh_sized(site_mark, Color(1.0, 0.25, 0.1), Vector3(1.2, 6.0, 1.2))
+	_spawn_town_traffic(layout, to_world)
+
+
+## 干道车流: 按 ARTERIAL 分段边重建完整折线, 对向各放一辆低多边形汽车循环行驶
+func _spawn_town_traffic(layout: TownLayout, to_world: Callable) -> void:
+	for c in _traffic_cars:
+		(c.node as Node3D).queue_free()
+	_traffic_cars.clear()
+	var segs := {}
+	var ends := {}
+	for e in layout.road_edges:
+		if int(e.cls) != TownLayout.EdgeClass.ARTERIAL:
+			continue
+		segs[int(e.a)] = int(e.b)
+		ends[int(e.b)] = true
+	var chains: Array = []
+	for start_key in segs.keys():
+		if ends.has(start_key):
+			continue
+		var chain := PackedInt32Array([start_key])
+		var cur: int = segs[start_key]
+		while segs.has(cur):
+			chain.append(cur)
+			cur = segs[cur]
+		chains.append(chain)
+	for chain in chains:
+		if chain.size() < 2:
+			continue
+		var pts := PackedVector3Array()
+		for idx in chain:
+			var n: Vector2 = layout.road_nodes[idx]
+			pts.append(to_world.call(int(roundf(n.x)), int(roundf(n.y))) + Vector3(0, 0.55, 0))
+		var total := 0.0
+		var cum := PackedFloat32Array([0.0])
+		for i in range(1, pts.size()):
+			total += pts[i - 1].distance_to(pts[i])
+			cum.append(total)
+		if total < 12.0:
+			continue
+		for dir_sign in [1, -1]:
+			var car := Node3D.new()
+			var body_col: Color = [Color(0.92, 0.22, 0.16), Color(0.18, 0.5, 0.9), Color(0.95, 0.78, 0.15), Color(0.94, 0.94, 0.96)][absi(hash(chain[0]) + dir_sign) % 4]
+			_add_car_part(car, Vector3(0, 0.55, 0), Vector3(2.4, 0.7, 1.35), body_col)
+			_add_car_part(car, Vector3(-0.15, 1.12, 0), Vector3(1.3, 0.55, 1.15), Color(0.12, 0.15, 0.2))
+			_add_car_part(car, Vector3(0.88, 0.85, 0), Vector3(0.2, 0.2, 0.08), Color(1.0, 0.95, 0.6), Color(1.0, 0.9, 0.45))
+			world.add_child(car)
+			_traffic_cars.append({
+				"node": car, "pts": pts, "cum": cum, "total": total,
+				"dist": total * (0.5 if dir_sign > 0 else 0.48),
+				"speed": 5.5 if dir_sign > 0 else 5.0,
+				"reverse": dir_sign < 0,
+				"lane": -0.62 * dir_sign,
+			})
+
+
+func _add_car_part(parent: Node3D, pos: Vector3, size: Vector3, color: Color, emission := Color(0, 0, 0)) -> void:
+	var mi := MeshInstance3D.new()
+	var bm := BoxMesh.new()
+	bm.size = size
+	bm.material = StandardMaterial3D.new()
+	bm.material.albedo_color = color
+	if emission.a > 0.0:
+		bm.material.emission_enabled = true
+		bm.material.emission = emission
+	mi.mesh = bm
+	mi.position = pos
+	parent.add_child(mi)
+
+
+## 沿折线取位置与朝向 (dist 归一化到 [0,total))
+func _traffic_sample(pts: PackedVector3Array, cum: PackedFloat32Array, total: float, dist: float) -> Dictionary:
+	var dd := fposmod(dist, total)
+	var i := 1
+	while i < cum.size() and cum[i] < dd:
+		i += 1
+	i = mini(i, cum.size() - 1)
+	var t0 := cum[i - 1]
+	var seg_len := maxf(0.001, cum[i] - t0)
+	var t := (dd - t0) / seg_len
+	var a := pts[i - 1]
+	var b := pts[i]
+	return {"pos": a.lerp(b, t), "dir": (b - a).normalized()}
 
 
 ## 城镇导航：可行走面 = 道路/广场/室内地板，墙体为实体障碍；
@@ -889,6 +964,22 @@ func _despawn_town_npc() -> void:
 
 
 func _physics_process(delta: float) -> void:
+	# 干道车流推进(沿折线循环, 右侧车道偏移)
+	for car in _traffic_cars:
+		var node: Node3D = car.node
+		if not is_instance_valid(node):
+			continue
+		var total: float = car.total
+		car.dist = fposmod(car.dist + car.speed * delta, total)
+		var s := _traffic_sample(car.pts, car.cum, total, car.dist)
+		var dir: Vector3 = s.dir
+		if car.reverse:
+			dir = -dir
+		var side := Vector3(-dir.z, 0, dir.x)
+		node.position = s.pos + side * float(car.lane) * -1.0
+		node.look_at(node.position + dir, Vector3.UP)
+		node.rotation.x = 0.0
+		node.rotation.z = 0.0
 	if _npc == null or _npc_agent == null or not is_instance_valid(_npc):
 		return
 	if _npc_agent.is_navigation_finished():
@@ -903,15 +994,57 @@ func _physics_process(delta: float) -> void:
 		_npc.move_and_slide()
 
 
-func _add_box(center: Vector3, size: Vector3, color: Color) -> void:
+func _add_box(center: Vector3, size: Vector3, color: Color, emission := Color(0, 0, 0)) -> void:
 	var mi := MeshInstance3D.new()
 	var bm := BoxMesh.new()
 	bm.size = size
 	bm.material = StandardMaterial3D.new()
 	bm.material.albedo_color = color
+	if emission.a > 0.0:
+		bm.material.emission_enabled = true
+		bm.material.emission = emission
 	mi.mesh = bm
 	mi.position = center
 	world.add_child(mi)
+
+
+## 天空/环境光：白天=蓝天+强环境光；夜景(N 键)=深夜蓝+暗环境+冷月光, 自发光元素主导
+func _apply_sky(night: bool) -> void:
+	var env := get_node_or_null("Env") as WorldEnvironment
+	var sun := get_node_or_null("Sun") as DirectionalLight3D
+	if sun:
+		sun.light_color = Color(0.55, 0.65, 1.0) if night else Color.WHITE
+		sun.light_energy = 0.35 if night else 1.5
+	if not env:
+		return
+	var sky := Sky.new()
+	var smat := ProceduralSkyMaterial.new()
+	if night:
+		smat.sky_top_color = Color(0.02, 0.03, 0.09)
+		smat.sky_horizon_color = Color(0.06, 0.08, 0.14)
+		smat.ground_bottom_color = Color(0.01, 0.01, 0.03)
+		smat.ground_horizon_color = Color(0.05, 0.06, 0.1)
+		sky.sky_material = smat
+		env.environment.background_mode = Environment.BG_SKY
+		env.environment.sky = sky
+		env.environment.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
+		env.environment.ambient_light_color = Color(0.17, 0.2, 0.32)
+		env.environment.ambient_light_energy = 1.0
+	else:
+		smat.sky_top_color = Color(0.32, 0.52, 0.85)
+		smat.sky_horizon_color = Color(0.72, 0.8, 0.9)
+		smat.ground_bottom_color = Color(0.3, 0.33, 0.36)
+		smat.ground_horizon_color = Color(0.66, 0.73, 0.82)
+		sky.sky_material = smat
+		env.environment.background_mode = Environment.BG_SKY
+		env.environment.sky = sky
+		env.environment.ambient_light_source = Environment.AMBIENT_SOURCE_SKY
+		env.environment.ambient_light_energy = 1.3
+
+
+func _toggle_night() -> void:
+	_night = not _night
+	_apply_sky(_night)
 
 
 func _set_title(t: String) -> void:
