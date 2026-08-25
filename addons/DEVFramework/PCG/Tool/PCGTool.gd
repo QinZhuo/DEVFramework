@@ -1009,7 +1009,8 @@ static func _town_arterials(def: TownDef, hm: HeightMap, layout: TownLayout, rng
 		var y0 := int(round((i + 1.0) / (def.arterial_h_count + 1.0) * def.height)) + rng.randi_range(-4, 4)
 		y0 = clampi(y0, 4, def.height - 5)
 		var wps := PackedVector2Array([Vector2(1, y0)])
-		var ctrl_n := 1 + (rng.randi() % 2)
+		# 大部分干道全程笔直(60%), 少数带 1 个控制点形成一段斜向
+		var ctrl_n := 0 if rng.randf() < 0.6 else 1
 		var prev_y := float(y0)
 		var x_span := def.width / float(ctrl_n + 1)
 		for c in ctrl_n:
@@ -1024,7 +1025,7 @@ static func _town_arterials(def: TownDef, hm: HeightMap, layout: TownLayout, rng
 		var x0 := int(round((i + 1.0) / (def.arterial_v_count + 1.0) * def.width)) + rng.randi_range(-4, 4)
 		x0 = clampi(x0, 4, def.width - 5)
 		var wps := PackedVector2Array([Vector2(x0, 1)])
-		var ctrl_n := 1 + (rng.randi() % 2)
+		var ctrl_n := 0 if rng.randf() < 0.6 else 1
 		var prev_x := float(x0)
 		var y_span := def.height / float(ctrl_n + 1)
 		for c in ctrl_n:
@@ -1069,7 +1070,7 @@ static func _stamp_arterial_line(def: TownDef, hm: HeightMap, layout: TownLayout
 				continue
 			var dir: Vector2 = perp * side
 			var start := p + dir * (def.arterial_width * 0.5 + 1.0)
-			_grow_street(def, hm, roads, start, dir, def.road_sec_value, def.secondary_max_len, rng, 0.4)
+			_grow_street(def, hm, roads, start, dir, def.road_sec_value, def.secondary_max_len, rng, 0.12)
 		i += spacing
 
 
@@ -1097,14 +1098,15 @@ static func _octi_segment(a: Vector2, b: Vector2) -> PackedVector2Array:
 	return out
 
 
-## 折线简化为 octilinear 航点: 贪心延伸, 段方向 snap 8 向, 横向偏差超容差即截弯
-static func _octilinear_waypoints(path: PackedVector2Array, min_seg := 8, max_dev := 2.4) -> PackedVector2Array:
+## 折线简化为 octilinear 航点: 贪心延伸, 段方向 snap 8 向, 横向偏差超容差即截弯;
+## max_bends 限定最大拐点数(现实道路以超长直线为主, 弯折是例外)
+static func _octilinear_waypoints(path: PackedVector2Array, min_seg := 8, max_dev := 2.4, max_bends := 999) -> PackedVector2Array:
 	if path.size() <= min_seg + 1:
 		return path
 	var out := PackedVector2Array([path[0]])
 	var anchor := path[0]
 	var i := mini(min_seg, path.size() - 1)
-	while i < path.size():
+	while i < path.size() and out.size() - 1 < max_bends:
 		var snapped := _snap_dir8(path[i] - anchor)
 		var best_j := i
 		var j := i
@@ -1120,6 +1122,9 @@ static func _octilinear_waypoints(path: PackedVector2Array, min_seg := 8, max_de
 		out.append(path[best_j])
 		anchor = path[best_j]
 		i = best_j + mini(min_seg, 1)
+	# 拐点预算耗尽后仍须直连终点(保证主街触达边缘枢纽, 连通性不破)
+	if out.size() > 0 and anchor != path[path.size() - 1]:
+		out.append(path[path.size() - 1])
 	return out
 
 
@@ -1150,8 +1155,8 @@ static func town_roads_step(step: TownRoadStep, ctx: TownGenContext) -> void:
 	if main_path.is_empty():
 		push_warning("PCGTool.town_roads_step: 主街 A* 无通路，回退直线 L 路。")
 		main_path = _carve_l_path(Vector2(layout.site), Vector2(hub), rng)
-	# Octilinear 简化: 主街化为少量长直段(横/竖/45°斜), 告别碎弯
-	var wps := _octilinear_waypoints(main_path, maxi(4, def.road_min_segment))
+	# Octilinear 简化: 主街化为极少数长直段(横/竖/45°斜), 拐点≤3——现实道路以笔直为主
+	var wps := _octilinear_waypoints(main_path, maxi(4, def.road_min_segment), 2.4, 3)
 	_stamp_octi_path(def, hm, layout, wps, def.main_width, def.road_main_value, TownLayout.EdgeClass.MAIN)
 	# 次街生长锚点沿简化后航点的实际折线取样
 	var spacing := rng.randi_range(maxi(2, def.street_spacing_min), maxi(3, def.street_spacing_max))
@@ -1254,22 +1259,38 @@ static func _turn_right(d: Vector2i) -> Vector2i:
 	return Vector2i(-d.y, d.x)
 
 
-## 把路径以指定宽度印进道路层（水上自动标桥值）
+## 把路径以指定宽度印进道路层（水上自动标桥值）。
+## int 化后相邻点呈对角关系时自动补楼梯格——保证斜线段 4 邻域连通(BFS/导航依赖)
 static func _stamp_road_layer(roads: GeneratedGrid, path: PackedVector2Array, width: int, value: int, hm: HeightMap, sea_level: float, bridge_value: int) -> void:
 	var hw := (width - 1) / 2
+	var prev := Vector2i(2147483647, 2147483647)
 	for p in path:
-		var px := int(p.x)
-		var py := int(p.y)
-		for dy in range(-hw, width - hw):
-			for dx in range(-hw, width - hw):
-				var x := px + dx
-				var y := py + dy
-				if not roads.in_bounds(x, y):
-					continue
-				var v := value
-				if hm != null and hm.get_height(x, y, 1.0) < sea_level:
-					v = bridge_value
-				roads.set_cell(x, y, v)
+		var c := Vector2i(int(p.x), int(p.y))
+		if c == prev:
+			continue
+		if prev.x != 2147483647 and c.x != prev.x and c.y != prev.y:
+			# 对角跳: 补 (c.x, prev.y) 拐角格使 4 连通
+			_stamp_wide(roads, Vector2i(c.x, prev.y), hw, value, hm, sea_level, bridge_value)
+		_stamp_wide(roads, c, hw, value, hm, sea_level, bridge_value)
+		prev = c
+
+
+## 以格为中心印 width×width 道路块
+static func _stamp_wide(roads: GeneratedGrid, c: Vector2i, hw: int, value: int, hm: HeightMap, sea_level: float, bridge_value: int) -> void:
+	for dy in range(-hw, width_from_hw(hw) - hw):
+		for dx in range(-hw, width_from_hw(hw) - hw):
+			var x := c.x + dx
+			var y := c.y + dy
+			if not roads.in_bounds(x, y):
+				continue
+			var v := value
+			if hm != null and hm.get_height(x, y, 1.0) < sea_level:
+				v = bridge_value
+			roads.set_cell(x, y, v)
+
+
+static func width_from_hw(hw: int) -> int:
+	return hw * 2 + 1
 
 
 ## 二叉最小堆（A* 开放列表；吸取线性扫描 O(n²) 教训）

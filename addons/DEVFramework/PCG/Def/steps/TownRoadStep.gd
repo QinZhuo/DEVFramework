@@ -21,7 +21,7 @@ class_name TownRoadStep extends TownStepDef
 ## Octilinear 简化最小段长（格）
 @export_range(4, 24, 1) var road_min_segment := 8
 ## 次街转向后最少直行格数
-@export_range(1, 16, 1) var street_min_run := 5
+@export_range(1, 16, 1) var street_min_run := 10
 
 
 func apply(ctx: TownGenContext) -> void:

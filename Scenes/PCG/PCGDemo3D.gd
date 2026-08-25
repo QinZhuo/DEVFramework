@@ -824,10 +824,12 @@ func _spawn_town_traffic(layout: TownLayout, to_world: Callable) -> void:
 		if ends.has(start_key):
 			continue
 		var chain := PackedInt32Array([start_key])
-		var cur: int = segs[start_key]
-		while segs.has(cur):
-			chain.append(cur)
+		var cur: int = start_key
+		while true:
 			cur = segs[cur]
+			chain.append(cur)
+			if not segs.has(cur):
+				break
 		chains.append(chain)
 	for chain in chains:
 		if chain.size() < 2:
