@@ -8,7 +8,7 @@
 script = ExtResource("1_script")
 base_layer = ExtResource("2_base")
 detail_layer = ExtResource("3_detail")
-island_strength = 0.7
+island_strength = 1.0
 island_shape = 2
 min_height = 0.1
 max_height = 0.95
