@@ -132,3 +132,17 @@ static func await_emit(s: Signal, ...args) -> void:
 		if await_emit_delay > 0.0 and i < conns.size() - 1:
 			await Engine.get_main_loop().create_timer(await_emit_delay).timeout
 	timer.stop()
+
+## 安全等待一个协程句柄(GDScriptFunctionState), 返回其结果。
+## 引擎陷阱: await 一个【已完成/已失效】的句柄会永久挂起且无任何报错 ——
+## 本方法先经 is_valid() 判定, 仅活跃句柄才真正等待; 失效/非句柄输入返回 null。
+static func await_state_safe(fs: Variant) -> Variant:
+	if _is_active_function_state(fs):
+		return await fs
+	return null
+
+
+static func _is_active_function_state(v: Variant) -> bool:
+	if v == null or not (v is Object) or v.get_class() != "GDScriptFunctionState":
+		return false
+	return bool(v.call("is_valid"))

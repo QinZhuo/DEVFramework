@@ -679,6 +679,34 @@ static func _place_random_3d(def: PlacementDef3D, rng: RandomNumberGenerator) ->
 			rng.randf() * def.region_size.z))
 	return out
 
+## —— 城市（CityDef，道路网格划分街区） ——
+
+## 城市街区生成：道路网格划分街区，街区内建筑 / 公园填充
+static func generate_city(def: CityDef, rng: RandomNumberGenerator) -> GeneratedGrid:
+	var grid := GeneratedGrid.create(def.width, def.height, def.empty_value)
+	for x in def.width:
+		if x % def.block_size < def.road_width:
+			for y in def.height:
+				grid.set_cell(x, y, def.road_value)
+	for y in def.height:
+		if y % def.block_size < def.road_width:
+			for x in def.width:
+				grid.set_cell(x, y, def.road_value)
+	var blocks := Vector2i(ceili(def.width / float(def.block_size)), ceili(def.height / float(def.block_size)))
+	var inner := def.block_size - def.road_width
+	if inner <= def.building_gap * 2:
+		return grid
+	for by in blocks.y:
+		for bx in blocks.x:
+			var ox := bx * def.block_size + def.road_width
+			var oy := by * def.block_size + def.road_width
+			var is_park := rng.randf() < def.park_ratio
+			var fill := def.park_value if is_park else def.building_value
+			for y in range(oy + def.building_gap, mini(oy + inner - def.building_gap, def.height)):
+				for x in range(ox + def.building_gap, mini(ox + inner - def.building_gap, def.width)):
+					grid.set_cell(x, y, fill)
+	return grid
+
 ## —— 城镇（S1 选址 / S2 道路网 / S3 街区 / S4 地块细分） ——
 
 ## 生成小城镇（同 Def + 同 seed 必复现）。hm 可为 null（平地城镇）。
@@ -1165,7 +1193,7 @@ static func town_roads_step(step: TownRoadStep, ctx: TownGenContext) -> void:
 		})
 	# 次街生长锚点沿主街实际路径取样
 	var spacing := rng.randi_range(maxi(2, def.street_spacing_min), maxi(3, def.street_spacing_max))
-	var i := spacing
+	var i: int = spacing
 	while i < main_path.size() - 1:
 		var p := main_path[i]
 		var nxt := main_path[mini(i + 1, main_path.size() - 1)]

@@ -1,4 +1,7 @@
-class_name ActorTool
+class_name NodeTreeTool
+
+## 通用节点树生命周期/存档编排工具(原 ActorTool, 更名以反映通用定位):
+## 按约定在子节点上实现 game_init/game_ready/save_data/load_data, 由宿主统一调度。
 
 ## 遍历指定节点的子节点，在所有子节点上调用同名函数
 static func call_on_children(node: Node, func_name: String):
