@@ -1045,9 +1045,13 @@ static func _stamp_arterial_line(def: TownDef, hm: HeightMap, layout: TownLayout
 	if wps.size() < 2:
 		return
 	var roads := layout.roads_grid
+	# 控制点是稀疏拐点(2-3个)，_stamp_road_layer 是逐点印刷契约——
+	# 必须先栅格化加密成逐格路径，否则干道只剩端点几个斑块(车流也会脱路穿房)
 	var full := PackedVector2Array()
 	for s in wps.size() - 1:
-		full.append_array(_octi_segment(wps[s], wps[s + 1]))
+		var seg := _octi_segment(wps[s], wps[s + 1])
+		for k in seg.size() - 1:
+			full.append_array(_rasterize_line(seg[k], seg[k + 1]))
 	_stamp_road_layer(roads, full, def.arterial_width, def.road_arterial_value, hm, def.sea_level, def.bridge_value)
 	var start_idx := layout.road_nodes.size()
 	for wp in wps:
@@ -1097,6 +1101,16 @@ static func _octi_segment(a: Vector2, b: Vector2) -> PackedVector2Array:
 	elif ady > adx:
 		out.append(Vector2(a.x, a.y + dy - signf(dy) * adx))
 	out.append(b)
+	return out
+
+
+## 直线栅格化：返回 a→b 的逐格中心序列（含两端；先走主导轴，与 octilinear 印刷一致）
+static func _rasterize_line(a: Vector2, b: Vector2) -> PackedVector2Array:
+	var out := PackedVector2Array()
+	var d := b - a
+	var steps := maxi(int(ceilf(d.length())), 1)
+	for k in steps + 1:
+		out.append(a + d * (float(k) / float(steps)))
 	return out
 
 

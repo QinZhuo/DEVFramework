@@ -1,4 +1,4 @@
-﻿extends Node3D
+extends Node3D
 ## PCG 3D 演示 · 体素地形 / 洞穴
 ##
 ## 生成 GeneratedGrid3D 并用 MultiMesh 体素化显示，鼠标左键拖拽旋转查看。
@@ -379,13 +379,14 @@ func _render_town(layout: TownLayout, def: TownDef) -> void:
 		ground.position = Vector3(0, -0.1, 0)
 		world.add_child(ground)
 	# 道路层（按值分组；厚铺装半嵌入地形, 遮住格间台阶缝隙避免破碎感）
+	# 沥青色阶整体加深、拉开等级对比(干道最深→巷道最浅偏土色), 与草地/人行道强对比
 	var road_style := {
-		def.road_arterial_value: [Color(0.4, 0.41, 0.45), 1.0],
-		def.road_main_value: [Color(0.55, 0.56, 0.6), 0.9],
-		def.road_sec_value: [Color(0.48, 0.49, 0.53), 0.75],
-		def.road_alley_value: [Color(0.4, 0.41, 0.45), 0.65],
-		def.road_ring_value: [Color(0.52, 0.53, 0.57), 0.75],
-		def.bridge_value: [Color(0.5, 0.38, 0.24), 0.9],
+		def.road_arterial_value: [Color(0.22, 0.23, 0.26), 1.0],
+		def.road_main_value: [Color(0.3, 0.31, 0.34), 0.9],
+		def.road_sec_value: [Color(0.38, 0.39, 0.42), 0.75],
+		def.road_alley_value: [Color(0.47, 0.45, 0.4), 0.65],
+		def.road_ring_value: [Color(0.26, 0.27, 0.3), 0.75],
+		def.bridge_value: [Color(0.42, 0.28, 0.16), 0.9],
 	}
 	for v in road_style:
 		var pts := PackedVector3Array()
@@ -469,12 +470,16 @@ func _render_town(layout: TownLayout, def: TownDef) -> void:
 	_add_mesh_sized(dbl_y_v, Color(1.0, 0.8, 0.1), Vector3(0.13, 0.09, 1.0), false, Color(1.0, 0.8, 0.1))
 	_add_mesh_sized(zebra_h, Color(0.92, 0.92, 0.88), Vector3(0.5, 0.07, 0.34), false, Color(0.7, 0.7, 0.68))
 	_add_mesh_sized(zebra_v, Color(0.92, 0.92, 0.88), Vector3(0.34, 0.07, 0.5), false, Color(0.7, 0.7, 0.68))
-	# 人行道：主街邻接空格（浅灰白, 半嵌入）
+	# 人行道：主街/干道/环路/次街邻接空格（浅灰白, 半嵌入）——全路网勾边, 道路轮廓一眼可辨
+	var sidewalk_src := {
+		def.road_main_value: true, def.road_arterial_value: true,
+		def.road_ring_value: true, def.road_sec_value: true,
+	}
 	var sidewalk_seen := {}
 	var walk_pts := PackedVector3Array()
 	for z in d:
 		for x in w:
-			if grid.get_cell(x, z, -1) != def.road_main_value:
+			if not sidewalk_src.has(grid.get_cell(x, z, -1)):
 				continue
 			for dd: Vector2i in [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)]:
 				var nx := x + dd.x
@@ -802,37 +807,64 @@ func _render_town(layout: TownLayout, def: TownDef) -> void:
 	_spawn_town_traffic(layout, to_world)
 
 
-## 干道车流: 按 ARTERIAL 分段边重建完整折线, 对向各放一辆低多边形汽车循环行驶
+## 干道车流: 邻接表重建干道链(交叉节点不再跳链) + 每段按道路印刷同款八向展开
+## (干道是 octilinear 路径, 直接连端点的直线会切角穿房——必须与 _octi_segment 展开一致)
 func _spawn_town_traffic(layout: TownLayout, to_world: Callable) -> void:
 	for c in _traffic_cars:
 		(c.node as Node3D).queue_free()
 	_traffic_cars.clear()
-	var segs := {}
-	var ends := {}
+	var adj := {}
 	for e in layout.road_edges:
 		if int(e.cls) != TownLayout.EdgeClass.ARTERIAL:
 			continue
-		segs[int(e.a)] = int(e.b)
-		ends[int(e.b)] = true
+		var ea := int(e.a)
+		var eb := int(e.b)
+		if not adj.has(ea):
+			adj[ea] = {}
+		if not adj.has(eb):
+			adj[eb] = {}
+		(adj[ea] as Dictionary)[eb] = true
+		(adj[eb] as Dictionary)[ea] = true
+	if adj.is_empty():
+		return
+	# 从度=1 端点出发走链(交叉节点不跳链); 全是环时任取起点
+	var starts: Array = []
+	for n in adj.keys():
+		if (adj[n] as Dictionary).size() == 1:
+			starts.append(n)
+	if starts.is_empty():
+		starts.append(adj.keys()[0])
 	var chains: Array = []
-	for start_key in segs.keys():
-		if ends.has(start_key):
-			continue
-		var chain := PackedInt32Array([start_key])
-		var cur: int = start_key
+	var visited := {}
+	for n0 in starts:
+		var cur: int = n0
+		var prev := -1
+		var chain := PackedInt32Array([cur])
 		while true:
-			cur = segs[cur]
-			chain.append(cur)
-			if not segs.has(cur):
+			var nxt := -1
+			for nb in adj[cur]:
+				var ek := Vector2i(mini(cur, int(nb)), maxi(cur, int(nb)))
+				if int(nb) != prev and not visited.has(ek):
+					nxt = int(nb)
+					break
+			if nxt < 0:
 				break
-		chains.append(chain)
+			visited[Vector2i(mini(cur, nxt), maxi(cur, nxt))] = true
+			chain.append(nxt)
+			prev = cur
+			cur = nxt
+		if chain.size() >= 2:
+			chains.append(chain)
 	for chain in chains:
-		if chain.size() < 2:
-			continue
 		var pts := PackedVector3Array()
-		for idx in chain:
-			var n: Vector2 = layout.road_nodes[idx]
-			pts.append(to_world.call(int(roundf(n.x)), int(roundf(n.y))) + Vector3(0, 0.55, 0))
+		for i in chain.size() - 1:
+			var a: Vector2 = layout.road_nodes[chain[i]]
+			var b: Vector2 = layout.road_nodes[chain[i + 1]]
+			var poly := _octi_expand(a, b)
+			var keep := poly.size() if i == chain.size() - 2 else poly.size() - 1
+			for k in keep:
+				var p: Vector2 = poly[k]
+				pts.append(to_world.call(int(roundf(p.x)), int(roundf(p.y))) + Vector3(0, 0.55, 0))
 		var total := 0.0
 		var cum := PackedFloat32Array([0.0])
 		for i in range(1, pts.size()):
