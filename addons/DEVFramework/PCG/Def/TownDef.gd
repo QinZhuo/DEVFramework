@@ -1,4 +1,4 @@
-﻿@tool
+@tool
 class_name TownDef extends PCGGeneratorDef
 ## 城镇生成总控 — 可插拔步骤管线（城镇生成总控）
 ##
@@ -78,6 +78,8 @@ class_name TownDef extends PCGGeneratorDef
 @export_range(4, 128, 1) var min_block_area := 32
 @export_range(16, 512, 2) var lot_max_area := 60
 @export_range(4, 64, 1) var lot_min_area := 18
+## 地块最短边（格）：切分时保证两半沿切轴都不窄于此值，防 1 格细条地块
+@export_range(1, 8, 1) var lot_min_edge := 2
 ## [建筑]
 @export var houses: Array[TemplateDef] = []
 @export var facilities: Array[FacilityDef] = []
@@ -85,6 +87,8 @@ class_name TownDef extends PCGGeneratorDef
 @export_range(0, 4, 1) var setback := 1
 @export_range(1, 8, 1) var house_layers_min := 1
 @export_range(1, 8, 1) var house_layers_max := 3
+## 面积→高度权重（CGA Mass Modeling：0=纯中心距离梯度, 1=纯地块面积驱动）
+@export_range(0.0, 1.0, 0.05) var area_height_weight := 0.4
 @export var house_roof := "gable"
 @export var flat_roof_styles: Array[String] = ["石砌", "砖混"]
 @export var style_table: Array[ContentEntryDef] = []
@@ -112,6 +116,8 @@ class_name TownDef extends PCGGeneratorDef
 @export_range(0, 6, 1) var infill_passes := 3
 ## 象限最低路格密度阈值（该象限路格数/象限面积，低于即触发补生长）
 @export_range(0.0, 0.25, 0.005) var infill_min_density := 0.05
+## 死路清理：迭代摘除 4 邻域度数≤1 的次街/巷道端头（主街/干道/环路/桥不动）
+@export var prune_dead_ends := true
 ## [分区] 启用语义分区（市集/贵族/民居，写入 parcels[i].ward 与 layout.wards）
 @export var enable_wards := true
 ## [城墙] 启用城墙+城门（墙写入 build 层；门洞记录到 layout.gates）

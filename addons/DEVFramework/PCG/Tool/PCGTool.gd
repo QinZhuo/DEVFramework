@@ -1,4 +1,4 @@
-﻿@tool
+@tool
 ## PCG 统一入口 — 随机 / 噪声 / 网格 / 散布 / 内容 / 管线
 ##
 ## 设计要点：
@@ -679,35 +679,8 @@ static func _place_random_3d(def: PlacementDef3D, rng: RandomNumberGenerator) ->
 			rng.randf() * def.region_size.z))
 	return out
 
-## —— 城市（CityDef，道路网格划分街区） ——
-
-## 城市街区生成：道路网格划分街区，街区内建筑 / 公园填充
-static func generate_city(def: CityDef, rng: RandomNumberGenerator) -> GeneratedGrid:
-	var grid := GeneratedGrid.create(def.width, def.height, def.empty_value)
-	for x in def.width:
-		if x % def.block_size < def.road_width:
-			for y in def.height:
-				grid.set_cell(x, y, def.road_value)
-	for y in def.height:
-		if y % def.block_size < def.road_width:
-			for x in def.width:
-				grid.set_cell(x, y, def.road_value)
-	var blocks := Vector2i(ceili(def.width / float(def.block_size)), ceili(def.height / float(def.block_size)))
-	var inner := def.block_size - def.road_width
-	if inner <= def.building_gap * 2:
-		return grid
-	for by in blocks.y:
-		for bx in blocks.x:
-			var ox := bx * def.block_size + def.road_width
-			var oy := by * def.block_size + def.road_width
-			var is_park := rng.randf() < def.park_ratio
-			var fill := def.park_value if is_park else def.building_value
-			for y in range(oy + def.building_gap, mini(oy + inner - def.building_gap, def.height)):
-				for x in range(ox + def.building_gap, mini(ox + inner - def.building_gap, def.width)):
-					grid.set_cell(x, y, fill)
-	return grid
-
 ## —— 城镇（S1 选址 / S2 道路网 / S3 街区 / S4 地块细分） ——
+## 城市生成统一走 TownDef 管线（旧 CityDef 均匀网格模式已按设计案移除）
 
 ## 生成小城镇（同 Def + 同 seed 必复现）。hm 可为 null（平地城镇）。
 ## def 参数容器值反向注入步骤实例（tres 配置生效），然后统一走 step.apply 执行。
@@ -724,6 +697,13 @@ static func generate_town(def: TownDef, hm: HeightMap, seed_base: int) -> TownLa
 			continue
 		s.apply(gctx)
 	return gctx.layout
+
+
+## 后台线程生成城镇（大城镇不卡主线程；TownLayout/TownDef 均纯数据，线程安全）
+static func generate_town_async(def: TownDef, hm: HeightMap, seed_base: int) -> TownLayout:
+	return await AsyncTool.thread_call(func() -> TownLayout:
+		return generate_town(def, hm, seed_base)
+	)
 
 
 ## 反向同步：def 参数容器 → 同类型 step 实例（使 tres 配置在默认链下生效）
@@ -750,6 +730,7 @@ static func _sync_def_to_steps(def: TownDef, steps_arr: Array[TownStepDef]) -> v
 			s.min_block_area = def.min_block_area
 			s.lot_max_area = def.lot_max_area
 			s.lot_min_area = def.lot_min_area
+			s.set("lot_min_edge", def.get("lot_min_edge"))
 		elif s is TownBuildingStep:
 			if def.houses.size() > 0:
 				s.houses = def.houses
@@ -801,6 +782,8 @@ static func town_ring_step(_step: TownRingStep, ctx: TownGenContext) -> void:
 		passes = int(ctx.def.infill_passes)
 	if passes > 0:
 		_town_balance_infill(ctx.def, ctx.heightmap, ctx.layout, ctx.next_rng())
+	_prune_dead_ends(ctx.def, ctx.layout)
+	_ensure_bridges(ctx.def, ctx.layout)
 
 
 static func town_ward_step(_step: TownWardStep, ctx: TownGenContext) -> void:
@@ -832,6 +815,9 @@ static func town_parcel_step(step: TownParcelStep, ctx: TownGenContext) -> void:
 	def.min_block_area = step.min_block_area
 	def.lot_max_area = step.lot_max_area
 	def.lot_min_area = step.lot_min_area
+	var lme = step.get("lot_min_edge")
+	if lme != null:
+		def.set("lot_min_edge", int(lme))
 	_town_parcels(def, ctx.layout, ctx.next_rng())
 
 
@@ -1557,12 +1543,28 @@ static func _slice_lot(def: TownDef, roads: GeneratedGrid, cells: Dictionary, re
 		return
 	var ra: Rect2i
 	var rb: Rect2i
-	if rect.size.x >= rect.size.y:
-		var sx := rect.position.x + maxi(1, int(rect.size.x * rng.randf_range(0.35, 0.65)))
+	# OBB 退化实现：以地块实际格 extents 选切轴（L 形街区不再按外包盒切出大空矩形），
+	# 切点在 [pos+min_edge, end-min_edge] 内随机（Parish&Müller 随机比例），
+	# 保证两半沿切轴都不窄于 lot_min_edge——防 1 格细条地块（锯齿观感根因）
+	var me := maxi(1, int(def.get("lot_min_edge")) if def.get("lot_min_edge") != null else 1)
+	var exn := Vector2i(2147483647, 2147483647)
+	var exx := Vector2i(-2147483648, -2147483648)
+	for idx in cells:
+		var ep := Vector2i(int(idx) % roads.width, int(idx) / roads.width)
+		exn = exn.min(ep)
+		exx = exx.max(ep)
+	if exx.x - exn.x >= exx.y - exn.y:
+		var lo := rect.position.x + me
+		var hi := rect.end.x - me
+		var sx: int = rect.get_center().x if lo > hi \
+				else clampi(rect.position.x + int(rect.size.x * rng.randf_range(0.35, 0.65)), lo, hi)
 		ra = Rect2i(rect.position, Vector2i(sx - rect.position.x, rect.size.y))
 		rb = Rect2i(Vector2i(sx, rect.position.y), Vector2i(rect.end.x - sx, rect.size.y))
 	else:
-		var sy := rect.position.y + maxi(1, int(rect.size.y * rng.randf_range(0.35, 0.65)))
+		var lo2 := rect.position.y + me
+		var hi2 := rect.end.y - me
+		var sy: int = rect.get_center().y if lo2 > hi2 \
+				else clampi(rect.position.y + int(rect.size.y * rng.randf_range(0.35, 0.65)), lo2, hi2)
 		ra = Rect2i(rect.position, Vector2i(rect.size.x, sy - rect.position.y))
 		rb = Rect2i(Vector2i(rect.position.x, sy), Vector2i(rect.size.x, rect.end.y - sy))
 	for half in [ra, rb]:
@@ -1837,13 +1839,25 @@ static func _place_from_lists(def: TownDef, layout: TownLayout, li: int, type_na
 	if frontage < 0 or not _FACING_TO_ROT.has(frontage):
 		return false
 	var rect: Rect2i = parcel.rect
-	# 模板按面积降序尝试（同面积随机次序）：大地块优先放 大房子，放不下再换小户型兜底
+	# 临街宽度（沿 frontage 方向贴路的真实格数）：楼型与朝向匹配的依据
+	# —— 窄临街配窄户型、宽临街配宽户型，避免宽街一面小屋或窄巷硬塞大楼
+	var roads0: GeneratedGrid = layout.roads_grid
+	var dir0: Vector2i = _DIR4[frontage]
+	var front_len := 0
+	for idx in parcel.cells:
+		var cx: int = int(idx) % roads0.width
+		var cy: int = int(idx) / roads0.width
+		if roads0.get_cell(cx + dir0.x, cy + dir0.y, -1) > 0:
+			front_len += 1
+	# 模板按面积降序尝试（同面积随机次序）：大地块优先放 大房子，放不下再换小户型兜底；
+	# 同时对「沿街尺寸与临街宽度失配」的模板施加惩罚（朝向→楼型规则）
 	var scored: Array = []
 	for t in tmpl_list:
 		if t == null or t.lines.is_empty():
 			continue
 		var sz := t.get_size()
-		scored.append({"t": t, "key": float(sz.x * sz.y) + rng.randf_range(0.0, 0.5)})
+		var dim_fit := absf(maxf(sz.x, sz.y) - front_len) + absf(minf(sz.x, sz.y) - front_len) * 0.5
+		scored.append({"t": t, "key": float(sz.x * sz.y) - dim_fit * 1.5 + rng.randf_range(0.0, 0.5)})
 	if scored.is_empty():
 		return false
 	scored.sort_custom(func(a, b): return float(b.key) < float(a.key))
@@ -1867,9 +1881,11 @@ static func _place_from_lists(def: TownDef, layout: TownLayout, li: int, type_na
 static func _try_place_one(def: TownDef, layout: TownLayout, parcel: Dictionary, tmpl: TemplateDef, facing: int, type_name: String, bid: int, rng: RandomNumberGenerator, li: int, fac: FacilityDef) -> bool:
 	var rot: int = _FACING_TO_ROT[facing]
 	var rect: Rect2i = parcel.rect
-	# 分向退线：临街面不退（门贴路），其余方向各退 side/rear 退线
+	# 分向退线（CGA setback）：临街面不退（门贴路），侧/后各退线；退线量来自 Def 配置
 	var side_setback := 1
-	var rear_setback := 2
+	if def.get("setback") != null:
+		side_setback = maxi(1, int(def.setback))
+	var rear_setback := side_setback + 1
 	var front_setback := 0
 	var avail_w: int
 	var avail_h: int
@@ -1985,9 +2001,16 @@ static func _try_place_one(def: TownDef, layout: TownLayout, parcel: Dictionary,
 		layers = clampi(fac.layers, 1, 4)
 		roof = fac.roof
 	else:
-		# 住宅层数：中心高外围矮的自然天际线（距选址越远越矮）+ 少量随机上浮
+		# 住宅层数（CGA Mass Modeling 形态规则）：
+		#   中心梯度（距选址越远越矮）与地块面积梯度按 area_height_weight 加权混合
+		#   —— 小地块永不产出摩天楼（面积→高度区间），市中心/大地块自然高
 		var dist := Vector2(footprint.get_center()).distance_to(Vector2(layout.site))
-		var t := clampf(1.0 - dist / maxf(1.0, def.width * 0.5), 0.0, 1.0)
+		var t_center := clampf(1.0 - dist / maxf(1.0, def.width * 0.5), 0.0, 1.0)
+		var ahw := 0.4
+		if def.get("area_height_weight") != null:
+			ahw = clampf(float(def.get("area_height_weight")), 0.0, 1.0)
+		var t_area := clampf(float((parcel.cells as PackedInt32Array).size()) / maxf(1.0, float(def.lot_max_area)), 0.0, 1.0)
+		var t := (1.0 - ahw) * t_center + ahw * t_area
 		layers = def.house_layers_min + int(round(t * (def.house_layers_max - def.house_layers_min)))
 		if rng.randf() < 0.25:
 			layers += 1
@@ -2100,6 +2123,49 @@ static func _town_ring_road(def: TownDef, hm: HeightMap, layout: TownLayout) -> 
 			continue
 		# 水上段必须有桥语义（否则贴地回写跳过水下格，形成断崖）
 		roads.set_cell(c.x, c.y, def.bridge_value if under_water else def.road_ring_value)
+
+
+## 死路清理：迭代摘除 4 邻域度数≤1 的次街/巷道端头（链式短死胡同逐轮收敛）；
+## 主街/干道/环路/桥不参与摘除（保持骨架与跨水连通语义完整）。
+## 摘除度数 1 的格子不会破坏连通性，且 2 格宽街道的两条并行 lane 互为支撑不会被误摘。
+static func _prune_dead_ends(def: TownDef, layout: TownLayout) -> void:
+	var pd = def.get("prune_dead_ends")
+	if pd != null and not bool(pd):
+		return
+	var roads := layout.roads_grid
+	var keep := [def.road_main_value, def.road_arterial_value, def.road_ring_value, def.bridge_value]
+	for _pass in 8:
+		var to_clear: Array[Vector2i] = []
+		for y in roads.height:
+			for x in roads.width:
+				var v := roads.get_cell(x, y, 0)
+				if v == 0 or keep.has(v):
+					continue
+				var n := 0
+				for d in _DIR4:
+					if roads.get_cell(x + d.x, y + d.y, -1) != 0:
+						n += 1
+				if n <= 1:
+					to_clear.append(Vector2i(x, y))
+		if to_clear.is_empty():
+			return
+		for c in to_clear:
+			roads.set_cell(c.x, c.y, 0)
+
+
+## 桥值兜底校验：任何落在水面上的路格必须携带桥语义
+## （贴地回写/导航按桥规则处理；漏标会造成水下路格断崖或断路）
+static func _ensure_bridges(def: TownDef, layout: TownLayout) -> void:
+	var hm := layout.heightmap
+	if hm == null:
+		return
+	var roads := layout.roads_grid
+	for y in roads.height:
+		for x in roads.width:
+			if roads.get_cell(x, y, 0) == 0:
+				continue
+			if hm.get_height(x, y, 1.0) < def.sea_level and roads.get_cell(x, y, -1) != def.bridge_value:
+				roads.set_cell(x, y, def.bridge_value)
 
 
 ## —— 空间均衡：环路收口后对路网稀疏象限补生次街 ——

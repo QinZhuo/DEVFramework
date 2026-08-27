@@ -321,14 +321,18 @@ var stream: AudioStreamWAV = out["laser"]                # 直接播放/保存
 
 S1 地形评分选址 → S2 贴地道路网(主街坡度A*→边缘枢纽 / 次街扰动生长) →
 环路 → S2b 递归空间细分刻巷道 → 广场(中心设施) → S3 街区提取 → S4 临街地块细分 →
-S5 建筑放置(设施优先 / 住宅填充 / 锚点定位保证门临路 / 切台·桩基贴地) →
+S5 建筑放置(设施优先 / 住宅填充 / 锚点定位保证门临路 / 切台·桩基贴地 /
+面积·临街宽→楼型楼层的形态规则) →
 S6 室内家具(槽位抽变体 + 装饰散布 + 校验修复) + 院落围栏 →
 绿化散布 + 行道树 + 街具(路灯/长椅) + 农田条纹 + V1 地形回写。
+环路收口后自动做 稀疏象限补生长 + 死路清理 + 桥值兜底校验。
+> 注：旧 CityDef 均匀网格城市已按设计案移除，城市生成统一走 TownDef 管线。
 设计全案见 `docs/城镇生成管线设计案.md`、贴地方案见 `docs/城镇贴地放置技术方案.md`：
 
 ```gdscript
 var town: TownDef = load("res://Assets/Def/PCG/City_Grid.tres")
 var layout := PCGTool.generate_town(town, heightmap, seed)   # heightmap 可为 null(平地)
+var layout2 := await PCGTool.generate_town_async(town, heightmap, seed)  # 后台线程版, 大城镇不卡主线程
 layout.town_name             # 城镇名(ContentGenDef NAME 模式生成)
 layout.site                  # 选址点(评分 site_score)
 layout.roads_grid            # 道路层：主街/次街/巷道/桥/环路 值可配(TownDef 导出)
