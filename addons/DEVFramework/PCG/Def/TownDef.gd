@@ -172,11 +172,12 @@ func get_desc(_data) -> String:
 func effective_steps() -> Array[TownStepDef]:
 	if not steps.is_empty():
 		return steps
-	return TownDef.default_steps(use_tensor_roads)
+	return TownDef.default_steps(use_tensor_roads, enable_walls)
 
 
 ## 内置标准链（每次调用生成新实例，资源间互不干扰）
-static func default_steps(use_tensor: bool = false) -> Array[TownStepDef]:
+## use_walls=false(现代城市等) 时不挂城墙步骤, 链里完全没有墙/门逻辑
+static func default_steps(use_tensor: bool = false, use_walls: bool = true) -> Array[TownStepDef]:
 	var list: Array[TownStepDef] = []
 	list.append(TownSiteStep.new())
 	# S2 路网二选一: A*主街生长 / 张量场流线追踪
@@ -190,7 +191,9 @@ static func default_steps(use_tensor: bool = false) -> Array[TownStepDef]:
 	list.append(TownParcelStep.new())
 	list.append(TownWardStep.new())
 	list.append(TownBuildingStep.new())
-	list.append(TownWallStep.new())
+	# 城墙+城门: 仅古城/要塞类城镇挂载(现代城市 enable_walls=false 时整步跳过)
+	if use_walls:
+		list.append(TownWallStep.new())
 	list.append(TownInteriorStep.new())
 	list.append(TownGreeneryStep.new())
 	list.append(TownStreetStep.new())

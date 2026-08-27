@@ -99,3 +99,4 @@ tensor_minor_spacing = 11
 tensor_max_step_rise = 0.06
 tensor_town_radius = 50
 tensor_straight_run = 14.0
+enable_walls = false

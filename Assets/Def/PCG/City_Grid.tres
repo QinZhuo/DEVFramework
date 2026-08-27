@@ -90,3 +90,4 @@ furniture_tables = Array[ExtResource("4_ftable_script")]([ExtResource("10_fbed")
 prop_table = Array[ExtResource("3_entry_script")]([SubResource("prop_barrel"), SubResource("prop_plant"), SubResource("prop_crate")])
 props_per_building = 3
 name_gen = ExtResource("24_townname")
+enable_walls = false

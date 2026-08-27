@@ -1721,6 +1721,73 @@ static func _town_alley_split(def: TownDef, hm: HeightMap, layout: TownLayout, r
 		if c.size() <= 24:
 			for idx in c:
 				roads.cells[idx] = 0
+	# 真实街区加密: 外包矩形切分对不规则路网(山地张量)会落空, 改为直接
+	# 对面积超限的封闭口袋(实际街区)内部刻巷道, 迭代至全部 ≤ max_block_area
+	_town_block_densify(def, layout)
+
+
+## 街区加密 — 对面积超限的真实封闭口袋刻巷道切分(每轮每个口袋切一刀, 最多 4 轮)
+static func _town_block_densify(def: TownDef, layout: TownLayout) -> void:
+	var roads := layout.roads_grid
+	# 目标街区尺度与 max_block_area(地块切分阈值, 通常很大)无关:
+	# 按真实城镇街区感取 min_block_area 的 2 倍(典型 80*2=160), 超过即加密
+	var target := maxi(def.min_block_area * 2, 120)
+	for pass_i in 4:
+		var cut_any := false
+		for comp in _town_blocks(roads):
+			if comp.size() <= target:
+				continue
+			# 跳过接触地图边界的外部区域(不是街区)
+			var bbox := Rect2i()
+			var first := true
+			var touches_border := false
+			for idx in comp:
+				var c := Vector2i(idx % roads.width, idx / roads.width)
+				if first:
+					bbox = Rect2i(c, Vector2i.ONE)
+					first = false
+				else:
+					bbox = bbox.expand(c)
+				if c.x == 0 or c.y == 0 or c.x == roads.width - 1 or c.y == roads.height - 1:
+					touches_border = true
+			if touches_border:
+				continue
+			# 沿长轴找覆盖最多口袋格的切线(矩形切分对不规则口袋落空的补救)
+			var vertical := bbox.size.x >= bbox.size.y
+			var best_pos := -1
+			var best_cover := 0
+			if vertical:
+				for cx in range(bbox.position.x + 1, bbox.end.x - 1):
+					var cover := 0
+					for idx in comp:
+						if idx % roads.width == cx:
+							cover += 1
+					if cover > best_cover:
+						best_cover = cover
+						best_pos = cx
+			else:
+				for cy in range(bbox.position.y + 1, bbox.end.y - 1):
+					var cover := 0
+					for idx in comp:
+						if idx / roads.width == cy:
+							cover += 1
+					if cover > best_cover:
+						best_cover = cover
+						best_pos = cy
+			if best_pos < 0 or best_cover < 4:
+				continue
+			# 沿切线把口袋内格子刻成巷道(水下跳过; 山地巷道=石阶, 不查坡度)
+			for idx in comp:
+				var c := Vector2i(idx % roads.width, idx / roads.width)
+				var on_line := (c.x == best_pos) if vertical else (c.y == best_pos)
+				if not on_line or roads.get_cell(c.x, c.y, 0) != 0:
+					continue
+				if layout.heightmap != null and layout.heightmap.get_height(c.x, c.y, 1.0) < def.sea_level:
+					continue
+				roads.set_cell(c.x, c.y, def.road_alley_value)
+				cut_any = true
+		if not cut_any:
+			break
 
 
 ## 街区提取：非道路连通域（复用 components）
@@ -2538,7 +2605,7 @@ static func _town_walls(def: TownDef, layout: TownLayout, rng: RandomNumberGener
 	for y in range(r.position.y + 1, r.end.y - 1):
 		perim.append([Vector2i(r.position.x, y), "W"])
 		perim.append([Vector2i(r.end.x - 1, y), "E"])
-	# 主街城门: 每边最多一处(向内 3 格探测主街)
+	# 主街城门: 每边最多一处(向内 3 格探测主街); 全城城门最小间距, 防止门过多失去城墙意义
 	var gate_pos := {}
 	var gate_edge := {}
 	for it in perim:
@@ -2546,9 +2613,17 @@ static func _town_walls(def: TownDef, layout: TownLayout, rng: RandomNumberGener
 		var edge: String = it[1]
 		if gate_pos.has(pos):
 			continue
-		if _wall_gate_hit(roads, pos, edge, def.road_main_value):
-			gate_pos[pos] = true
-			gate_edge[pos] = edge
+		if not _wall_gate_hit(roads, pos, edge, def.road_main_value):
+			continue
+		var near := false
+		for gp in gate_pos.keys():
+			if Vector2(gp).distance_to(Vector2(pos)) < 8.0:
+				near = true
+				break
+		if near:
+			continue
+		gate_pos[pos] = true
+		gate_edge[pos] = edge
 	# 额外小门: 次街相交点随机挑(Fisher-Yates 用步骤 rng 保证确定性)
 	var sec_hits: Array = []
 	for it in perim:
@@ -2571,6 +2646,14 @@ static func _town_walls(def: TownDef, layout: TownLayout, rng: RandomNumberGener
 			break
 		var pos: Vector2i = it[0]
 		if gate_pos.has(pos):
+			continue
+		# 与既有城门保持最小间距(同主街门规则)
+		var near := false
+		for gp in gate_pos.keys():
+			if Vector2(gp).distance_to(Vector2(pos)) < 8.0:
+				near = true
+				break
+		if near:
 			continue
 		gate_pos[pos] = true
 		gate_edge[pos] = it[1]
