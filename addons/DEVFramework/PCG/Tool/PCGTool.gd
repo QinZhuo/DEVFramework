@@ -699,6 +699,7 @@ static func town_tensor_road_step(step: TensorRoadStep, ctx: TownGenContext) -> 
 	step.contour_strength = float(def.get("tensor_contour_strength"))
 	step.major_spacing = int(def.get("tensor_major_spacing"))
 	step.minor_spacing = int(def.get("tensor_minor_spacing"))
+	step.max_step_rise = float(def.get("tensor_max_step_rise"))
 	_tensor_roads(step, def, ctx.heightmap, ctx.layout, ctx.next_rng())
 
 

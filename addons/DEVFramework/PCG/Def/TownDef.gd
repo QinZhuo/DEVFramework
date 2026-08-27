@@ -134,6 +134,8 @@ class_name TownDef extends PCGGeneratorDef
 ## 主街/次街线间距(格)
 @export_range(8, 64, 1) var tensor_major_spacing := 24
 @export_range(4, 32, 1) var tensor_minor_spacing := 10
+## 坡度限制: 流线单步高差超过该值即截断(0=不限制); 山地次街存活关键, 过严会截断大量街段
+@export_range(0.0, 1.0, 0.01) var tensor_max_step_rise := 0.03
 ## [分区] 启用语义分区（市集/贵族/民居，写入 parcels[i].ward 与 layout.wards）
 @export var enable_wards := true
 ## [城墙] 启用城墙+城门（墙写入 build 层；门洞记录到 layout.gates）
@@ -173,7 +175,9 @@ static func default_steps(use_tensor: bool = false) -> Array[TownStepDef]:
 	list.append(TownSiteStep.new())
 	# S2 路网二选一: A*主街生长 / 张量场流线追踪
 	list.append(TensorRoadStep.new() if use_tensor else TownRoadStep.new())
-	list.append(TownArterialStep.new())
+	# 张量场主街已承担干道骨架+集散次街职责, ArterialStep 仅在 A* 模式追加
+	if not use_tensor:
+		list.append(TownArterialStep.new())
 	list.append(TownRingStep.new())
 	list.append(TownAlleyStep.new())
 	list.append(TownPlazaStep.new())
