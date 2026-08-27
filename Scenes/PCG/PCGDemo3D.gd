@@ -335,8 +335,8 @@ func _render_town(layout: TownLayout, def: TownDef) -> void:
 					band_peak.append(wp)
 					band_peak_h.append(col_h)
 		var mats := {
-			"grass": [band_grass, band_grass_h, Color(0.36, 0.52, 0.3)],
-			"rock": [band_rock, band_rock_h, Color(0.5, 0.46, 0.42)],
+			"grass": [band_grass, band_grass_h, Color(0.46, 0.6, 0.33)],
+			"rock": [band_rock, band_rock_h, Color(0.52, 0.48, 0.44)],
 			"peak": [band_peak, band_peak_h, Color(0.82, 0.84, 0.88)],
 		}
 		for key in mats:
@@ -374,7 +374,7 @@ func _render_town(layout: TownLayout, def: TownDef) -> void:
 		var gm := BoxMesh.new()
 		gm.size = Vector3(w, 0.2, d)
 		gm.material = StandardMaterial3D.new()
-		gm.material.albedo_color = Color(0.36, 0.52, 0.3)
+		gm.material.albedo_color = Color(0.46, 0.6, 0.33)
 		ground.mesh = gm
 		ground.position = Vector3(0, -0.1, 0)
 		world.add_child(ground)

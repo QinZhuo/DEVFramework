@@ -682,6 +682,189 @@ static func _place_random_3d(def: PlacementDef3D, rng: RandomNumberGenerator) ->
 ## —— 城镇（S1 选址 / S2 道路网 / S3 街区 / S4 地块细分） ——
 ## 城市生成统一走 TownDef 管线（旧 CityDef 均匀网格模式已按设计案移除）
 
+## S2 张量场路网（TensorRoadStep；与 town_roads_step 二选一插拔）：
+## 预计算全图主/次方向场 → 旋转格网播种 → 双向 RK2 流线追踪 → 空间哈希吸附接入 → 印刷
+static func town_tensor_road_step(step: TensorRoadStep, ctx: TownGenContext) -> void:
+	# TownDef 总控参数反向注入步骤实例（与其它步骤的 tres 配置生效方式一致）
+	var def := ctx.def
+	step.grid_angle = float(def.get("tensor_grid_angle"))
+	step.radial_strength = float(def.get("tensor_radial_strength"))
+	var rc = def.get("tensor_radial_center")
+	if rc != null:
+		step.radial_center = rc
+	# 径向中心未配置(负值=关闭)时自动跟随选址点: 环形+放射大街以城镇为中心
+	if step.radial_strength > 0.0 and step.radial_center.x < 0.0 and ctx.layout.site.x >= 0:
+		step.radial_center = Vector2(ctx.layout.site)
+	step.noise_strength = float(def.get("tensor_noise_strength"))
+	step.contour_strength = float(def.get("tensor_contour_strength"))
+	step.major_spacing = int(def.get("tensor_major_spacing"))
+	step.minor_spacing = int(def.get("tensor_minor_spacing"))
+	_tensor_roads(step, def, ctx.heightmap, ctx.layout, ctx.next_rng())
+
+
+static func _tensor_roads(step: TensorRoadStep, def: TownDef, hm: HeightMap, layout: TownLayout, rng: RandomNumberGenerator) -> void:
+	var roads := layout.roads_grid
+	var w := def.width
+	var h := def.height
+	var c := deg_to_rad(step.grid_angle)
+	# —— 1. 预计算方向场：对称 2x2 张量叠加(网格/径向/等高线/噪声) + 特征分解 ——
+	var ang := PackedFloat32Array()
+	ang.resize(w * h)
+	var ang_min := PackedFloat32Array()
+	ang_min.resize(w * h)
+	var noise := FastNoiseLite.new()
+	noise.seed = rng.randi()
+	noise.frequency = step.noise_scale
+	for y in h:
+		for x in w:
+			var p := Vector2(x, y)
+			var a := 0.0
+			var b := 0.0
+			var cc := 0.0
+			if step.grid_strength > 0.0:
+				var e := Vector2.from_angle(c)
+				a += step.grid_strength * e.x * e.x
+				b += step.grid_strength * e.x * e.y
+				cc += step.grid_strength * e.y * e.y
+			if step.radial_strength > 0.0 and step.radial_center.x >= 0.0:
+				var rd := p - step.radial_center
+				var rl := rd.length()
+				if rl > 0.001:
+					var u := rd / rl
+					var rw := step.radial_strength * exp(-pow(rl / step.radial_radius, 2.0))
+					a += rw * u.x * u.x
+					b += rw * u.x * u.y
+					cc += rw * u.y * u.y
+			if step.contour_strength > 0.0 and hm != null:
+				var g := Vector2(hm.sample(x + 1, y) - hm.sample(x - 1, y), hm.sample(x, y + 1) - hm.sample(x, y - 1))
+				if g.length() > 0.0001:
+					var v := g.normalized().orthogonal()  # 沿等高线
+					var cw := step.contour_strength * clampf(g.length() * 20.0, 0.0, 1.0)  # 平地自动失效
+					a += cw * v.x * v.x
+					b += cw * v.x * v.y
+					cc += cw * v.y * v.y
+			if step.noise_strength > 0.0:
+				var e2 := Vector2.from_angle(c + noise.get_noise_2d(x, y) * step.noise_strength * PI)
+				a += step.noise_strength * e2.x * e2.x
+				b += step.noise_strength * e2.x * e2.y
+				cc += step.noise_strength * e2.y * e2.y
+			var i := y * w + x
+			if a == 0.0 and cc == 0.0 and b == 0.0:
+				ang[i] = c
+				ang_min[i] = c + PI * 0.5
+				continue
+			# 特征分解: λ± = (a+cc)/2 ± sqrt(((a-cc)/2)² + b²); 主特征向量 (λ1-cc, b)
+			var l1 := (a + cc) * 0.5 + sqrt(maxf(0.0, pow((a - cc) * 0.5, 2.0) + b * b))
+			var v1: Vector2
+			if absf(b) > 0.0001:
+				v1 = Vector2(l1 - cc, b).normalized()
+			else:
+				v1 = Vector2.RIGHT if a >= cc else Vector2.DOWN
+			ang[i] = v1.angle()
+			ang_min[i] = v1.orthogonal().angle()
+	# —— 2. 流线追踪：主方向(干道) + 次方向(次街)，旋转格网播种 ——
+	var occupied := {}
+	for y in h:
+		for x in w:
+			if roads.get_cell(x, y, -1) != 0:
+				occupied[Vector2i(x, y)] = true
+	for pass_i in 2:
+		var is_major := pass_i == 0
+		var spacing := step.major_spacing if is_major else step.minor_spacing
+		var base_ang := c if is_major else c + PI * 0.5
+		var fwd := Vector2.from_angle(base_ang)
+		var nrm := fwd.orthogonal()
+		var diag := float(w + h)
+		var k := -diag * 0.5
+		while k <= diag * 0.5:
+			k += spacing
+			var jitter := rng.randf_range(-spacing * 0.15, spacing * 0.15)
+			var start := Vector2(w, h) * 0.5 + nrm * (k + jitter) - fwd * diag * 0.5
+			# 双向追踪拼接
+			var fwd_pts := _tensor_trace(ang, ang_min, is_major, w, h, start, fwd, step, occupied, hm)
+			var back_pts := _tensor_trace(ang, ang_min, is_major, w, h, start, -fwd, step, occupied, hm)
+			back_pts.reverse()
+			var line := back_pts
+			line.append(start)
+			line.append_array(fwd_pts)
+			if line.size() < maxi(2, step.min_len):
+				continue
+			# 全线在水下则丢弃
+			if hm != null:
+				var wet := 0
+				for q in line:
+					if hm.sample(q.x, q.y) < def.sea_level:
+						wet += 1
+				if wet >= line.size() - 1:
+					continue
+			var value := def.road_arterial_value if is_major else def.road_sec_value
+			var width := def.arterial_width if is_major else 1
+			_stamp_road_layer(roads, line, width, value, hm, def.sea_level, def.bridge_value)
+			for q in line:
+				occupied[Vector2i(int(q.x), int(q.y))] = true
+			if is_major and line.size() >= 4:
+				# 干道入图(节点=每 3 格降采样 + 首尾; 边=相邻节点, 供车流/标线/导航)
+				var base_idx := layout.road_nodes.size()
+				for qi in range(0, line.size(), 3):
+					layout.road_nodes.append(line[qi])
+				if (line.size() - 1) % 3 != 0:
+					layout.road_nodes.append(line[line.size() - 1])
+				var cnt := layout.road_nodes.size() - base_idx
+				for ei in cnt - 1:
+					layout.road_edges.append({
+						"a": base_idx + ei, "b": base_idx + ei + 1,
+						"width": def.arterial_width, "cls": TownLayout.EdgeClass.ARTERIAL,
+					})
+
+
+## 沿方向场追踪一条流线（RK2 中点法；方向取与前进方向同号的特征向量），
+## 出界/超长/坡度超限/吸附到既有路(形成路口)即停
+static func _tensor_trace(ang: PackedFloat32Array, ang_min: PackedFloat32Array, is_major: bool, w: int, h: int,
+		start: Vector2, dir0: Vector2, step: TensorRoadStep, occupied: Dictionary, hm: HeightMap) -> PackedVector2Array:
+	var field := ang if is_major else ang_min
+	var pts := PackedVector2Array()
+	var p := start
+	var prev_d := dir0
+	var steps_n := int(step.max_len / step.step_len)
+	var snap_r := int(ceilf(step.snap_dist))
+	var entered := false  # 播种点可在界外(旋转格网播种), 需先走到图内
+	for i in steps_n:
+		var cell := Vector2i(int(floorf(p.x)), int(floorf(p.y)))
+		if cell.x < 1 or cell.y < 1 or cell.x >= w - 1 or cell.y >= h - 1:
+			if entered:
+				break
+			p += prev_d * step.step_len  # 界外滑行: 沿初始方向前进直到入图
+			continue
+		entered = true
+		# 吸附: 跳过起点近旁, 靠近既有路即接入
+		if i > int(3.0 / step.step_len):
+			var hit := false
+			for dy in range(-snap_r, snap_r + 1):
+				for dx in range(-snap_r, snap_r + 1):
+					if occupied.has(cell + Vector2i(dx, dy)):
+						hit = true
+						break
+			if hit:
+				pts.append(p)
+				break
+		var d := Vector2.from_angle(field[cell.y * w + cell.x])
+		if d.dot(prev_d) < 0.0:
+			d = -d
+		var mid := p + d * step.step_len * 0.5
+		var mcell := Vector2i(clampi(int(mid.x), 0, w - 1), clampi(int(mid.y), 0, h - 1))
+		var d2 := Vector2.from_angle(field[mcell.y * w + mcell.x])
+		if d2.dot(prev_d) < 0.0:
+			d2 = -d2
+		var np := p + d2 * step.step_len
+		if hm != null and step.max_step_rise > 0.0:
+			if absf(hm.sample(np.x, np.y) - hm.sample(p.x, p.y)) > step.max_step_rise:
+				break
+		pts.append(np)
+		p = np
+		prev_d = d2
+	return pts
+
+
 ## 生成小城镇（同 Def + 同 seed 必复现）。hm 可为 null（平地城镇）。
 ## def 参数容器值反向注入步骤实例（tres 配置生效），然后统一走 step.apply 执行。
 static func generate_town(def: TownDef, hm: HeightMap, seed_base: int) -> TownLayout:
@@ -2725,13 +2908,14 @@ static func _town_street_furniture(def: TownDef, layout: TownLayout) -> void:
 	var roads := layout.roads_grid
 	var build := layout.build_grid
 	var used := {}
-	# 路灯：主街/环路每 spacing 个取样，灯位放路的邻接空格
+	# 路灯：主街/环路/干道/次街每 spacing 个取样（含绿地路段，夜景勾出路网），灯位放路的邻接空格
 	var step := maxi(1, def.streetlamp_spacing)
 	var walk := 0
 	for y in roads.height:
 		for x in roads.width:
 			var rv := roads.get_cell(x, y, -1)
-			if rv != def.road_main_value and rv != def.road_ring_value and rv != def.road_arterial_value:
+			if rv != def.road_main_value and rv != def.road_ring_value \
+					and rv != def.road_arterial_value and rv != def.road_sec_value:
 				continue
 			walk += 1
 			if walk % step != 0:

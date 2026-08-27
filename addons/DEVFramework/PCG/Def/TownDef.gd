@@ -118,6 +118,22 @@ class_name TownDef extends PCGGeneratorDef
 @export_range(0.0, 0.25, 0.005) var infill_min_density := 0.05
 ## 死路清理：迭代摘除 4 邻域度数≤1 的次街/巷道端头（主街/干道/环路/桥不动）
 @export var prune_dead_ends := true
+## 路网模式: false=主街A*+次街生长(TownRoadStep), true=张量场路网(TensorRoadStep)
+## 张量场: 网格/径向/噪声/等高线四场 RBF 混合 → 流线追踪 → 吸附成网
+@export var use_tensor_roads := false
+## [张量场路网] 以下参数在 use_tensor_roads=true 时生效（总控，同步到 TensorRoadStep）
+## 网格场整体角度(度)
+@export_range(-90.0, 90.0, 1.0) var tensor_grid_angle := 0.0
+## 径向场权重与中心(格坐标, 负值=关闭): 环形+放射大街
+@export_range(0.0, 2.0, 0.05) var tensor_radial_strength := 0.0
+@export var tensor_radial_center := Vector2(-1, -1)
+## 噪声场权重: 街道弯曲有机感
+@export_range(0.0, 1.5, 0.05) var tensor_noise_strength := 0.0
+## 等高线场权重: 道路沿等高线走(需高度图, 平地自动失效)
+@export_range(0.0, 2.0, 0.05) var tensor_contour_strength := 0.0
+## 主街/次街线间距(格)
+@export_range(8, 64, 1) var tensor_major_spacing := 24
+@export_range(4, 32, 1) var tensor_minor_spacing := 10
 ## [分区] 启用语义分区（市集/贵族/民居，写入 parcels[i].ward 与 layout.wards）
 @export var enable_wards := true
 ## [城墙] 启用城墙+城门（墙写入 build 层；门洞记录到 layout.gates）
@@ -148,14 +164,15 @@ func get_desc(_data) -> String:
 func effective_steps() -> Array[TownStepDef]:
 	if not steps.is_empty():
 		return steps
-	return TownDef.default_steps()
+	return TownDef.default_steps(use_tensor_roads)
 
 
 ## 内置标准链（每次调用生成新实例，资源间互不干扰）
-static func default_steps() -> Array[TownStepDef]:
+static func default_steps(use_tensor: bool = false) -> Array[TownStepDef]:
 	var list: Array[TownStepDef] = []
 	list.append(TownSiteStep.new())
-	list.append(TownRoadStep.new())
+	# S2 路网二选一: A*主街生长 / 张量场流线追踪
+	list.append(TensorRoadStep.new() if use_tensor else TownRoadStep.new())
 	list.append(TownArterialStep.new())
 	list.append(TownRingStep.new())
 	list.append(TownAlleyStep.new())
