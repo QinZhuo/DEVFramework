@@ -575,7 +575,7 @@ func _render_town(layout: TownLayout, def: TownDef) -> void:
 			door_along_x.append(dp)
 		else:
 			door_along_z.append(dp)
-		var dvec := TownGenTool.DIR4[posmod(int(b.facing), 4)]
+		var dvec: Vector2i = [Vector2i(0, -1), Vector2i(1, 0), Vector2i(0, 1), Vector2i(-1, 0)][posmod(int(b.facing), 4)]
 		# 门口雨棚: 门板上方外挑小檐(木色)
 		var awc: Vector3 = to_world.call(dr.x, dr.y)
 		awc.y = gy

@@ -932,6 +932,10 @@ static func _sync_def_to_steps(def: TownDef, steps_arr: Array[TownStepDef]) -> v
 			s.street_spacing_max = def.street_spacing_max
 			s.secondary_max_len = def.secondary_max_len
 			s.slope_cost_k = def.slope_cost_k
+			s.street_wander = def.street_wander
+			s.main_jitter = def.main_jitter
+			s.bridge_allowed = def.bridge_allowed
+			s.bridge_cost = def.bridge_cost
 			s.set("road_min_segment", def.road_min_segment)
 			s.set("street_min_run", def.street_min_run)
 		elif s is TownPlazaStep:
@@ -1722,17 +1726,19 @@ static func _town_alley_split(def: TownDef, hm: HeightMap, layout: TownLayout, r
 			for idx in c:
 				roads.cells[idx] = 0
 	# 真实街区加密: 外包矩形切分对不规则路网(山地张量)会落空, 改为直接
-	# 对面积超限的封闭口袋(实际街区)内部刻巷道, 迭代至全部 ≤ max_block_area
+	# 对面积超限的封闭口袋(实际街区)内部刻巷道, 迭代至全部 ≤ 目标街区尺度
 	_town_block_densify(def, layout)
 
 
-## 街区加密 — 对面积超限的真实封闭口袋刻巷道切分(每轮每个口袋切一刀, 最多 4 轮)
+## 街区加密 — 对面积超限的真实封闭口袋刻巷道切分(每轮每口袋切一刀, 最多 16 轮至收敛)
 static func _town_block_densify(def: TownDef, layout: TownLayout) -> void:
 	var roads := layout.roads_grid
 	# 目标街区尺度与 max_block_area(地块切分阈值, 通常很大)无关:
 	# 按真实城镇街区感取 min_block_area 的 2 倍(典型 80*2=160), 超过即加密
 	var target := maxi(def.min_block_area * 2, 120)
-	for pass_i in 4:
+	# 轮数上限 16: 每轮每个超限口袋至少被削去 1 格(单调收敛),
+	# S形/凹形口袋切单列未必断开但持续缩小, 直至 ≤ target 或无列可切
+	for pass_i in 16:
 		var cut_any := false
 		for comp in _town_blocks(roads):
 			if comp.size() <= target:

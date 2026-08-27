@@ -1,9 +1,9 @@
-﻿class_name PCTDeterminismTest
+class_name PCTDeterminismTest
 extends RefCounted
 
 ## PCG 确定性测试 — 同 seed 必复现，不同 seed 不同
 
-static func run() -> void:
+static func run() -> bool:
 	var all_ok := true
 
 	# 2D 网格各算法：同 seed 两次生成必须完全一致
@@ -120,4 +120,17 @@ static func run() -> void:
 			pipe_ok = false
 	print("[确定性] 管线同 seed 复现: %s" % pipe_ok)
 
+	# 张量场路网：同 seed 复现（含街区加密/穿越吸附全部随机路径）
+	var tensor := load("res://Assets/Def/PCG/City_Tensor.tres") as TownDef
+	var ta2 := PCGTool.generate_town(tensor, null, 77)
+	var tb2 := PCGTool.generate_town(tensor, null, 77)
+	var tc2 := PCGTool.generate_town(tensor, null, 78)
+	var tensor_det_ok := ta2.roads_grid.cells == tb2.roads_grid.cells \
+		and ta2.buildings.size() == tb2.buildings.size() \
+		and ta2.roads_grid.cells != tc2.roads_grid.cells
+	if not tensor_det_ok:
+		all_ok = false
+	print("[确定性] 张量路网同 seed 复现/异 seed 不同: %s" % tensor_det_ok)
+
 	print("== 确定性测试 %s ==" % ("全部通过" if all_ok else "存在失败"))
+	return all_ok

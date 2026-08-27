@@ -7,7 +7,7 @@ extends RefCounted
 ##   ECSCore / PCGErode / PCGWFC / PCGWFC3D / PCGWFCAnimator / PCGLSystem / PCGCave3D
 ## 检查: 加载 / 方法集 / 功能正确性 / 同 seed 可复现 / 缺库报错路径。
 
-static func run() -> void:
+static func run() -> bool:
 	var all_ok := true
 
 	# ---- 1. 全部原生类经 FrameworkNative 加载 ----
@@ -125,3 +125,4 @@ static func run() -> void:
 	print("[Native] 缺库报错路径(不存在的类): %s" % missing_ok)
 
 	print("== 原生库测试 %s ==" % ("全部通过" if all_ok else "存在失败"))
+	return all_ok

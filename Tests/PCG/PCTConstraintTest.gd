@@ -1,9 +1,9 @@
-﻿class_name PCTConstraintTest
+class_name PCTConstraintTest
 extends RefCounted
 
 ## PCG 约束正确性测试 — 算法输出满足其定义约束
 
-static func run() -> void:
+static func run() -> bool:
 	var all_ok := true
 
 	# 迷宫：完美迷宫通道应全连通（空连通域 == 1）
@@ -280,4 +280,93 @@ static func run() -> void:
 	all_ok = all_ok and audit_ok
 	print("[约束] 多种子批量审计(20种子): %s%s" % [audit_ok, audit_detail])
 
+	# 张量场路网：主街存在 + 建筑产出 + 无压路 + 门临路 + 街区加密生效
+	var tensor := load("res://Assets/Def/PCG/City_Tensor.tres") as TownDef
+	var tt := PCGTool.generate_town(tensor, null, 7)
+	var trg := tt.roads_grid
+	var tbg := tt.build_grid
+	var tensor_ok := trg.count(12) > 0 and tt.buildings.size() > 20
+	var tensor_ov := 0
+	for i in tbg.cells.size():
+		var bv2: int = tbg.cells[i]
+		if (bv2 == tensor.building_wall_value or bv2 == tensor.building_floor_value or bv2 == tensor.building_door_value) \
+				and trg.cells[i] != 0:
+			tensor_ov += 1
+	if tensor_ov > 0:
+		tensor_ok = false
+	var tensor_dr := 0
+	for b in tt.buildings:
+		var tdr: Vector2i = b.door
+		for d3 in [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)]:
+			if trg.get_cell(tdr.x + d3.x, tdr.y + d3.y, -1) > 0:
+				tensor_dr += 1
+				break
+	tensor_ok = tensor_ok and tensor_dr >= int(tt.buildings.size() * 0.9)
+	# 街区加密: 全部封闭口袋 ≤ min_block_area*2(+容差), 山地不规则口袋同样被切割
+	var t_density_ok := true
+	var t_road := {}
+	for y in trg.height:
+		for x in trg.width:
+			if trg.get_cell(x, y, -1) != 0:
+				t_road[Vector2i(x, y)] = true
+	var t_out := {}
+	var t_q := []
+	for x in trg.width:
+		for yy in [0, trg.height - 1]:
+			if not t_road.has(Vector2i(x, yy)):
+				t_out[Vector2i(x, yy)] = true
+				t_q.append(Vector2i(x, yy))
+	for yy in trg.height:
+		for x0 in [0, trg.width - 1]:
+			if not t_road.has(Vector2i(x0, yy)):
+				t_out[Vector2i(x0, yy)] = true
+				t_q.append(Vector2i(x0, yy))
+	while not t_q.is_empty():
+		var c: Vector2i = t_q.pop_back()
+		for d3 in [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)]:
+			var nc: Vector2i = c + d3
+			if nc.x >= 0 and nc.y >= 0 and nc.x < trg.width and nc.y < trg.height \
+					and not t_road.has(nc) and not t_out.has(nc):
+				t_out[nc] = true
+				t_q.append(nc)
+	var t_seen := {}
+	for yy in trg.height:
+		for x in trg.width:
+			var c := Vector2i(x, yy)
+			if t_road.has(c) or t_out.has(c) or t_seen.has(c):
+				continue
+			var size := 0
+			var q2 := [c]
+			t_seen[c] = true
+			while not q2.is_empty():
+				var cc: Vector2i = q2.pop_back()
+				size += 1
+				for d3 in [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)]:
+					var nc: Vector2i = cc + d3
+					if nc.x >= 0 and nc.y >= 0 and nc.x < trg.width and nc.y < trg.height \
+							and not t_road.has(nc) and not t_out.has(nc) and not t_seen.has(nc):
+						t_seen[nc] = true
+						q2.append(nc)
+			if size > tensor.min_block_area * 2 + 40:
+				t_density_ok = false
+	tensor_ok = tensor_ok and t_density_ok
+	all_ok = all_ok and tensor_ok
+	print("[约束] 张量路网(主街/无压路/门临路/街区加密): %s (干道%d 建筑%d 门路%d/%d)" % [
+		tensor_ok, trg.count(12), tt.buildings.size(), tensor_dr, tt.buildings.size()])
+
+	# 步骤链裁剪: enable_walls=false 时链中无城墙步骤, 古城配置保留
+	var chain_ok := true
+	for st in tensor.effective_steps():
+		if st is TownWallStep:
+			chain_ok = false
+	var mine := load("res://Assets/Def/PCG/Town_MountainMine.tres") as TownDef
+	var mine_has_wall := false
+	for st in mine.effective_steps():
+		if st is TownWallStep:
+			mine_has_wall = true
+	chain_ok = chain_ok and mine_has_wall
+	all_ok = all_ok and chain_ok
+	print("[约束] 城墙步骤链裁剪(现代无/古城有): %s" % chain_ok)
+
 	print("== 约束测试 %s ==" % ("全部通过" if all_ok else "存在失败"))
+	return all_ok
