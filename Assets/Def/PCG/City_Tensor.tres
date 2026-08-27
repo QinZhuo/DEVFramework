@@ -97,3 +97,4 @@ tensor_contour_strength = 0.8
 tensor_major_spacing = 26
 tensor_minor_spacing = 11
 tensor_max_step_rise = 0.06
+tensor_town_radius = 50

@@ -136,6 +136,9 @@ class_name TownDef extends PCGGeneratorDef
 @export_range(4, 32, 1) var tensor_minor_spacing := 10
 ## 坡度限制: 流线单步高差超过该值即截断(0=不限制); 山地次街存活关键, 过严会截断大量街段
 @export_range(0.0, 1.0, 0.01) var tensor_max_step_rise := 0.03
+## 城区半径(格, 0=铺满全图): 流线以选址点为圆心只在该半径内追踪, 出圈即断
+## 防止路网+路灯延伸到无人区/图缘(A* 模式天然选址居中, 张量场需显式限定)
+@export_range(0, 256, 1) var tensor_town_radius := 0
 ## [分区] 启用语义分区（市集/贵族/民居，写入 parcels[i].ward 与 layout.wards）
 @export var enable_wards := true
 ## [城墙] 启用城墙+城门（墙写入 build 层；门洞记录到 layout.gates）

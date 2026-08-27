@@ -34,6 +34,10 @@ class_name TensorRoadStep extends TownStepDef
 @export_range(0, 32, 1) var min_len := 10
 ## 坡度限制: 流线单步高差超过该值即截断(0=不限制)
 @export_range(0.0, 1.0, 0.01) var max_step_rise := 0.03
+## 城区半径(格, 0=铺满全图): 流线以圆心(center)为界只在该半径内追踪, 出圈即断
+@export_range(0, 256, 1) var town_radius := 0
+## 城区圆心(格坐标; 由 TownGenContext 注入选址点, 独立使用时默认图心)
+var center := Vector2(-1, -1)
 
 
 func apply(ctx: TownGenContext) -> void:

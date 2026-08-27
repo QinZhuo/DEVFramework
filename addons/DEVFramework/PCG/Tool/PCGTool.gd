@@ -700,6 +700,12 @@ static func town_tensor_road_step(step: TensorRoadStep, ctx: TownGenContext) -> 
 	step.major_spacing = int(def.get("tensor_major_spacing"))
 	step.minor_spacing = int(def.get("tensor_minor_spacing"))
 	step.max_step_rise = float(def.get("tensor_max_step_rise"))
+	step.town_radius = int(def.get("tensor_town_radius"))
+	# 城区圆心: 半径生效时优先选址点(未配置径向中心时的自动跟随同源), 否则图心
+	if step.town_radius > 0:
+		step.center = Vector2(ctx.layout.site) if ctx.layout.site.x >= 0 else Vector2(def.width, def.height) * 0.5
+	else:
+		step.center = Vector2(-1, -1)
 	_tensor_roads(step, def, ctx.heightmap, ctx.layout, ctx.next_rng())
 
 
@@ -786,7 +792,9 @@ static func _tensor_roads(step: TensorRoadStep, def: TownDef, hm: HeightMap, lay
 			var back_pts := _tensor_trace(ang, ang_min, is_major, w, h, start, -fwd, step, occupied, hm)
 			back_pts.reverse()
 			var line := back_pts
-			line.append(start)
+			# 播种点可在图外(旋转格网播种): 图外不加入折线, 防止图外坐标混入 road_nodes
+			if start.x >= 0.0 and start.y >= 0.0 and start.x < float(w) and start.y < float(h):
+				line.append(start)
 			line.append_array(fwd_pts)
 			if line.size() < maxi(2, step.min_len):
 				continue
@@ -828,15 +836,18 @@ static func _tensor_trace(ang: PackedFloat32Array, ang_min: PackedFloat32Array, 
 	var prev_d := dir0
 	var steps_n := int(step.max_len / step.step_len)
 	var snap_r := int(ceilf(step.snap_dist))
-	var entered := false  # 播种点可在界外(旋转格网播种), 需先走到图内
+	var active := false  # 播种点可在界外/城区圆外(旋转格网播种), 需先滑行到有效区
 	for i in steps_n:
 		var cell := Vector2i(int(floorf(p.x)), int(floorf(p.y)))
-		if cell.x < 1 or cell.y < 1 or cell.x >= w - 1 or cell.y >= h - 1:
-			if entered:
-				break
-			p += prev_d * step.step_len  # 界外滑行: 沿初始方向前进直到入图
+		var in_map := cell.x >= 1 and cell.y >= 1 and cell.x < w - 1 and cell.y < h - 1
+		var in_town := step.town_radius <= 0 or step.center.x < 0.0 \
+				or p.distance_to(step.center) <= float(step.town_radius)
+		if not (in_map and in_town):
+			if active:
+				break  # 已入图/入圈后再离开 → 截断(城区半径收拢路网, 不蔓延图缘)
+			p += prev_d * step.step_len  # 滑行: 沿初始方向前进直到同时入图且入圈
 			continue
-		entered = true
+		active = true
 		# 吸附: 跳过起点近旁, 靠近既有路即接入
 		if i > int(3.0 / step.step_len):
 			var hit := false
@@ -2304,6 +2315,11 @@ static func _town_ring_road(def: TownDef, hm: HeightMap, layout: TownLayout) -> 
 		return
 	# 环路矩形：外包盒外扩，但与地图边缘保持 1 格间距（贴边侧不封口）
 	var r := bounds.grow(2).intersection(Rect2i(1, 1, roads.width - 2, roads.height - 2))
+	# 张量场城区半径: 环路不越过城区圆(圆形/月牙形路网配矩形环会圈进大片空地)
+	var tr = def.get("tensor_town_radius")
+	if tr != null and int(tr) > 0:
+		var tc := Vector2(layout.site) if layout.site.x >= 0 else Vector2(roads.width, roads.height) * 0.5
+		r = r.intersection(Rect2i(int(tc.x) - int(tr), int(tc.y) - int(tr), int(tr) * 2, int(tr) * 2))
 	if r.size.x < 4 or r.size.y < 4:
 		return
 	var edge_cells: Array[Vector2i] = []
@@ -2821,10 +2837,19 @@ static func _town_greenery(def: TownDef, layout: TownLayout, rng: RandomNumberGe
 	for idx in layout.plaza_cells:
 		plaza[int(idx)] = true
 	var candidates: Array[Vector2i] = []
+	var hm := layout.heightmap
+	# 张量场城区半径: 散布限定在城区圆内, 避免树木蔓延到无人区
+	var tr = def.get("tensor_town_radius")
+	var radius := int(tr) if tr != null else 0
+	var center := Vector2(layout.site) if layout.site.x >= 0 else Vector2(roads.width, roads.height) * 0.5
 	for y in roads.height:
 		for x in roads.width:
 			var idx := y * roads.width + x
 			if plaza.has(idx) or roads.get_cell(x, y, -1) != 0 or build.get_cell(x, y, -1) != 0:
+				continue
+			if hm != null and hm.sample(x, y) < def.sea_level:
+				continue  # 水下不种树(否则悬空于水面/虚空)
+			if radius > 0 and Vector2(x, y).distance_to(center) > float(radius):
 				continue
 			candidates.append(Vector2i(x, y))
 	if candidates.is_empty():
@@ -3192,14 +3217,23 @@ static func _town_farms(def: TownDef, layout: TownLayout) -> void:
 	var roads := layout.roads_grid
 	var build := layout.build_grid
 	var w := roads.width
-	# 候选：外围空地（非道路/建筑/广场/树）
+	# 候选：城区外围空地（非道路/建筑/广场/树）
 	var cand := {}
+	var hm := layout.heightmap
+	# 张量场城区半径: 农田不越过城区圆(否则剩余空地全变农田, 蔓延到图缘/无人区)
+	var tr = def.get("tensor_town_radius")
+	var radius := int(tr) if tr != null else 0
+	var center := Vector2(layout.site) if layout.site.x >= 0 else Vector2(w, roads.height) * 0.5
 	for y in roads.height:
 		for x in roads.width:
 			var idx := y * w + x
 			if roads.get_cell(x, y, -1) != 0 or build.get_cell(x, y, -1) != 0:
 				continue
 			if Vector2(x, y).distance_to(Vector2(layout.site)) < def.farm_min_dist:
+				continue
+			if hm != null and hm.get_height(x, y, 1.0) < def.sea_level:
+				continue  # 水下不设农田
+			if radius > 0 and Vector2(x, y).distance_to(center) > float(radius):
 				continue
 			cand[idx] = true
 	if cand.is_empty():
