@@ -701,6 +701,7 @@ static func town_tensor_road_step(step: TensorRoadStep, ctx: TownGenContext) -> 
 	step.minor_spacing = int(def.get("tensor_minor_spacing"))
 	step.max_step_rise = float(def.get("tensor_max_step_rise"))
 	step.town_radius = int(def.get("tensor_town_radius"))
+	step.straight_run = float(def.get("tensor_straight_run"))
 	# 城区圆心: 半径生效时优先选址点(未配置径向中心时的自动跟随同源), 否则图心
 	if step.town_radius > 0:
 		step.center = Vector2(ctx.layout.site) if ctx.layout.site.x >= 0 else Vector2(def.width, def.height) * 0.5
@@ -826,8 +827,8 @@ static func _tensor_roads(step: TensorRoadStep, def: TownDef, hm: HeightMap, lay
 					})
 
 
-## 沿方向场追踪一条流线（RK2 中点法；方向取与前进方向同号的特征向量），
-## 出界/超长/坡度超限/吸附到既有路(形成路口)即停
+## 沿方向场追踪一条流线（直行锁定+轴对齐为主/少量45°+垂直穿越成十字路口），
+## 出界/超长/坡度超限/平行接入既有路即停
 static func _tensor_trace(ang: PackedFloat32Array, ang_min: PackedFloat32Array, is_major: bool, w: int, h: int,
 		start: Vector2, dir0: Vector2, step: TensorRoadStep, occupied: Dictionary, hm: HeightMap) -> PackedVector2Array:
 	var field := ang if is_major else ang_min
@@ -836,6 +837,10 @@ static func _tensor_trace(ang: PackedFloat32Array, ang_min: PackedFloat32Array, 
 	var prev_d := dir0
 	var steps_n := int(step.max_len / step.step_len)
 	var snap_r := int(ceilf(step.snap_dist))
+	# 直行锁定: 锁定期内保持原方向, 到点才按方向场重新定向(轴对齐为主/少量45°) → 长直段+离散转向
+	var recheck := maxi(1, int(roundf(step.straight_run / step.step_len)))
+	var run := recheck  # 首步立即定向
+	var grace := 0  # 垂直穿越既有路后的宽容步数(期间关闭吸附, 让本线穿过路口)
 	var active := false  # 播种点可在界外/城区圆外(旋转格网播种), 需先滑行到有效区
 	for i in steps_n:
 		var cell := Vector2i(int(floorf(p.x)), int(floorf(p.y)))
@@ -848,32 +853,44 @@ static func _tensor_trace(ang: PackedFloat32Array, ang_min: PackedFloat32Array, 
 			p += prev_d * step.step_len  # 滑行: 沿初始方向前进直到同时入图且入圈
 			continue
 		active = true
-		# 吸附: 跳过起点近旁, 靠近既有路即接入
-		if i > int(3.0 / step.step_len):
-			var hit := false
+		# 吸附: 跳过起点近旁, 靠近既有路即接入; 垂直相交则穿过形成十字路口
+		if grace > 0:
+			grace -= 1  # 穿越既有路带宽, 期间关闭吸附
+		elif i > int(3.0 / step.step_len):
+			var hit_cell := Vector2i(-999, -999)
 			for dy in range(-snap_r, snap_r + 1):
 				for dx in range(-snap_r, snap_r + 1):
 					if occupied.has(cell + Vector2i(dx, dy)):
-						hit = true
+						hit_cell = cell + Vector2i(dx, dy)
 						break
-			if hit:
+			if hit_cell.x != -999:
 				pts.append(p)
-				break
-		var d := Vector2.from_angle(field[cell.y * w + cell.x])
-		if d.dot(prev_d) < 0.0:
-			d = -d
-		var mid := p + d * step.step_len * 0.5
-		var mcell := Vector2i(clampi(int(mid.x), 0, w - 1), clampi(int(mid.y), 0, h - 1))
-		var d2 := Vector2.from_angle(field[mcell.y * w + mcell.x])
-		if d2.dot(prev_d) < 0.0:
-			d2 = -d2
-		var np := p + d2 * step.step_len
+				# 估计既有路走向: 本线与其垂直 → 穿过成十字路口; 平行/斜交 → 接入截止
+				var along_x := occupied.has(hit_cell + Vector2i(1, 0)) or occupied.has(hit_cell + Vector2i(-1, 0))
+				var along_y := occupied.has(hit_cell + Vector2i(0, 1)) or occupied.has(hit_cell + Vector2i(0, -1))
+				var cross_perp := (along_x and absf(prev_d.y) > 0.9) or (along_y and absf(prev_d.x) > 0.9)
+				if cross_perp:
+					grace = snap_r + 4
+				else:
+					break
+		if run >= recheck:
+			var d := Vector2.from_angle(field[cell.y * w + cell.x])
+			if d.dot(prev_d) < 0.0:
+				d = -d
+			# 方向量化: 大部分吸附到网格轴(横平竖直); 仅当方向场明确指向斜向(距45°轴<15°)才走45°
+			var a := d.angle()
+			var k45 := roundf(a / (PI * 0.25))
+			if int(absf(k45)) % 2 == 1 and absf(a - k45 * PI * 0.25) > deg_to_rad(15.0):
+				k45 = roundf(a / (PI * 0.5)) * 2.0
+			prev_d = Vector2.from_angle(k45 * PI * 0.25)
+			run = 0
+		run += 1
+		var np := p + prev_d * step.step_len
 		if hm != null and step.max_step_rise > 0.0:
 			if absf(hm.sample(np.x, np.y) - hm.sample(p.x, p.y)) > step.max_step_rise:
 				break
 		pts.append(np)
 		p = np
-		prev_d = d2
 	return pts
 
 

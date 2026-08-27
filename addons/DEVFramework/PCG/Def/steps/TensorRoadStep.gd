@@ -26,6 +26,9 @@ class_name TensorRoadStep extends TownStepDef
 @export_range(4, 32, 1) var minor_spacing := 10
 ## 追踪步长(格)
 @export_range(0.3, 2.0, 0.05) var step_len := 0.8
+## 直行锁定(格): 流线保持直行的最短长度, 到点才按方向场重新定向
+## 方向量化以网格轴为主(横平竖直), 方向场明确指向斜向时才产生45°; 垂直相交穿过成十字路口
+@export_range(1.0, 32.0, 0.5) var straight_run := 10.0
 ## 单线最大长度(格)
 @export_range(16, 512, 4) var max_len := 320
 ## 吸附距离: 靠近既有路即接入成路口(格)

@@ -139,6 +139,9 @@ class_name TownDef extends PCGGeneratorDef
 ## 城区半径(格, 0=铺满全图): 流线以选址点为圆心只在该半径内追踪, 出圈即断
 ## 防止路网+路灯延伸到无人区/图缘(A* 模式天然选址居中, 张量场需显式限定)
 @export_range(0, 256, 1) var tensor_town_radius := 0
+## 直行锁定(格): 道路保持直行的最短长度, 到点才重新定向
+## 方向量化以网格轴(横平竖直)为主, 仅当方向场明确指向斜向时才产生45°道路
+@export_range(1.0, 32.0, 0.5) var tensor_straight_run := 10.0
 ## [分区] 启用语义分区（市集/贵族/民居，写入 parcels[i].ward 与 layout.wards）
 @export var enable_wards := true
 ## [城墙] 启用城墙+城门（墙写入 build 层；门洞记录到 layout.gates）
