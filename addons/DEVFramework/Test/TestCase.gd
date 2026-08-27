@@ -1,6 +1,6 @@
 class_name TestCase extends RefCounted
 
-## 测试用例基类(框架仅提供断言基建, 具体用例由项目在 Tests/ 下编写)。
+## 测试用例基类(框架仅提供断言基建, 具体用例由项目在 Scripts/Test/ 下编写)。
 ## 以 test_ 开头的方法会被 TestRunner 自动发现并执行;
 ## 方法可含 await(协程), runner 自动等待完成后再判定。
 

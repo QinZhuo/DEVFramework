@@ -3,7 +3,8 @@ extends RefCounted
 
 ## ② 跨组件对齐行号(query_aligned) + ③ 查询缓存增量失效 自检。
 
-static func run() -> void:
+static func run() -> bool:
+	var all_ok := true
 	var w := ECSWorld.new(false)
 	w.register_component(PTCompA)
 	w.register_component(PTCompB)
@@ -28,10 +29,12 @@ static func run() -> void:
 	for k in rows_a.size():
 		if w.entity_of_row(PTCompA, rows_a[k]) != w.entity_of_row(PTCompB, rows_b[k]):
 			ok = false
+	all_ok = all_ok and ok
 	print("[Aligned] count=", rows_a.size(), " aligned_same_entity=", ok,
 			" haveB=", rows_b.size())
 	# 过滤 without
 	var filt = w.query_aligned(PTCompA, [PTCompB], [PTCompC])
+	all_ok = all_ok and filt[0].size() == 42
 	print("[Aligned] withoutC=", filt[0].size())   # 期望 50 - 8 = 42
 	# 对齐数据正确性: 用对齐行号读列, 交叉核对 hp/pos 一致
 	var xa: PackedInt32Array = w.get_column(PTCompA, &"x")
@@ -40,6 +43,7 @@ static func run() -> void:
 	for k in rows_a.size():
 		if xb[rows_b[k]] != xa[rows_a[k]] * 10:
 			cross_ok = false
+	all_ok = all_ok and cross_ok
 	print("[Aligned] cross_column_ok=", cross_ok)
 
 	# ---- ③ 缓存增量失效 ----
@@ -47,20 +51,25 @@ static func run() -> void:
 	w.query_rows(PTCompA, [], [])
 	var s0 := w._query_cache.size()
 	w.query_rows(PTCompA, [], [])
+	all_ok = all_ok and w._query_cache.size() == s0
 	print("[Cache] same_query_hits=", w._query_cache.size() == s0)
 	# 2) add PTCompC 只失效 C 缓存, PTCompA 缓存保持(数量应不变)
 	var cnt_a0: int = w.query_rows(PTCompA, [], []).size()
 	w.add_component(ids[1], PTCompC)
 	var cnt_a1: int = w.query_rows(PTCompA, [], []).size()
+	all_ok = all_ok and cnt_a1 == cnt_a0
 	print("[Cache] addC_keeps_A=", cnt_a1 == cnt_a0)
 	# 3) add PTCompA(新实体) 必须使 A 缓存失效并更新数量
 	var ne := w.create_entity()
 	w.add_component(ne, PTCompA)
 	w.set_field(ne, PTCompA, &"x", 999)
 	var cnt_a2: int = w.query_rows(PTCompA, [], []).size()
+	all_ok = all_ok and cnt_a2 == cnt_a0 + 1
 	print("[Cache] addA_updates=", cnt_a2 == cnt_a0 + 1)
 	# 4) destroy 全局失效, 查询结果更新
 	var cnt_a3: int = w.query_rows(PTCompA, [], []).size()
 	w.destroy_entity(ids[2])
 	var cnt_a4: int = w.query_rows(PTCompA, [], []).size()
+	all_ok = all_ok and cnt_a4 == cnt_a3 - 1
 	print("[Cache] destroy_updates=", cnt_a4 == cnt_a3 - 1)
+	return all_ok

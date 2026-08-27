@@ -1,7 +1,7 @@
 class_name test_pcg
 extends TestCase
 
-## PCG 模块回归桥接 — 将 Tests/PCG/ 下的静态用例接入 TestRunner 套件。
+## PCG 模块回归桥接 — 将 Scripts/Test/pcg/ 下的静态用例接入 TestRunner 套件。
 ## PCT*.run() 已改为返回 bool（内部自行聚合 all_ok 并打印明细），此处只判定与报告。
 
 

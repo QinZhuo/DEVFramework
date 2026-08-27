@@ -1,6 +1,6 @@
 class_name TestRunner extends RefCounted
 
-## 轻量测试运行器(基建): 扫描项目 Tests/ 目录下所有用例类, 自动发现 test_ 开头方法执行。
+## 轻量测试运行器(基建): 扫描项目 Scripts/Test/ 目录下所有用例类, 自动发现 test_ 开头方法执行。
 ## 框架只提供机制; 用例内容由项目编写(对齐 GUT/gdUnit4 的"框架=runner, 项目=用例"分工)。
 ## 入口:
 ##   - MCP 工具 run_tests

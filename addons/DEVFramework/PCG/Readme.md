@@ -20,7 +20,7 @@ addons/DEVFramework/PCG/
 │   ├── TileDef3D / TileSetDef3D  # 3D WFC 六面 socket 瓦片与瓦片集
 │   ├── TownDef.gd             # 城镇生成总控（可插拔步骤链：选址→贴地路网→[干道]→环路→巷道+街区加密→广场→地块→建筑→[城墙]→室内→绿化→街具→农田→地形回写）
 │   ├── TownStepDef.gd         # 城镇步骤抽象基类
-│   ├── steps/                   # 城镇可插拔步骤（15 个，见 docs/城镇生成管线设计案.md）
+│   ├── steps/                   # 城镇可插拔步骤（15 个，见下方管线说明）
 │   │   ├── TownSiteStep.gd    # 选址（地形评分）
 │   │   ├── TownRoadStep.gd    # 道路网 A* 流派（主街坡度A* + 次街生长）
 │   │   ├── TensorRoadStep.gd  # 道路网张量场流派（方向场混合→流线追踪，与 TownRoadStep 二选一）
@@ -332,8 +332,8 @@ S5 建筑放置(设施优先 / 住宅填充 / 锚点定位保证门临路 / 切�
 S6 室内家具(槽位抽变体 + 装饰散布 + 校验修复) + 院落围栏 →
 绿化散布 + 行道树 + 街具(路灯/长椅) + 农田条纹 + V1 地形回写。
 环路收口后自动做 稀疏象限补生长 + 死路清理 + 桥值兜底校验。
-> 注：旧 CityDef 均匀网格城市已按设计案移除，城市生成统一走 TownDef 管线。
-设计全案见 `docs/城镇生成管线设计案.md`、贴地方案见 `docs/城镇贴地放置技术方案.md`：
+> 注：旧 CityDef 均匀网格城市已按设计案移除，城市生成统一走 TownDef 管线；
+> 历史设计案/贴地方案文档已归档删除，以本 Readme 为准。
 
 ```gdscript
 var town: TownDef = load("res://Assets/Def/PCG/City_Grid.tres")
@@ -535,7 +535,8 @@ WFC 演示小贴士：切到「网格」选 WFC 配置，左侧选「刷子」�
 
 ## 测试与基准
 
-`res://Tests/PCG/` 提供确定性 / 约束 / 性能三套自检（`class_name XXTest extends RefCounted`，`static run()`）：
+`res://Scripts/Test/pcg/` 提供确定性 / 约束 / 性能三套自检（`class_name XXTest extends RefCounted`，`static run()` 返回 bool），
+经桥接用例 `Scripts/Test/test_pcg.gd` 接入 TestRunner 套件：
 
 | 脚本 | 验证内容 |
 |---|---|

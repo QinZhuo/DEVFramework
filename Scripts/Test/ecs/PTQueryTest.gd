@@ -10,7 +10,8 @@ static func _cb(rows: PackedInt32Array, _comp_rows: Dictionary, w: ECSWorld) -> 
 	for r in rows:
 		seen.append(xa[r])
 
-static func run() -> void:
+static func run() -> bool:
+	var all_ok := true
 	var w := ECSWorld.new(false)
 	w.register_component(PTCompA)
 	w.register_component(PTCompB)
@@ -37,6 +38,7 @@ static func run() -> void:
 	for k in ra.size():
 		if w.entity_of_row(PTCompA, ra[k]) != w.entity_of_row(PTCompB, rb[k]):
 			ok = false
+	all_ok = all_ok and ok
 	print("[Query] aligned_where=", ra.size(), " same_entity=", ok)
 
 	# ---- process Callback: 条件过滤后遍历 ----
@@ -50,6 +52,7 @@ static func run() -> void:
 	for i in range(10):
 		if not seen.has(i):
 			expected = false
+	all_ok = all_ok and expected
 	print("[Query] process_filtered=", expected, " count=", seen.size())
 
 	# ---- 规则动作 mul ----
@@ -67,6 +70,7 @@ static func run() -> void:
 
 	# ---- must / without ----
 	var rows: PackedInt32Array = w.query_rows(PTCompA, [PTCompB], [PTCompC])
+	all_ok = all_ok and rows.size() == 16
 	print("[Query] must_without=", rows.size())   # 20 - 4 = 16
 
 	# ---- process 内写列(get_column 改 + set_column 写回) ----
@@ -79,4 +83,6 @@ static func run() -> void:
 		ww.set_column(PTCompA, &"x", xa)
 	, [PTCompA])
 	q4.execute()
+	all_ok = all_ok and int(w.get_field(ids[0], PTCompA, &"x")) == 1000
 	print("[Query] process_write=", int(w.get_field(ids[0], PTCompA, &"x")))   # 0+1000=1000
+	return all_ok

@@ -4,6 +4,7 @@ extends RefCounted
 ## ④ 组件生命周期钩子(on_add/on_remove/on_destroy) + 变化检测 自检。
 
 static var events: Array = []
+static var all_ok := true
 
 static func _on_add(entity: int) -> void:
 	events.append(["add", entity])
@@ -15,9 +16,12 @@ static func _on_destroy(entity: int) -> void:
 	events.append(["destroy", entity])
 
 static func _tag(name: String, cond: bool) -> void:
+	if not cond:
+		all_ok = false
 	print("[Hooks] ", name, " = ", cond)
 
-static func run() -> void:
+static func run() -> bool:
+	all_ok = true
 	var w := ECSWorld.new(false)
 	w.register_component(PTCompA)
 	w.register_component(PTCompB)
@@ -67,3 +71,4 @@ static func run() -> void:
 	w.cmd_flush()
 	_tag("cmd_destroy_fired", events.size() == 2 and events[0][0] == "remove"
 			and events[1][0] == "destroy")
+	return all_ok
