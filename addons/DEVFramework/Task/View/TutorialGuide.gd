@@ -29,6 +29,7 @@ var _target: Node
 var _target_def: TutorialTargetDef
 var _block := true
 var _click_to_complete := false
+var _active := false  # 聚焦中标志: blur(完成/未开始) 时不绘制也不拦截; 聚焦中且无孔(纯提示)才画全屏暗区
 var _hole := Rect2()
 var _time := 0.0
 var _arrow_dir := Vector2.DOWN
@@ -80,6 +81,7 @@ func _notification(what: int) -> void:
 
 ## 聚焦目标(全屏遮罩 + 挖孔; target 为空 = 纯提示不挖孔)
 func focus(target: Node, target_def: TutorialTargetDef, block: bool, click_to_complete: bool, tip_text: String = "") -> void:
+	_active = true
 	_target = target
 	_target_def = target_def
 	_block = block
@@ -102,8 +104,9 @@ func show_step(step: Task, host: Node) -> void:
 			step.get_current_desc() if step else "")
 
 
-## 取消聚焦(全部隐藏)
+## 取消聚焦(全部隐藏: 不绘制暗区/边框/箭头, 拦截板失效)
 func blur() -> void:
+	_active = false
 	_target = null
 	_target_def = null
 	_hole = Rect2()
@@ -190,6 +193,8 @@ func _read_const(name: String, fallback: int) -> int:
 # ------------------------------------------------------------
 
 func _process(delta: float) -> void:
+	if not _active:
+		return
 	_time += delta
 	_update_geometry()
 	queue_redraw()
@@ -209,6 +214,14 @@ func _update_geometry() -> void:
 
 func _apply_rects() -> void:
 	var v := get_viewport_rect().size
+	if not _active:
+		# 未聚焦(完成/未开始): 拦截板全部失效(不拦截任何输入)
+		for r: Control in [_dim_top, _dim_bottom, _dim_left, _dim_right]:
+			r.mouse_filter = Control.MOUSE_FILTER_IGNORE
+			r.size = Vector2.ZERO
+		_sensor.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		_sensor.visible = false
+		return
 	_sensor.mouse_filter = Control.MOUSE_FILTER_STOP if _block else Control.MOUSE_FILTER_IGNORE
 	_sensor.visible = false
 	if _hole.size == Vector2.ZERO:
@@ -265,6 +278,8 @@ func _place_tip(v: Vector2) -> void:
 # ------------------------------------------------------------
 
 func _draw() -> void:
+	if not _active:
+		return  # 未聚焦(完成/未开始)不绘制任何内容
 	_draw_dim()
 	if _hole.size == Vector2.ZERO:
 		return
