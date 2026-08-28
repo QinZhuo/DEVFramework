@@ -1,14 +1,14 @@
-## 教程运行器 — 播放任意 GroupTaskDef(纯任务树), 驱动遮罩/箭头/提示等表现层。
+## 教程运行器 — 播放任意 GroupTaskDef(纯任务树), 驱动 TutorialGuide 控件表现。
 ##
 ## 流程完全复用任务系统: 步骤 = TutorialStepDef(继承 SignalTaskDef, 信号触发即完成),
-## 其 target/tip/拦截字段是表现配置; TutorialTool 只做"观察 GroupTask 推进 + 渲染当前步骤表现"。
-## 播放选项(skippable/pause_tree/自定义视图)由 opts 指定; 存档复用 Task 系统, 由项目接入。
+## 其 target/tip/拦截字段是表现配置; TutorialTool 只做"观察 GroupTask 推进 + 驱动 TutorialGuide"。
+## 播放选项(skippable/pause_tree/theme/guide_scene)由 opts 指定; 存档复用 Task 系统, 由项目接入。
 ##
 ## 用法:
 ##   TutorialTool.start(flow, host, opts)
 ##     flow: GroupTaskDef, 步骤为 TutorialStepDef(SEQUENTIAL)
 ##     opts: {skippable: true, pause_tree: false,
-##            overlay_scene/tip_scene/arrow_scene: PackedScene}
+##            guide_scene: PackedScene(TutorialGuide 子类), theme: Theme}
 ##   tool.step_changed.connect(...)
 ##   tool.tutorial_completed.connect(...)
 ##   tool.skip()                    # opts.skippable 时生效
@@ -20,16 +20,11 @@ signal step_changed(step: Task)
 ## 教程完成(含跳完最后一步)
 signal tutorial_completed()
 
-const DEFAULT_OVERLAY := preload("res://addons/DEVFramework/Task/View/TutorialOverlay.tscn")
-const DEFAULT_TIP := preload("res://addons/DEVFramework/Task/View/TutorialTip.tscn")
-const DEFAULT_ARROW := preload("res://addons/DEVFramework/Task/View/TutorialArrow.tscn")
-
 var _flow: GroupTaskDef
 var _opts: Dictionary
 var _context: Dictionary
 var _task: GroupTask
-var _overlay: TutorialOverlay
-var _tip: TutorialTip
+var _guide: TutorialGuide
 var _prev_paused := false
 
 
@@ -45,7 +40,7 @@ static func start(flow: GroupTaskDef, host: Node, opts: Dictionary = {}, context
 
 
 func _ready() -> void:
-	_setup_views()
+	_setup_guide()
 	var data := _context.duplicate()
 	data["root"] = get_parent()
 	data["tutorial"] = self
@@ -58,12 +53,6 @@ func _ready() -> void:
 		process_mode = Node.PROCESS_MODE_ALWAYS
 	_task.activate(data)
 	_on_task_changed()
-
-
-func _process(_delta: float) -> void:
-	if _tip and _tip.visible:
-		var vp_size := get_viewport().get_visible_rect().size
-		_tip.place(_overlay.get_hole_rect(), vp_size)
 
 
 ## 当前活跃步骤(无则 null)
@@ -91,16 +80,23 @@ func load_data(dict: Dictionary) -> void:
 		_task.load_data(dict)
 
 
-func _setup_views() -> void:
-	var overlay_scene: PackedScene = _opts.get("overlay_scene")
-	_overlay = (overlay_scene if overlay_scene else DEFAULT_OVERLAY).instantiate()
-	_overlay.hole_clicked.connect(_on_hole_clicked)
-	add_child(_overlay)
-	var arrow_scene: PackedScene = _opts.get("arrow_scene")
-	_overlay.set_arrow((arrow_scene if arrow_scene else DEFAULT_ARROW).instantiate())
-	var tip_scene: PackedScene = _opts.get("tip_scene")
-	_tip = (tip_scene if tip_scene else DEFAULT_TIP).instantiate()
-	_overlay.add_child(_tip)
+func _setup_guide() -> void:
+	var layer := CanvasLayer.new()
+	layer.name = "TutorialLayer"
+	layer.layer = 100
+	add_child(layer)
+	var guide_scene: PackedScene = _opts.get("guide_scene")
+	if guide_scene:
+		_guide = guide_scene.instantiate()
+	else:
+		_guide = TutorialGuide.new()
+	_guide.name = "TutorialGuide"
+	var theme: Theme = _opts.get("theme")
+	if theme:
+		_guide.theme = theme
+	_guide.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_guide.hole_clicked.connect(_on_hole_clicked)
+	layer.add_child(_guide)
 
 
 func _on_task_changed() -> void:
@@ -113,14 +109,14 @@ func _on_task_changed() -> void:
 
 func _show_step(step: Task) -> void:
 	var step_def := step.def as TutorialStepDef
-	_overlay.blur()
+	_guide.blur()
 	var target: Node = null
 	if step_def and step_def.target:
 		target = step_def.target.resolve(get_parent())
-	_overlay.focus(target, step_def.target if step_def else null,
+	var tip_text := _tip_text(step, step_def)
+	_guide.focus(target, step_def.target if step_def else null,
 			step_def.block_input if step_def else true,
-			step_def.click_to_complete if step_def else false)
-	_tip.show_tip(_tip_text(step, step_def))
+			step_def.click_to_complete if step_def else false, tip_text)
 	step_changed.emit(step)
 
 
@@ -141,8 +137,7 @@ func _on_hole_clicked() -> void:
 
 
 func _on_completed() -> void:
-	_overlay.blur()
-	_tip.visible = false
+	_guide.blur()
 	if _opts.get("pause_tree", false):
 		get_tree().paused = _prev_paused
 	tutorial_completed.emit()
