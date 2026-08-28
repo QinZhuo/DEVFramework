@@ -46,12 +46,6 @@ static func get_screen_rect(node: Node, target_def: TutorialTargetDef = null) ->
 	return rect
 
 
-## 3D 目标是否在相机背后(用于箭头贴边方向的近似修正)
-static func is_behind_camera(node: Node3D) -> bool:
-	var cam := node.get_viewport().get_camera_3d() if node.is_inside_tree() else null
-	return cam != null and cam.is_position_behind(node.global_position)
-
-
 ## Node3D → 屏幕矩形: 全局 AABB 8 角投影取包围矩形; 中心在相机背后时返回空
 static func _rect_3d(node: Node3D) -> Rect2:
 	var cam := node.get_viewport().get_camera_3d()
@@ -89,7 +83,40 @@ static func _global_aabb(node: Node3D) -> AABB:
 	return result
 
 
-## Node2D → 屏幕矩形: 无固有体量, 以投影原点为单位矩形, 交由 min_size 外扩定挖孔尺寸
+## Node2D → 屏幕矩形: 汇总自身及子级 Sprite2D/Control 的视觉体量(画布坐标);
+## 无任何体量时退化为原点单位矩形, 交由 min_size 外扩定挖孔尺寸
 static func _rect_2d(node: Node2D, _target_def: TutorialTargetDef) -> Rect2:
-	var origin := node.get_global_transform_with_canvas().origin
-	return Rect2(origin - Vector2.ONE * 0.5, Vector2.ONE)
+	var rects: Array[Rect2] = []
+	_collect_canvas_rects(node, rects)
+	if rects.is_empty():
+		var origin := node.get_global_transform_with_canvas().origin
+		return Rect2(origin - Vector2.ONE * 0.5, Vector2.ONE)
+	var merged := rects[0]
+	for i in range(1, rects.size()):
+		merged = merged.merge(rects[i])
+	return merged
+
+
+## 收集 CanvasItem(含子级, 仅可见)的画布坐标矩形 — 2D 挖孔体量的来源
+static func _collect_canvas_rects(item: CanvasItem, result: Array[Rect2]) -> void:
+	if not item.visible:
+		return
+	if item is Control:
+		result.append((item as Control).get_global_rect())
+	elif item is Sprite2D:
+		var local := (item as Sprite2D).get_rect()
+		if local.size != Vector2.ZERO:
+			result.append(_canvas_rect(item, local))
+	for child in item.get_children():
+		if child is CanvasItem:
+			_collect_canvas_rects(child, result)
+
+
+## 局部矩形 → 画布坐标包围矩形(Node2D 经 global_transform_with_canvas 投影)
+static func _canvas_rect(item: Node2D, local_rect: Rect2) -> Rect2:
+	var t := item.get_global_transform_with_canvas()
+	var p1 := t * local_rect.position
+	var p2 := t * (local_rect.position + local_rect.size)
+	return Rect2(
+		Vector2(minf(p1.x, p2.x), minf(p1.y, p2.y)),
+		Vector2(absf(p2.x - p1.x), absf(p2.y - p1.y)))

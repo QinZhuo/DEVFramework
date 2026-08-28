@@ -4,8 +4,9 @@
 ## 用法(项目创建后挂到自己的 CanvasLayer):
 ##   var guide := TutorialGuide.new()
 ##   guide.set_anchors_preset(Control.PRESET_FULL_RECT)
-##   guide.focus(target, target_def, block, click_to_complete, tip_text)
-##   guide.blur()
+##   guide.start(flow, host)                       # 一行启动(推荐)
+##   guide.stop()                                  # 提前结束/跳过
+## 低层手动路径: focus(target, target_def, block, click_to_complete, tip_text) / blur()
 ##
 ## 主题命名空间 "TutorialGuide"(Theme/ThemeTypeVariation 均可):
 ##   Color    dim_color         遮罩暗色
@@ -19,6 +20,8 @@ class_name TutorialGuide extends Control
 
 ## 空洞/孔内点击(仅 click_to_complete 步骤启用, 用于"点屏幕区域完成"兜底)
 signal hole_clicked()
+## 步骤进入(step 为当前活跃 Task, 供外部绑定步骤 UI/进度条/播音频)
+signal step_started(step: Task)
 
 const _DEFAULT_DIM := Color(0, 0, 0, 0.55)
 const _DEFAULT_ARROW := Color(1, 0.82, 0.25, 1)
@@ -30,10 +33,14 @@ var _target_def: TutorialTargetDef
 var _block := true
 var _click_to_complete := false
 var _active := false  # 聚焦中标志: blur(完成/未开始) 时不绘制也不拦截; 聚焦中且无孔(纯提示)才画全屏暗区
+var _arrow := true  # 当前步骤是否显示指示箭头(读 TutorialTargetDef.arrow)
 var _hole := Rect2()
+var _last_hole := Rect2()  # 上一帧挖孔(未变化且无动画时跳过重绘)
 var _time := 0.0
 var _arrow_dir := Vector2.DOWN
 var _arrow_anchor := Vector2.ZERO
+var _task: GroupTask  # start() 创建的任务(供 stop() 停用)
+var _paused_tree: SceneTree  # start({pause_tree}) 暂停的世界(完成后自动恢复)
 
 # --- 主题缓存 ---
 var _dim_color := _DEFAULT_DIM
@@ -86,6 +93,8 @@ func focus(target: Node, target_def: TutorialTargetDef, block: bool, click_to_co
 	_target_def = target_def
 	_block = block
 	_click_to_complete = click_to_complete
+	_arrow = target_def.arrow if target_def else true
+	_last_hole = Rect2()
 	set_tip(tip_text)
 	_update_geometry()
 	queue_redraw()
@@ -109,7 +118,9 @@ func blur() -> void:
 	_active = false
 	_target = null
 	_target_def = null
+	_arrow = true
 	_hole = Rect2()
+	_last_hole = Rect2()
 	_apply_rects()
 	if _tip_panel:
 		_tip_panel.visible = false
@@ -128,14 +139,27 @@ func blur() -> void:
 ## [return] GroupTask 实体(由外部持有)
 func start(flow: GroupTaskDef, host: Node, opts: Dictionary = {}) -> GroupTask:
 	var task := flow.create_entity() as GroupTask
+	_task = task
 	task.entity_changed.connect(_on_task_changed.bind(task, host))
-	task.completed.connect(_on_done.bind(task, host, opts))
+	task.completed.connect(_on_done)
 	if opts.get("pause_tree", false):
-		host.get_tree().paused = true
+		_paused_tree = host.get_tree()
+		_paused_tree.paused = true
 		process_mode = Node.PROCESS_MODE_ALWAYS
 	task.activate({"root": host})
 	_on_task_changed(task, host)  # activate 不触发 entity_changed, 手动首次渲染
 	return task
+
+
+## 提前结束/跳过教程(取消聚焦 + 停用任务 + 恢复暂停; 不触发 completed, 供"跳过教程"按钮调用)
+func stop() -> void:
+	if _task:
+		_task.deactivate()
+		_task = null
+	if _paused_tree:
+		_paused_tree.paused = false
+		_paused_tree = null
+	blur()
 
 
 func _on_task_changed(task: GroupTask, host: Node) -> void:
@@ -145,12 +169,15 @@ func _on_task_changed(task: GroupTask, host: Node) -> void:
 	var step := task.active_child_entity
 	if step and not step.is_completed:
 		show_step(step, host)
+		step_started.emit(step)
 
 
-func _on_done(_task: GroupTask, host: Node, opts: Dictionary) -> void:
+func _on_done() -> void:
 	blur()
-	if opts.get("pause_tree", false):
-		host.get_tree().paused = false
+	if _paused_tree:
+		_paused_tree.paused = false
+		_paused_tree = null
+	_task = null
 
 
 ## 当前挖孔矩形(供外部参考)
@@ -234,7 +261,10 @@ func _process(delta: float) -> void:
 		return
 	_time += delta
 	_update_geometry()
-	queue_redraw()
+	# 有箭头动画或挖孔变化才重绘; 静止纯提示步骤不再每帧重绘
+	if (_arrow and _hole.size != Vector2.ZERO) or _last_hole != _hole:
+		_last_hole = _hole
+		queue_redraw()
 
 
 func _update_geometry() -> void:
@@ -259,52 +289,103 @@ func _apply_rects() -> void:
 		_sensor.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		_sensor.visible = false
 		return
-	_sensor.mouse_filter = Control.MOUSE_FILTER_STOP if _block else Control.MOUSE_FILTER_IGNORE
-	_sensor.visible = false
+	# 拦截策略: 阻断时暗区 STOP(拦截暗区点击, 孔内穿透); 不阻断时暗区 IGNORE(仅视觉不拦输入)
+	var dim_filter := Control.MOUSE_FILTER_STOP if _block else Control.MOUSE_FILTER_IGNORE
+	_sensor.mouse_filter = Control.MOUSE_FILTER_STOP if _block and _click_to_complete else Control.MOUSE_FILTER_IGNORE
+	_sensor.visible = _block and _click_to_complete
 	if _hole.size == Vector2.ZERO:
-		# 不挖孔: 单块全屏拦截板(视觉由 _draw 画全屏暗区)
+		# 不挖孔: 单块全屏板(阻断时拦截全屏, 不阻断时仅视觉由 _draw 画暗区)
 		_dim_top.position = Vector2.ZERO
 		_dim_top.size = v
+		_dim_top.mouse_filter = dim_filter
 		for r: Control in [_dim_bottom, _dim_left, _dim_right]:
+			r.mouse_filter = Control.MOUSE_FILTER_IGNORE
 			r.size = Vector2.ZERO
 		return
-	# 4 矩形拼洞: 拦截板与孔贴合(暗区 STOP 拦截, 孔内穿透到目标按钮/3D 拾取)
+	# 4 矩形拼洞: 拦截板与孔贴合(暗区拦截, 孔内穿透到目标按钮/3D 拾取)
 	_dim_top.position = Vector2.ZERO
 	_dim_top.size = Vector2(v.x, _hole.position.y)
+	_dim_top.mouse_filter = dim_filter
 	_dim_bottom.position = Vector2(0.0, _hole.end.y)
 	_dim_bottom.size = Vector2(v.x, v.y - _hole.end.y)
+	_dim_bottom.mouse_filter = dim_filter
 	_dim_left.position = Vector2(0.0, _hole.position.y)
 	_dim_left.size = Vector2(_hole.position.x, _hole.size.y)
+	_dim_left.mouse_filter = dim_filter
 	_dim_right.position = Vector2(_hole.end.x, _hole.position.y)
 	_dim_right.size = Vector2(v.x - _hole.end.x, _hole.size.y)
+	_dim_right.mouse_filter = dim_filter
 	# 点击兜底感应区: 仅 click_to_complete 时启用(拦截孔内点击; 否则禁用让事件穿透)
-	_sensor.visible = _block and _click_to_complete
 	_sensor.position = _hole.position
 	_sensor.size = _hole.size
 
 
-## 箭头: 停在挖孔上/下边缘, 尖端贴近孔边指向目标(屏内); 孔无效时隐藏
+## 箭头: 按挖孔到屏幕四边的富余空间选最佳方位(上/下/左/右), 尖端贴近孔边指向目标;
+## 箭头 + 气泡始终落在屏内富余侧, 不遮挡目标; 孔无效或未启用箭头时隐藏
 func _update_arrow(v: Vector2) -> void:
-	if _hole.size == Vector2.ZERO:
+	if _hole.size == Vector2.ZERO or not _arrow:
 		_arrow_dir = Vector2.RIGHT
 		_arrow_anchor = Vector2.ZERO
 		return
-	var center := _hole.get_center()
 	var gap := _arrow_size * 0.25 + 8.0  # 尖端到孔边的间隙
-	_arrow_anchor = Vector2(clampf(center.x, 48.0, v.x - 48.0), _hole.position.y - gap)
-	_arrow_dir = Vector2.DOWN  # 尖端朝下指向目标
-	if _arrow_anchor.y < gap + 8.0:
-		_arrow_anchor.y = _hole.end.y + gap
-		_arrow_dir = Vector2.UP
+	var center := _hole.get_center()
+	# 选择富余空间最大的一侧放置(保证箭头+气泡都留在屏内)
+	var top := _hole.position.y
+	var bottom := v.y - _hole.end.y
+	var left := _hole.position.x
+	var right := v.x - _hole.end.x
+	match _pick_side(top, bottom, left, right):
+		"bottom":
+			_arrow_dir = Vector2.UP
+			_arrow_anchor = Vector2(clampf(center.x, 48.0, v.x - 48.0), _hole.end.y + gap)
+		"left":
+			_arrow_dir = Vector2.RIGHT
+			_arrow_anchor = Vector2(_hole.position.x - gap, clampf(center.y, 48.0, v.y - 48.0))
+		"right":
+			_arrow_dir = Vector2.LEFT
+			_arrow_anchor = Vector2(_hole.end.x + gap, clampf(center.y, 48.0, v.y - 48.0))
+		_:
+			_arrow_dir = Vector2.DOWN
+			_arrow_anchor = Vector2(clampf(center.x, 48.0, v.x - 48.0), _hole.position.y - gap)
 
 
-## 提示气泡置于箭头上方(箭头尾端外侧, 固定不动不跟随浮动, 避免晃动影响阅读)
+## 四边富余空间最大者(箭头/气泡放置侧); 均不足时优先生成上方(目标贴边时的兜底)
+func _pick_side(top: float, bottom: float, left: float, right: float) -> String:
+	var best := "top"
+	var best_space := top
+	if bottom > best_space:
+		best = "bottom"
+		best_space = bottom
+	if left > best_space:
+		best = "left"
+		best_space = left
+	if right > best_space:
+		best = "right"
+	return best
+
+
+## 提示气泡置于箭头尾端外侧(与箭头同侧), 固定不动不跟随浮动, 避免晃动影响阅读;
+## 无箭头时: 有挖孔则置于孔下方, 纯提示(无孔)置于左上角
 func _place_tip(v: Vector2) -> void:
 	if _tip_panel == null or not _tip_panel.visible:
 		return
 	var margin := 12.0
-	var base := _arrow_anchor - _arrow_dir * (_arrow_size + 10.0)
-	var pos := Vector2(base.x - _tip_panel.size.x * 0.5, base.y - _tip_panel.size.y)
+	var pos := Vector2.ZERO
+	if _arrow_anchor == Vector2.ZERO:
+		if _hole.size != Vector2.ZERO:
+			pos = Vector2(_hole.get_center().x - _tip_panel.size.x * 0.5, _hole.end.y + margin)
+		else:
+			pos = Vector2(margin, margin)
+	else:
+		var tail := _arrow_anchor - _arrow_dir * (_arrow_size + 10.0)
+		if _arrow_dir == Vector2.DOWN:
+			pos = tail + Vector2(-_tip_panel.size.x * 0.5, -_tip_panel.size.y)
+		elif _arrow_dir == Vector2.UP:
+			pos = tail + Vector2(-_tip_panel.size.x * 0.5, 0.0)
+		elif _arrow_dir == Vector2.RIGHT:
+			pos = tail + Vector2(-_tip_panel.size.x, -_tip_panel.size.y * 0.5)
+		else:
+			pos = tail + Vector2(0.0, -_tip_panel.size.y * 0.5)
 	pos.x = clampf(pos.x, margin, maxf(margin, v.x - _tip_panel.size.x - margin))
 	pos.y = clampf(pos.y, margin, maxf(margin, v.y - _tip_panel.size.y - margin))
 	_tip_panel.position = pos

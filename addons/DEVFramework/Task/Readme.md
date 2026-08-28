@@ -76,6 +76,7 @@ var task := guide.start(TutorialStart, self)   # ← 一行启动，内部完成
 task.completed.connect(_on_completed)
 ```
 > `guide.start(flow, host, {pause_tree: bool})` 内部完成「创建任务→连 entity_changed/completed→activate→首次渲染」，完成后自动 `blur`；返回 `GroupTask` 供外部连接/存档。
+> 配套：`guide.stop()` 提前结束/跳过（停用任务 + blur + 恢复暂停，不触发 completed）；`guide.step_started` 信号每进入一步发一次，可绑步骤 UI/进度条/播音频。
 
 **手动路径**（完全外部驱动，等价）：
 ```gdscript
@@ -118,7 +119,8 @@ func _on_task_changed() -> void:
 屏幕矩形换算规则：
 - **Control**：`get_global_rect()`
 - **Node3D**：全局 AABB 8 角投影（相机背后隐藏；极小/极远目标退化为投影点 + `min_size` 兜底）
-- **Node2D**：无固有体量 → 投影原点 + `min_size` 定尺寸
+- **Node2D**：汇总自身及子级 `Sprite2D`/`Control` 的视觉体量换算屏幕矩形（2D 精灵挖孔准确）；无任何体量时才退化为投影原点 + `min_size` 定尺寸
+- 箭头按挖孔到屏幕四边的富余空间**自动选最佳方位（上/下/左/右）**，箭头+气泡恒不出屏、不遮挡目标；`arrow=false` 时不画箭头，气泡置于孔下方（无孔则左上角）
 
 ### TutorialGuide 主题（命名空间 `"TutorialGuide"`）
 
@@ -172,7 +174,9 @@ task.completed.connect(func(): get_tree().paused = false)
 
 **跳过/存档**：
 ```gdscript
-task.active_child_entity.complete()      # 跳过当前步骤
+guide.stop()                             # 一键跳过整个教程（Guide 自动停用任务+blur）
+# 或仅跳过当前步骤：
+task.active_child_entity.complete()
 var data := task.save_data()             # 进度存档（含子步骤）
 task.load_data(data)                     # 断点续玩
 ```
