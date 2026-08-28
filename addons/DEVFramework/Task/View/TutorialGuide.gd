@@ -320,8 +320,8 @@ func _apply_rects() -> void:
 	_sensor.size = _hole.size
 
 
-## 箭头: 按挖孔到屏幕四边的富余空间选最佳方位(上/下/左/右), 尖端贴近孔边指向目标;
-## 箭头 + 气泡始终落在屏内富余侧, 不遮挡目标; 孔无效或未启用箭头时隐藏
+## 箭头: 默认置于挖孔上方(尖端朝下指向目标); 顶部空间放不下才翻到下方兜底。
+## 气泡随箭头同侧(默认上方), 不随目标左右偏移/浮动
 func _update_arrow(v: Vector2) -> void:
 	if _hole.size == Vector2.ZERO or not _arrow:
 		_arrow_dir = Vector2.RIGHT
@@ -329,42 +329,15 @@ func _update_arrow(v: Vector2) -> void:
 		return
 	var gap := _arrow_size * 0.25 + 8.0  # 尖端到孔边的间隙
 	var center := _hole.get_center()
-	# 选择富余空间最大的一侧放置(保证箭头+气泡都留在屏内)
-	var top := _hole.position.y
-	var bottom := v.y - _hole.end.y
-	var left := _hole.position.x
-	var right := v.x - _hole.end.x
-	match _pick_side(top, bottom, left, right):
-		"bottom":
-			_arrow_dir = Vector2.UP
-			_arrow_anchor = Vector2(clampf(center.x, 48.0, v.x - 48.0), _hole.end.y + gap)
-		"left":
-			_arrow_dir = Vector2.RIGHT
-			_arrow_anchor = Vector2(_hole.position.x - gap, clampf(center.y, 48.0, v.y - 48.0))
-		"right":
-			_arrow_dir = Vector2.LEFT
-			_arrow_anchor = Vector2(_hole.end.x + gap, clampf(center.y, 48.0, v.y - 48.0))
-		_:
-			_arrow_dir = Vector2.DOWN
-			_arrow_anchor = Vector2(clampf(center.x, 48.0, v.x - 48.0), _hole.position.y - gap)
+	if _hole.position.y >= gap + 8.0:
+		_arrow_dir = Vector2.DOWN  # 默认上方
+		_arrow_anchor = Vector2(clampf(center.x, 48.0, v.x - 48.0), _hole.position.y - gap)
+	else:
+		_arrow_dir = Vector2.UP  # 顶部放不下才翻到下方
+		_arrow_anchor = Vector2(clampf(center.x, 48.0, v.x - 48.0), _hole.end.y + gap)
 
 
-## 四边富余空间最大者(箭头/气泡放置侧); 均不足时优先生成上方(目标贴边时的兜底)
-func _pick_side(top: float, bottom: float, left: float, right: float) -> String:
-	var best := "top"
-	var best_space := top
-	if bottom > best_space:
-		best = "bottom"
-		best_space = bottom
-	if left > best_space:
-		best = "left"
-		best_space = left
-	if right > best_space:
-		best = "right"
-	return best
-
-
-## 提示气泡置于箭头尾端外侧(与箭头同侧), 固定不动不跟随浮动, 避免晃动影响阅读;
+## 提示气泡置于箭头尾端外侧(与箭头同侧, 默认上方), 固定不动不跟随浮动, 避免晃动影响阅读;
 ## 无箭头时: 有挖孔则置于孔下方, 纯提示(无孔)置于左上角
 func _place_tip(v: Vector2) -> void:
 	if _tip_panel == null or not _tip_panel.visible:
@@ -378,14 +351,9 @@ func _place_tip(v: Vector2) -> void:
 			pos = Vector2(margin, margin)
 	else:
 		var tail := _arrow_anchor - _arrow_dir * (_arrow_size + 10.0)
+		pos = Vector2(tail.x - _tip_panel.size.x * 0.5, tail.y)
 		if _arrow_dir == Vector2.DOWN:
-			pos = tail + Vector2(-_tip_panel.size.x * 0.5, -_tip_panel.size.y)
-		elif _arrow_dir == Vector2.UP:
-			pos = tail + Vector2(-_tip_panel.size.x * 0.5, 0.0)
-		elif _arrow_dir == Vector2.RIGHT:
-			pos = tail + Vector2(-_tip_panel.size.x, -_tip_panel.size.y * 0.5)
-		else:
-			pos = tail + Vector2(0.0, -_tip_panel.size.y * 0.5)
+			pos.y -= _tip_panel.size.y  # 默认上方: 气泡在箭头尾端之上
 	pos.x = clampf(pos.x, margin, maxf(margin, v.x - _tip_panel.size.x - margin))
 	pos.y = clampf(pos.y, margin, maxf(margin, v.y - _tip_panel.size.y - margin))
 	_tip_panel.position = pos
