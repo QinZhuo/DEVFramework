@@ -116,6 +116,43 @@ func blur() -> void:
 	queue_redraw()
 
 
+# ------------------------------------------------------------
+# 一行启动(便捷; 等价外部手动桥接: 创建任务→连信号→activate→首次渲染)
+# ------------------------------------------------------------
+
+## 在已挂载的 Guide 上直接启动教程: 内部完成"Task 推进→渲染"桥接, 完成后自动 blur。
+## 与手动路径完全等价(外部仍可通过返回的 task 连接 completed / 调 save_data 存档)。
+## [param flow] 教程流程(GroupTaskDef, 步骤为 TutorialStepDef; SEQUENTIAL)
+## [param host] 教程宿主(目标路径/信号解析相对它)
+## [param opts] {pause_tree: bool} 可选暂停世界(完成后自动恢复)
+## [return] GroupTask 实体(由外部持有)
+func start(flow: GroupTaskDef, host: Node, opts: Dictionary = {}) -> GroupTask:
+	var task := flow.create_entity() as GroupTask
+	task.entity_changed.connect(_on_task_changed.bind(task, host))
+	task.completed.connect(_on_done.bind(task, host, opts))
+	if opts.get("pause_tree", false):
+		host.get_tree().paused = true
+		process_mode = Node.PROCESS_MODE_ALWAYS
+	task.activate({"root": host})
+	_on_task_changed(task, host)  # activate 不触发 entity_changed, 手动首次渲染
+	return task
+
+
+func _on_task_changed(task: GroupTask, host: Node) -> void:
+	if task.is_completed:
+		blur()
+		return
+	var step := task.active_child_entity
+	if step and not step.is_completed:
+		show_step(step, host)
+
+
+func _on_done(_task: GroupTask, host: Node, opts: Dictionary) -> void:
+	blur()
+	if opts.get("pause_tree", false):
+		host.get_tree().paused = false
+
+
 ## 当前挖孔矩形(供外部参考)
 func get_hole_rect() -> Rect2:
 	return _hole

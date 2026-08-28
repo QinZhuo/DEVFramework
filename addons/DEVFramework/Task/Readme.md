@@ -63,28 +63,35 @@ tasks = Array[TaskDef]([步骤1, 步骤2, ...])
 mode = 0                                             # SEQUENTIAL
 ```
 
-3. **代码桥接**（挂 Guide + 激活任务 + 两个信号，无任何运行器）：
+3. **代码启动**（两选一）：
 
+**便捷路径**（一行）：
 ```gdscript
 var layer := CanvasLayer.new(); layer.layer = 100; add_child(layer)
 var guide := TutorialGuide.new()
 guide.set_anchors_preset(Control.PRESET_FULL_RECT)
-guide.theme = my_theme                                # 可选：主题定制
+guide.theme = my_theme                    # 可选：主题定制
 layer.add_child(guide)
+var task := guide.start(TutorialStart, self)   # ← 一行启动，内部完成桥接 + 首次渲染
+task.completed.connect(_on_completed)
+```
+> `guide.start(flow, host, {pause_tree: bool})` 内部完成「创建任务→连 entity_changed/completed→activate→首次渲染」，完成后自动 `blur`；返回 `GroupTask` 供外部连接/存档。
 
+**手动路径**（完全外部驱动，等价）：
+```gdscript
 var task := TutorialStart.create_entity() as GroupTask
 task.entity_changed.connect(_on_task_changed)
 task.completed.connect(_on_completed)
 task.activate({"root": self})
-_on_task_changed()                                    # activate 不触发 entity_changed，需手动首次渲染
+_on_task_changed()                      # activate 不触发 entity_changed，需手动首次渲染
 
 func _on_task_changed() -> void:
 	if task.is_completed:
-		guide.blur()                                  # 完成时也会触发一次 entity_changed
+		guide.blur()                    # 完成时也会触发一次 entity_changed
 		return
 	var step := task.active_child_entity
 	if step and not step.is_completed:
-		guide.show_step(step, self)                   # 渲染当前步骤（挖孔/箭头/提示）
+		guide.show_step(step, self)     # 渲染当前步骤（挖孔/箭头/提示）
 ```
 
 ## 三、配置详解

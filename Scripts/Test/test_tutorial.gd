@@ -57,6 +57,49 @@ func test_step_completes_on_node_signal() -> void:
 	host.queue_free()
 
 
+func test_start_helper() -> void:
+	# 便捷路径: guide.start(flow, host) 一行启动, 内部完成桥接, 完成后自动 blur
+	var tree := Engine.get_main_loop() as SceneTree
+	var host := Node.new()
+	host.name = "TutHost2"
+	tree.root.add_child(host)
+	await tree.process_frame
+	var btn := Button.new()
+	btn.name = "Btn"
+	host.add_child(btn)
+	await tree.process_frame
+
+	var sig := NodeSignalDef.new()
+	sig.node_path = NodePath("Btn")
+	sig.signal_name = &"pressed"
+	var step_def := TutorialStepDef.new()
+	step_def.signals = [sig]
+	step_def.target = TutorialTargetDef.new()
+	step_def.target.node_path = NodePath("Btn")
+	var flow := GroupTaskDef.new()
+	flow.mode = GroupTaskDef.Mode.SEQUENTIAL
+	flow.tasks = [step_def]
+
+	var layer := CanvasLayer.new()
+	host.add_child(layer)
+	var guide := TutorialGuide.new()
+	guide.set_anchors_preset(Control.PRESET_FULL_RECT)
+	layer.add_child(guide)
+	await tree.process_frame
+
+	var done := [false]
+	var task := guide.start(flow, host)
+	task.completed.connect(func(): done[0] = true)
+	assert_true(guide._active, "start 后应处于聚焦渲染状态")
+	btn.pressed.emit()
+	for i in 60:
+		if done[0]:
+			break
+		await tree.process_frame
+	assert_true(done[0] and not guide._active, "完成后 Guide 应自动 blur(不再绘制遮罩)")
+	host.queue_free()
+
+
 func test_save_data_roundtrip() -> void:
 	# 进度持久化: GroupTask 存档往返(断点续玩的数据基础, 完全由 task 提供)
 	var tree := Engine.get_main_loop() as SceneTree
