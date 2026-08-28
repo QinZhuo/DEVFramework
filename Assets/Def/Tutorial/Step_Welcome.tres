@@ -17,4 +17,3 @@ signal_name = &"pressed"
 script = ExtResource("1_step")
 signals = Array[SignalDef]([SubResource("Resource_sig")])
 target = SubResource("Resource_target")
-tip_text = "欢迎！请点击[color=#ffd140]开始游戏[/color]按钮。"

@@ -96,14 +96,10 @@ func show_step(step: Task, host: Node) -> void:
 	var target: Node = null
 	if step_def and step_def.target:
 		target = step_def.target.resolve(host)
-	var tip := ""
-	if step_def and not step_def.tip_text.is_empty():
-		tip = step_def.tip_text
-	elif step:
-		tip = step.get_current_desc()
 	focus(target, step_def.target if step_def else null,
 			step_def.block_input if step_def else true,
-			step_def.click_to_complete if step_def else false, tip)
+			step_def.click_to_complete if step_def else false,
+			step.get_current_desc() if step else "")
 
 
 ## 取消聚焦(全部隐藏)

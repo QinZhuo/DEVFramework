@@ -38,7 +38,6 @@ func test_step_completes_on_node_signal() -> void:
 	step_def.signals = [sig]
 	step_def.target = TutorialTargetDef.new()
 	step_def.target.node_path = NodePath("Btn")
-	step_def.tip_text = "点击按钮"
 	var flow := GroupTaskDef.new()
 	flow.mode = GroupTaskDef.Mode.SEQUENTIAL
 	flow.tasks = [step_def]

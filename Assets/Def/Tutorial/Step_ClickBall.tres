@@ -18,4 +18,3 @@ signal_name = &"clicked"
 script = ExtResource("1_step")
 signals = Array[SignalDef]([SubResource("Resource_sig")])
 target = SubResource("Resource_target")
-tip_text = "现在点击[color=#ffd140]蓝色球体[/color]！"

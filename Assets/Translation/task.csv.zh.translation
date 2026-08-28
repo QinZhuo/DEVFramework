@@ -1,0 +1,8 @@
+[gd_resource type="Translation" format=3]
+
+[resource]
+locale = "zh"
+messages = {
+"Step_ClickBall_desc": "现在点击[color=#ffd140]蓝色球体[/color]！",
+"Step_Welcome_desc": "欢迎！请点击[color=#ffd140]开始游戏[/color]按钮。"
+}

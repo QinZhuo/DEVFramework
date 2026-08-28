@@ -12,11 +12,7 @@ class_name TutorialStepDef extends SignalTaskDef
 @export var block_input := true
 ## 点击目标区域即完成(目标无可交互/无碰撞体时的兜底; 启用后目标区域由遮罩接管点击)
 @export var click_to_complete := false
-## 提示文字(BBCode; 为空则用翻译描述 tr(名称_desc))
-@export_multiline var tip_text := ""
 
 
-func get_desc(_data) -> String:
-	if not tip_text.is_empty():
-		return tip_text
-	return tr(str(name, "_desc"))
+## 无额外字段: 提示文字复用 TaskDef 统一 desc 翻译(tr(名称_desc), 见 Assets/Translation/task.csv)
+## 内容支持 BBCode(如 [color=#ffd140]高亮[/color])

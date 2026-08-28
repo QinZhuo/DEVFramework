@@ -15,6 +15,7 @@ var _guide: TutorialGuide
 
 
 func _ready() -> void:
+	TranslationTool.initialize()  # 加载 Assets/Translation 翻译(task.csv.zh.translation)
 	var layer := CanvasLayer.new()
 	layer.name = "TutorialLayer"
 	layer.layer = 100

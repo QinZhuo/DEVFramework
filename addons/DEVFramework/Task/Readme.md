@@ -44,8 +44,15 @@ task.load_data(save)               # 断点续玩
 script = ExtResource("1_step")                       # TutorialStepDef
 signals = Array[SignalDef]([SubResource("sig")])     # NodeSignalDef → Button.pressed
 target = SubResource("target")                       # TutorialTargetDef → node_path = UI/StartButton
-tip_text = "欢迎！请点击[color=#ffd140]开始游戏[/color]按钮。"
+# 提示文字走统一 desc 翻译: Assets/Translation/task.csv 中 步骤名_desc(如 Step_Welcome_desc)
 ```
+> 翻译表格式（`Assets/Translation/task.csv` 供编辑器写入；运行时需同名 `.translation` 文件并调 `TranslationTool.initialize()` 加载，内容支持 BBCode）：
+> ```
+> keys,zh
+> Step_Welcome_desc,欢迎！请点击[color=#ffd140]开始游戏[/color]按钮。
+> Step_ClickBall_desc,现在点击[color=#ffd140]蓝色球体[/color]！
+> ```
+> 对应 `.translation`：`Assets/Translation/task.csv.zh.translation`（Godot `Translation` 资源，`messages` 同键值）。
 
 2. **配流程**：一个 `.tres`（`GroupTaskDef`，步骤按序引用）
 
@@ -90,7 +97,7 @@ func _on_task_changed() -> void:
 | `target: TutorialTargetDef` | 高亮目标；空 = 纯提示步骤（只显示气泡不挖孔） |
 | `block_input: bool = true` | 阻断目标外输入（遮罩暗区拦截） |
 | `click_to_complete: bool` | 无交互目标时的兜底：点击目标区域即完成 |
-| `tip_text: String` | 提示文字（BBCode）；空则回退翻译描述 `tr(名称_desc)` |
+| （无提示字段） | 提示文字复用 TaskDef 统一 desc 翻译 `tr(名称_desc)`（见上方翻译表） |
 
 ### TutorialTargetDef（2D/3D 通用）
 
