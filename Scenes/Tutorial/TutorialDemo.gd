@@ -3,12 +3,14 @@ extends Node3D
 ## 教程模块演示 — 顺序两步(纯 Task 流程 + TutorialStepDef 表现):
 ##   1. 点击 UI 按钮(TutorialStepDef + NodeSignalDef 订阅 Button.pressed)
 ##   2. 点击 3D 球体(TutorialStepDef + NodeSignalDef 订阅 Ball.clicked, 交互语义在 ClickableBall.gd)
-## 表现由一体化 TutorialGuide 控件驱动(遮罩/边框/箭头/气泡, 提示气泡置于箭头上方),
-## 视觉经 opts.theme 主题定制(演示: 暗色偏蓝 + 绿色箭头 + 青色气泡边框)。
+## 播放完全外部驱动(对齐 Task 系统): TutorialTool.play 返回任务实体,
+## task.completed / entity_changed 由外部连接; 视觉由 TutorialGuide 绘制(可主题定制)。
 
 const TUTORIAL := preload("res://Assets/Def/Tutorial/Tutorial_Start.tres")
 
 @onready var _hint: Label = $UI/Hint
+
+var _task: GroupTask
 
 
 func _ready() -> void:
@@ -29,13 +31,16 @@ func _ready() -> void:
 	frame_box.set_corner_radius_all(4)
 	theme.set_stylebox("frame_stylebox", "TutorialGuide", frame_box)
 
-	var runner := TutorialTool.start(TUTORIAL, self, {"theme": theme})
-	runner.step_changed.connect(_on_step_changed)
-	runner.tutorial_completed.connect(_on_completed)
+	_task = TutorialTool.play(TUTORIAL, self, {"theme": theme})
+	_task.entity_changed.connect(_on_step_changed)
+	_task.completed.connect(_on_completed)
 
 
-func _on_step_changed(step: Task) -> void:
-	var step_name := step.def.name if step.def else "?"
+func _on_step_changed() -> void:
+	if _task.is_completed:
+		return  # 完成时 GroupTask 也会发 entity_changed, 无活跃步骤
+	var step := TutorialTool.current_step(_task)
+	var step_name := step.def.name if step and step.def else "?"
 	print("[TutorialDemo] 进入步骤: ", step_name)
 
 

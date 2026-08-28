@@ -1,7 +1,7 @@
 class_name test_tutorial
 extends TestCase
 
-## 教程模块回归 — TutorialStepDef(继承 SignalTaskDef)表现配置 + 纯 Task 流程。
+## 教程模块回归 — TutorialStepDef(继承 SignalTaskDef)表现配置 + 纯 Task 外部驱动。
 
 
 func test_screen_rect_control() -> void:
@@ -20,7 +20,7 @@ func test_screen_rect_control() -> void:
 
 
 func test_step_completes_on_node_signal() -> void:
-	# 完成条件 = 纯 Task 系统: TutorialStepDef 继承 SignalTaskDef, NodeSignalDef 订阅 Button.pressed
+	# 外部驱动: TutorialTool.play 返回任务实体, 完成条件 = SignalTask + NodeSignalDef 订阅 Button.pressed
 	var tree := Engine.get_main_loop() as SceneTree
 	var host := Node.new()
 	host.name = "TutHost"
@@ -44,10 +44,10 @@ func test_step_completes_on_node_signal() -> void:
 	flow.tasks = [step_def]
 
 	var done := [false]
-	var runner := TutorialTool.start(flow, host)
-	runner.tutorial_completed.connect(func(): done[0] = true)
+	var task := TutorialTool.play(flow, host)
+	task.completed.connect(func(): done[0] = true)
 
-	assert_true(runner.current_step() != null, "教程启动后应有活跃步骤")
+	assert_true(TutorialTool.current_step(task) != null, "教程启动后应有活跃步骤")
 	btn.pressed.emit()
 	for i in 60:
 		if done[0]:
@@ -58,7 +58,7 @@ func test_step_completes_on_node_signal() -> void:
 
 
 func test_save_data_roundtrip() -> void:
-	# 进度持久化: GroupTask 存档往返(断点续玩的数据基础)
+	# 进度持久化: GroupTask 存档往返(断点续玩的数据基础, 完全由 task 提供)
 	var tree := Engine.get_main_loop() as SceneTree
 	var host := Node.new()
 	tree.root.add_child(host)
@@ -79,12 +79,12 @@ func test_save_data_roundtrip() -> void:
 	flow.mode = GroupTaskDef.Mode.SEQUENTIAL
 	flow.tasks = [step1, step2]
 
-	var runner := TutorialTool.start(flow, host)
+	var task := TutorialTool.play(flow, host)
 	# 第一步: 点击完成后推进到第二步
 	btn.pressed.emit()
 	await tree.process_frame
-	var step := runner.current_step()
-	var saved := runner.save_data()
+	var step := TutorialTool.current_step(task)
+	var saved := task.save_data()
 	# 注: 动态创建的 Def 为 built-in, name 读取时回退脚本类名, 故用进度状态断言
 	assert_true(step != null and not step.is_completed \
 			and saved.children[0].get("is_completed", false), "第一步完成后应推进到第二步")

@@ -1,134 +1,113 @@
-## 教程运行器 — 播放任意 GroupTaskDef(纯任务树), 驱动 TutorialGuide 控件表现。
+## 教程工具 — 纯静态: 桥接 Task 流程 ⇄ TutorialGuide 表现, 无 Node 生命周期。
 ##
-## 流程完全复用任务系统: 步骤 = TutorialStepDef(继承 SignalTaskDef, 信号触发即完成),
-## 其 target/tip/拦截字段是表现配置; TutorialTool 只做"观察 GroupTask 推进 + 驱动 TutorialGuide"。
-## 播放选项(skippable/pause_tree/theme/guide_scene)由 opts 指定; 存档复用 Task 系统, 由项目接入。
+## 完全外部调用管理(对齐 Task 系统): 项目自己持有 Guide(挂自己的 UI 树)与 task(RefCounted),
+## 本类只提供"播放桥接 + 渲染封装"的静态方法, 不创建也不管理任何场景树节点。
 ##
-## 用法:
-##   TutorialTool.start(flow, host, opts)
-##     flow: GroupTaskDef, 步骤为 TutorialStepDef(SEQUENTIAL)
-##     opts: {skippable: true, pause_tree: false,
-##            guide_scene: PackedScene(TutorialGuide 子类), theme: Theme}
-##   tool.step_changed.connect(...)
-##   tool.tutorial_completed.connect(...)
-##   tool.skip()                    # opts.skippable 时生效
-##   tool.save_data()/load_data()   # 复用 Task 系统存档
-class_name TutorialTool extends Node
-
-## 当前步骤切换(已激活且未完成)
-signal step_changed(step: Task)
-## 教程完成(含跳完最后一步)
-signal tutorial_completed()
-
-var _flow: GroupTaskDef
-var _opts: Dictionary
-var _context: Dictionary
-var _task: GroupTask
-var _guide: TutorialGuide
-var _prev_paused := false
+## 典型用法(便利路径, play 自动创建 layer+guide 挂 host):
+##   var task: GroupTask = TutorialTool.play(flow, self, {"theme": theme})
+##   task.completed.connect(_on_finish)
+##
+## 完全外部路径(Guide 由项目自己挂载管理):
+##   var layer := CanvasLayer.new(); add_child(layer)
+##   var guide := TutorialGuide.new(); guide.set_anchors_preset(Control.PRESET_FULL_RECT); layer.add_child(guide)
+##   guide.hole_clicked.connect(func(): TutorialTool.on_hole_clicked(task, guide))
+##   var task: GroupTask = TutorialTool.play(flow, self, {}, guide)
+##
+## 播放生命周期全部由外部驱动: task.entity_changed / task.completed 已由 play 桥接到 guide 渲染。
+class_name TutorialTool
 
 
-## 启动教程(host 为教程宿主, 目标路径/信号解析均相对它; context 额外上下文传给 SignalDef)
-static func start(flow: GroupTaskDef, host: Node, opts: Dictionary = {}, context: Dictionary = {}) -> TutorialTool:
-	var tool := TutorialTool.new()
-	tool.name = "TutorialTool"
-	tool._flow = flow
-	tool._opts = opts
-	tool._context = context
-	host.add_child(tool)
-	return tool
+## 开始播放: 创建任务实体并桥接"Task 推进 → Guide 渲染"。
+## [param flow] 教程流程(GroupTaskDef, 步骤为 TutorialStepDef; SEQUENTIAL)
+## [param host] 教程宿主(目标路径/信号解析相对它)
+## [param opts] {skippable, pause_tree, theme, guide_scene}
+## [param guide] 外部 Guide(空 = 自动创建 TutorialLayer + TutorialGuide 挂到 host)
+## [return] GroupTask 实体(RefCounted, 由外部持有; 完成时自动 blur guide 并恢复暂停)
+static func play(flow: GroupTaskDef, host: Node, opts: Dictionary = {}, guide: TutorialGuide = null) -> GroupTask:
+	if guide == null:
+		guide = _make_guide(host, opts)
+	var task := flow.create_entity() as GroupTask
+	task.entity_changed.connect(_dispatch_step.bind(task, guide, host))
+	task.completed.connect(_finish.bind(task, guide, host, opts))
+	if opts.get("pause_tree", false):
+		host.get_tree().paused = true
+		guide.process_mode = Node.PROCESS_MODE_ALWAYS
+	task.activate(_make_context(host))
+	_dispatch_step(task, guide, host)
+	return task
 
 
-func _ready() -> void:
-	_setup_guide()
-	var data := _context.duplicate()
-	data["root"] = get_parent()
-	data["tutorial"] = self
-	_task = _flow.create_entity() as GroupTask
-	_task.entity_changed.connect(_on_task_changed)
-	_task.completed.connect(_on_completed)
-	if _opts.get("pause_tree", false):
-		_prev_paused = get_tree().paused
-		get_tree().paused = true
-		process_mode = Node.PROCESS_MODE_ALWAYS
-	_task.activate(data)
-	_on_task_changed()
-
-
-## 当前活跃步骤(无则 null)
-func current_step() -> Task:
-	return _task.active_child_entity if _task else null
-
-
-## 跳过当前步骤(opts.skippable 时生效)
-func skip() -> void:
-	if not _opts.get("skippable", true):
-		return
-	var step := current_step()
-	if step:
-		step.complete()
-
-
-## 导出进度(复用 Task 系统存档, 供项目存档系统整合)
-func save_data() -> Dictionary:
-	return _task.save_data() if _task else {}
-
-
-## 恢复进度(复用 Task 系统存档)
-func load_data(dict: Dictionary) -> void:
-	if _task:
-		_task.load_data(dict)
-
-
-func _setup_guide() -> void:
+## 创建并挂载默认 TutorialGuide(挂到 host 下的 TutorialLayer)
+static func _make_guide(host: Node, opts: Dictionary) -> TutorialGuide:
 	var layer := CanvasLayer.new()
 	layer.name = "TutorialLayer"
 	layer.layer = 100
-	add_child(layer)
-	var guide_scene: PackedScene = _opts.get("guide_scene")
+	host.add_child(layer)
+	var guide: TutorialGuide
+	var guide_scene: PackedScene = opts.get("guide_scene")
 	if guide_scene:
-		_guide = guide_scene.instantiate()
+		guide = guide_scene.instantiate()
 	else:
-		_guide = TutorialGuide.new()
-	_guide.name = "TutorialGuide"
-	var theme: Theme = _opts.get("theme")
+		guide = TutorialGuide.new()
+	guide.name = "TutorialGuide"
+	var theme: Theme = opts.get("theme")
 	if theme:
-		_guide.theme = theme
-	_guide.set_anchors_preset(Control.PRESET_FULL_RECT)
-	_guide.hole_clicked.connect(_on_hole_clicked)
-	layer.add_child(_guide)
+		guide.theme = theme
+	guide.set_anchors_preset(Control.PRESET_FULL_RECT)
+	layer.add_child(guide)
+	return guide
 
 
-func _on_task_changed() -> void:
-	if _task == null or _task.is_completed:
+## 任务上下文(目标/信号解析用)
+static func _make_context(host: Node) -> Dictionary:
+	return {"root": host}
+
+
+## 桥接: Task 推进信号 → 渲染当前步骤到 Guide
+static func _dispatch_step(task: GroupTask, guide: TutorialGuide, host: Node) -> void:
+	if task.is_completed:
+		guide.blur()
 		return
-	var step := current_step()
+	var step := task.active_child_entity
 	if step and not step.is_completed:
-		_show_step(step)
+		render_step(guide, step, host)
 
 
-func _show_step(step: Task) -> void:
+## 渲染单个步骤到 Guide(外部手动桥接时也可直接调用)
+static func render_step(guide: TutorialGuide, step: Task, host: Node) -> void:
 	var step_def := step.def as TutorialStepDef
-	_guide.blur()
+	guide.blur()
 	var target: Node = null
 	if step_def and step_def.target:
-		target = step_def.target.resolve(get_parent())
-	var tip_text := _tip_text(step, step_def)
-	_guide.focus(target, step_def.target if step_def else null,
+		target = step_def.target.resolve(host)
+	guide.focus(target, step_def.target if step_def else null,
 			step_def.block_input if step_def else true,
-			step_def.click_to_complete if step_def else false, tip_text)
-	step_changed.emit(step)
+			step_def.click_to_complete if step_def else false,
+			tip_text(step, step_def))
 
 
 ## 提示文本: 步骤 def 的 tip_text 优先, 否则用翻译描述(tr(名称_desc))
-func _tip_text(step: Task, step_def: TutorialStepDef) -> String:
+static func tip_text(step: Task, step_def: TutorialStepDef) -> String:
 	if step_def and not step_def.tip_text.is_empty():
 		return step_def.tip_text
 	return step.get_current_desc()
 
 
-func _on_hole_clicked() -> void:
-	var step := current_step()
+## 当前活跃步骤(无则 null)
+static func current_step(task: GroupTask) -> Task:
+	return task.active_child_entity if task else null
+
+
+## 跳过当前步骤(task 的 skippable 由调用方判定后调用)
+static func skip(task: GroupTask) -> void:
+	var step := current_step(task)
+	if step:
+		step.complete()
+
+
+## Guide 孔内点击(click_to_complete 步骤的完成兜底; 需外部连接 guide.hole_clicked)
+static func on_hole_clicked(task: GroupTask, guide: TutorialGuide) -> void:
+	var step := current_step(task)
 	if step == null:
 		return
 	var step_def := step.def as TutorialStepDef
@@ -136,9 +115,8 @@ func _on_hole_clicked() -> void:
 		step.complete()
 
 
-func _on_completed() -> void:
-	_guide.blur()
-	if _opts.get("pause_tree", false):
-		get_tree().paused = _prev_paused
-	tutorial_completed.emit()
-	queue_free()
+## 完成清理: 隐藏 Guide + 恢复暂停
+static func _finish(task: GroupTask, guide: TutorialGuide, host: Node, opts: Dictionary) -> void:
+	guide.blur()
+	if opts.get("pause_tree", false):
+		host.get_tree().paused = false
