@@ -1,0 +1,20 @@
+[gd_resource type="Resource" load_steps=6 format=3]
+
+[ext_resource type="Script" path="res://addons/DEVFramework/Task/Def/TutorialStepDef.gd" id="1_step"]
+[ext_resource type="Script" path="res://addons/DEVFramework/Task/Def/TutorialTargetDef.gd" id="2_target"]
+[ext_resource type="Script" path="res://addons/DEVFramework/Def/NodeSignalDef.gd" id="3_sig"]
+
+[sub_resource type="Resource" id="Resource_target"]
+script = ExtResource("2_target")
+node_path = NodePath("UI/StartButton")
+
+[sub_resource type="Resource" id="Resource_sig"]
+script = ExtResource("3_sig")
+node_path = NodePath("UI/StartButton")
+signal_name = &"pressed"
+
+[resource]
+script = ExtResource("1_step")
+signals = Array[SignalDef]([SubResource("Resource_sig")])
+target = SubResource("Resource_target")
+tip_text = "欢迎！请点击[color=#ffd140]开始游戏[/color]按钮。"

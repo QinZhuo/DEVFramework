@@ -1,0 +1,21 @@
+[gd_resource type="Resource" load_steps=6 format=3]
+
+[ext_resource type="Script" path="res://addons/DEVFramework/Task/Def/TutorialStepDef.gd" id="1_step"]
+[ext_resource type="Script" path="res://addons/DEVFramework/Task/Def/TutorialTargetDef.gd" id="2_target"]
+[ext_resource type="Script" path="res://addons/DEVFramework/Def/NodeSignalDef.gd" id="3_sig"]
+
+[sub_resource type="Resource" id="Resource_target"]
+script = ExtResource("2_target")
+node_path = NodePath("Ball")
+padding = 16.0
+
+[sub_resource type="Resource" id="Resource_sig"]
+script = ExtResource("3_sig")
+node_path = NodePath("Ball")
+signal_name = &"clicked"
+
+[resource]
+script = ExtResource("1_step")
+signals = Array[SignalDef]([SubResource("Resource_sig")])
+target = SubResource("Resource_target")
+tip_text = "现在点击[color=#ffd140]蓝色球体[/color]！"

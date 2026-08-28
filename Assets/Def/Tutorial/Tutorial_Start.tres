@@ -1,0 +1,10 @@
+[gd_resource type="Resource" load_steps=4 format=3]
+
+[ext_resource type="Script" path="res://addons/DEVFramework/Task/Def/GroupTaskDef.gd" id="1_flow"]
+[ext_resource type="Resource" path="res://Assets/Def/Tutorial/Step_Welcome.tres" id="2_s1"]
+[ext_resource type="Resource" path="res://Assets/Def/Tutorial/Step_ClickBall.tres" id="3_s2"]
+
+[resource]
+script = ExtResource("1_flow")
+tasks = Array[TaskDef]([ExtResource("2_s1"), ExtResource("3_s2")])
+mode = 0

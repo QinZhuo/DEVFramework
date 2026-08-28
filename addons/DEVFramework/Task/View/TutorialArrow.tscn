@@ -1,0 +1,11 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://addons/DEVFramework/Task/View/TutorialArrow.gd" id="1_arrow"]
+
+[node name="TutorialArrow" type="Control"]
+mouse_filter = 2
+script = ExtResource("1_arrow")
+
+[node name="Poly" type="Polygon2D" parent="."]
+color = Color(1, 0.82, 0.25, 1)
+polygon = PackedVector2Array(0, -14, 24, 0, 0, 14)

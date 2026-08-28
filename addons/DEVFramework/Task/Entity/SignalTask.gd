@@ -20,7 +20,8 @@ func _connect_signals(data) -> void:
 	var task_def := def as SignalTaskDef
 	if not task_def or task_def.signals.is_empty():
 		return
-	_handler = func(_signal_data):
+	# 兼容无参信号(如 Button.pressed)与单参数信号(如自定义 data 回调)
+	_handler = func(_signal_data = null):
 		if is_completed:
 			return
 		complete()

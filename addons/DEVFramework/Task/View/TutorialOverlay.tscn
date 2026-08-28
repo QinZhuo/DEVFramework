@@ -1,0 +1,51 @@
+[gd_scene load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://addons/DEVFramework/Task/View/TutorialOverlay.gd" id="1_overlay"]
+
+[sub_resource type="StyleBoxFlat" id="sb_frame"]
+draw_center = false
+border_width_left = 2
+border_width_top = 2
+border_width_right = 2
+border_width_bottom = 2
+border_color = Color(1, 0.82, 0.25, 1)
+corner_radius_top_left = 4
+corner_radius_top_right = 4
+corner_radius_bottom_right = 4
+corner_radius_bottom_left = 4
+
+[node name="TutorialOverlay" type="CanvasLayer"]
+process_mode = 3
+layer = 100
+script = ExtResource("1_overlay")
+
+[node name="Dim" type="Control" parent="."]
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+
+[node name="Top" type="ColorRect" parent="Dim"]
+mouse_filter = 0
+color = Color(0, 0, 0, 0.55)
+
+[node name="Bottom" type="ColorRect" parent="Dim"]
+mouse_filter = 0
+color = Color(0, 0, 0, 0.55)
+
+[node name="Left" type="ColorRect" parent="Dim"]
+mouse_filter = 0
+color = Color(0, 0, 0, 0.55)
+
+[node name="Right" type="ColorRect" parent="Dim"]
+mouse_filter = 0
+color = Color(0, 0, 0, 0.55)
+
+[node name="Frame" type="Panel" parent="Dim"]
+mouse_filter = 2
+theme_override_styles/panel = SubResource("sb_frame")
+
+[node name="HoleSensor" type="Control" parent="Dim"]
+mouse_filter = 0
