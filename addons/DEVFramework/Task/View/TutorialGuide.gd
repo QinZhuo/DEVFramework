@@ -1,7 +1,7 @@
 @tool
 ## 教程引导控件 — 遮罩/挖孔/边框/箭头/提示气泡一体化, 类 Godot 内置控件, 支持主题定制。
 ##
-## 用法(TutorialTool 内部创建):
+## 用法(项目创建后挂到自己的 CanvasLayer):
 ##   var guide := TutorialGuide.new()
 ##   guide.set_anchors_preset(Control.PRESET_FULL_RECT)
 ##   guide.focus(target, target_def, block, click_to_complete, tip_text)
@@ -87,6 +87,23 @@ func focus(target: Node, target_def: TutorialTargetDef, block: bool, click_to_co
 	set_tip(tip_text)
 	_update_geometry()
 	queue_redraw()
+
+
+## 从任务步骤渲染表现(播放桥接: 外部连 task.entity_changed 调用本方法; 无表现字段的普通步骤退化为纯提示)
+func show_step(step: Task, host: Node) -> void:
+	var step_def := step.def as TutorialStepDef if step else null
+	blur()
+	var target: Node = null
+	if step_def and step_def.target:
+		target = step_def.target.resolve(host)
+	var tip := ""
+	if step_def and not step_def.tip_text.is_empty():
+		tip = step_def.tip_text
+	elif step:
+		tip = step.get_current_desc()
+	focus(target, step_def.target if step_def else null,
+			step_def.block_input if step_def else true,
+			step_def.click_to_complete if step_def else false, tip)
 
 
 ## 取消聚焦(全部隐藏)
