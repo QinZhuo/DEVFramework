@@ -1,46 +1,26 @@
 @tool
-## 教程目标定义 — 描述"当前步骤要指哪", 2D/3D 通用。
+## 教程目标定义 — 描述"当前步骤指哪个节点", 2D/3D 通用。
 ##
-## 定位: 相对 root 的节点路径, 或场景组名(取第一个命中)。
+## 定位: 相对教程宿主 root 的节点路径(node_path 必须存在, 否则视为纯提示步骤)。
 ## 核心能力: 把 Control / Node2D / Node3D 统一换算为屏幕矩形(Rect2),
-## 供遮罩挖孔、指示箭头、点击兜底共用。
+## 供遮罩挖孔、指示箭头、点击兜底共用; min_size 统一作用于 2D/3D(小于则外扩到最小挖孔)。
 class_name TutorialTargetDef extends Def
 
-## 定位方式
-enum Locate {
-	NODE_PATH, ## 按节点路径(相对教程宿主 root)
-	GROUP, ## 按场景组名, 取第一个命中节点
-}
-
-## 定位方式
-@export var locate: Locate = Locate.NODE_PATH
-## 目标节点路径(相对教程宿主 root; NODE_PATH 模式)
+## 目标节点路径(相对教程宿主 root)
 @export var node_path: NodePath
-## 场景组名(取第一个命中节点; GROUP 模式)
-@export var group: StringName
 ## 挖孔外扩像素
 @export var padding: float = 8.0
-## Node2D 目标的尺寸(世界单位, 用于换算屏幕矩形)
-@export var size_2d := Vector2(64, 64)
-## 挖孔最小屏幕尺寸(远处 3D 目标太小时保证可读可点)
+## 挖孔最小屏幕尺寸(2D/3D 都生效: 目标换算后小于它即外扩到该尺寸; 无体量的 Node2D 直接以它定尺寸)
 @export var min_size := Vector2(96, 96)
 ## 显示指示箭头
 @export var arrow := true
 
 
-## 解析目标节点(root 为教程宿主)
+## 解析目标节点(root 为教程宿主; 节点缺失返回 null)
 func resolve(root: Node) -> Node:
 	if root == null:
 		return null
-	match locate:
-		Locate.NODE_PATH:
-			return root.get_node_or_null(node_path)
-		Locate.GROUP:
-			if group.is_empty():
-				return null
-			var nodes := root.get_tree().get_nodes_in_group(group)
-			return nodes[0] if not nodes.is_empty() else null
-	return null
+	return root.get_node_or_null(node_path)
 
 
 ## 统一换算目标节点为屏幕矩形(含 padding 与最小尺寸; 失败返回空 Rect2)
@@ -58,7 +38,7 @@ static func get_screen_rect(node: Node, target_def: TutorialTargetDef = null) ->
 	if rect.size == Vector2.ZERO:
 		return Rect2()
 	rect = rect.grow(pad)
-	# 保证最小挖孔尺寸(以中心外扩)
+	# min_size 统一生效(2D/3D): 小于最小尺寸时以中心外扩
 	var minv := target_def.min_size if target_def else Vector2.ZERO
 	var deficit := Vector2(maxf(minv.x - rect.size.x, 0.0), maxf(minv.y - rect.size.y, 0.0))
 	if deficit != Vector2.ZERO:
@@ -72,7 +52,7 @@ static func is_behind_camera(node: Node3D) -> bool:
 	return cam != null and cam.is_position_behind(node.global_position)
 
 
-## Node3D → 屏幕矩形: 全局 AABB 8 角投影取包围矩形; 任一角在相机背后时用中心点兜底
+## Node3D → 屏幕矩形: 全局 AABB 8 角投影取包围矩形; 中心在相机背后时返回空
 static func _rect_3d(node: Node3D) -> Rect2:
 	var cam := node.get_viewport().get_camera_3d()
 	if cam == null:
@@ -84,6 +64,10 @@ static func _rect_3d(node: Node3D) -> Rect2:
 	for i in 8:
 		var p := cam.unproject_position(aabb.get_endpoint(i))
 		rect = rect.expand(p) if i > 0 else Rect2(p, Vector2.ZERO)
+	if rect.size == Vector2.ZERO:
+		# 所有角投影重叠(目标极小/极远): 以中心投影点为单位矩形, 交由 min_size 外扩兜底
+		var c := cam.unproject_position(aabb.get_center())
+		return Rect2(c - Vector2.ONE * 0.5, Vector2.ONE)
 	return rect
 
 
@@ -105,11 +89,7 @@ static func _global_aabb(node: Node3D) -> AABB:
 	return result
 
 
-## Node2D → 屏幕矩形: 按 size_2d 四角经 canvas 变换(含 Camera2D 缩放)换算
-static func _rect_2d(node: Node2D, target_def: TutorialTargetDef) -> Rect2:
-	var t := node.get_global_transform_with_canvas()
-	var half := (target_def.size_2d if target_def else Vector2(64, 64)) * 0.5
-	var rect := Rect2(t * (-half), Vector2.ZERO)
-	for corner in [Vector2(half.x, -half.y), half, Vector2(-half.x, half.y)]:
-		rect = rect.expand(t * corner)
-	return rect
+## Node2D → 屏幕矩形: 无固有体量, 以投影原点为单位矩形, 交由 min_size 外扩定挖孔尺寸
+static func _rect_2d(node: Node2D, _target_def: TutorialTargetDef) -> Rect2:
+	var origin := node.get_global_transform_with_canvas().origin
+	return Rect2(origin - Vector2.ONE * 0.5, Vector2.ONE)
