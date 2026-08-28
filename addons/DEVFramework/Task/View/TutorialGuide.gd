@@ -41,11 +41,11 @@ var _arrow_color := _DEFAULT_ARROW
 var _arrow_size := 28.0
 var _default_frame: StyleBoxFlat
 
-# --- 子节点 ---
-var _dim_top := ColorRect.new()
-var _dim_bottom := ColorRect.new()
-var _dim_left := ColorRect.new()
-var _dim_right := ColorRect.new()
+# --- 子节点(仅承担输入拦截, 全部视觉统一在 _draw 绘制: 暗区→边框→箭头 层级正确) ---
+var _dim_top := Control.new()
+var _dim_bottom := Control.new()
+var _dim_left := Control.new()
+var _dim_right := Control.new()
 var _sensor := Control.new()
 var _tip_panel: PanelContainer
 var _tip_text_label: RichTextLabel
@@ -121,7 +121,7 @@ func set_tip(text: String) -> void:
 func _build_widgets() -> void:
 	if _tip_panel:
 		return
-	for r: ColorRect in [_dim_top, _dim_bottom, _dim_left, _dim_right]:
+	for r: Control in [_dim_top, _dim_bottom, _dim_left, _dim_right]:
 		r.mouse_filter = Control.MOUSE_FILTER_STOP
 		add_child(r)
 	_sensor.mouse_filter = Control.MOUSE_FILTER_STOP
@@ -151,8 +151,6 @@ func _apply_theme() -> void:
 	_arrow_size = float(_read_const("arrow_size", 28))
 	_frame_style = get_theme_stylebox("frame_stylebox", "TutorialGuide") \
 			if has_theme_stylebox("frame_stylebox", "TutorialGuide") else null
-	for r: ColorRect in [_dim_top, _dim_bottom, _dim_left, _dim_right]:
-		r.color = _dim_color
 	if _tip_panel:
 		var tip_box := get_theme_stylebox("tip_stylebox", "TutorialGuide") \
 				if has_theme_stylebox("tip_stylebox", "TutorialGuide") else null
@@ -201,13 +199,13 @@ func _apply_rects() -> void:
 	_sensor.mouse_filter = Control.MOUSE_FILTER_STOP if _block else Control.MOUSE_FILTER_IGNORE
 	_sensor.visible = false
 	if _hole.size == Vector2.ZERO:
-		# 不挖孔: 单块全屏暗区
+		# 不挖孔: 单块全屏拦截板(视觉由 _draw 画全屏暗区)
 		_dim_top.position = Vector2.ZERO
 		_dim_top.size = v
-		for r: ColorRect in [_dim_bottom, _dim_left, _dim_right]:
+		for r: Control in [_dim_bottom, _dim_left, _dim_right]:
 			r.size = Vector2.ZERO
 		return
-	# 4 矩形拼洞: 视觉挖孔与输入放行一致(暗区 STOP 拦截, 孔内穿透到目标按钮/3D 拾取)
+	# 4 矩形拼洞: 拦截板与孔贴合(暗区 STOP 拦截, 孔内穿透到目标按钮/3D 拾取)
 	_dim_top.position = Vector2.ZERO
 	_dim_top.size = Vector2(v.x, _hole.position.y)
 	_dim_bottom.position = Vector2(0.0, _hole.end.y)
@@ -222,21 +220,22 @@ func _apply_rects() -> void:
 	_sensor.size = _hole.size
 
 
-## 箭头: 屏内停在挖孔上/下边缘指向目标; 屏外贴边指向目标投影(相机背后按镜像近似)
+## 箭头: 停在挖孔上/下边缘, 尖端贴近孔边指向目标(屏内); 孔无效时隐藏
 func _update_arrow(v: Vector2) -> void:
 	if _hole.size == Vector2.ZERO:
 		_arrow_dir = Vector2.RIGHT
 		_arrow_anchor = Vector2.ZERO
 		return
 	var center := _hole.get_center()
-	_arrow_anchor = Vector2(clampf(center.x, 48.0, v.x - 48.0), _hole.position.y - _arrow_size * 0.5 - 12.0)
-	_arrow_dir = Vector2.DOWN
-	if _arrow_anchor.y < 24.0:
-		_arrow_anchor.y = _hole.end.y + _arrow_size * 0.5 + 12.0
+	var gap := _arrow_size * 0.25 + 8.0  # 尖端到孔边的间隙
+	_arrow_anchor = Vector2(clampf(center.x, 48.0, v.x - 48.0), _hole.position.y - gap)
+	_arrow_dir = Vector2.DOWN  # 尖端朝下指向目标
+	if _arrow_anchor.y < gap + 8.0:
+		_arrow_anchor.y = _hole.end.y + gap
 		_arrow_dir = Vector2.UP
 
 
-## 提示气泡置于箭头上方(箭头尾端外侧, 钳制屏内)
+## 提示气泡置于箭头上方(箭头尾端外侧, 固定不动不跟随浮动, 避免晃动影响阅读)
 func _place_tip(v: Vector2) -> void:
 	if _tip_panel == null or not _tip_panel.visible:
 		return
@@ -249,24 +248,41 @@ func _place_tip(v: Vector2) -> void:
 
 
 # ------------------------------------------------------------
-# 绘制: 边框 + 箭头
+# 绘制: 层级 = 暗区 → 边框 → 箭头(同一 CanvasItem 内先画后叠, 箭头恒在顶层)
 # ------------------------------------------------------------
 
 func _draw() -> void:
-	if _hole.size != Vector2.ZERO:
-		if _frame_style:
-			draw_style_box(_frame_style, _hole)
-		else:
-			draw_rect(_hole, _DEFAULT_ARROW * Color(1, 1, 1, 0.9), false, 2.0)
-	if _hole.size == Vector2.ZERO or _arrow_anchor == Vector2.ZERO:
+	_draw_dim()
+	if _hole.size == Vector2.ZERO:
 		return
-	# 呼吸摆动
-	var bob := sin(_time * 6.0) * 5.0
-	var dir := _arrow_dir
-	var tip := _arrow_anchor
-	var tail := _arrow_anchor - dir * (_arrow_size + bob)
-	var normal := Vector2(-dir.y, dir.x)
-	var half_w := 7.0
+	if _frame_style:
+		draw_style_box(_frame_style, _hole)
+	else:
+		draw_rect(_hole, _DEFAULT_ARROW, false, 2.0)
+	_draw_arrow()
+
+
+## 暗区: 与拦截板矩形一致(4 矩形拼洞), 直接绘制在本控件(不再被子节点遮盖)
+func _draw_dim() -> void:
+	var v := get_viewport_rect().size
+	if _hole.size == Vector2.ZERO:
+		draw_rect(Rect2(Vector2.ZERO, v), _dim_color)
+		return
+	draw_rect(Rect2(0.0, 0.0, v.x, _hole.position.y), _dim_color)
+	draw_rect(Rect2(0.0, _hole.end.y, v.x, v.y - _hole.end.y), _dim_color)
+	draw_rect(Rect2(0.0, _hole.position.y, _hole.position.x, _hole.size.y), _dim_color)
+	draw_rect(Rect2(_hole.end.x, _hole.position.y, v.x - _hole.end.x, _hole.size.y), _dim_color)
+
+
+## 箭头: 像素尺寸恒定, 整体沿指向方向往复平移(bob 整体偏移, 长度恒为 arrow_size 不拉伸)
+func _draw_arrow() -> void:
+	if _arrow_anchor == Vector2.ZERO:
+		return
+	var bob := sin(_time * 6.0) * 4.0
+	var tip := _arrow_anchor + _arrow_dir * bob
+	var tail := tip - _arrow_dir * _arrow_size
+	var normal := Vector2(-_arrow_dir.y, _arrow_dir.x)
+	var half_w := _arrow_size * 0.25
 	draw_colored_polygon([
 		tip,
 		tail + normal * half_w,
