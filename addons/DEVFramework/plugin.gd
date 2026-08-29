@@ -8,9 +8,6 @@ extends EditorPlugin
 # autoload 行(DevMCP)只对"游戏运行进程"起作用(run_game 时游戏内开启运行时服务器),
 # 编辑器本身的服务器由本插件持有的 MCPDevServer 节点提供, 两者互不冲突。
 
-const DevProjectSetup = preload("res://addons/DEVFramework/Tool/DevProjectSetup.gd")
-const DevAudioExamples = preload("res://addons/DEVFramework/Tool/DevAudioExamples.gd")
-
 const DEF_TABLE_SCENE := "res://addons/DEVFramework/DefTable/DefTableView.tscn"
 
 const AUTOLOAD_NAME := "DevMCP"
@@ -32,19 +29,18 @@ func _enter_tree() -> void:
 	_register("dev_framework/mcp/token", TYPE_STRING, "")
 	_register("dev_framework/mcp/max_output_chars", TYPE_INT, 90000)
 	_register("dev_framework/audio/default_sample_rate", TYPE_INT, 44100)
-	add_tool_menu_item("创建 DEV 项目结构...", Callable(self, "_on_create_structure"))
-	add_tool_menu_item("DEV 音频：生成示例音频定义...", Callable(self, "_on_create_audio_examples"))
-	# 启用插件: 开启 MCP
+	# 先开启 MCP 调试服务器, 避免后续初始化(工具菜单/DefTable)出错时阻断调试链路
 	_set_mcp_enabled(true)
+	# 所有编辑器工具统一由 Tool 目录下 extends EditorScript 的脚本自动注册
+	EditorScriptMenuTool.register(self)
 	_setup_def_table()
 
 
 func _exit_tree() -> void:
-	remove_tool_menu_item("创建 DEV 项目结构...")
-	remove_tool_menu_item("DEV 音频：生成示例音频定义...")
-	# 停用插件: 关闭 MCP
-	_set_mcp_enabled(false)
 	_teardown_def_table()
+	EditorScriptMenuTool.unregister(self)
+	# 停用插件: 最后关闭 MCP
+	_set_mcp_enabled(false)
 
 
 ## DefTable: 顶部 Main Screen Tab, 查看/复制/粘贴 Def 静态数据
@@ -90,15 +86,6 @@ func _get_plugin_icon() -> Texture2D:
 	if tex != null:
 		return tex
 	return get_editor_interface().get_base_control().get_theme_icon("Data", "EditorIcons")
-
-
-func _on_create_structure() -> void:
-	DevProjectSetup.create_structure()
-
-
-func _on_create_audio_examples() -> void:
-	var results := DevAudioExamples.create_all()
-	LogTool.log("音频", "示例生成完成: ", results)
 
 
 ## 插件开关: enable=true 写 autoload 单例行并启动编辑器服务器; false 只停止服务器。

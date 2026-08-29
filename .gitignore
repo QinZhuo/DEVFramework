@@ -21,3 +21,4 @@ addons/DEVFramework/Native/~*
 addons/VoxelSupport/Native/~*
 
 /.opencode
+*.translation
