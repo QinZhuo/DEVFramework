@@ -127,7 +127,7 @@ static func _is_editor_tool_script(path: String) -> bool:
 	return script.get_instance_base_type() == &"EditorScript"
 
 
-static func _on_tool_pressed(plugin: EditorPlugin, tools: Array, id: int) -> void:
+static func _on_tool_pressed(id: int, plugin: EditorPlugin, tools: Array) -> void:
 	if id < 0 or id >= tools.size():
 		return
 	var path: String = tools[id]
