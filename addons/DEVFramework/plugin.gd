@@ -9,6 +9,10 @@ extends EditorPlugin
 # 编辑器本身的服务器由本插件持有的 MCPDevServer 节点提供, 两者互不冲突。
 
 const DEF_TABLE_SCENE := "res://addons/DEVFramework/DefTable/DefTableView.tscn"
+## 虚拟机位 3D 视图可视化(仅编辑器加载, 故用路径而非全局类)
+const CAMERA_GIZMO_SCRIPT := "res://addons/DEVFramework/Camera/Editor/VirtualCameraGizmo.gd"
+## 虚拟机位取景器(底部面板, 预览机位看到的画面)
+const CAMERA_VIEWFINDER_SCRIPT := "res://addons/DEVFramework/Camera/Editor/CameraViewfinder.gd"
 
 const AUTOLOAD_NAME := "DevMCP"
 const AUTOLOAD_PATH := "res://addons/DEVFramework/MCP/MCPDevServer.gd"
@@ -17,6 +21,9 @@ var _mcp: MCPDevServer
 var _debugger_plugin: MCPDebuggerPlugin
 var _ecs_debugger: ECSDebuggerPlugin
 var _def_table: Control
+var _camera_gizmo: EditorNode3DGizmoPlugin
+var _camera_viewfinder: Control
+var _camera_viewfinder_button: Button
 
 
 func _enter_tree() -> void:
@@ -34,9 +41,13 @@ func _enter_tree() -> void:
 	# 所有编辑器工具统一由 Tool 目录下 extends EditorScript 的脚本自动注册
 	EditorScriptMenuTool.register(self)
 	_setup_def_table()
+	_setup_camera_gizmo()
+	_setup_camera_viewfinder()
 
 
 func _exit_tree() -> void:
+	_teardown_camera_viewfinder()
+	_teardown_camera_gizmo()
 	_teardown_def_table()
 	EditorScriptMenuTool.unregister(self)
 	# 停用插件: 最后关闭 MCP
@@ -63,6 +74,46 @@ func _teardown_def_table() -> void:
 	if is_instance_valid(_def_table):
 		_def_table.queue_free()
 	_def_table = null
+
+
+## Camera 模块: 在 3D 视图中画出 VirtualCamera3D 的视锥, 方便直接摆机位
+func _setup_camera_gizmo() -> void:
+	if _camera_gizmo != null:
+		return
+	var script := load(CAMERA_GIZMO_SCRIPT) as Script
+	if script == null:
+		return
+	_camera_gizmo = script.new()
+	if _camera_gizmo != null:
+		add_node_3d_gizmo_plugin(_camera_gizmo)
+
+
+func _teardown_camera_gizmo() -> void:
+	if _camera_gizmo == null:
+		return
+	remove_node_3d_gizmo_plugin(_camera_gizmo)
+	_camera_gizmo = null
+
+
+## Camera 模块: 底部面板取景器, 预览选中机位看到的画面
+func _setup_camera_viewfinder() -> void:
+	if _camera_viewfinder != null:
+		return
+	var script := load(CAMERA_VIEWFINDER_SCRIPT) as Script
+	if script == null:
+		return
+	_camera_viewfinder = script.new()
+	_camera_viewfinder_button = add_control_to_bottom_panel(_camera_viewfinder, "Camera Viewfinder")
+
+
+func _teardown_camera_viewfinder() -> void:
+	if _camera_viewfinder == null:
+		return
+	remove_control_from_bottom_panel(_camera_viewfinder)
+	if is_instance_valid(_camera_viewfinder):
+		_camera_viewfinder.queue_free()
+	_camera_viewfinder = null
+	_camera_viewfinder_button = null
 
 
 func _get_plugin_name() -> String:

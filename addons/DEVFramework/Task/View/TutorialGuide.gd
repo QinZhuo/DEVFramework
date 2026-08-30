@@ -206,6 +206,7 @@ func _build_widgets() -> void:
 		add_child(r)
 	_sensor.mouse_filter = Control.MOUSE_FILTER_STOP
 	_sensor.visible = false
+	_sensor.gui_input.connect(_on_sensor_input)
 	add_child(_sensor)
 	_tip_panel = PanelContainer.new()
 	_tip_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -301,6 +302,9 @@ func _apply_rects() -> void:
 		for r: Control in [_dim_bottom, _dim_left, _dim_right]:
 			r.mouse_filter = Control.MOUSE_FILTER_IGNORE
 			r.size = Vector2.ZERO
+		# 纯提示且点击兜底: 感应区覆盖全屏(点击任意处完成)
+		_sensor.position = Vector2.ZERO
+		_sensor.size = v if _block and _click_to_complete else Vector2.ZERO
 		return
 	# 4 矩形拼洞: 拦截板与孔贴合(暗区拦截, 孔内穿透到目标按钮/3D 拾取)
 	_dim_top.position = Vector2.ZERO
@@ -318,6 +322,16 @@ func _apply_rects() -> void:
 	# 点击兜底感应区: 仅 click_to_complete 时启用(拦截孔内点击; 否则禁用让事件穿透)
 	_sensor.position = _hole.position
 	_sensor.size = _hole.size
+
+
+## 感应区输入: 点击/触摸孔内区域时发射 hole_clicked(click_to_complete 步骤的完成兜底)
+func _on_sensor_input(event: InputEvent) -> void:
+	var mouse_pressed: bool = event is InputEventMouseButton \
+			and event.pressed and event.button_index == MOUSE_BUTTON_LEFT
+	var touch_pressed: bool = event is InputEventScreenTouch and event.pressed
+	if mouse_pressed or touch_pressed:
+		_sensor.accept_event()
+		hole_clicked.emit()
 
 
 ## 箭头: 默认置于挖孔上方(尖端朝下指向目标); 顶部空间放不下才翻到下方兜底。

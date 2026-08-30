@@ -299,6 +299,30 @@ var out: Dictionary = PCGTool.generate(pipeline_def, seed)
 
 **完整使用说明见 [`PCG/Readme.md`](PCG/Readme.md)**。
 
+### 4.8 Camera 虚拟机位（`Camera/`）
+
+3D 镜头管理模块，思路对齐 Unity Cinemachine：场景里摆若干**机位**（`VirtualCamera3D`，只描述取景意图），
+由场景中唯一的**大脑**（`CameraBrain3D`，真实 `Camera3D`）每帧挑出生效机位并平滑混合过去。
+
+```gdscript
+vcam.set_active(true)        # 参与竞争(面板信号可直连 set_active(bind true/false))
+vcam.activate(0.5)           # 代码切换, 本次过渡 0.5 秒
+vcam.deactivate()            # 退出竞争, 自动回落到上一个机位
+CameraTool.get_camera()      # 真实渲染相机(无 Brain 时退回视口相机)
+CameraTool.snap()            # 立即对齐当前机位(传送/场景切换)
+```
+
+- **竞争规则**：`priority` 大者胜，同级取最后激活者 → 「开面板激活机位 / 关面板取消激活」天然构成机位栈；生效机位带缓存，不每帧遍历。
+- **混合**：固定时长 + Tween 曲线（每个机位可单独配 `blend_time/trans/ease`）；位置可选 **直线 / 球面 / 柱面** 轨迹（绕枢纽点绕行，不会切过目标内部）；`lens_fov` 一并插值；混合结束后持续跟随机位。需要 **A→B 专属过渡** 或按来源/目标统一过渡时，在 Brain 的 `blends` 挂 [过渡规则](Camera/Readme.md#过渡规则表blends)（按机位名匹配、支持通配、精确者胜）。
+- **机位能力**：默认固定取景（Inspector 极简）；需要动态取景时挂 [行为资源](Camera/Readme.md#三行为资源camerabehaviordef)——内置 `FollowBehaviorDef`（跟随 + 按轴阻尼 + **死区/软区**）、`LookAtBehaviorDef`（瞄准 + 可配 up）、`NoiseBehaviorDef`（常驻手持抖动，噪声源用 Godot 原生 `Noise`），也可继承 `CameraBehaviorDef` 自定义；另有 `lens_fov`（覆盖视场角）。
+- **不重复造轮子**：碰撞回避用 `SpringArm3D`、路径运镜用 `PathFollow3D`、物理插值用引擎设置——见 [用 Godot 原生能力组合高级机位](Camera/Readme.md#五用-godot-原生能力组合高级机位)。
+- **待机策略**：`standby_update` 三档（ALWAYS / ROUND_ROBIN / NEVER），未生效机位不白跑；上台瞬间自动对齐姿态。
+- **冲击与震屏**：`CameraTool.impulse(pos, strength, radius, duration)` 定向冲击（传播延迟 + 距离衰减）、`CameraTool.shake(strength)` 无方向震屏。
+- **叠加偏移层**：常态特效/鼠标跟随一律写 Brain 的 `position_offset` / `rotation_offset`，与机位混合互不争写 transform（`TweenShake` 把 `property` 指向 `:position_offset` 即可）。
+- **编辑器**：机位有视锥 gizmo（插件注册，生效中显示橙色）与「对齐到编辑器视角」按钮；底部面板 **Camera Viewfinder** 可实时预览机位画面（共享编辑器 3D 视口的 World3D，带三分线构图辅助与 Solo）。
+
+**完整使用说明见 [`Camera/Readme.md`](Camera/Readme.md)**。
+
 ---
 
 ## 五、Tool 工具层
@@ -477,6 +501,7 @@ AudioTool.list_examples()                      # 列出全部示例
 | `ArrayViewTool` | 数组视图通用逻辑：`get_item_name` / `create_view` / `free_view`（配合对象池） |
 | `TweenViewTool` | Tween 显隐控制与释放：`update_visible` / `finish_and_free` |
 | `PCGTool` | PCG 统一入口：噪声/网格(2D/3D)/群系/散布/内容/河流道路/分块世界/管线/异步/序列化 |
+| `CameraTool` | Camera 模块统一入口：`get_brain` / `get_camera` / `get_current` / `activate` / `deactivate` / `find` / `snap` |
 | `DevProjectSetup` | 一键创建项目目录结构（编辑器菜单触发） |
 | `SpriteFramesToAnimationLibrary` | `EditorScript`：将选中的 SpriteFrames 生成 AnimationLibrary |
 
