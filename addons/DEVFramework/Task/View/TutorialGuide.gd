@@ -8,7 +8,8 @@
 ##   guide.stop()                                  # 提前结束/跳过
 ## 低层手动路径: focus(target, target_def, block, click_to_complete, tip_text) / blur()
 ##
-## 主题命名空间 "TutorialGuide"(Theme/ThemeTypeVariation 均可):
+## 主题命名空间 "TutorialGuide"(与 OptionSelector 一致, 走 Godot 标准主题查找链:
+## 本地 → 祖先 → 项目主题, 未定义时用 _DEFAULT_* 回退):
 ##   Color    dim_color         遮罩暗色
 ##   StyleBox frame_stylebox    挖孔边框样式
 ##   Color    arrow_color       指示箭头颜色
@@ -26,9 +27,6 @@ signal step_started(step: Task)
 const _DEFAULT_DIM := Color(0, 0, 0, 0.55)
 const _DEFAULT_ARROW := Color(1, 0.82, 0.25, 1)
 const _DEFAULT_TIP_TEXT := Color(0.95, 0.95, 0.95, 1)
-
-# --- 内置默认主题(无需外部资源, 类似 Godot 内置控件的默认外观) ---
-var _builtin_theme: Theme
 
 # --- 状态 ---
 var _target: Node
@@ -73,39 +71,10 @@ func _init() -> void:
 	_default_frame.border_color = _DEFAULT_ARROW
 	_default_frame.set_corner_radius_all(4)
 
-	# 内置默认主题(代码定义, 无外部依赖, 类似 Godot 内置控件默认外观)
-	_builtin_theme = Theme.new()
-	_builtin_theme.set_color("dim_color", "TutorialGuide", Color(0, 0, 0.05, 0.65))
-	_builtin_theme.set_color("arrow_color", "TutorialGuide", Color(0.2, 0.9, 0.5, 1.0))
-	_builtin_theme.set_color("tip_font_color", "TutorialGuide", Color(0.8, 1.0, 0.9, 1.0))
-	_builtin_theme.set_constant("arrow_size", "TutorialGuide", 30)
-	_builtin_theme.set_constant("tip_font_size", "TutorialGuide", 18)
-	
-	var tip_box := StyleBoxFlat.new()
-	tip_box.bg_color = Color(0.02, 0.1, 0.06, 0.95)
-	tip_box.set_border_width_all(1)
-	tip_box.border_color = Color(0.2, 0.9, 0.5, 0.8)
-	tip_box.set_corner_radius_all(10)
-	tip_box.content_margin_left = 16
-	tip_box.content_margin_top = 12
-	tip_box.content_margin_right = 16
-	tip_box.content_margin_bottom = 12
-	_builtin_theme.set_stylebox("tip_stylebox", "TutorialGuide", tip_box)
-	
-	var frame_box := StyleBoxFlat.new()
-	frame_box.draw_center = false
-	frame_box.set_border_width_all(3)
-	frame_box.border_color = Color(0.2, 0.9, 0.5, 1.0)
-	frame_box.set_corner_radius_all(6)
-	_builtin_theme.set_stylebox("frame_stylebox", "TutorialGuide", frame_box)
-
 
 func _ready() -> void:
 	set_process_input(true)  # 启用节点级 _input: 用于在物理拾取前阻断目标外点击
 	_build_widgets()
-	# 自动应用内置默认主题(仅当未手动设置 theme 时)
-	if theme == null or theme.get_type_count() == 0:
-		theme = _builtin_theme
 	_apply_theme()
 	blur()
 
