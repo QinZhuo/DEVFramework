@@ -72,6 +72,7 @@ func _init() -> void:
 
 
 func _ready() -> void:
+	set_process_input(true)  # 启用节点级 _input: 用于在物理拾取前阻断目标外点击
 	_build_widgets()
 	_apply_theme()
 	blur()
@@ -101,15 +102,20 @@ func focus(target: Node, target_def: TutorialTargetDef, block: bool, click_to_co
 
 
 ## 从任务步骤渲染表现(播放桥接: 外部连 task.entity_changed 调用本方法; 无表现字段的普通步骤退化为纯提示)
+## 锁定语义自动推导(无需手动配 block_input/click_to_complete):
+##   - 存在 target → 强制锁定(block & click_to_complete 按步骤配置, 默认 lock 全屏、只点目标)
+##   - 无 target    → 纯提示(自动“不锁 + 点任意处继续”, 无黑遮罩仅气泡)
 func show_step(step: Task, host: Node) -> void:
 	var step_def := step.def as TutorialStepDef if step else null
 	blur()
 	var target: Node = null
 	if step_def and step_def.target:
 		target = step_def.target.resolve(host)
+	var has_target := target != null
+	var forced_block: bool = step_def.block_input if step_def else true
 	focus(target, step_def.target if step_def else null,
-			step_def.block_input if step_def else true,
-			step_def.click_to_complete if step_def else false,
+			forced_block and has_target,  # 无目标恒不锁 → 纯提示
+			(step_def.click_to_complete if step_def else false) or not has_target,  # 纯提示自动“点任意处继续”
 			step.get_current_desc() if step else "")
 
 
@@ -257,6 +263,61 @@ func _read_const(name: String, fallback: int) -> int:
 # 几何更新(每帧, 目标移动/镜头转动持续校正)
 # ------------------------------------------------------------
 
+## 节点级输入拦截：在事件进入 GUI(_gui_input) 与物理拾取(Area3D 的 input_event / mouse_entered) 之前运行。
+## 分两类:
+##   - 纯提示(无目标): 不锁、无遮罩, 点任意处即继续(hole_clicked)。
+##   - 强制锁定(有目标): 把落在挖孔之外的指针事件(点击+移动)标记为已处理,
+##     既阻止目标外的 2D/3D 点击, 也阻止鼠标移过框外 3D 物体触发 mouse_entered 高亮。
+func _input(event: InputEvent) -> void:
+	if not _active:
+		return
+	if _allow_fullscreen_click():
+		# 纯提示: 点击任意处即完成(无遮罩、不锁, 由本层直接触发, 不依赖 GUI sensor)
+		if _is_primary_press(event):
+			hole_clicked.emit()
+			get_viewport().set_input_as_handled()
+		return
+	if not _block:
+		return
+	var pos := _pointer_position(event)
+	if pos == Vector2.INF:
+		return  # 非指针事件(键盘/手柄)不处理
+	if _hole.size == Vector2.ZERO:
+		get_viewport().set_input_as_handled()  # 空孔(有目标但不可见): 拦全部指针交互
+		return
+	if not _hole.has_point(pos):
+		get_viewport().set_input_as_handled()  # 孔外: 拦点击与 hover
+
+
+## 是否为主键按下事件(左键/触摸按下)。
+func _is_primary_press(event: InputEvent) -> bool:
+	if event is InputEventMouseButton:
+		var b := event as InputEventMouseButton
+		return b.pressed and b.button_index == MOUSE_BUTTON_LEFT
+	if event is InputEventScreenTouch:
+		return (event as InputEventScreenTouch).pressed
+	return false
+
+
+## 提取指针类事件的屏幕坐标；非指针事件返回 INF 表示不参与拦截。
+func _pointer_position(event: InputEvent) -> Vector2:
+	if event is InputEventMouseButton:
+		return (event as InputEventMouseButton).position
+	if event is InputEventMouseMotion:
+		return (event as InputEventMouseMotion).position
+	if event is InputEventScreenTouch:
+		return (event as InputEventScreenTouch).position
+	if event is InputEventScreenDrag:
+		return (event as InputEventScreenDrag).position
+	return Vector2.INF
+
+
+## 判断该步骤是否放行全屏点击(仅用于"无目标"的纯提示步骤点击完成兜底)。
+## 存在目标(_target 有效)时一律视为"有目标区域"，绝不放行全屏 —— 目标外必须拦截。
+func _allow_fullscreen_click() -> bool:
+	return _click_to_complete and (_target == null or not is_instance_valid(_target))
+
+
 func _process(delta: float) -> void:
 	if not _active:
 		return
@@ -302,9 +363,10 @@ func _apply_rects() -> void:
 		for r: Control in [_dim_bottom, _dim_left, _dim_right]:
 			r.mouse_filter = Control.MOUSE_FILTER_IGNORE
 			r.size = Vector2.ZERO
-		# 纯提示且点击兜底: 感应区覆盖全屏(点击任意处完成)
+		# 仅"无目标"的纯提示步骤可全屏点击兜底(与 _allow_fullscreen_click 一致);
+		# 有目标时孔空(目标尚不可见), 感应区不覆盖, 防止绕过目标外拦截完成
 		_sensor.position = Vector2.ZERO
-		_sensor.size = v if _block and _click_to_complete else Vector2.ZERO
+		_sensor.size = v if _block and _allow_fullscreen_click() else Vector2.ZERO
 		return
 	# 4 矩形拼洞: 拦截板与孔贴合(暗区拦截, 孔内穿透到目标按钮/3D 拾取)
 	_dim_top.position = Vector2.ZERO
@@ -391,7 +453,10 @@ func _draw() -> void:
 
 
 ## 暗区: 与拦截板矩形一致(4 矩形拼洞), 直接绘制在本控件(不再被子节点遮盖)
+## 仅强制锁定(_block)时画暗区; 纯提示(无目标、不锁)不画黑遮罩, 只留气泡。
 func _draw_dim() -> void:
+	if not _block:
+		return
 	var v := get_viewport_rect().size
 	if _hole.size == Vector2.ZERO:
 		draw_rect(Rect2(Vector2.ZERO, v), _dim_color)
