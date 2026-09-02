@@ -275,3 +275,87 @@ func test_save_data_roundtrip() -> void:
 					and not restored.active_child_entity.is_completed,
 			"还原后应停在第 2 步, 不重跑已完成的第 1 步")
 	host.queue_free()
+
+
+func test_advance_by_action_and_funnel_signals() -> void:
+	# 键盘/手柄继续键(advance_action)推进纯提示步骤 + 漏斗埋点信号(step_started/step_completed/stopped)
+	var tree := Engine.get_main_loop() as SceneTree
+	var host := Node.new()
+	host.name = "TutAction"
+	tree.root.add_child(host)
+	await tree.process_frame
+
+	var step1 := TutorialStepDef.new()   # 无 target 无信号 → 点任意处 / 按继续键
+	var step2 := TutorialStepDef.new()
+	var flow := GroupTaskDef.new()
+	flow.mode = GroupTaskDef.Mode.SEQUENTIAL
+	flow.tasks = [step1, step2]
+
+	var layer := CanvasLayer.new()
+	host.add_child(layer)
+	var guide := TutorialGuide.new()
+	guide.set_anchors_preset(Control.PRESET_FULL_RECT)
+	layer.add_child(guide)
+	await tree.process_frame
+
+	var started := []
+	var done_steps := []
+	var stopped := [false]
+	guide.step_started.connect(func(s: Task): started.append(s))
+	guide.step_completed.connect(func(s: Task): done_steps.append(s))
+	guide.stopped.connect(func(): stopped[0] = true)
+
+	var task := guide.start(flow, host)
+	assert_eq(started.size(), 1, "首步进入应发 step_started")
+
+	var ev := InputEventAction.new()
+	ev.action = &"ui_accept"
+	ev.pressed = true
+	guide._input(ev)
+	assert_eq(done_steps.size(), 1, "按继续键应完成当前步骤")
+	assert_eq(started.size(), 2, "应推进到第二步")
+	assert_eq(task.get_progress(), Vector2i(1, 2), "进度应为 1/2")
+
+	guide._input(ev)
+	assert_eq(done_steps.size(), 2, "第二步同样可按键推进")
+	assert_true(task.is_completed, "全部步骤完成后任务应完成")
+
+	guide.start(flow, host)
+	guide.stop()
+	assert_true(stopped[0], "stop() 应发 stopped(漏斗'中途放弃')")
+	host.queue_free()
+
+
+func test_target_control_grabs_focus() -> void:
+	# 可访问性: 有 target 的步骤把焦点移交给目标控件(键盘/手柄导航交给 Godot 焦点系统)
+	var tree := Engine.get_main_loop() as SceneTree
+	var host := Node.new()
+	host.name = "TutFocus"
+	tree.root.add_child(host)
+	var btn := Button.new()
+	btn.name = "Btn"
+	btn.focus_mode = Control.FOCUS_ALL
+	host.add_child(btn)
+	await tree.process_frame
+
+	var sig := NodeSignalDef.new()
+	sig.node_path = NodePath("Btn")
+	sig.signal_name = &"pressed"
+	var step := TutorialStepDef.new()
+	step.signals = [sig]
+	step.target = TutorialTargetDef.new()
+	step.target.node_path = NodePath("Btn")
+	var flow := GroupTaskDef.new()
+	flow.mode = GroupTaskDef.Mode.SEQUENTIAL
+	flow.tasks = [step]
+
+	var layer := CanvasLayer.new()
+	host.add_child(layer)
+	var guide := TutorialGuide.new()
+	guide.set_anchors_preset(Control.PRESET_FULL_RECT)
+	layer.add_child(guide)
+	await tree.process_frame
+
+	guide.start(flow, host)
+	assert_true(btn.has_focus(), "聚焦步骤应把焦点交给目标按钮(Enter 即可激活)")
+	host.queue_free()

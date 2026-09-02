@@ -1,6 +1,9 @@
 ## 分组任务实体 — 由 GroupTaskDef 驱动，管理多个子任务完成。
 class_name GroupTask extends Task
 
+## 某个子任务完成(index 为其在 tasks 中的下标, child 为子任务实体) —— 供任务日志/埋点
+signal child_completed(index: int, child: Task)
+
 var _child_entities: Array[Task] = []
 var _active_child_index: int = 0
 var _completed_count: int = 0
@@ -56,11 +59,26 @@ func _activate_children(data) -> void:
 		var child := Task.create(sub_def)
 		_child_entities.append(child)
 		child.completed.connect(_on_child_completed.bind(i))
+	# 先建齐再激活: 子任务 skip_if 命中会级联完成并推进到下一个, 依赖子任务已全部存在
+	for i in _child_entities.size():
+		var child := _child_entities[i]
 		if group.mode == GroupTaskDef.Mode.SEQUENTIAL and i > 0:
 			continue
 		child.activate(data)
 		if group.mode == GroupTaskDef.Mode.COMPLETE_ANY:
 			break
+
+## 组级 skip_if: 整组跳过 —— 子任务静默标记完成后整组完成(不发子任务信号/奖励)
+func _apply_skip_if(data) -> void:
+	var group := def as GroupTaskDef
+	if not group or not group.skip_if or not group.skip_if.is_met(data):
+		return
+	if _child_entities.is_empty():
+		_ensure_children()
+	for child in _child_entities:
+		child._mark_completed()
+	_recompute_progress()
+	complete()
 
 ## 从当前进度恢复子任务激活(只激活"该激活的"那几个, 已完成的不重跑)
 func _resume_children(data) -> void:
@@ -104,6 +122,7 @@ func _on_child_completed(child_index: int) -> void:
 				complete()
 		GroupTaskDef.Mode.COMPLETE_ANY:
 			complete()
+	child_completed.emit(child_index, _child_entities[child_index])
 	entity_changed.emit()
 	progress_changed.emit()
 

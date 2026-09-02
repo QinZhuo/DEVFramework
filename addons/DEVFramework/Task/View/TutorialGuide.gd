@@ -23,6 +23,13 @@ class_name TutorialGuide extends Control
 signal hole_clicked()
 ## 步骤进入(step 为当前活跃 Task, 供外部绑定步骤 UI/进度条/播音频)
 signal step_started(step: Task)
+## 步骤完成(供漏斗埋点; skip_if 直接跳过的步骤不会发此信号)
+signal step_completed(step: Task)
+## 教程被提前结束/跳过(stop(), 供漏斗埋点"中途放弃")
+signal stopped()
+## 纯提示步骤的"继续"输入动作(键盘/手柄), 空 = 仅指针点击。
+## 有 target 的步骤不走此动作 —— 完成靠目标自身交互(Enter 会激活已聚焦的目标控件)。
+@export var advance_action: StringName = &"ui_accept"
 
 const _DEFAULT_DIM := Color(0, 0, 0, 0.55)
 const _DEFAULT_ARROW := Color(1, 0.82, 0.25, 1)
@@ -123,6 +130,7 @@ func focus(target: Node, target_def: TutorialTargetDef, block: bool, click_to_co
 	var v := get_viewport_rect().size
 	_update_arrow(v)
 	_place_tip(v)
+	_focus_target_control()
 	queue_redraw()
 
 
@@ -211,7 +219,14 @@ func bind_task(task: GroupTask, host: Node, on_step_changed: Callable = Callable
 	_on_step_changed = on_step_changed
 	task.entity_changed.connect(_on_task_changed.bind(task, host))
 	task.completed.connect(_on_done)
+	if not task.child_completed.is_connected(_on_child_completed):
+		task.child_completed.connect(_on_child_completed)
 	_on_task_changed(task, host)  # activate 不触发 entity_changed, 手动首次渲染
+
+
+## 子任务完成 → 转发为步骤级埋点信号
+func _on_child_completed(_index: int, child: Task) -> void:
+	step_completed.emit(child)
 
 
 ## 重新渲染当前活跃步骤(从商店返回等场景, 目标重新可见时刷新表现)
@@ -237,6 +252,7 @@ func stop() -> void:
 		_paused_tree.paused = false
 		_paused_tree = null
 	blur()
+	stopped.emit()
 
 
 func _on_task_changed(task: GroupTask, host: Node) -> void:
@@ -363,8 +379,8 @@ func _input(event: InputEvent) -> void:
 	if _is_dragging_3d():
 		return
 	if _allow_fullscreen_click():
-		# 纯提示: 点击任意处即完成(无遮罩、不锁, 由本层直接触发, 不依赖 GUI sensor)
-		if _is_primary_press(event):
+		# 纯提示: 点击任意处 / 按下继续键即完成(无遮罩、不锁, 由本层直接触发, 不依赖 GUI sensor)
+		if _is_primary_press(event) or _is_advance_pressed(event):
 			hole_clicked.emit()
 			get_viewport().set_input_as_handled()
 		return
@@ -451,6 +467,19 @@ func _is_primary_press(event: InputEvent) -> bool:
 	return false
 
 
+## 是否按下"继续"动作(键盘/手柄; 仅纯提示步骤使用)
+func _is_advance_pressed(event: InputEvent) -> bool:
+	return advance_action != &"" and event.is_action_pressed(advance_action)
+
+
+## 目标为可聚焦 Control 时接管焦点 —— 键盘/手柄导航与激活交给 Godot 焦点系统, 不自建
+func _focus_target_control() -> void:
+	if _target is Control:
+		var c := _target as Control
+		if c.get_focus_mode() != Control.FOCUS_NONE and not c.has_focus():
+			c.grab_focus()
+
+
 ## 提取指针类事件的屏幕坐标；非指针事件返回 INF 表示不参与拦截。
 func _pointer_position(event: InputEvent) -> Vector2:
 	if event is InputEventMouseButton:
@@ -506,6 +535,7 @@ func _try_refresh_target() -> void:
 	if resolved != null and is_instance_valid(resolved):
 		_target = resolved
 		_update_geometry()
+		_focus_target_control()
 		queue_redraw()
 
 

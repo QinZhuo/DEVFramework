@@ -29,12 +29,19 @@ static func get_screen_rect(node: Node, target_def: TutorialTargetDef = null) ->
 		return Rect2()
 	var pad := target_def.padding if target_def else 0.0
 	var rect := Rect2()
-	if node is Control:
-		rect = (node as Control).get_global_rect()
-	elif node is Node3D:
+	if node is Node3D:
 		rect = _rect_3d(node)
-	elif node is Node2D:
-		rect = _rect_2d(node, target_def)
+	elif node is CanvasItem:
+		# 2D(Control/Node2D): 合并自身与可见子级的画布矩形 —— 多目标同框 = 直接把 node_path 指向其父节点
+		var rects: Array[Rect2] = []
+		_collect_canvas_rects(node, rects)
+		if rects.is_empty():
+			var origin := (node as CanvasItem).get_global_transform_with_canvas().origin
+			rect = Rect2(origin - Vector2.ONE * 0.5, Vector2.ONE)
+		else:
+			rect = rects[0]
+			for i in range(1, rects.size()):
+				rect = rect.merge(rects[i])
 	if rect.size == Vector2.ZERO:
 		return Rect2()
 	return rect.grow(pad)
@@ -123,20 +130,6 @@ static func _global_aabb(node: Node3D) -> AABB:
 	if not found:
 		return AABB(node.global_position, Vector3.ZERO)
 	return result
-
-
-## Node2D → 屏幕矩形: 汇总自身及子级 Sprite2D/Control 的视觉体量(画布坐标);
-## 无任何体量时退化为原点单位矩形, 交由 padding 外扩定挖孔尺寸
-static func _rect_2d(node: Node2D, _target_def: TutorialTargetDef) -> Rect2:
-	var rects: Array[Rect2] = []
-	_collect_canvas_rects(node, rects)
-	if rects.is_empty():
-		var origin := node.get_global_transform_with_canvas().origin
-		return Rect2(origin - Vector2.ONE * 0.5, Vector2.ONE)
-	var merged := rects[0]
-	for i in range(1, rects.size()):
-		merged = merged.merge(rects[i])
-	return merged
 
 
 ## 收集 CanvasItem(含子级, 仅可见)的画布坐标矩形 — 2D 挖孔体量的来源

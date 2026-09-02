@@ -19,6 +19,11 @@ enum Status {
 ## 未满足则保持 INACTIVE 并发 blocked(由外部决定重试时机, 如界面点亮/前置任务完成)。
 @export var prerequisite: ConditionDef
 
+## 跳过条件(门控): 激活时条件已满足则视为"已达成"直接完成并推进 —— 教程"老玩家跳过前几步"、
+## 任务"背包里已有材料则该目标直接完成"。视为达成会正常发奖励; 不想发奖励请改用入口分流。
+## 配在 GroupTaskDef 上 = 整组跳过(子任务静默完成, 不发子任务奖励)。
+@export var skip_if: ConditionDef
+
 ## 完成奖励: 任务完成时按序 apply(context)(context = activate 传入的上下文)。
 ## 需要多个奖励时用 EffectsDef 打包; 异步效果不会被 complete() 等待。
 @export var rewards: Array[EffectDef]

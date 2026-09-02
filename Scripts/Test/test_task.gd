@@ -206,6 +206,76 @@ func test_rewards_apply_on_complete() -> void:
 	assert_eq(reward.applied.size(), 1, "重复 complete 不应重复发奖")
 
 
+func test_skip_if_advances_step() -> void:
+	# 步骤门控: skip_if 满足 → 该步直接完成并级联推进("老玩家跳过前几步")
+	var cond := FakeCondition.new()
+	cond.met = true
+	var step1 := TutorialStepDef.new()
+	step1.skip_if = cond
+	var step2 := TutorialStepDef.new()
+	var flow := GroupTaskDef.new()
+	flow.mode = GroupTaskDef.Mode.SEQUENTIAL
+	flow.tasks = [step1, step2]
+
+	var task := flow.create_entity() as GroupTask
+	task.activate({"root": null})
+	assert_eq(task.get_progress(), Vector2i(1, 2), "第一步应被 skip_if 直接完成")
+	assert_true(task.active_child_def == step2, "应已推进到第二步(未被跳过)")
+
+	# 未命中时不跳过
+	cond.met = false
+	var task2 := flow.create_entity() as GroupTask
+	task2.activate({"root": null})
+	assert_eq(task2.get_progress(), Vector2i(0, 2), "条件未满足应正常停在第一步")
+	assert_true(task2.active_child_def == step1, "应停在第一步")
+
+
+func test_skip_if_grants_reward_and_whole_group() -> void:
+	# skip_if 视为"已达成": 单任务会发奖励; 配在 GroupTaskDef 上则整组跳过(进度 n/n)
+	var reward := FakeReward.new()
+	var def := SignalTaskDef.new()
+	var cond := FakeCondition.new()
+	cond.met = true
+	def.skip_if = cond
+	def.rewards = [reward]
+	var task := Task.create(def)
+	task.activate({"root": null})
+	assert_true(task.is_completed, "条件已满足应直接完成")
+	assert_eq(reward.applied.size(), 1, "视为达成应正常发奖励")
+
+	var step := TutorialStepDef.new()
+	var flow := GroupTaskDef.new()
+	flow.mode = GroupTaskDef.Mode.SEQUENTIAL
+	flow.tasks = [step]
+	var gcond := FakeCondition.new()
+	gcond.met = true
+	flow.skip_if = gcond
+	var group := flow.create_entity() as GroupTask
+	group.activate({"root": null})
+	assert_true(group.is_completed, "整组 skip_if 命中应直接完成")
+	assert_eq(group.get_progress(), Vector2i(1, 1), "整组跳过后进度应为 n/n")
+
+
+func test_child_completed_signal() -> void:
+	# 子任务完成信号: 带下标与实体, 供任务日志/埋点
+	var step1 := TutorialStepDef.new()
+	var step2 := TutorialStepDef.new()
+	var flow := GroupTaskDef.new()
+	flow.mode = GroupTaskDef.Mode.SEQUENTIAL
+	flow.tasks = [step1, step2]
+	var task := flow.create_entity() as GroupTask
+	var events := []
+	task.child_completed.connect(func(i: int, child: Task): events.append([i, child.def]))
+	task.activate({"root": null})
+	task.active_child_entity.complete()
+	assert_eq(events.size(), 1, "完成第一个子任务应发 child_completed")
+	assert_eq(events[0][0], 0, "下标应为 0")
+	assert_true(events[0][1] == step1, "实体应为第一个子任务")
+	task.active_child_entity.complete()
+	assert_eq(events.size(), 2, "第二个子任务完成应再发一次")
+	assert_eq(events[1][0], 1, "下标应为 1")
+
+
 func test_task_tool_registry_and_save_all() -> void:
 	# 跟踪表: 注册/终态迁移/查找/聚合存读档
 	var tree := Engine.get_main_loop() as SceneTree

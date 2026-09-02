@@ -76,6 +76,19 @@ func activate(data) -> void:
 		_teardown()             # 重复激活: 先断旧监听
 	_data = data
 	_status = TaskDef.Status.ACTIVE
+	_apply_skip_if(data)
+
+## skip_if 门控: 条件已满足则视为"已达成"直接完成(GroupTask 覆写为整组语义)
+func _apply_skip_if(data) -> void:
+	if def and def.skip_if and def.skip_if.is_met(data):
+		complete()
+
+## 静默置为完成(不发信号/不发奖励) —— 供 GroupTask 整组跳过时标记子任务
+func _mark_completed() -> void:
+	if is_terminal:
+		return
+	_teardown()
+	_status = TaskDef.Status.COMPLETED
 
 ## 停用: 断开监听, 状态回到 INACTIVE(终态任务不受影响)
 func deactivate() -> void:

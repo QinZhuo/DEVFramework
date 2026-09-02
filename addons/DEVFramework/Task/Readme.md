@@ -33,13 +33,22 @@ var restored := Task.restore(save, data)       # 断点续玩：一步重建并�
 ```gdscript
 # .tres 上配置（均为可选，缺省不启用）
 @export var prerequisite: ConditionDef     # 未满足时 activate() 拒绝激活（保持 INACTIVE，发 blocked）
+@export var skip_if: ConditionDef          # 激活时已满足 → 视为"已达成"直接完成并推进（门控跳过）
 @export var rewards: Array[EffectDef]      # 完成时按序 apply(context)，多个奖励用 EffectsDef 打包
 ```
 
 ```gdscript
 task.blocked.connect(_on_blocked)          # 前置未满足 → 点亮入口/提示玩家
-task.activate(ctx)                          # ctx 同时作为前置判定与奖励发放的上下文
+task.activate(ctx)                          # ctx 同时作为条件判定与奖励发放的上下文
 ```
+
+**`skip_if` 的两个典型用途**：
+
+- 教程"老玩家跳过"：前 3 步各配 `skip_if = 玩家等级 >= N`，激活流程时被满足的步骤直接完成并级联推进。
+- 任务"已有存货"：`CountTaskDef.required = 3` + `skip_if = 背包数量 >= 3`，接任务时即刻完成。
+- 配在 `GroupTaskDef` 上 = **整组跳过**（子任务静默标记完成，不发子任务奖励）；配在叶子步骤上则正常走 `completed`/发奖励。
+
+> 与 `prerequisite` 的区别：`prerequisite` 是"没准备好就先不开始"（阻塞，发 `blocked`）；`skip_if` 是"已经做到了就直接算完成"（跳过）。需要"按玩家状态走不同流程"时优先用**入口分流**（`if 条件: start(流程A) else: start(流程B)` / `Task.restore`），不要把分支逻辑堆进步骤。
 
 ### 计数目标（进度型）
 
@@ -125,7 +134,7 @@ task.completed.connect(_on_completed)
 ```
 
 > `guide.start(flow, host, {pause_tree: bool})` 内部完成「创建任务→连 entity\_changed/completed→activate→首次渲染」，完成后自动 `blur`；返回 `GroupTask` 供外部连接/存档。
-> 配套：`guide.stop()` 提前结束/跳过（停用任务 + blur + 恢复暂停，不触发 completed）；`guide.step_started` 信号每进入一步发一次，可绑步骤 UI/进度条/播音频。
+> 配套：`guide.stop()` 提前结束/跳过（停用任务 + blur + 恢复暂停，不触发 completed，发 `stopped`）；`guide.step_started` 每进入一步发一次（绑步骤 UI/进度条/播音频），`guide.step_completed` 每完成一步发一次（埋点）。
 
 **手动路径**（完全外部驱动，等价）：
 
@@ -168,11 +177,11 @@ func _on_task_changed() -> void:
 
 屏幕矩形换算规则：
 
-- **Control**：`get_global_rect()`
+- **Control / Node2D**：合并**自身及可见子级**的画布矩形（Control 含所有后代 Control，Node2D 含后代 `Sprite2D`/`Control`）；无任何体量时退化为投影原点，尺寸由 `padding` 兜底外扩
 
-- **Node3D**：全局 AABB 8 角投影（相机背后隐藏；极小/极远目标退化为投影点，尺寸由 `padding` 兜底外扩）
+  > **多目标同框不需要新功能**：把 `node_path` 指向这些目标的**共同父节点**即可（挖孔 = 父节点及其可见子级的并集）。
 
-- **Node2D**：汇总自身及子级 `Sprite2D`/`Control` 的视觉体量换算屏幕矩形（2D 精灵挖孔准确）；无任何体量时才退化为投影原点，尺寸由 `padding` 兜底外扩
+- **Node3D**：可见 mesh 世界 AABB 合并投影（相机背后隐藏；极小/极远目标退化为投影点，尺寸由 `padding` 兜底外扩）
 
 - 箭头**默认置于挖孔上方**指向目标，顶部放不下才翻到下方兜底；提示气泡始终在箭头尾端外侧（默认上方），固定不随目标左右偏移/浮动；`arrow=false` 时不画箭头，气泡置于孔下方（纯提示无孔默认居中偏上，也可用 `tip_position` 指定位置）
 
@@ -244,6 +253,48 @@ var same_task := Task.restore(data, {"root": host})  # 断点续玩：重建并�
 
 **自定义外观**：继承 `TutorialGuide` 重写 `_draw`（`_draw_dim/_draw_arrow`），或改造 `focus()/show_step()` 触发的表现；流程/完成逻辑无需改动。
 
+### 键盘 / 手柄与可访问性（走 Godot 焦点系统）
+
+框架不自建焦点导航 —— 有 `target` 的步骤进入时会把焦点移交给目标控件（仅当其 `focus_mode != FOCUS_NONE`），方向键导航、手柄摇杆、Enter 激活全部由 Godot 内置焦点系统承担：
+
+```gdscript
+btn.focus_mode = Control.FOCUS_ALL   # 目标控件可聚焦即可，Guide 会 grab_focus()
+```
+
+纯提示步骤（无 target）额外支持"按继续键推进"，默认映射引擎预定义动作 `ui_accept`（Enter/空格/手柄 A）：
+
+```gdscript
+guide.advance_action = &"ui_accept"   # 或自定义 InputMap 动作；置 &"" 则仅响应指针
+```
+
+> 有 `target` 的步骤不消费继续键 —— 完成靠目标自身交互（Enter 会激活已聚焦的目标按钮），避免双重推进。
+
+### 漏斗埋点（步骤级事件）
+
+```gdscript
+guide.step_started.connect(func(s): Analytics.event("tutorial_step_start", s.def.name))
+guide.step_completed.connect(func(s): Analytics.event("tutorial_step_done", s.def.name))
+guide.stopped.connect(func(): Analytics.event("tutorial_abandoned"))
+task.child_completed.connect(func(i, child): pass)   # 通用任务也可用（GroupTask 信号）
+```
+
+> `skip_if` 命中被跳过的步骤视为"已达成"，**不发** `step_completed`（埋点上不计入完成漏斗）。
+
+### 目标不在屏内：交给项目层，不进框架
+
+框架不认识镜头。需要"引导时自动把目标滚进画面"时，在项目层监听 `step_started` 自行处理：
+
+```gdscript
+guide.step_started.connect(func(step):
+	var def := step.def as TutorialStepDef
+	var target := def.target.resolve(host) if def and def.target else null
+	if target == null or TutorialTargetDef.get_screen_rect(target).size == Vector2.ZERO:
+		CameraTool.impulse(...)  # 或临时推一个对准目标的 vcam 机位
+)
+```
+
+同理，边框呼吸/脉冲动画未内置 —— 它会抵消 Guide 的每帧重绘缓存优化，确有需要再做成默认关闭的开关。
+
 ## 五、最佳实践
 
 1. **完成信号由目标节点自己发**（`pressed`/`clicked` 等），`NodeSignalDef` 只做订阅 —— 不替节点过滤输入流。
@@ -251,5 +302,6 @@ var same_task := Task.restore(data, {"root": host})  # 断点续玩：重建并�
 3. **首次渲染手动调用**：`GroupTask.activate()` 不发射 `entity_changed`，激活后需手动 `guide.show_step(...)`，否则 Guide 停在模糊态遮挡全部点击（走 `guide.start()/bind_task()` 无此问题）。
 4. **要存档就用 `.tres`**：运行时 `new()` 出来的 Def 没有 `resource_path`，存不下也还原不了。
 5. **不要在 `hole_clicked` 里推进步骤**：纯提示步骤已由 Guide 内部自推进，外部再 `complete()` 会重复触发。
-6. 演示场景：`res://Scenes/Tutorial/TutorialDemo.tscn`（UI 按钮 + 3D 球体两步流程，含 `progress_changed` 进度显示）。
+6. **分支优先用入口分流，其次 `skip_if`**：不要试图在流程内部建分支图。
+7. 演示场景：`res://Scenes/Tutorial/TutorialDemo.tscn`（UI 按钮 + 3D 球体两步流程，含 `progress_changed` 进度显示）。
 
