@@ -94,26 +94,6 @@ static func _visible_mesh_aabb(node: Node3D) -> AABB:
 	return result
 
 
-## 汇总"紧凑可见体量"的全局 AABB: 只取 Label3D / Sprite3D / 文本与贴图类小体量,
-## 忽略 MeshInstance3D 等大外框/背景板(否则聚焦框偏大)。
-static func _compact_aabb(node: Node3D) -> AABB:
-	if node is Label3D:
-		return (node as VisualInstance3D).global_transform * (node as VisualInstance3D).get_aabb()
-	var result := AABB()
-	var found := false
-	for child in node.get_children():
-		if child is Label3D:
-			var a := (child as VisualInstance3D).global_transform * (child as VisualInstance3D).get_aabb()
-			result = result.merge(a) if found else a
-			found = true
-		elif child is Node3D and not (child is MeshInstance3D):
-			var a := _compact_aabb(child)
-			if a.size != Vector3.ZERO:
-				result = result.merge(a) if found else a
-				found = true
-	return result
-
-
 ## 汇总节点(含子级)的全局 AABB
 static func _global_aabb(node: Node3D) -> AABB:
 	if node is VisualInstance3D:

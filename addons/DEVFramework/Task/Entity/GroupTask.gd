@@ -3,6 +3,9 @@ class_name GroupTask extends Task
 
 ## 某个子任务完成(index 为其在 tasks 中的下标, child 为子任务实体) —— 供任务日志/埋点
 signal child_completed(index: int, child: Task)
+## 进入某个子步骤(游标所指; SEQUENTIAL 下每步一次) —— 供"分步驱动 UI"(教程/日志/进度条)直接订阅,
+## 免去外部转发器。激活首步与每步推进后都会发; 被 skip 跳过的步骤不发。
+signal step_entered(step: Task)
 
 var _child_entities: Array[Task] = []
 var _active_child_index: int = 0
@@ -18,6 +21,7 @@ func activate(data) -> void:
 		_activate_children(data)
 	else:
 		_resume_children(data)
+	_emit_step_entered()
 
 func get_current_desc() -> String:
 	if _active_child_index < _child_entities.size():
@@ -28,6 +32,8 @@ func get_progress() -> Vector2i:
 	return Vector2i(_completed_count, _child_entities.size())
 
 ## 当前活跃子任务的 def
+## 注意: 仅 SEQUENTIAL 下"活跃"唯一; ANY_ORDER / COMPLETE_ANY 可能多步并发,
+## 此 getter 仅返回"游标(最早切换到的)所指"步骤, 不代表"唯一进行中"。教程用 SEQUENTIAL 无碍。
 var active_child_def: TaskDef:
 	get:
 		var group := def as GroupTaskDef
@@ -36,6 +42,8 @@ var active_child_def: TaskDef:
 		return group.tasks[_active_child_index]
 
 ## 当前活跃子任务实体
+## 注意: 仅 SEQUENTIAL 下"活跃"唯一; ANY_ORDER / COMPLETE_ANY 多步并发时,
+## 此 getter 返回"游标所指"的那个, 语义为"当前指向的步骤", 而非"唯一的进行中步骤"。
 var active_child_entity: Task:
 	get:
 		if _active_child_index >= _child_entities.size():
@@ -68,7 +76,7 @@ func _activate_children(data) -> void:
 		if group.mode == GroupTaskDef.Mode.COMPLETE_ANY:
 			break
 
-## 组级 skip_if: 整组跳过 —— 子任务静默标记完成后整组完成(不发子任务信号/奖励)
+## 组级 skip_if: 整组跳过 —— 子任务静默标记完成后整组完成(不发子任务信号/不执行 next)
 func _apply_skip_if(data) -> void:
 	var group := def as GroupTaskDef
 	if not group or not group.skip_if or not group.skip_if.is_met(data):
@@ -123,8 +131,16 @@ func _on_child_completed(child_index: int) -> void:
 		GroupTaskDef.Mode.COMPLETE_ANY:
 			complete()
 	child_completed.emit(child_index, _child_entities[child_index])
+	_emit_step_entered()
 	entity_changed.emit()
 	progress_changed.emit()
+
+
+## 发出"进入当前步骤"信号(游标所指且未完成才发; 整组完成/被跳过的步骤不发)
+func _emit_step_entered() -> void:
+	var step := active_child_entity
+	if step and not step.is_completed:
+		step_entered.emit(step)
 
 func save_data() -> Dictionary:
 	var dict: Dictionary = {

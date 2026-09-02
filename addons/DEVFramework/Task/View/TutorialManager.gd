@@ -1,8 +1,9 @@
 @tool
-## 教程引导控件 — 遮罩/挖孔/边框/箭头/提示气泡一体化, 类 Godot 内置控件, 支持主题定制。
+## 教程管理器 — 遮罩/挖孔/边框/箭头/提示气泡一体化控件, 也是教程流程的唯一控制器
+## (直接订阅 GroupTask 的逐步信号, 步骤进入→渲染、纯提示点击→判定完成), 类 Godot 内置控件, 支持主题定制。
 ##
 ## 用法(项目创建后挂到自己的 CanvasLayer):
-##   var guide := TutorialGuide.new()
+##   var guide := TutorialManager.new()
 ##   guide.set_anchors_preset(Control.PRESET_FULL_RECT)
 ##   guide.start(flow, host)                       # 一行启动(推荐)
 ##   guide.stop()                                  # 提前结束/跳过
@@ -17,7 +18,7 @@
 ##   StyleBox tip_stylebox      提示气泡面板
 ##   Color    tip_font_color    气泡文字颜色
 ##   int      tip_font_size     气泡字号
-class_name TutorialGuide extends Control
+class_name TutorialManager extends Control
 
 ## 空洞/孔内点击(仅 click_to_complete 步骤启用, 用于"点屏幕区域完成"兜底)
 signal hole_clicked()
@@ -42,7 +43,6 @@ var _block := true
 var _click_to_complete := false
 var _active := false  # 聚焦中标志: blur(完成/未开始) 时不绘制也不拦截; 聚焦中且无孔(纯提示)才画全屏暗区
 var _arrow := true  # 当前步骤是否显示指示箭头(读 TutorialTargetDef.arrow)
-var _tip_position := Vector2(-1.0, -1.0)  # 纯提示步骤提示框自定义位置(视口归一化), -1 = 自动(纯提示默认贴屏幕底部铺满)
 var _tip_bottom_margin := 28.0  # 纯提示气泡距屏幕底部的边距(像素)
 var _tip_min_height := 160.0  # 纯提示气泡最小高度(像素, 保证文本框有足够的垂直高度)
 var _tip_top_limit := -1.0  # 纯提示气泡顶部上限 Y(屏幕坐标, 用于"不遮住商店最下方物品购买按钮"), -1 = 不限制
@@ -56,15 +56,15 @@ var _arrow_dir := Vector2.DOWN
 var _arrow_anchor := Vector2.ZERO
 var _task: GroupTask  # start() 创建的任务(供 stop() 停用)
 var _paused_tree: SceneTree  # start({pause_tree}) 暂停的世界(完成后自动恢复)
-var _host: Node  # 步骤 target 解析宿主(bind_task/start 记录, refresh 用)
-var _active_step: Task  # 当前活跃任务步骤(纯提示点击完成后推进)
-var _on_step_changed: Callable  # bind_task 步骤切换回调(宿主存进度/发日志等)
+var _host: Node  # 步骤 target 解析宿主(bind_task/start 记录, show_step 用)
+var _active_step: Task  # 当前活跃任务步骤(纯提示点击完成请求的载体)
+var _on_step_changed: Callable  # bind_task 步骤推进回调(宿主存进度/发日志等)
 var _hover_hits_draggable := false  # 最近物理帧鼠标位置是否命中可拖拽 3D 目标(拖拽按下放行用)
 ## 放行孔外按下(拖拽类步骤: 目标可能超出挖孔, 需放行按下才能开始拖拽)。
 ## 由 TutorialTargetDef.allow_outside_drag 在 show_step 时自动带入, 也可在运行时手动改。
 var allow_hand_drag := false
 ## 拖拽放行判定(可选注入): funcref/无参 lambda, 返回 true 时 Guide 放行全部指针事件,
-## 避免打断"拖出聚焦框"的拖拽。框架不认识任何具体拖拽实现 —— 判定由项目注入, 避免 Task 反向依赖 View。
+## 避免打断"拖出聚焦框"的拖拽。框架不认识"该项目的拖拽视图类", 由项目注入"是否正在拖拽"。
 var drag_checker: Callable = Callable()
 
 # --- 主题缓存 ---
@@ -144,20 +144,18 @@ func show_step(step: Task, host: Node) -> void:
 	blur()
 	_active_step = step
 	_host = host
-	_tip_position = step_def.tip_position if step_def else Vector2(-1.0, -1.0)
 	var target_def: TutorialTargetDef = step_def.target if step_def else null
-	var target: Node = target_def.resolve(host) if target_def else null
+	# 完成语义由 TutorialStepDef 归口(resolve_target/has_signals), 表现层只组合决策, 不反射任务内部
+	var target: Node = step_def.resolve_target(host) if step_def else null
 	# 每步重置拖拽放行态: 避免上一步开启的放行残留到本步骤导致误放行孔外点击;
 	# 初值取 TutorialTargetDef.allow_outside_drag(拖拽类步骤在配置里声明), 运行期仍可手动改。
 	allow_hand_drag = target_def.allow_outside_drag if target_def else false
-	_hover_hits_draggable = false
 	var has_target := target != null
-	# 完成方式自动推导:
+	# 完成方式自动推导(归口 TutorialStepDef.click_to_complete_for, target 已解析, 不重复 resolve):
 	# - 有 target        → 挖孔阻挡孔外输入, 完成靠目标交互/信号
-	# - 无 target 有信号 → 纯提示不阻挡、也不点击完成, 等待信号(如"结算衔接"步骤: 不能让引导拦截面板按钮)
-	# - 无 target 无信号 → 纯提示, 点击任意处完成
-	var has_signals := step_def is SignalTaskDef and not (step_def as SignalTaskDef).signals.is_empty()
-	var click_to_complete := not has_target and not has_signals
+	# - 无 target 有信号 → 纯提示不阻挡、也不点击完成, 等待信号(如"结算衔接"步骤)
+	# - 无 target 无信号 → 纯提示, 点击任意处完成(由此 click_to_complete 承载, 与完成请求共用)
+	var click_to_complete: bool = step_def.click_to_complete_for(has_target) if step_def else false
 	# 遮罩策略: 有 target(挖孔) 或"点击任意处继续"的纯提示(click_to_complete)都画暗区并强制点击,
 	# 使全屏文本提示与指定操作步骤一样: 除文本气泡高亮外其余位置调暗, 玩家只能点击继续。
 	# 仅"等待信号"的纯提示步骤(click_to_complete=false)保持不遮罩, 以便玩家操作界面触发信号。
@@ -173,7 +171,6 @@ func blur() -> void:
 	_target = null
 	_target_def = null
 	_active_step = null
-	_tip_position = Vector2(-1.0, -1.0)
 	_tip_top_limit = -1.0
 	_arrow = true
 	_hole = Rect2()
@@ -209,7 +206,8 @@ func start(flow: GroupTaskDef, host: Node, opts: Dictionary = {}) -> GroupTask:
 
 
 ## 绑定外部创建的任务(与 start() 等价, 但由外部持有任务实体, 便于存档/连接 completed)。
-## 内部完成 "task.entity_changed → show_step" 桥接; 纯提示(无目标)步骤自动"点任意处继续"。
+## 直接订阅 GroupTask 的逐步信号(step_entered/child_completed/completed), Guide 即教程控制器:
+## 步骤进入→渲染表现、纯提示点击→判定完成。无中间转发器。
 ## [param task] 已激活的 GroupTask(步骤为 TutorialStepDef)
 ## [param host] 教程宿主(步骤 target 相对它解析)
 ## [param on_step_changed] 步骤推进回调(宿主存进度/发日志等, 可选)
@@ -217,16 +215,38 @@ func bind_task(task: GroupTask, host: Node, on_step_changed: Callable = Callable
 	_task = task
 	_host = host
 	_on_step_changed = on_step_changed
-	task.entity_changed.connect(_on_task_changed.bind(task, host))
-	task.completed.connect(_on_done)
-	if not task.child_completed.is_connected(_on_child_completed):
-		task.child_completed.connect(_on_child_completed)
-	_on_task_changed(task, host)  # activate 不触发 entity_changed, 手动首次渲染
+	# 直接订阅 GroupTask 的逐步信号(GroupTask 自内建 step_entered), 无需外部转发器
+	if not task.step_entered.is_connected(_on_task_step_entered):
+		task.step_entered.connect(_on_task_step_entered)
+	if not task.child_completed.is_connected(_on_task_child_completed):
+		task.child_completed.connect(_on_task_child_completed)
+	if not task.completed.is_connected(_on_task_completed):
+		task.completed.connect(_on_task_completed)
+	# activate 已发过一次 step_entered(此时未连), 手动补首次渲染
+	_on_task_step_entered(task.active_child_entity)
 
 
-## 子任务完成 → 转发为步骤级埋点信号
-func _on_child_completed(_index: int, child: Task) -> void:
+## 某步骤进入 → 渲染表现 + 广播 step_started + 触发进度回调
+func _on_task_step_entered(step: Task) -> void:
+	if step and not step.is_completed:
+		show_step(step, _host)
+		step_started.emit(step)
+	if _on_step_changed.is_valid():
+		_on_step_changed.call()
+
+
+## 某子步骤完成 → 转发为步骤级埋点信号
+func _on_task_child_completed(_index: int, child: Task) -> void:
 	step_completed.emit(child)
+
+
+## 整组完成 → 结束聚焦并恢复暂停世界
+func _on_task_completed() -> void:
+	blur()
+	if _paused_tree:
+		_paused_tree.paused = false
+		_paused_tree = null
+	_task = null
 
 
 ## 重新渲染当前活跃步骤(从商店返回等场景, 目标重新可见时刷新表现)
@@ -235,12 +255,12 @@ func refresh() -> void:
 		show_step(_active_step, _host)
 
 
-## 纯提示(无目标)步骤的点击完成: 挖孔/全屏点击 → hole_clicked → 若当前步骤为 click_to_complete 则推进。
-## 统一以 Guide 的 _click_to_complete(解析后无目标)为准, 与有 target 的步骤(靠目标交互/信号完成)区分,
-## 避免目标节点缺失时出现"Guide 放行点击、宿主却不完成"的判定分歧。
+## 纯提示(无目标)步骤的"点任意处 / 按继续键"完成: 由本控制器判定 click_to_complete 后推进。
+## 完成语义(是否该点击完成)由 TutorialStepDef.click_to_complete 归口, 此处与 show_step 共用同一来源。
 func _on_hole_clicked_internal() -> void:
-	if _active_step and _click_to_complete and not _active_step.is_completed:
-		_active_step.complete()
+	var step := _active_step
+	if step and not step.is_completed and _click_to_complete:
+		step.complete()
 
 
 ## 提前结束/跳过教程(取消聚焦 + 停用任务 + 恢复暂停; 不触发 completed, 供"跳过教程"按钮调用)
@@ -253,26 +273,6 @@ func stop() -> void:
 		_paused_tree = null
 	blur()
 	stopped.emit()
-
-
-func _on_task_changed(task: GroupTask, host: Node) -> void:
-	if task.is_completed:
-		blur()
-		return
-	var step := task.active_child_entity
-	if step and not step.is_completed:
-		show_step(step, host)
-		step_started.emit(step)
-	if _on_step_changed.is_valid():
-		_on_step_changed.call()
-
-
-func _on_done() -> void:
-	blur()
-	if _paused_tree:
-		_paused_tree.paused = false
-		_paused_tree = null
-	_task = null
 
 
 ## 当前挖孔矩形(供外部参考)
@@ -397,9 +397,9 @@ func _input(event: InputEvent) -> void:
 			get_viewport().set_input_as_handled()
 		return
 	if not _hole.has_point(pos):
-		# 孔外: 拦点击与 hover。但若"按下"命中可拖拽 3D 目标(如手牌卡牌拖拽出售),
-		# 需放行, 否则 3D 拾取收不到按下, 拖拽无法开始(_is_dragging_3d 此时仍为 false)。
-		# 命中结果在 _physics_process 中更新(仅那时 direct_space_state 可安全访问)。
+		# 孔外: 拦点击与 hover。但"按下"命中可拖拽 3D 目标(如手牌卡牌拖拽出售)时
+		# 需放行, 否则 3D 拾取收不到按下、拖拽无法开始(_is_dragging_3d 此时仍为 false)。
+		# 命中结果在 _physics_process 中更新(仅那时 direct_space_state 可安全访问), 供此处读取缓存;
 		# 配置了 allow_outside_drag 的拖拽类步骤也放行孔外按下(目标可能超出挖孔, 需放行按下才能起拖)。
 		if _is_primary_press(event):
 			if _hover_hits_draggable or allow_hand_drag:
@@ -408,7 +408,7 @@ func _input(event: InputEvent) -> void:
 
 
 ## 当前是否有拖拽正在进行(拖拽需要把物品拖出聚焦框, 放行全部指针事件以免打断)。
-## 判定来自 drag_checker —— 框架不认识任何具体拖拽实现, 由调用方注入。
+## 判定来自 drag_checker —— 框架不认识"该项目的拖拽视图类", 由调用方注入。
 func _is_dragging_3d() -> bool:
 	return drag_checker.is_valid() and drag_checker.call()
 
@@ -447,7 +447,7 @@ func _query_hover_draggable() -> bool:
 	return _is_draggable_node(result.get("collider"))
 
 
-## 命中节点是否"可拖拽"(鸭子类型: 框架不认识具体拖拽类)。
+## 命中节点是否"可拖拽"(鸭子类型: 框架不认识具体拖拽视图类)。
 ## 命中节点或其祖先带 is_dragging 属性 —— 拖拽视图的通行约定, 与是否正在拖拽无关。
 static func _is_draggable_node(collider) -> bool:
 	while collider:

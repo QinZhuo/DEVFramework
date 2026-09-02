@@ -20,13 +20,14 @@ enum Status {
 @export var prerequisite: ConditionDef
 
 ## 跳过条件(门控): 激活时条件已满足则视为"已达成"直接完成并推进 —— 教程"老玩家跳过前几步"、
-## 任务"背包里已有材料则该目标直接完成"。视为达成会正常发奖励; 不想发奖励请改用入口分流。
-## 配在 GroupTaskDef 上 = 整组跳过(子任务静默完成, 不发子任务奖励)。
+## 任务"背包里已有材料则该目标直接完成"。视为达成会正常执行 next; 不想执行 next 请改用入口分流。
+## 配在 GroupTaskDef 上 = 整组跳过(子任务静默完成, 不执行子任务 next)。
 @export var skip_if: ConditionDef
 
-## 完成奖励: 任务完成时按序 apply(context)(context = activate 传入的上下文)。
-## 需要多个奖励时用 EffectsDef 打包; 异步效果不会被 complete() 等待。
-@export var rewards: Array[EffectDef]
+## 任务完成后执行的操作(单个, 也可以是任务奖励): complete() 时 apply(context)。
+## 语义是"任务结束做一次什么" —— 既可发奖励, 也可做任意副作用/衔接下一段逻辑。
+## 需要级联多个效果时用 EffectsDef 打包, 或多个任务通过后续编排串联。
+@export var next: EffectDef
 
 func get_desc(_data) -> String:
 	return tr(str(name, "_desc"))

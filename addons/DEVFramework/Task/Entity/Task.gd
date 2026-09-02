@@ -83,7 +83,7 @@ func _apply_skip_if(data) -> void:
 	if def and def.skip_if and def.skip_if.is_met(data):
 		complete()
 
-## 静默置为完成(不发信号/不发奖励) —— 供 GroupTask 整组跳过时标记子任务
+## 静默置为完成(不发信号/不执行 next) —— 供 GroupTask 整组跳过时标记子任务
 func _mark_completed() -> void:
 	if is_terminal:
 		return
@@ -101,13 +101,13 @@ func deactivate() -> void:
 func _teardown() -> void:
 	pass
 
-## 手动完成: 状态 → COMPLETED, 先发奖励再广播 completed
+## 手动完成: 状态 → COMPLETED, 先执行 next 再广播 completed
 func complete() -> void:
 	if is_terminal:
 		return
 	_teardown()
 	_status = TaskDef.Status.COMPLETED
-	_apply_rewards()
+	_apply_next()
 	completed.emit()
 
 ## 失败(终态)
@@ -165,13 +165,10 @@ func _resume_from_save() -> void:
 
 # --- 内部 ---
 
-## 发放完成奖励(apply 与 revert 共用 activate 传入的上下文)
-func _apply_rewards() -> void:
-	if def == null:
-		return
-	for effect in def.rewards:
-		if effect:
-			effect.apply(_data)
+## 执行任务完成动作(apply 以 activate 传入的上下文)
+func _apply_next() -> void:
+	if def and def.next:
+		def.next.apply(_data)
 
 ## Def → 存档值(相对 res://Assets/Def/ 的短路径; 无路径的内置 Def 无法还原)
 func _def_to_data():
