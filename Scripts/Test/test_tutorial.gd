@@ -155,7 +155,7 @@ func test_stop_helper() -> void:
 	assert_true(guide._active, "start 后应聚焦渲染")
 	guide.stop()
 	assert_false(guide._active, "stop 后不再绘制遮罩")
-	assert_false(task._active, "stop 后任务应停用")
+	assert_false(task.is_active, "stop 后任务应停用")
 	assert_false(completed[0], "stop 不应触发 completed")
 	host.queue_free()
 

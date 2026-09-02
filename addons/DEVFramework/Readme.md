@@ -156,20 +156,22 @@ func _to_string():
 
 ### 3.4 任务（Task）体系
 
-`TaskDef` 定义任务，`Task` 负责运行时推进：
+`TaskDef` 定义任务，`Task` 负责运行时推进。状态机：`INACTIVE → ACTIVE → COMPLETED / FAILED / CANCELLED`。
 
 | 子类 | 行为 |
 |---|---|
 | `SignalTaskDef` / `SignalTask` | 任一信号触发即完成 |
+| `CountTaskDef` / `CountTask` | 计数目标：信号累加到 `required` 即完成（进度型） |
 | `GroupTaskDef` / `GroupTask` | 三种模式：`SEQUENTIAL`（顺序）、`ANY_ORDER`（任意顺序全部）、`COMPLETE_ANY`（任一完成即结束） |
 
 ```gdscript
 var task := Task.create(task_def)  # 通过工厂创建实体
 task.activate(data)
 task.completed.connect(_on_task_done)
+task.get_progress()                # Vector2i(已完成数, 总数)
 ```
 
-任务实体支持 `save_data()` / `load_data()`，可用于任务系统存档。
+任务实体支持 `save_data()` / `load_data()` 与 `Task.restore()` 存档还原；`TaskTool` 提供活动列表/按 Def 查找/聚合存读档。详见 [`Task/Readme.md`](Task/Readme.md)。
 
 ---
 

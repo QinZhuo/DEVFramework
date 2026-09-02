@@ -8,18 +8,13 @@ var _completed_count: int = 0
 
 func activate(data) -> void:
 	super(data)
-	if is_completed:
-		return
+	if not is_active:
+		return    # 终态, 或 prerequisite 未满足被拒绝(保持 INACTIVE)
 	# 已有子实体时(重复 activate / 先 load_data 后 activate)从存档进度继续, 不重建子任务
 	if _child_entities.is_empty():
 		_activate_children(data)
 	else:
 		_resume_children(data)
-
-func deactivate() -> void:
-	for child in _child_entities:
-		child.deactivate()
-	super()
 
 func get_current_desc() -> String:
 	if _active_child_index < _child_entities.size():
@@ -43,6 +38,13 @@ var active_child_entity: Task:
 		if _active_child_index >= _child_entities.size():
 			return null
 		return _child_entities[_active_child_index]
+
+## 重置整组(可重复任务用): 子任务全部复位, 进度归零
+func reset() -> void:
+	for child in _child_entities:
+		child.reset()
+	_recompute_progress()
+	super()
 
 
 func _activate_children(data) -> void:
@@ -80,6 +82,11 @@ func _resume_children(data) -> void:
 					child.activate(data)
 					break
 
+## 断开全部子任务(子类清理协议; 本组状态由基类处理)
+func _teardown() -> void:
+	for child in _child_entities:
+		child.deactivate()
+
 func _on_child_completed(child_index: int) -> void:
 	var group := def as GroupTaskDef
 	if not group:
@@ -103,6 +110,7 @@ func _on_child_completed(child_index: int) -> void:
 func save_data() -> Dictionary:
 	var dict: Dictionary = {
 		def = _def_to_data(),
+		status = _status,
 		is_completed = is_completed,
 		children = [],
 	}
@@ -113,26 +121,13 @@ func save_data() -> Dictionary:
 func load_data(dict: Dictionary, data = null) -> void:
 	if data != null:
 		_data = data
-	is_completed = dict.get("is_completed", false)
 	var children: Array = dict.get("children", [])
 	_ensure_children()                      # 按 def 建齐子实体(幂等, 重复调用不重建)
 	for i in children.size():
 		if i < _child_entities.size():
 			_child_entities[i].load_data(children[i])
 	_recompute_progress()
-	if _active_child_index >= _child_entities.size() and not is_completed:
-		complete()          # 子任务已全部完成(或空组): 收尾, 与 _on_child_completed 一致
-	if is_completed:
-		entity_changed.emit()
-		progress_changed.emit()
-		return
-	# 上下文尚未提供时只恢复数据, 等调用方 activate(data) 由 _resume_children 从进度继续
-	if _data != null:
-		for child in _child_entities:
-			child.deactivate()
-		_child_entities[_active_child_index].activate(_data)
-	entity_changed.emit()
-	progress_changed.emit()
+	super(dict, data)                       # 还原状态 + _resume_from_save()
 
 
 ## 按 def 建立缺失的子实体(已存在则复用, 保证 activate/load_data 可重复调用)
@@ -156,3 +151,13 @@ func _recompute_progress() -> void:
 			_completed_count += 1
 		elif _active_child_index == _child_entities.size():
 			_active_child_index = i
+
+## 读档后恢复: 全部子任务已完成则收尾; 未完成且有上下文则激活当前步骤(不重跑已完成步骤)
+func _resume_from_save() -> void:
+	if is_completed:
+		return
+	if _active_child_index >= _child_entities.size():
+		complete()
+		return
+	if _status == TaskDef.Status.ACTIVE and _data != null:
+		_resume_children(_data)

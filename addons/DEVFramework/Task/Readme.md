@@ -9,26 +9,63 @@ DEV Framework 的**任务系统**：`Def（静态配置 .tres）→ Entity（运
 
 | 类                              | 角色                                                                |
 | ------------------------------ | ----------------------------------------------------------------- |
-| `TaskDef`                      | 任务定义基类（抽象）                                                        |
+| `TaskDef`                      | 任务定义基类（抽象）：状态枚举 / 前置条件 `prerequisite` / 完成奖励 `rewards` |
 | `SignalTaskDef` / `SignalTask` | 任一信号触发即完成                                                         |
+| `CountTaskDef` / `CountTask`   | 计数目标：信号累加计数，达到 `required` 即完成（"击杀 5 只怪"） |
 | `GroupTaskDef` / `GroupTask`   | 子任务编排：`SEQUENTIAL`(顺序) / `ANY_ORDER`(任意全完) / `COMPLETE_ANY`(任一即完) |
+
+**状态机**：`INACTIVE → ACTIVE → COMPLETED / FAILED / CANCELLED`（终态不可再激活）。
+`complete()/fail()/cancel()` 由外部或派生逻辑调用；`status` 只读，配套 `is_active` / `is_completed` / `is_terminal`。
 
 ```gdscript
 var task := Task.create(task_def)   # 或 task_def.create_entity()
 task.completed.connect(_on_done)
-task.progress_changed.connect(_on_progress)   # 进度变化（步骤推进）
+task.progress_changed.connect(_on_progress)   # 进度变化（步骤推进/计数累加）
 task.activate(data)                # data 携带信号解析上下文（root 等）
-task.get_progress()                # Vector2i(已完成数, 总数)
+task.get_progress()                # Vector2i(已完成数, 总数)；计数任务为 (当前, required)
 
-var save := task.save_data()                   # 存档（Def 相对路径 + 各步完成状态）
+var save := task.save_data()                   # 存档（Def 相对路径 + 状态 + 子进度）
 var restored := Task.restore(save, data)       # 断点续玩：一步重建并激活到存档进度
+```
+
+### 前置条件与奖励
+
+```gdscript
+# .tres 上配置（均为可选，缺省不启用）
+@export var prerequisite: ConditionDef     # 未满足时 activate() 拒绝激活（保持 INACTIVE，发 blocked）
+@export var rewards: Array[EffectDef]      # 完成时按序 apply(context)，多个奖励用 EffectsDef 打包
+```
+
+```gdscript
+task.blocked.connect(_on_blocked)          # 前置未满足 → 点亮入口/提示玩家
+task.activate(ctx)                          # ctx 同时作为前置判定与奖励发放的上下文
+```
+
+### 计数目标（进度型）
+
+```gdscript
+var def := CountTaskDef.new()
+def.required = 5                            # 目标数量（required=1 时退化为普通信号任务）
+def.signals = [node_sig]                    # 计数信号：任一触发 +1
+def.signals = [cond_sig]                    # 或配 ConditionSignalDef → 只统计满足条件的触发
+```
+
+### 任务跟踪表（可选基建）
+
+```gdscript
+TaskTool.track(task)                # 显式注册（框架不做隐式生命周期）；终态自动转入 finished
+TaskTool.get_active()               # 活动列表（任务日志 UI 数据源）
+TaskTool.find("Tutorial/xxx.tres")  # 按 Def 相对路径查找
+var saved := TaskTool.save_all()    # 聚合存档 {def_key: save_data}
+var tasks := TaskTool.load_all(saved, ctx)   # 聚合读档并重新注册
+TaskTool.untrack(task)              # 场景销毁时注销（静态表持有强引用）
 ```
 
 > **存档前提**：`Def` 必须有 `resource_path`（即存成 `.tres` 文件）。运行时 `XxxDef.new()` 出来的内置 Def 没有路径，存档时会告警且无法还原 —— 需要持久化的任务请一律用 `.tres` 配置。
 >
 > `Task.restore(dict, data)` 的 `data` 可省略：省略时只恢复数据不激活，之后调 `task.activate(data)` 会从存档进度继续（不重跑已完成步骤）。
 >
-> 信号源（`SignalDef` 家族）：`NodeSignalDef` 订阅任意节点具名信号（如 `Button.pressed`）；`ConditionSignalDef` 带条件过滤。
+> 信号源（`SignalDef` 家族）：`NodeSignalDef` 订阅任意节点具名信号（如 `Button.pressed`）；`ConditionSignalDef` 带条件过滤（条件基于 activate 传入的上下文求值，信号实参原样转发）。
 
 ## 二、教程 = 任务 + 表现
 
