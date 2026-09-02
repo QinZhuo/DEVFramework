@@ -573,7 +573,7 @@ array_view.remove_item(item)
 | 类 | 说明 |
 |---|---|
 | `TweenView / 2D / 3D` | 通过 `tween_visible` 布尔驱动 Tween 显隐 |
-| `OutlineEffect` | 后处理描边：`OutlineEffect.set_outlined(true, mesh)` |
+| `OutlineEffect` | 多实例后处理描边（一个实例 = 一种描边，在 Compositor 资源里配置颜色/宽度/标记通道）。项目侧 @export 直接引用实例资源，调用实例的 `set_marked(true, mesh)` 开关；框架内部悬停走静态快捷方式 `OutlineEffect.set_outlined(true, mesh)`（固定通道 0）。颜色动画由项目侧每帧改实例的 `outline_color` 驱动 |
 | `GLSLShaderEffect` | 可编程后处理（填 `define_code` / `main_code` 实时编译） |
 | `Trail3D` | 拖尾网格 |
 | `BakedPool / BakedPoolManager` | 烘焙对象池（编辑器一键生成池子，运行时 `pool_get`/`pool_push`） |

@@ -35,13 +35,23 @@ var _block := true
 var _click_to_complete := false
 var _active := false  # 聚焦中标志: blur(完成/未开始) 时不绘制也不拦截; 聚焦中且无孔(纯提示)才画全屏暗区
 var _arrow := true  # 当前步骤是否显示指示箭头(读 TutorialTargetDef.arrow)
+var _tip_position := Vector2(-1.0, -1.0)  # 纯提示步骤提示框自定义位置(视口归一化), -1 = 自动(纯提示默认贴屏幕底部铺满)
+var _tip_bottom_margin := 28.0  # 纯提示气泡距屏幕底部的边距(像素)
+var _tip_min_height := 160.0  # 纯提示气泡最小高度(像素, 保证文本框有足够的垂直高度)
+var _tip_top_limit := -1.0  # 纯提示气泡顶部上限 Y(屏幕坐标, 用于"不遮住商店最下方物品购买按钮"), -1 = 不限制
 var _hole := Rect2()
+var _target_rect := Rect2()  # 每帧精确目标矩形, _hole 平滑逼近它, 避免镜头转动/目标移动时挖孔跳变
 var _last_hole := Rect2()  # 上一帧挖孔(未变化且无动画时跳过重绘)
 var _time := 0.0
 var _arrow_dir := Vector2.DOWN
 var _arrow_anchor := Vector2.ZERO
 var _task: GroupTask  # start() 创建的任务(供 stop() 停用)
 var _paused_tree: SceneTree  # start({pause_tree}) 暂停的世界(完成后自动恢复)
+var _host: Node  # 步骤 target 解析宿主(bind_task/start 记录, refresh 用)
+var _active_step: Task  # 当前活跃任务步骤(纯提示点击完成后推进)
+var _on_step_changed: Callable  # bind_task 步骤切换回调(宿主存进度/发日志等)
+var _hover_hits_draggable := false  # 最近物理帧鼠标位置是否命中可拖拽 3D 目标(拖拽按下放行用)
+var allow_hand_drag := false  # 拖拽手牌步骤(卖卡/排序)时放行孔外按下, 让手牌卡牌拖拽能开始
 
 # --- 主题缓存 ---
 var _dim_color := _DEFAULT_DIM
@@ -56,7 +66,7 @@ var _dim_bottom := Control.new()
 var _dim_left := Control.new()
 var _dim_right := Control.new()
 var _sensor := Control.new()
-var _tip_panel: PanelContainer
+var _tip_panel: Panel
 var _tip_text_label: RichTextLabel
 
 
@@ -76,6 +86,8 @@ func _ready() -> void:
 	set_process_input(true)  # 启用节点级 _input: 用于在物理拾取前阻断目标外点击
 	_build_widgets()
 	_apply_theme()
+	# 纯提示(无目标)步骤的"点任意处继续"由本控件自行推进, 宿主无需再转发 hole_clicked
+	hole_clicked.connect(_on_hole_clicked_internal)
 	blur()
 
 
@@ -99,24 +111,41 @@ func focus(target: Node, target_def: TutorialTargetDef, block: bool, click_to_co
 	_last_hole = Rect2()
 	set_tip(tip_text)
 	_update_geometry()
+	_hole = _target_rect  # 首次聚焦瞬移到位(不做平滑插值)
+	_apply_rects()
+	var v := get_viewport_rect().size
+	_update_arrow(v)
+	_place_tip(v)
 	queue_redraw()
 
 
 ## 从任务步骤渲染表现(播放桥接: 外部连 task.entity_changed 调用本方法; 无表现字段的普通步骤退化为纯提示)
-## 锁定语义自动推导(无需手动配 block_input/click_to_complete):
-##   - 存在 target → 强制锁定(block & click_to_complete 按步骤配置, 默认 lock 全屏、只点目标)
-##   - 无 target    → 纯提示(自动“不锁 + 点任意处继续”, 无黑遮罩仅气泡)
+## 锁定语义自动推导:
+##   - 存在 target → 遮挡目标外输入(遮罩挖孔、只点目标, 完成靠目标自身交互/信号)
+##   - 无 target 无信号 → 纯提示: 画全屏暗区(除文本气泡外调暗), 强制"点任意处继续"
+##   - 无 target 有信号 → 纯提示不遮挡, 等待信号推进(如结算衔接步骤, 不拦截面板按钮)
 func show_step(step: Task, host: Node) -> void:
 	var step_def := step.def as TutorialStepDef if step else null
 	blur()
+	_active_step = step
+	_host = host
+	_tip_position = step_def.tip_position if step_def else Vector2(-1.0, -1.0)
 	var target: Node = null
 	if step_def and step_def.target:
 		target = step_def.target.resolve(host)
 	var has_target := target != null
-	var forced_block: bool = step_def.block_input if step_def else true
+	# 完成方式自动推导:
+	# - 有 target        → 挖孔阻挡孔外输入, 完成靠目标交互/信号
+	# - 无 target 有信号 → 纯提示不阻挡、也不点击完成, 等待信号(如"结算衔接"步骤: 不能让引导拦截面板按钮)
+	# - 无 target 无信号 → 纯提示, 点击任意处完成
+	var has_signals := step_def is SignalTaskDef and not (step_def as SignalTaskDef).signals.is_empty()
+	var click_to_complete := not has_target and not has_signals
+	# 遮罩策略: 有 target(挖孔) 或"点击任意处继续"的纯提示(click_to_complete)都画暗区并强制点击,
+	# 使全屏文本提示与指定操作步骤一样: 除文本气泡高亮外其余位置调暗, 玩家只能点击继续。
+	# 仅"等待信号"的纯提示步骤(click_to_complete=false)保持不遮罩, 以便玩家操作界面触发信号。
 	focus(target, step_def.target if step_def else null,
-			forced_block and has_target,  # 无目标恒不锁 → 纯提示
-			(step_def.click_to_complete if step_def else false) or not has_target,  # 纯提示自动“点任意处继续”
+			has_target or click_to_complete,
+			click_to_complete,
 			step.get_current_desc() if step else "")
 
 
@@ -125,8 +154,12 @@ func blur() -> void:
 	_active = false
 	_target = null
 	_target_def = null
+	_active_step = null
+	_tip_position = Vector2(-1.0, -1.0)
+	_tip_top_limit = -1.0
 	_arrow = true
 	_hole = Rect2()
+	_target_rect = Rect2()
 	_last_hole = Rect2()
 	_apply_rects()
 	if _tip_panel:
@@ -146,16 +179,41 @@ func blur() -> void:
 ## [return] GroupTask 实体(由外部持有)
 func start(flow: GroupTaskDef, host: Node, opts: Dictionary = {}) -> GroupTask:
 	var task := flow.create_entity() as GroupTask
-	_task = task
-	task.entity_changed.connect(_on_task_changed.bind(task, host))
-	task.completed.connect(_on_done)
 	if opts.get("pause_tree", false):
 		_paused_tree = host.get_tree()
 		_paused_tree.paused = true
 		process_mode = Node.PROCESS_MODE_ALWAYS
 	task.activate({"root": host})
-	_on_task_changed(task, host)  # activate 不触发 entity_changed, 手动首次渲染
+	bind_task(task, host)
 	return task
+
+
+## 绑定外部创建的任务(与 start() 等价, 但由外部持有任务实体, 便于存档/连接 completed)。
+## 内部完成 "task.entity_changed → show_step" 桥接; 纯提示(无目标)步骤自动"点任意处继续"。
+## [param task] 已激活的 GroupTask(步骤为 TutorialStepDef)
+## [param host] 教程宿主(步骤 target 相对它解析)
+## [param on_step_changed] 步骤推进回调(宿主存进度/发日志等, 可选)
+func bind_task(task: GroupTask, host: Node, on_step_changed: Callable = Callable()) -> void:
+	_task = task
+	_host = host
+	_on_step_changed = on_step_changed
+	task.entity_changed.connect(_on_task_changed.bind(task, host))
+	task.completed.connect(_on_done)
+	_on_task_changed(task, host)  # activate 不触发 entity_changed, 手动首次渲染
+
+
+## 重新渲染当前活跃步骤(从商店返回等场景, 目标重新可见时刷新表现)
+func refresh() -> void:
+	if _active_step and not _active_step.is_completed and _host:
+		show_step(_active_step, _host)
+
+
+## 纯提示(无目标)步骤的点击完成: 挖孔/全屏点击 → hole_clicked → 若当前步骤为 click_to_complete 则推进。
+## 统一以 Guide 的 _click_to_complete(解析后无目标)为准, 与有 target 的步骤(靠目标交互/信号完成)区分,
+## 避免目标节点缺失时出现"Guide 放行点击、宿主却不完成"的判定分歧。
+func _on_hole_clicked_internal() -> void:
+	if _active_step and _click_to_complete and not _active_step.is_completed:
+		_active_step.complete()
 
 
 ## 提前结束/跳过教程(取消聚焦 + 停用任务 + 恢复暂停; 不触发 completed, 供"跳过教程"按钮调用)
@@ -177,6 +235,8 @@ func _on_task_changed(task: GroupTask, host: Node) -> void:
 	if step and not step.is_completed:
 		show_step(step, host)
 		step_started.emit(step)
+	if _on_step_changed.is_valid():
+		_on_step_changed.call()
 
 
 func _on_done() -> void:
@@ -192,6 +252,12 @@ func get_hole_rect() -> Rect2:
 	return _hole
 
 
+## 是否处于"聚焦并阻挡目标外输入"状态(供外部判断快捷键/操作是否应禁用)。
+## 纯提示(无目标, _block=false)或已 blur(_active=false) 时返回 false, 不阻挡任何输入。
+func is_blocking() -> bool:
+	return _active and _block
+
+
 ## 设置提示文字(空 = 隐藏气泡)
 func set_tip(text: String) -> void:
 	if _tip_panel == null:
@@ -199,6 +265,13 @@ func set_tip(text: String) -> void:
 	_tip_text_label.text = text
 	_tip_panel.reset_size()
 	_tip_panel.visible = not text.is_empty()
+
+
+## 设置纯提示气泡的顶部上限 Y(屏幕坐标)。
+## 纯提示(无目标)气泡默认贴屏幕底部铺满显示; 传入有效上限后, 气泡顶部不会高于该 Y,
+## 用于"提示框不遮住商店最下方物品的购买按钮"。传 -1 取消限制。
+func set_tip_top_limit(max_y: float) -> void:
+	_tip_top_limit = max_y
 
 
 # ------------------------------------------------------------
@@ -215,16 +288,16 @@ func _build_widgets() -> void:
 	_sensor.visible = false
 	_sensor.gui_input.connect(_on_sensor_input)
 	add_child(_sensor)
-	_tip_panel = PanelContainer.new()
+	_tip_panel = Panel.new()
 	_tip_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_tip_panel.visible = false
 	_tip_text_label = RichTextLabel.new()
 	_tip_text_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_tip_text_label.bbcode_enabled = true
-	_tip_text_label.fit_content = true
+	_tip_text_label.fit_content = false  # Panel 手动布局: 由 _place_tip 控制尺寸
 	_tip_text_label.scroll_active = false
 	_tip_text_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_tip_text_label.custom_minimum_size = Vector2(360, 0)
+	_tip_text_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER  # 文字在气泡内垂直居中
 	_tip_panel.add_child(_tip_text_label)
 	add_child(_tip_panel)
 
@@ -248,7 +321,7 @@ func _apply_theme() -> void:
 				if has_theme_color("tip_font_color", "TutorialGuide") else _DEFAULT_TIP_TEXT
 		_tip_text_label.add_theme_color_override("default_color", tc)
 		var fsz := get_theme_font_size("tip_font_size", "TutorialGuide") \
-				if has_theme_font_size("tip_font_size", "TutorialGuide") else 16
+				if has_theme_font_size("tip_font_size", "TutorialGuide") else 48
 		_tip_text_label.add_theme_font_size_override("normal_font_size", fsz)
 
 
@@ -272,6 +345,10 @@ func _read_const(name: String, fallback: int) -> int:
 func _input(event: InputEvent) -> void:
 	if not _active:
 		return
+	# 拖拽手势放行: 3D 拖拽(如出售卡牌)由 _unhandled_input 驱动, 需要把物品拖出聚焦框外,
+	# 此时若按孔外拦截会把事件标记为已处理, 打断拖拽。进入拖拽状态后放行全部指针事件。
+	if _is_dragging_3d():
+		return
 	if _allow_fullscreen_click():
 		# 纯提示: 点击任意处即完成(无遮罩、不锁, 由本层直接触发, 不依赖 GUI sensor)
 		if _is_primary_press(event):
@@ -284,10 +361,68 @@ func _input(event: InputEvent) -> void:
 	if pos == Vector2.INF:
 		return  # 非指针事件(键盘/手柄)不处理
 	if _hole.size == Vector2.ZERO:
-		get_viewport().set_input_as_handled()  # 空孔(有目标但不可见): 拦全部指针交互
+		# 空孔: 目标不存在/失效时拦全部指针交互(纯"无目标全屏阻断");
+		# 目标为有效节点但暂不可见(如战斗结算面板弹出、商店未开)时放行输入,
+		# 让玩家能点结算"继续"返回商店(否则点继续被拦截导致卡死)。
+		if _block_when_hole_empty():
+			get_viewport().set_input_as_handled()
 		return
 	if not _hole.has_point(pos):
-		get_viewport().set_input_as_handled()  # 孔外: 拦点击与 hover
+		# 升级面板弹出时放行孔外, 让玩家能操作升级面板(选择升级目标)。
+		# 升级面板是购买可升级卡后弹出的模态面板, 挖孔只框住商店卡(Card_1),
+		# 若不放行, 玩家点击升级面板会被孔外拦截, 无法升级, on_card_upgrade 永不触发而卡死。
+		if LevelupPanel.singleton and LevelupPanel.singleton.is_open:
+			return
+		# 孔外: 拦点击与 hover。但若"按下"命中可拖拽 3D 目标(如手牌卡牌拖拽出售),
+		# 需放行, 否则 3D 拾取收不到按下, 拖拽无法开始(_is_dragging_3d 此时仍为 false)。
+		# 命中结果在 _physics_process 中更新(仅那时 direct_space_state 可安全访问)。
+		# 拖拽手牌步骤(allow_hand_drag)时也放行孔外按下, 让手牌卡牌拖拽能开始(卡牌可能超出挖孔)。
+		if _is_primary_press(event):
+			print("[TUT-DEBUG] 孔外按下: hover=", _hover_hits_draggable, " allow_hand_drag=", allow_hand_drag, " hole=", _hole)
+			if _hover_hits_draggable or allow_hand_drag:
+				return
+		get_viewport().set_input_as_handled()
+
+
+## 当前是否有 3D 拖拽正在进行(拖拽类目标如出售卡牌时放行事件, 以免打断拖出孔外的操作)
+func _is_dragging_3d() -> bool:
+	return ButtonView3D.dragging_item != null
+
+
+## 在物理阶段更新"鼠标位置是否命中可拖拽 3D 目标(DragView3D)"缓存。
+## 注意: 物理射线查询只能在 _physics_process(物理通知)内安全访问 direct_space_state,
+## _input 阶段访问会报 "Space state is inaccessible"。故把检测放到物理帧更新,
+## _input 按下时读取缓存来判断是否放行拖拽, 避免吞掉拖拽按下导致"卡牌拖不动"。
+func _physics_process(_delta: float) -> void:
+	if not _active:
+		return
+	_hover_hits_draggable = _query_hover_draggable()
+
+
+## 射线检测当前鼠标位置是否命中 DragView3D(可拖拽目标, 如手牌卡牌)。须在物理帧调用。
+func _query_hover_draggable() -> bool:
+	var viewport := get_viewport()
+	var cam := viewport.get_camera_3d()
+	var world := viewport.get_world_3d()
+	if cam == null or world == null:
+		return false
+	var mouse := viewport.get_mouse_position()
+	var from := cam.project_ray_origin(mouse)
+	var dir := cam.project_ray_normal(mouse)
+	var query := PhysicsRayQueryParameters3D.create(from, from + dir * 2000.0)
+	query.collide_with_areas = true  # 拖拽目标(ButtonView3D)是 Area3D, 需显式开启
+	var space_state := world.direct_space_state
+	if space_state == null:
+		return false
+	var result := space_state.intersect_ray(query)
+	if result.is_empty():
+		return false
+	var collider: Object = result.get("collider")
+	while collider:
+		if collider is DragView3D:
+			return true
+		collider = collider.get_parent()
+	return false
 
 
 ## 是否为主键按下事件(左键/触摸按下)。
@@ -319,27 +454,64 @@ func _allow_fullscreen_click() -> bool:
 	return _click_to_complete and (_target == null or not is_instance_valid(_target))
 
 
+## 挖孔为空(_hole.size==ZERO)时是否仍需拦截全部指针交互 / 绘制全屏暗区。
+## 仅当目标不存在或已失效(纯"无目标全屏阻断"步骤)时返回 true;
+## 目标为有效节点但当前不可见(如战斗结算面板弹出、商店未开, 挖孔为空)时返回 false,
+## 使引导让出输入, 玩家能点结算面板"继续"按钮返回商店, 而非拦截所有点击导致卡死。
+func _block_when_hole_empty() -> bool:
+	return _target == null or not is_instance_valid(_target)
+
+
 func _process(delta: float) -> void:
 	if not _active:
 		return
 	_time += delta
-	_update_geometry()
-	# 有箭头动画或挖孔变化才重绘; 静止纯提示步骤不再每帧重绘
-	if (_arrow and _hole.size != Vector2.ZERO) or _last_hole != _hole:
+	_update_geometry()               # 计算精确 _target_rect
+	var changed := _advance_hole(delta)  # _hole 平滑逼近(消除跳变)
+	_apply_rects()
+	var v := get_viewport_rect().size
+	_update_arrow(v)
+	_place_tip(v)
+	# 有箭头动画、挖孔平滑更新或有内容变化才重绘
+	if (_arrow and _hole.size != Vector2.ZERO) or changed or _last_hole != _hole:
 		_last_hole = _hole
 		queue_redraw()
 
 
+## 计算每帧精确目标矩形(相对 viewport 裁剪)。拦截用 _hole, 这里只更新计算值。
 func _update_geometry() -> void:
 	var v := get_viewport_rect().size
 	var rect := Rect2()
-	if _target_def and _target != null and is_instance_valid(_target) and _target.is_inside_tree():
+	if LevelupPanel.singleton and LevelupPanel.singleton.is_open:
+		# 升级面板弹出时挖孔跟随升级面板选项区: 购买可升级卡后挖孔本是商店卡(Card_1),
+		# 升级面板在孔外且被暗区盖住看不清。此时切到升级面板选项区, 玩家能看清并选择升级目标。
+		var opt: Node = LevelupPanel.singleton.get("options_view")
+		if opt and opt.is_inside_tree():
+			rect = TutorialTargetDef.get_screen_rect(opt, _target_def)
+	elif _target_def and _target != null and is_instance_valid(_target) and _target.is_inside_tree():
 		rect = TutorialTargetDef.get_screen_rect(_target, _target_def)
 	rect = rect.intersection(Rect2(Vector2.ZERO, v))
-	_hole = rect
-	_apply_rects()
-	_update_arrow(v)
-	_place_tip(v)
+	_target_rect = rect
+
+
+## 挖孔"死区跟随": 仅当实际显示的 mesh(目标精确矩形, 已含 padding)超出当前聚焦框
+## (外扩 padding 的死区)时才把挖孔吸附到目标; 目标仍被死区包容时挖孔固定不动,
+## 避免镜头轻微转动 / 目标微移导致挖孔持续跳变。
+## 死区大小 = TutorialTargetDef.padding: padding 越大, 目标允许移动/变化的范围越大,
+## 聚焦框更新越不频繁; padding 越小则越灵敏。
+func _advance_hole(_delta: float) -> bool:
+	if _target_rect.size == Vector2.ZERO or _hole.size == Vector2.ZERO:
+		var changed := _hole != _target_rect
+		_hole = _target_rect
+		return changed
+	# 死区: 由挖洞外扩 padding 决定(至少 1px, 避免零死区导致每帧抖动)
+	var deadzone := maxf(_target_def.padding if _target_def else 0.0, 1.0)
+	var hold := _hole.grow(deadzone)
+	if hold.encloses(_target_rect):
+		return false
+	# 目标移出死区 → 重新吸附到目标位置
+	_hole = _target_rect
+	return true
 
 
 func _apply_rects() -> void:
@@ -358,9 +530,12 @@ func _apply_rects() -> void:
 	_sensor.visible = _block and _click_to_complete
 	if _hole.size == Vector2.ZERO:
 		# 不挖孔: 单块全屏板(阻断时拦截全屏, 不阻断时仅视觉由 _draw 画暗区)
+		# 目标为有效节点但暂不可见(如战斗结算面板弹出、商店未开)时拦截板不拦截输入(IGNORE),
+		# 让玩家能点结算"继续"返回商店; 仅"无目标全屏阻断"步骤才拦全屏(与 _block_when_hole_empty 一致)。
 		_dim_top.position = Vector2.ZERO
 		_dim_top.size = v
-		_dim_top.mouse_filter = dim_filter
+		_dim_top.mouse_filter = Control.MOUSE_FILTER_STOP \
+				if (_block and _block_when_hole_empty()) else Control.MOUSE_FILTER_IGNORE
 		for r: Control in [_dim_bottom, _dim_left, _dim_right]:
 			r.mouse_filter = Control.MOUSE_FILTER_IGNORE
 			r.size = Vector2.ZERO
@@ -415,24 +590,66 @@ func _update_arrow(v: Vector2) -> void:
 
 
 ## 提示气泡置于箭头尾端外侧(与箭头同侧, 默认上方), 固定不动不跟随浮动, 避免晃动影响阅读;
-## 无箭头时: 有挖孔则置于孔下方, 纯提示(无孔)置于左上角
+## 无箭头时: 有挖孔则置于孔下方; 纯提示(无孔)则横向布满屏幕、贴屏幕底部显示,
+## 且顶部不高于 _tip_top_limit(供"不遮住商店最下方物品购买按钮")。
 func _place_tip(v: Vector2) -> void:
-	if _tip_panel == null or not _tip_panel.visible:
+	if _tip_panel == null:
+		return
+	# 挖孔步骤(target 有效): 挖孔为空(_hole.size==ZERO)且目标当前不可见(如战斗期间商店未打开)时隐藏气泡,
+	# 待目标可见后(_hole 非空)再显示, 避免"战斗结束"等提示在战斗期间提前弹出。
+	# 仅当 _hole 为空且目标确实不可见才隐藏, 避免挖孔步骤初始帧(_hole 尚未逼近)误隐藏气泡。
+	if _target != null and is_instance_valid(_target):
+		if _hole.size == Vector2.ZERO and not _target.is_visible_in_tree():
+			if _tip_panel.visible:
+				_tip_panel.visible = false
+			return
+		elif not _tip_panel.visible and not _tip_text_label.text.is_empty():
+			_tip_panel.visible = true
+	if not _tip_panel.visible:
 		return
 	var margin := 12.0
+	# 纯提示(无孔无箭头): 气泡横向布满屏幕; 有孔/箭头: 保持内容宽度(跟随箭头/孔)
+	var pure_tip := _arrow_anchor == Vector2.ZERO and _hole.size == Vector2.ZERO
+	var tip_width := v.x - 2.0 * margin if pure_tip else 620.0
+	# 面板内边距(来自 panel stylebox)
+	var box := _tip_panel.get_theme_stylebox("panel")
+	var pl := box.get_margin(SIDE_LEFT) if box else 0.0
+	var pr := box.get_margin(SIDE_RIGHT) if box else 0.0
+	var pt := box.get_margin(SIDE_TOP) if box else 0.0
+	var pb := box.get_margin(SIDE_BOTTOM) if box else 0.0
+	# 先给 label 设定可用宽度 → 让文本按该宽度换行并计算内容高度
+	var label_w := maxf(tip_width - pl - pr, 1.0)
+	_tip_text_label.size = Vector2(label_w, 0)
+	var content_h := _tip_text_label.get_content_height()
+	# 面板尺寸: 宽度铺满但不超屏, 高度 = 内容 + 上下内边距(纯提示不低于 _tip_min_height)
+	var panel_w := minf(tip_width, v.x - 2.0 * margin)
+	var panel_h := content_h + pt + pb
+	if pure_tip:
+		panel_h = maxf(panel_h, _tip_min_height)
+	var panel_size := Vector2(panel_w, panel_h)
+	# 手动布局 label 填满面板内部, 文字垂直居中(避免 Container 自动撑宽超出屏幕)
+	_tip_text_label.position = Vector2(pl, pt)
+	_tip_text_label.size = Vector2(maxf(panel_w - pl - pr, 1.0), maxf(panel_h - pt - pb, 1.0))
+	# 计算位置
 	var pos := Vector2.ZERO
 	if _arrow_anchor == Vector2.ZERO:
 		if _hole.size != Vector2.ZERO:
-			pos = Vector2(_hole.get_center().x - _tip_panel.size.x * 0.5, _hole.end.y + margin)
+			pos = Vector2(_hole.get_center().x - panel_size.x * 0.5, _hole.end.y + margin)
 		else:
-			pos = Vector2(margin, margin)
+			# 纯提示(无孔): 横向布满屏幕, 贴屏幕底部显示; 顶部不高于 _tip_top_limit(若设置)
+			pos = Vector2(margin, v.y - _tip_bottom_margin - panel_size.y)
+			if _tip_top_limit >= 0.0:
+				pos.y = maxf(pos.y, _tip_top_limit)
 	else:
 		var tail := _arrow_anchor - _arrow_dir * (_arrow_size + 10.0)
-		pos = Vector2(tail.x - _tip_panel.size.x * 0.5, tail.y)
+		pos = Vector2(tail.x - panel_size.x * 0.5, tail.y)
 		if _arrow_dir == Vector2.DOWN:
-			pos.y -= _tip_panel.size.y  # 默认上方: 气泡在箭头尾端之上
-	pos.x = clampf(pos.x, margin, maxf(margin, v.x - _tip_panel.size.x - margin))
-	pos.y = clampf(pos.y, margin, maxf(margin, v.y - _tip_panel.size.y - margin))
+			pos.y -= panel_size.y  # 默认上方: 气泡在箭头尾端之上
+	pos.x = clampf(pos.x, margin, maxf(margin, v.x - panel_size.x - margin))
+	pos.y = clampf(pos.y, margin, maxf(margin, v.y - panel_size.y - margin))
+	# 应用实际尺寸与位置
+	_tip_panel.custom_minimum_size = panel_size
+	_tip_panel.size = panel_size
 	_tip_panel.position = pos
 
 
@@ -455,12 +672,15 @@ func _draw() -> void:
 
 ## 暗区: 与拦截板矩形一致(4 矩形拼洞), 直接绘制在本控件(不再被子节点遮盖)
 ## 仅强制锁定(_block)时画暗区; 纯提示(无目标、不锁)不画黑遮罩, 只留气泡。
+## 挖孔目标当前不可见(_hole 为空, 如战斗期间商店未开)时不画暗区, 让屏幕恢复正常,
+## 待回到商店目标可见后再画暗区(挖孔)。仅"无目标的全屏阻断"步骤画全屏暗区。
 func _draw_dim() -> void:
 	if not _block:
 		return
 	var v := get_viewport_rect().size
 	if _hole.size == Vector2.ZERO:
-		draw_rect(Rect2(Vector2.ZERO, v), _dim_color)
+		if _target == null or not is_instance_valid(_target):
+			draw_rect(Rect2(Vector2.ZERO, v), _dim_color)
 		return
 	draw_rect(Rect2(0.0, 0.0, v.x, _hole.position.y), _dim_color)
 	draw_rect(Rect2(0.0, _hole.end.y, v.x, v.y - _hole.end.y), _dim_color)

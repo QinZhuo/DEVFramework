@@ -3,15 +3,15 @@
 DEV Framework 的**任务系统**：`Def（静态配置 .tres）→ Entity（运行时推进）`，完全外部驱动 —— 无运行器、无隐式生命周期，调用方创建并持有任务实体，靠信号推进。
 **新手教程**是任务系统的能力子集，不新增流程引擎，只增加「步骤表现」与「引导视图"两个组件。
 
----
+***
 
 ## 一、任务系统核心（教程的地基）
 
-| 类 | 角色 |
-|---|---|
-| `TaskDef` | 任务定义基类（抽象） |
-| `SignalTaskDef` / `SignalTask` | 任一信号触发即完成 |
-| `GroupTaskDef` / `GroupTask` | 子任务编排：`SEQUENTIAL`(顺序) / `ANY_ORDER`(任意全完) / `COMPLETE_ANY`(任一即完) |
+| 类                              | 角色                                                                |
+| ------------------------------ | ----------------------------------------------------------------- |
+| `TaskDef`                      | 任务定义基类（抽象）                                                        |
+| `SignalTaskDef` / `SignalTask` | 任一信号触发即完成                                                         |
+| `GroupTaskDef` / `GroupTask`   | 子任务编排：`SEQUENTIAL`(顺序) / `ANY_ORDER`(任意全完) / `COMPLETE_ANY`(任一即完) |
 
 ```gdscript
 var task := Task.create(task_def)   # 或 task_def.create_entity()
@@ -25,12 +25,12 @@ task.load_data(save)               # 断点续玩
 
 ## 二、教程 = 任务 + 表现
 
-| 文件 | 角色 |
-|---|---|
-| `Def/TutorialStepDef.gd` | **步骤定义**：继承 `SignalTaskDef`，额外携带表现字段（target/tip/拦截） |
-| `Def/TutorialTargetDef.gd` | 目标换算：把 Control / Node2D / Node3D → 统一屏幕矩形 |
-| `View/TutorialGuide.gd` | **引导控件**：遮罩/挖孔/边框/箭头/提示气泡一体化，主题可定制 |
-| `Scenes/Tutorial/` | 演示场景（含 `ClickableBall.gd` 自发光点击信号范式） |
+| 文件                         | 角色                                                  |
+| -------------------------- | --------------------------------------------------- |
+| `Def/TutorialStepDef.gd`   | **步骤定义**：继承 `SignalTaskDef`，额外携带表现字段（target/tip/拦截） |
+| `Def/TutorialTargetDef.gd` | 目标换算：把 Control / Node2D / Node3D → 统一屏幕矩形           |
+| `View/TutorialGuide.gd`    | **引导控件**：遮罩/挖孔/边框/箭头/提示气泡一体化，主题可定制                  |
+| `Scenes/Tutorial/`         | 演示场景（含 `ClickableBall.gd` 自发光点击信号范式）                |
 
 **设计要点**：教程流程就是一个普通 `GroupTaskDef`（步骤为 `TutorialStepDef`）。何时完成完全由 Task 系统信号驱动；`TutorialGuide` 只负责"展示什么"。二者通过访问器 `guide.show_step(task.active_child_entity, host)` 在调用方桥接。
 
@@ -46,15 +46,18 @@ signals = Array[SignalDef]([SubResource("sig")])     # NodeSignalDef → Button.
 target = SubResource("target")                       # TutorialTargetDef → node_path = UI/StartButton
 # 提示文字走统一 desc 翻译: Assets/Translation/task.csv 中 步骤名_desc(如 Step_Welcome_desc)
 ```
+
 > 翻译表格式（`Assets/Translation/task.csv` 供编辑器写入；运行时需同名 `.translation` 文件并调 `TranslationTool.initialize()` 加载，内容支持 BBCode）：
+>
 > ```
 > keys,zh
 > Step_Welcome_desc,欢迎！请点击[color=#ffd140]开始游戏[/color]按钮。
 > Step_ClickBall_desc,现在点击[color=#ffd140]蓝色球体[/color]！
 > ```
+>
 > 对应 `.translation`：`Assets/Translation/task.csv.zh.translation`（Godot `Translation` 资源，`messages` 同键值）。
 
-2. **配流程**：一个 `.tres`（`GroupTaskDef`，步骤按序引用）
+1. **配流程**：一个 `.tres`（`GroupTaskDef`，步骤按序引用）
 
 ```gdscript
 [resource]
@@ -63,9 +66,10 @@ tasks = Array[TaskDef]([步骤1, 步骤2, ...])
 mode = 0                                             # SEQUENTIAL
 ```
 
-3. **代码启动**（两选一）：
+1. **代码启动**（两选一）：
 
 **便捷路径**（一行）：
+
 ```gdscript
 var layer := CanvasLayer.new(); layer.layer = 100; add_child(layer)
 var guide := TutorialGuide.new()
@@ -75,10 +79,12 @@ layer.add_child(guide)
 var task := guide.start(TutorialStart, self)   # ← 一行启动，内部完成桥接 + 首次渲染
 task.completed.connect(_on_completed)
 ```
-> `guide.start(flow, host, {pause_tree: bool})` 内部完成「创建任务→连 entity_changed/completed→activate→首次渲染」，完成后自动 `blur`；返回 `GroupTask` 供外部连接/存档。
+
+> `guide.start(flow, host, {pause_tree: bool})` 内部完成「创建任务→连 entity\_changed/completed→activate→首次渲染」，完成后自动 `blur`；返回 `GroupTask` 供外部连接/存档。
 > 配套：`guide.stop()` 提前结束/跳过（停用任务 + blur + 恢复暂停，不触发 completed）；`guide.step_started` 信号每进入一步发一次，可绑步骤 UI/进度条/播音频。
 
 **手动路径**（完全外部驱动，等价）：
+
 ```gdscript
 var task := TutorialStart.create_entity() as GroupTask
 task.entity_changed.connect(_on_task_changed)
@@ -99,39 +105,42 @@ func _on_task_changed() -> void:
 
 ### TutorialStepDef（继承 SignalTaskDef）
 
-| 字段 | 说明 |
-|---|---|
-| `signals` | （继承）完成信号，任一触发即完成本步骤 |
-| `target: TutorialTargetDef` | 高亮目标；空 = 纯提示步骤（只显示气泡不挖孔） |
-| `block_input: bool = true` | 阻断目标外输入（遮罩暗区拦截） |
-| `click_to_complete: bool` | 无交互目标时的兜底：点击目标区域即完成 |
-| （无提示字段） | 提示文字复用 TaskDef 统一 desc 翻译 `tr(名称_desc)`（见上方翻译表） |
+| 字段                          | 说明                                                                        |
+| --------------------------- | ------------------------------------------------------------------------- |
+| `signals`                   | （继承）完成信号，任一触发即完成本步骤                                                       |
+| `target: TutorialTargetDef` | 高亮目标；**有 target 即自动遮挡目标外输入**（遮罩挖孔，完成靠目标自身交互/信号）；空 = 纯提示步骤（不挖孔，自动"点任意处继续"） |
+| `tip_position: Vector2`     | 提示框屏幕位置（视口归一化 0..1，气泡中心）；仅纯提示生效，有 target 时随挖孔/箭头自动摆放；(-1,-1)=自动（纯提示居中偏上）  |
+| （无输入控制字段）                   | 是否遮挡 / 是否可点推进全部由 target 存在性**自动推导**，无需手动配置                                |
+| （无提示字段）                     | 提示文字复用 TaskDef 统一 desc 翻译 `tr(名称_desc)`（见上方翻译表）                           |
 
 ### TutorialTargetDef（2D/3D 通用）
 
-| 字段 | 说明 |
-|---|---|
-| `node_path: NodePath` | 目标节点（相对教程宿主 root） |
-| `padding: float = 8` | 挖孔外扩像素 |
-| `min_size: Vector2(96,96)` | **2D/3D 统一**最小挖孔尺寸；无体量的 Node2D 直接以它定尺寸 |
-| `arrow: bool = true` | 显示指示箭头 |
+| 字段                    | 说明                            |
+| --------------------- | ----------------------------- |
+| `node_path: NodePath` | 目标节点（相对教程宿主 root）             |
+| `padding: float = 8`  | 挖孔外扩像素（挖孔 = 目标视觉体量 + padding） |
+| `arrow: bool = true`  | 显示指示箭头                        |
 
 屏幕矩形换算规则：
+
 - **Control**：`get_global_rect()`
-- **Node3D**：全局 AABB 8 角投影（相机背后隐藏；极小/极远目标退化为投影点 + `min_size` 兜底）
-- **Node2D**：汇总自身及子级 `Sprite2D`/`Control` 的视觉体量换算屏幕矩形（2D 精灵挖孔准确）；无任何体量时才退化为投影原点 + `min_size` 定尺寸
-- 箭头**默认置于挖孔上方**指向目标，顶部放不下才翻到下方兜底；提示气泡始终在箭头尾端外侧（默认上方），固定不随目标左右偏移/浮动；`arrow=false` 时不画箭头，气泡置于孔下方（无孔则左上角）
+
+- **Node3D**：全局 AABB 8 角投影（相机背后隐藏；极小/极远目标退化为投影点，尺寸由 `padding` 兜底外扩）
+
+- **Node2D**：汇总自身及子级 `Sprite2D`/`Control` 的视觉体量换算屏幕矩形（2D 精灵挖孔准确）；无任何体量时才退化为投影原点，尺寸由 `padding` 兜底外扩
+
+- 箭头**默认置于挖孔上方**指向目标，顶部放不下才翻到下方兜底；提示气泡始终在箭头尾端外侧（默认上方），固定不随目标左右偏移/浮动；`arrow=false` 时不画箭头，气泡置于孔下方（纯提示无孔默认居中偏上，也可用 `tip_position` 指定位置）
 
 ### TutorialGuide 主题（命名空间 `"TutorialGuide"`）
 
-| 主题项 | 类型 | 控制 |
-|---|---|---|
-| `dim_color` | Color | 遮罩暗色 |
-| `frame_stylebox` | StyleBox | 挖孔边框 |
-| `arrow_color` | Color | 指示箭头 |
-| `arrow_size` | int | 箭头长度 |
-| `tip_stylebox` | StyleBox | 提示气泡面板 |
-| `tip_font_color` / `tip_font_size` | Color/int | 气泡文字 |
+| 主题项                                | 类型        | 控制     |
+| ---------------------------------- | --------- | ------ |
+| `dim_color`                        | Color     | 遮罩暗色   |
+| `frame_stylebox`                   | StyleBox  | 挖孔边框   |
+| `arrow_color`                      | Color     | 指示箭头   |
+| `arrow_size`                       | int       | 箭头长度   |
+| `tip_stylebox`                     | StyleBox  | 提示气泡面板 |
+| `tip_font_color` / `tip_font_size` | Color/int | 气泡文字   |
 
 ```gdscript
 var theme := Theme.new()
@@ -142,18 +151,19 @@ guide.theme = theme   # 或 ThemeTypeVariation / 项目全局主题
 
 ## 四、常见用法
 
-**点击目标区域完成（目标无碰撞体/无逻辑）**：
+**纯提示步骤"点任意处继续"（自动）**：无 `target` 的步骤默认不遮罩、自动可点继续。外部连接 `hole_clicked` 并完成当前纯提示步骤：
+
 ```gdscript
-var step_def := ... as TutorialStepDef
-step_def.click_to_complete = true
-# 项目里连接 Guide 点击：
 guide.hole_clicked.connect(func():
 	var s := task.active_child_entity
-	if s and (s.def as TutorialStepDef).click_to_complete:
+	if s and not s.is_completed and (s.def as TutorialStepDef).target == null:
 		s.complete())
 ```
 
+> 有 `target` 的步骤不需处理点击——完成靠目标自身交互/信号；纯提示（`target==null`）才走上面的点击推进。
+
 **3D 可点击物体（语义归节点自己，信号 Def 只订阅）** —— 参照 `Scenes/Tutorial/ClickableBall.gd`：
+
 ```gdscript
 class_name ClickableBall extends Area3D
 signal clicked
@@ -165,6 +175,7 @@ func _ready() -> void:
 ```
 
 **暂停世界播放**（遮罩/箭头仍每帧刷新）：
+
 ```gdscript
 task.activate({"root": self})
 get_tree().paused = true
@@ -173,6 +184,7 @@ task.completed.connect(func(): get_tree().paused = false)
 ```
 
 **跳过/存档**：
+
 ```gdscript
 guide.stop()                             # 一键跳过整个教程（Guide 自动停用任务+blur）
 # 或仅跳过当前步骤：
@@ -189,3 +201,4 @@ task.load_data(data)                     # 断点续玩
 2. **教程即任务**：`TutorialStepDef` 是 `SignalTaskDef` 子类，可独立复用为普通任务；同一条流程去掉表现字段就是通用任务树。
 3. **首次渲染手动调用**：`GroupTask.activate()` 不发射 `entity_changed`，激活后需手动 `guide.show_step(...)`，否则 Guide 停在模糊态遮挡全部点击。
 4. 演示场景：`res://Scenes/Tutorial/TutorialDemo.tscn`（UI 按钮 + 3D 球体两步流程，含主题定制示例）。
+

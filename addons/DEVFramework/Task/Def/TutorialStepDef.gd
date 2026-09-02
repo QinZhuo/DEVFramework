@@ -6,12 +6,13 @@
 ## 流程用 GroupTaskDef 编排, 步骤 Def 即本类。
 class_name TutorialStepDef extends SignalTaskDef
 
-## 智能目标(为空 = 纯提示步骤, 不挖孔仅显示提示文字)
+## 智能目标(为空 = 纯提示步骤, 不挖孔仅显示提示文字)。
+## 有 target 即自动遮挡目标外输入(遮罩挖孔, 完成靠目标自身交互/信号);
+## 无 target 即纯提示不遮挡, 并自动"点任意处继续"。
 @export var target: TutorialTargetDef
-## 阻断目标以外的输入(遮罩挖孔, 暗区拦截鼠标)
-@export var block_input := true
-## 点击目标区域即完成(目标无可交互/无碰撞体时的兜底; 启用后目标区域由遮罩接管点击)
-@export var click_to_complete := false
+## 提示框屏幕位置(视口归一化 0..1, 以气泡中心为锚)。仅纯提示(无 target)时生效;
+## 有 target 时气泡随挖孔/箭头自动摆放, 本字段被忽略。(-1,-1) = 自动(纯提示居中偏上)。
+@export var tip_position := Vector2(-1.0, -1.0)
 
 
 ## 无额外字段: 提示文字复用 TaskDef 统一 desc 翻译(tr(名称_desc), 见 Assets/Translation/task.csv)
