@@ -127,6 +127,9 @@ func focus(target: Node, target_def: TutorialTargetDef, block: bool, click_to_co
 func show_step(step: Task, host: Node) -> void:
 	var step_def := step.def as TutorialStepDef if step else null
 	blur()
+	# 复位步骤级拖拽放行态, 避免上一"卖卡/排序"步骤开启的放行残留到本步骤, 导致误放行孔外点击
+	allow_hand_drag = false
+	_hover_hits_draggable = false
 	_active_step = step
 	_host = host
 	_tip_position = step_def.tip_position if step_def else Vector2(-1.0, -1.0)
@@ -368,17 +371,11 @@ func _input(event: InputEvent) -> void:
 			get_viewport().set_input_as_handled()
 		return
 	if not _hole.has_point(pos):
-		# 升级面板弹出时放行孔外, 让玩家能操作升级面板(选择升级目标)。
-		# 升级面板是购买可升级卡后弹出的模态面板, 挖孔只框住商店卡(Card_1),
-		# 若不放行, 玩家点击升级面板会被孔外拦截, 无法升级, on_card_upgrade 永不触发而卡死。
-		if LevelupPanel.singleton and LevelupPanel.singleton.is_open:
-			return
 		# 孔外: 拦点击与 hover。但若"按下"命中可拖拽 3D 目标(如手牌卡牌拖拽出售),
 		# 需放行, 否则 3D 拾取收不到按下, 拖拽无法开始(_is_dragging_3d 此时仍为 false)。
 		# 命中结果在 _physics_process 中更新(仅那时 direct_space_state 可安全访问)。
 		# 拖拽手牌步骤(allow_hand_drag)时也放行孔外按下, 让手牌卡牌拖拽能开始(卡牌可能超出挖孔)。
 		if _is_primary_press(event):
-			print("[TUT-DEBUG] 孔外按下: hover=", _hover_hits_draggable, " allow_hand_drag=", allow_hand_drag, " hole=", _hole)
 			if _hover_hits_draggable or allow_hand_drag:
 				return
 		get_viewport().set_input_as_handled()
@@ -465,6 +462,7 @@ func _block_when_hole_empty() -> bool:
 func _process(delta: float) -> void:
 	if not _active:
 		return
+	_try_refresh_target()            # 目标失效时按 node_path 重新解析
 	_time += delta
 	_update_geometry()               # 计算精确 _target_rect
 	var changed := _advance_hole(delta)  # _hole 平滑逼近(消除跳变)
@@ -478,17 +476,25 @@ func _process(delta: float) -> void:
 		queue_redraw()
 
 
+## 目标节点失效(被移除/替换)时按 node_path 自动重新解析, 避免"购买后货架卡更替"等场景挖孔永久退化为纯提示。
+## 仅当当前目标无效且存在 target_def 时才尝试; 仍解析不到则保持纯提示/放行(交给 _block_when_hole_empty 兜底)。
+func _try_refresh_target() -> void:
+	if _target != null and is_instance_valid(_target):
+		return
+	if _target_def == null:
+		return
+	var resolved := _target_def.resolve(_host)
+	if resolved != null and is_instance_valid(resolved):
+		_target = resolved
+		_update_geometry()
+		queue_redraw()
+
+
 ## 计算每帧精确目标矩形(相对 viewport 裁剪)。拦截用 _hole, 这里只更新计算值。
 func _update_geometry() -> void:
 	var v := get_viewport_rect().size
 	var rect := Rect2()
-	if LevelupPanel.singleton and LevelupPanel.singleton.is_open:
-		# 升级面板弹出时挖孔跟随升级面板选项区: 购买可升级卡后挖孔本是商店卡(Card_1),
-		# 升级面板在孔外且被暗区盖住看不清。此时切到升级面板选项区, 玩家能看清并选择升级目标。
-		var opt: Node = LevelupPanel.singleton.get("options_view")
-		if opt and opt.is_inside_tree():
-			rect = TutorialTargetDef.get_screen_rect(opt, _target_def)
-	elif _target_def and _target != null and is_instance_valid(_target) and _target.is_inside_tree():
+	if _target_def and _target != null and is_instance_valid(_target) and _target.is_inside_tree():
 		rect = TutorialTargetDef.get_screen_rect(_target, _target_def)
 	rect = rect.intersection(Rect2(Vector2.ZERO, v))
 	_target_rect = rect

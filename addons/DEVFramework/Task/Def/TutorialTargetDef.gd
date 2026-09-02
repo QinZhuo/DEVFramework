@@ -12,6 +12,8 @@ class_name TutorialTargetDef extends Def
 @export var padding: float = 0.0
 ## 显示指示箭头
 @export var arrow := true
+## 允许孔外点按(拖拽手牌/物品类步骤用: 卡牌可能超出挖孔, 需要放行孔外按下以开始拖拽)
+@export var allow_outside_drag := false
 
 
 ## 解析目标节点(root 为教程宿主; 节点缺失返回 null)
