@@ -203,29 +203,28 @@ func test_step_started_signal() -> void:
 	host.queue_free()
 
 
-func test_block_false_non_blocking() -> void:
-	# block_input=false: 拦截板应为 IGNORE(仅视觉不拦输入, 玩家可自由点击)
+func test_pure_tip_modes() -> void:
+	# 锁定语义自动推导(无 target 的纯提示步骤):
+	#   - 有信号 → 不遮挡, 等信号推进(不拦截界面操作)
+	#   - 无信号 → "点任意处继续", 画暗区并强制点击
 	var tree := Engine.get_main_loop() as SceneTree
 	var host := Node.new()
-	host.name = "TutNoBlock"
+	host.name = "TutPureTip"
 	tree.root.add_child(host)
-	await tree.process_frame
-	var btn := Button.new()
-	btn.name = "Btn"
-	host.add_child(btn)
 	await tree.process_frame
 
 	var sig := NodeSignalDef.new()
 	sig.node_path = NodePath("Btn")
 	sig.signal_name = &"pressed"
-	var step_def := TutorialStepDef.new()
-	step_def.signals = [sig]
-	step_def.target = TutorialTargetDef.new()
-	step_def.target.node_path = NodePath("Btn")
-	step_def.block_input = false
-	var flow := GroupTaskDef.new()
-	flow.mode = GroupTaskDef.Mode.SEQUENTIAL
-	flow.tasks = [step_def]
+	var step_waits := TutorialStepDef.new()   # 无 target + 有信号
+	step_waits.signals = [sig]
+	var step_click := TutorialStepDef.new()   # 无 target + 无信号
+	var flow_waits := GroupTaskDef.new()
+	flow_waits.mode = GroupTaskDef.Mode.SEQUENTIAL
+	flow_waits.tasks = [step_waits]
+	var flow_click := GroupTaskDef.new()
+	flow_click.mode = GroupTaskDef.Mode.SEQUENTIAL
+	flow_click.tasks = [step_click]
 
 	var layer := CanvasLayer.new()
 	host.add_child(layer)
@@ -234,45 +233,45 @@ func test_block_false_non_blocking() -> void:
 	layer.add_child(guide)
 	await tree.process_frame
 
-	guide.start(flow, host)
+	guide.start(flow_waits, host)
+	assert_false(guide.is_blocking(), "无 target 有信号: 纯提示不遮挡输入")
 	assert_eq(guide._dim_top.mouse_filter, Control.MOUSE_FILTER_IGNORE, \
-			"block_input=false 时暗区不拦截输入")
+			"无 target 有信号: 暗区不拦截输入")
+
+	guide.start(flow_click, host)
+	assert_true(guide.is_blocking(), "无 target 无信号: 点任意处继续, 应遮挡输入")
+	assert_eq(guide._dim_top.mouse_filter, Control.MOUSE_FILTER_STOP, \
+			"无 target 无信号: 暗区应拦截全屏点击")
 	host.queue_free()
 
 
 func test_save_data_roundtrip() -> void:
-	# 进度持久化: GroupTask 存档往返(断点续玩的数据基础, 完全由 task 提供)
+	# 进度持久化: 真实 .tres 流程存档 → Task.restore 一步还原(含 def 与子任务树), 进度不回退。
+	# 用 .tres 而非动态 Def: 只有带 resource_path 的 Def 才能被存档记录并还原。
 	var tree := Engine.get_main_loop() as SceneTree
 	var host := Node.new()
+	host.name = "TutSave"
 	tree.root.add_child(host)
 	await tree.process_frame
-	var btn := Button.new()
-	btn.name = "Btn"
-	host.add_child(btn)
-	await tree.process_frame
 
-	var sig := NodeSignalDef.new()
-	sig.node_path = NodePath("Btn")
-	sig.signal_name = &"pressed"
-	var step1 := TutorialStepDef.new()
-	step1.signals = [sig]
-	var step2 := TutorialStepDef.new()
-	step2.signals = [sig]
-	var flow := GroupTaskDef.new()
-	flow.mode = GroupTaskDef.Mode.SEQUENTIAL
-	flow.tasks = [step1, step2]
-
+	var flow: GroupTaskDef = load("res://Assets/Def/Tutorial/Tutorial_Start.tres")
 	var task := flow.create_entity() as GroupTask
 	task.activate({"root": host})
-	# 第一步: 点击完成后推进到第二步
-	btn.pressed.emit()
-	await tree.process_frame
-	var step := task.active_child_entity
-	var saved := task.save_data()
-	# 注: 动态创建的 Def 为 built-in, name 读取时回退脚本类名, 故用进度状态断言
-	assert_true(step != null and not step.is_completed \
-			and saved.children[0].get("is_completed", false), "第一步完成后应推进到第二步")
+	assert_eq(task.get_progress(), Vector2i(0, 2), "初始进度应为 0/2")
 
-	assert_true(saved.get("children", []).size() == 2, "存档应包含全部步骤")
+	task.active_child_entity.complete()          # 完成第一步 → 推进到第二步
+	await tree.process_frame
+	var saved := task.save_data()
+	assert_eq(saved.get("def", ""), "Tutorial/Tutorial_Start.tres", "存档应记录 Def 相对路径")
+	assert_eq(saved.get("children", []).size(), 2, "存档应包含全部步骤")
 	assert_true(saved.children[0].get("is_completed", false), "存档应记录第一步已完成")
+	assert_eq(task.get_progress(), Vector2i(1, 2), "完成一步后进度应为 1/2")
+
+	var restored := Task.restore(saved, {"root": host}) as GroupTask
+	assert_true(restored != null, "存档应能还原出任务实体")
+	assert_eq(restored.def.resource_path, flow.resource_path, "还原后的 def 应与存档一致")
+	assert_eq(restored.get_progress(), Vector2i(1, 2), "还原后应保留进度 1/2")
+	assert_true(restored.active_child_entity != null \
+					and not restored.active_child_entity.is_completed,
+			"还原后应停在第 2 步, 不重跑已完成的第 1 步")
 	host.queue_free()

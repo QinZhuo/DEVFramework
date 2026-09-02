@@ -16,11 +16,18 @@ DEV Framework 的**任务系统**：`Def（静态配置 .tres）→ Entity（运
 ```gdscript
 var task := Task.create(task_def)   # 或 task_def.create_entity()
 task.completed.connect(_on_done)
+task.progress_changed.connect(_on_progress)   # 进度变化（步骤推进）
 task.activate(data)                # data 携带信号解析上下文（root 等）
-var save := task.save_data()       # 存档（组任务含子进度）
-task.load_data(save)               # 断点续玩
+task.get_progress()                # Vector2i(已完成数, 总数)
+
+var save := task.save_data()                   # 存档（Def 相对路径 + 各步完成状态）
+var restored := Task.restore(save, data)       # 断点续玩：一步重建并激活到存档进度
 ```
 
+> **存档前提**：`Def` 必须有 `resource_path`（即存成 `.tres` 文件）。运行时 `XxxDef.new()` 出来的内置 Def 没有路径，存档时会告警且无法还原 —— 需要持久化的任务请一律用 `.tres` 配置。
+>
+> `Task.restore(dict, data)` 的 `data` 可省略：省略时只恢复数据不激活，之后调 `task.activate(data)` 会从存档进度继续（不重跑已完成步骤）。
+>
 > 信号源（`SignalDef` 家族）：`NodeSignalDef` 订阅任意节点具名信号（如 `Button.pressed`）；`ConditionSignalDef` 带条件过滤。
 
 ## 二、教程 = 任务 + 表现
@@ -47,7 +54,7 @@ target = SubResource("target")                       # TutorialTargetDef → nod
 # 提示文字走统一 desc 翻译: Assets/Translation/task.csv 中 步骤名_desc(如 Step_Welcome_desc)
 ```
 
-> 翻译表格式（`Assets/Translation/task.csv` 供编辑器写入；运行时需同名 `.translation` 文件并调 `TranslationTool.initialize()` 加载，内容支持 BBCode）：
+> 翻译表格式（`Assets/Translation/task.csv` 供编辑器写入；运行时由 Godot CSV 导入器自动生成 `task.zh.translation` 并调 `TranslationTool.initialize()` 加载，内容支持 BBCode）：
 >
 > ```
 > keys,zh
@@ -55,7 +62,7 @@ target = SubResource("target")                       # TutorialTargetDef → nod
 > Step_ClickBall_desc,现在点击[color=#ffd140]蓝色球体[/color]！
 > ```
 >
-> 对应 `.translation`：`Assets/Translation/task.csv.zh.translation`（Godot `Translation` 资源，`messages` 同键值）。
+> `.translation` 由 CSV 导入器自动生成（`task.zh.translation`），**不要手写同名翻译文件**——否则同键会被重复注册，且手写那份不会随 CSV 更新而漂移失效。
 
 1. **配流程**：一个 `.tres`（`GroupTaskDef`，步骤按序引用）
 
@@ -120,6 +127,7 @@ func _on_task_changed() -> void:
 | `node_path: NodePath` | 目标节点（相对教程宿主 root）             |
 | `padding: float = 8`  | 挖孔外扩像素（挖孔 = 目标视觉体量 + padding） |
 | `arrow: bool = true`  | 显示指示箭头                        |
+| `allow_outside_drag: bool = false` | 放行孔外按下（拖拽类步骤：目标可能超出挖孔，需放行按下才能起拖）。每步进入时自动带入 `TutorialGuide.allow_hand_drag`，运行期也可手动改 |
 
 屏幕矩形换算规则：
 
@@ -151,16 +159,20 @@ guide.theme = theme   # 或 ThemeTypeVariation / 项目全局主题
 
 ## 四、常见用法
 
-**纯提示步骤"点任意处继续"（自动）**：无 `target` 的步骤默认不遮罩、自动可点继续。外部连接 `hole_clicked` 并完成当前纯提示步骤：
+**纯提示步骤"点任意处继续"（自动）**：无 `target` 且无 `signals` 的步骤由 `TutorialGuide` 内部自推进（点任意处 → `hole_clicked` → 完成当前步骤），**宿主无需转发**。
+
+> 有 `target` 的步骤完成靠目标自身交互/信号；无 `target` 但配了 `signals` 的"等待信号"步骤不遮罩、也不点击完成。
+> `hole_clicked` 仍可外部连接，仅用于额外钩子（播音效、埋点等），不要再用它推进步骤，否则会重复完成。
+
+**拖拽类步骤**（目标/可拖物可能超出挖孔）：
 
 ```gdscript
-guide.hole_clicked.connect(func():
-	var s := task.active_child_entity
-	if s and not s.is_completed and (s.def as TutorialStepDef).target == null:
-		s.complete())
+# 配置式：该步骤的 TutorialTargetDef 勾 allow_outside_drag 即可
+# 运行式：或由代码注入"当前是否正在拖拽"的判定，拖拽期间 Guide 放行全部指针事件
+guide.drag_checker = func(): return MyDragManager.is_dragging
 ```
 
-> 有 `target` 的步骤不需处理点击——完成靠目标自身交互/信号；纯提示（`target==null`）才走上面的点击推进。
+> 框架不认识任何具体拖拽实现：命中判定走鸭子类型（射线命中节点或其祖先带 `is_dragging` 属性即视为可拖），"是否正在拖拽"由 `drag_checker` 注入。
 
 **3D 可点击物体（语义归节点自己，信号 Def 只订阅）** —— 参照 `Scenes/Tutorial/ClickableBall.gd`：
 
@@ -189,8 +201,8 @@ task.completed.connect(func(): get_tree().paused = false)
 guide.stop()                             # 一键跳过整个教程（Guide 自动停用任务+blur）
 # 或仅跳过当前步骤：
 task.active_child_entity.complete()
-var data := task.save_data()             # 进度存档（含子步骤）
-task.load_data(data)                     # 断点续玩
+var data := task.save_data()                    # 进度存档（含子步骤）
+var same_task := Task.restore(data, {"root": host})  # 断点续玩：重建并激活到存档进度
 ```
 
 **自定义外观**：继承 `TutorialGuide` 重写 `_draw`（`_draw_dim/_draw_arrow`），或改造 `focus()/show_step()` 触发的表现；流程/完成逻辑无需改动。
@@ -199,6 +211,8 @@ task.load_data(data)                     # 断点续玩
 
 1. **完成信号由目标节点自己发**（`pressed`/`clicked` 等），`NodeSignalDef` 只做订阅 —— 不替节点过滤输入流。
 2. **教程即任务**：`TutorialStepDef` 是 `SignalTaskDef` 子类，可独立复用为普通任务；同一条流程去掉表现字段就是通用任务树。
-3. **首次渲染手动调用**：`GroupTask.activate()` 不发射 `entity_changed`，激活后需手动 `guide.show_step(...)`，否则 Guide 停在模糊态遮挡全部点击。
-4. 演示场景：`res://Scenes/Tutorial/TutorialDemo.tscn`（UI 按钮 + 3D 球体两步流程，含主题定制示例）。
+3. **首次渲染手动调用**：`GroupTask.activate()` 不发射 `entity_changed`，激活后需手动 `guide.show_step(...)`，否则 Guide 停在模糊态遮挡全部点击（走 `guide.start()/bind_task()` 无此问题）。
+4. **要存档就用 `.tres`**：运行时 `new()` 出来的 Def 没有 `resource_path`，存不下也还原不了。
+5. **不要在 `hole_clicked` 里推进步骤**：纯提示步骤已由 Guide 内部自推进，外部再 `complete()` 会重复触发。
+6. 演示场景：`res://Scenes/Tutorial/TutorialDemo.tscn`（UI 按钮 + 3D 球体两步流程，含 `progress_changed` 进度显示）。
 

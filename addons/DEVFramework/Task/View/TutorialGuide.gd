@@ -42,6 +42,8 @@ var _tip_top_limit := -1.0  # 纯提示气泡顶部上限 Y(屏幕坐标, 用于
 var _hole := Rect2()
 var _target_rect := Rect2()  # 每帧精确目标矩形, _hole 平滑逼近它, 避免镜头转动/目标移动时挖孔跳变
 var _last_hole := Rect2()  # 上一帧挖孔(未变化且无动画时跳过重绘)
+var _rects_key: Array = []  # _apply_rects 布局缓存键: 未变化则跳过重设拦截板矩形与过滤(避免每帧触发子控件重排)
+var _tip_layout_key: Array = []  # _place_tip 布局缓存键: 文本/几何未变则跳过 RichTextLabel 重新排版
 var _time := 0.0
 var _arrow_dir := Vector2.DOWN
 var _arrow_anchor := Vector2.ZERO
@@ -51,7 +53,12 @@ var _host: Node  # 步骤 target 解析宿主(bind_task/start 记录, refresh �
 var _active_step: Task  # 当前活跃任务步骤(纯提示点击完成后推进)
 var _on_step_changed: Callable  # bind_task 步骤切换回调(宿主存进度/发日志等)
 var _hover_hits_draggable := false  # 最近物理帧鼠标位置是否命中可拖拽 3D 目标(拖拽按下放行用)
-var allow_hand_drag := false  # 拖拽手牌步骤(卖卡/排序)时放行孔外按下, 让手牌卡牌拖拽能开始
+## 放行孔外按下(拖拽类步骤: 目标可能超出挖孔, 需放行按下才能开始拖拽)。
+## 由 TutorialTargetDef.allow_outside_drag 在 show_step 时自动带入, 也可在运行时手动改。
+var allow_hand_drag := false
+## 拖拽放行判定(可选注入): funcref/无参 lambda, 返回 true 时 Guide 放行全部指针事件,
+## 避免打断"拖出聚焦框"的拖拽。框架不认识任何具体拖拽实现 —— 判定由项目注入, 避免 Task 反向依赖 View。
+var drag_checker: Callable = Callable()
 
 # --- 主题缓存 ---
 var _dim_color := _DEFAULT_DIM
@@ -127,15 +134,15 @@ func focus(target: Node, target_def: TutorialTargetDef, block: bool, click_to_co
 func show_step(step: Task, host: Node) -> void:
 	var step_def := step.def as TutorialStepDef if step else null
 	blur()
-	# 复位步骤级拖拽放行态, 避免上一"卖卡/排序"步骤开启的放行残留到本步骤, 导致误放行孔外点击
-	allow_hand_drag = false
-	_hover_hits_draggable = false
 	_active_step = step
 	_host = host
 	_tip_position = step_def.tip_position if step_def else Vector2(-1.0, -1.0)
-	var target: Node = null
-	if step_def and step_def.target:
-		target = step_def.target.resolve(host)
+	var target_def: TutorialTargetDef = step_def.target if step_def else null
+	var target: Node = target_def.resolve(host) if target_def else null
+	# 每步重置拖拽放行态: 避免上一步开启的放行残留到本步骤导致误放行孔外点击;
+	# 初值取 TutorialTargetDef.allow_outside_drag(拖拽类步骤在配置里声明), 运行期仍可手动改。
+	allow_hand_drag = target_def.allow_outside_drag if target_def else false
+	_hover_hits_draggable = false
 	var has_target := target != null
 	# 完成方式自动推导:
 	# - 有 target        → 挖孔阻挡孔外输入, 完成靠目标交互/信号
@@ -146,7 +153,7 @@ func show_step(step: Task, host: Node) -> void:
 	# 遮罩策略: 有 target(挖孔) 或"点击任意处继续"的纯提示(click_to_complete)都画暗区并强制点击,
 	# 使全屏文本提示与指定操作步骤一样: 除文本气泡高亮外其余位置调暗, 玩家只能点击继续。
 	# 仅"等待信号"的纯提示步骤(click_to_complete=false)保持不遮罩, 以便玩家操作界面触发信号。
-	focus(target, step_def.target if step_def else null,
+	focus(target, target_def,
 			has_target or click_to_complete,
 			click_to_complete,
 			step.get_current_desc() if step else "")
@@ -164,9 +171,11 @@ func blur() -> void:
 	_hole = Rect2()
 	_target_rect = Rect2()
 	_last_hole = Rect2()
+	_rects_key = []
 	_apply_rects()
 	if _tip_panel:
 		_tip_panel.visible = false
+		_tip_layout_key = []
 	queue_redraw()
 
 
@@ -267,6 +276,7 @@ func set_tip(text: String) -> void:
 		return
 	_tip_text_label.text = text
 	_tip_panel.reset_size()
+	_tip_layout_key = []  # 文本变了, 气泡排版缓存失效
 	_tip_panel.visible = not text.is_empty()
 
 
@@ -374,29 +384,33 @@ func _input(event: InputEvent) -> void:
 		# 孔外: 拦点击与 hover。但若"按下"命中可拖拽 3D 目标(如手牌卡牌拖拽出售),
 		# 需放行, 否则 3D 拾取收不到按下, 拖拽无法开始(_is_dragging_3d 此时仍为 false)。
 		# 命中结果在 _physics_process 中更新(仅那时 direct_space_state 可安全访问)。
-		# 拖拽手牌步骤(allow_hand_drag)时也放行孔外按下, 让手牌卡牌拖拽能开始(卡牌可能超出挖孔)。
+		# 配置了 allow_outside_drag 的拖拽类步骤也放行孔外按下(目标可能超出挖孔, 需放行按下才能起拖)。
 		if _is_primary_press(event):
 			if _hover_hits_draggable or allow_hand_drag:
 				return
 		get_viewport().set_input_as_handled()
 
 
-## 当前是否有 3D 拖拽正在进行(拖拽类目标如出售卡牌时放行事件, 以免打断拖出孔外的操作)
+## 当前是否有拖拽正在进行(拖拽需要把物品拖出聚焦框, 放行全部指针事件以免打断)。
+## 判定来自 drag_checker —— 框架不认识任何具体拖拽实现, 由调用方注入。
 func _is_dragging_3d() -> bool:
-	return ButtonView3D.dragging_item != null
+	return drag_checker.is_valid() and drag_checker.call()
 
 
-## 在物理阶段更新"鼠标位置是否命中可拖拽 3D 目标(DragView3D)"缓存。
+## 在物理阶段更新"鼠标位置是否命中可拖拽目标"缓存(仅拖拽放行开启时才检测, 避免每帧射线开销)。
 ## 注意: 物理射线查询只能在 _physics_process(物理通知)内安全访问 direct_space_state,
 ## _input 阶段访问会报 "Space state is inaccessible"。故把检测放到物理帧更新,
-## _input 按下时读取缓存来判断是否放行拖拽, 避免吞掉拖拽按下导致"卡牌拖不动"。
+## _input 按下时读取缓存来判断是否放行拖拽, 避免吞掉拖拽按下导致"拖不动"。
 func _physics_process(_delta: float) -> void:
-	if not _active:
+	if not _active or not _block:
+		return
+	if not allow_hand_drag:
+		_hover_hits_draggable = false
 		return
 	_hover_hits_draggable = _query_hover_draggable()
 
 
-## 射线检测当前鼠标位置是否命中 DragView3D(可拖拽目标, 如手牌卡牌)。须在物理帧调用。
+## 射线检测当前鼠标位置是否命中可拖拽目标。须在物理帧调用。
 func _query_hover_draggable() -> bool:
 	var viewport := get_viewport()
 	var cam := viewport.get_camera_3d()
@@ -407,16 +421,21 @@ func _query_hover_draggable() -> bool:
 	var from := cam.project_ray_origin(mouse)
 	var dir := cam.project_ray_normal(mouse)
 	var query := PhysicsRayQueryParameters3D.create(from, from + dir * 2000.0)
-	query.collide_with_areas = true  # 拖拽目标(ButtonView3D)是 Area3D, 需显式开启
+	query.collide_with_areas = true  # 可拖拽目标多为 Area3D, 需显式开启
 	var space_state := world.direct_space_state
 	if space_state == null:
 		return false
 	var result := space_state.intersect_ray(query)
 	if result.is_empty():
 		return false
-	var collider: Object = result.get("collider")
+	return _is_draggable_node(result.get("collider"))
+
+
+## 命中节点是否"可拖拽"(鸭子类型: 框架不认识具体拖拽类)。
+## 命中节点或其祖先带 is_dragging 属性 —— 拖拽视图的通行约定, 与是否正在拖拽无关。
+static func _is_draggable_node(collider) -> bool:
 	while collider:
-		if collider is DragView3D:
+		if "is_dragging" in collider:
 			return true
 		collider = collider.get_parent()
 	return false
@@ -522,6 +541,11 @@ func _advance_hole(_delta: float) -> bool:
 
 func _apply_rects() -> void:
 	var v := get_viewport_rect().size
+	# 布局未变化则跳过: 每帧重设子控件 size/position 会反复触发 Control 重排
+	var key := [_active, _block, _click_to_complete, _hole, v, _target]
+	if key == _rects_key:
+		return
+	_rects_key = key
 	if not _active:
 		# 未聚焦(完成/未开始): 拦截板全部失效(不拦截任何输入)
 		for r: Control in [_dim_top, _dim_bottom, _dim_left, _dim_right]:
@@ -613,6 +637,12 @@ func _place_tip(v: Vector2) -> void:
 			_tip_panel.visible = true
 	if not _tip_panel.visible:
 		return
+	# 排版未变化则跳过: get_content_height() 会强制 RichTextLabel 重新排版, 每帧调用开销明显
+	var layout_key := [_tip_panel.visible, _tip_text_label.text, v, _hole, _arrow_anchor,
+			_tip_top_limit, _arrow]
+	if layout_key == _tip_layout_key:
+		return
+	_tip_layout_key = layout_key
 	var margin := 12.0
 	# 纯提示(无孔无箭头): 气泡横向布满屏幕; 有孔/箭头: 保持内容宽度(跟随箭头/孔)
 	var pure_tip := _arrow_anchor == Vector2.ZERO and _hole.size == Vector2.ZERO
