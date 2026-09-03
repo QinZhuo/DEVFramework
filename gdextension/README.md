@@ -67,7 +67,7 @@ cmake --build gdextension/build --config Release
   - **已有 CMakeCache 则完全以缓存为准**（生成器/编译器/API 都是配置时定的），只 `cmake --build`，零推断
   - 构建类型：`debug`/`release` 跟随当前编辑器（与 `.gdextension` 键对应）
   - 构建缓存：统一 `res://.godot/gdextension_build/<源>-<os>-<arch>-<类型>`，按名复用；不入工程目录
-  - 部署后按 `*.gdextension [libraries]` 白名单清理 `Native`：**只保留各平台/类型/架构键声明的必要产物**（跨平台发布件不受影响），清掉无后缀原始/导入库(`.a`)、规格外历史库与临时残留(`~*`/`*.TMP`)；生成器探测 `ninja`；仅无缓存且 CMakeLists 未钉 API 时才以引擎 major.minor 配置
+  - 部署后按 `*.gdextension [libraries]` 白名单清理 `Native`：**只保留各平台/类型/架构键声明的必要产物**（跨平台发布件不受影响），清掉无后缀原始/导入库(`.a`)、规格外历史库与临时残留(`~*`/`*.TMP`)；**构建后端固定只用 CMake 原生 Makefiles**（不依赖 Ninja）；仅无缓存且 CMakeLists 未钉 API 时才以引擎 major.minor 配置
 - **增量保证**：**首装之后永不全量重建**。只要本地存在可编译的绑定快照（CMakeLists 钉版或引擎回退版），`godot-cpp` 同步就完全跳过——无网络、不切版本、不碰缓存；唯一可能的全量 = 首次构建，或本地彻底无绑定快照时的一次性对齐（对齐后回归纯增量）。不因上游 tag/分支漂移而反复重编。
 - **编辑器内自动显示**：构建完成/失败自动弹引擎顶部 Toaster 提示（Godot 4.3+），过程输出实时回显 Output 面板；同一输出自动镜像到 `res://.godot/gdextension_build/build.log`（含最终结果摘要），`state.txt` / `last_build.txt` 同步落盘——全程无需手动查询。
 - **通用性**：工具链(MinGW/w64devkit)与 git 按 `环境变量(MINGW_HOME/W64DEVKIT_HOME/MSYS2_ROOT/GIT_HOME)→PATH→常见目录扫描(scoop/Program Files/msys64)` 定位，**无任何机器/用户路径硬编码**，多项目多平台通用。
@@ -83,10 +83,10 @@ cmake --build gdextension/build --config Release
 # 准备工具链 (以 w64devkit 便携版为例: https://github.com/skeeto/w64devkit)
 export PATH="/path/to/w64devkit/bin:$PATH"
 
-# 配置 + 编译 (Ninja 生成器, 输出到 addons/DEVFramework/Native/)
-cmake -S gdextension -B gdextension/build-win -G Ninja \
+# 配置 + 编译 (CMake 原生 MinGW Makefiles, 输出到 addons/DEVFramework/Native/)
+cmake -S gdextension -B gdextension/build-win -G "MinGW Makefiles" \
       -DGODOTCPP_API_VERSION=4.7 -DCMAKE_BUILD_TYPE=Release
-cmake --build gdextension/build-win
+cmake --build gdextension/build-win --parallel
 
 # 产物为无后缀 libdev.dll, 需复制为平台带后缀文件名供 .gdextension 加载
 cd addons/DEVFramework/Native

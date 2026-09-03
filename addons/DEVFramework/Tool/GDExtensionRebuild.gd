@@ -18,7 +18,7 @@ extends EditorScript
 ##   3) *.gdextension [libraries]: 当前 平台.类型[.架构] 键 = 产物最终文件名与落点(部署规格)。
 ##
 ## 其余自动判定: 源码目录(唯一工程根 res://gdextension, 多个 addons 候选按规格配对);
-## 构建类型 debug/release 跟随当前编辑器; 生成器探测 ninja 否则交给 cmake。
+## 构建类型 debug/release 跟随当前编辑器; 构建后端固定只用 CMake 原生 Makefiles。
 ## 缓存纪律: 一切中间产物/CMake 缓存统一放 res://.godot/gdextension_build/(引擎自带全局忽略),
 ## 不进入工程目录; 部署后按规格 [libraries] 白名单清理 Native —— 只保留各平台/类型/架构键声明的
 ## 必要产物, 清掉无后缀原始/导入库(.a)与规格外历史库及临时残留(~*/TMP), 工程内只留必要文件。
@@ -37,6 +37,8 @@ extends EditorScript
 
 const KEY_UPDATE_SUBMODULE := "dev_framework/gdextension_build/auto_update_submodule"
 const KEY_RELOAD_EDITOR := "dev_framework/gdextension_build/auto_reload_editor"
+const KEY_STALL_KILL := "dev_framework/gdextension_build/stall_auto_kill"   # 检测到卡死(无新目标且无编译器进程)时自动终止进程树
+const KEY_JOBS := "dev_framework/gdextension_build/build_jobs"        # 并行度, 0=自动(默认16; 设小可降并发防卡)
 
 static var _me: GDExtensionRebuild   # 异步构建期间持有自身(菜单调用方不持有实例)
 
@@ -44,9 +46,13 @@ var _lines: Array[String] = []
 var _cache_dirty := false   # submodule 检出变化 → 构建缓存作废, 需重新配置
 var _start_ms := 0
 var _last_progress := ""    # 最近一次解析到的 [k/N] 编译进度
-var _total_targets := -1    # build.ninja 编译目标总数缓存(-1=未解析)
+var _total_targets := -1    # 编译目标总数缓存(Makefile 解析, -1=未解析)
 var _objects_logged := 0    # 上次打印磁盘进度时的目标数(≥30 才刷一行)
 var _stall_warned := false  # 目标全满但仍卡住时只提示一次
+var _prev_done_count := -1  # 上次心跳时的目标数(判断是否还在推进)
+var _no_advance := 0        # 目标数无推进的累计秒(心跳间隔 10s)
+var _stall_checked := false # 卡死检测已判定并处理
+var _stall_killed := false  # 已自动终止卡死进程树
 
 
 func _run() -> void:
@@ -583,6 +589,41 @@ func _opt(key: String, def_val: bool) -> bool:
 	return bool(ProjectSettings.get_setting(key, def_val))
 
 
+func _stall_kill_enabled() -> bool:
+	return bool(ProjectSettings.get_setting(KEY_STALL_KILL, true))
+
+
+## 存活编译器子进程数(cc1plus/g++/clang/python); 查询失败返回 -1
+func _active_compile_procs() -> int:
+	var out: Array = []
+	if OS.get_name() == "Windows":
+		if OS.execute("C:/Windows/System32/tasklist.exe", PackedStringArray(), out, true) != 0:
+			return -1
+		var n := 0
+		for line in out:
+			var l := String(line)
+			if l.contains("cc1plus") or l.contains("g++.exe") or l.contains("python"):
+				n += 1
+		return n
+	if OS.execute("ps", PackedStringArray(["-e", "-o", "comm="]), out, true) == 0:
+		var n := 0
+		for line in out:
+			var l := String(line)
+			if l.contains("cc1plus") or l.contains("g++") or l.contains("clang") or l.contains("python"):
+				n += 1
+		return n
+	return -1
+
+
+## 终止进程树(cmake→make→g++)
+func _kill_build_tree(pid: int) -> void:
+	if OS.get_name() == "Windows":
+		OS.execute("C:/Windows/System32/taskkill.exe",
+				PackedStringArray(["/PID", str(pid), "/T", "/F"]), [], true)
+	else:
+		OS.execute("kill", PackedStringArray(["-KILL", str(pid)]), [], true)
+
+
 ## 构建缓存统一放 res://.godot/gdextension_build/(引擎自带全局忽略, 不入库、不污染工程)。
 ## 复用已有缓存(优先名称含当前 平台+构建类型 者, 再取最新); 没有则新建 <源>-<os>-<arch>-<类型>。
 func _pick_build_dir(source_dir: String) -> String:
@@ -630,14 +671,17 @@ func _ready_build_dir(build_dir: String, source_dir: String, info: Dictionary) -
 		_log("submodule 已更新, 作废旧构建缓存: ", build_dir)
 		_wipe_dir(build_dir)
 	if FileAccess.file_exists(build_dir.path_join("CMakeCache.txt")):
-		_log("复用构建目录(以缓存配置为准): ", build_dir)
-		return true
+		# 后端一致性: 缓存必须是 CMake Makefiles, 否则 cmake --build 会按缓存里的其它生成器执行
+		if _cache_is_makefiles(build_dir):
+			_log("复用构建目录(以缓存配置为准): ", build_dir)
+			return true
+		_log("缓存生成器不是 Makefiles, 作废重新配置。")
+		_wipe_dir(build_dir)
 	var src_abs := _abs(source_dir)
 	DirAccess.make_dir_recursive_absolute(build_dir)
 	var args: PackedStringArray = ["-S", src_abs, "-B", build_dir]
-	var generator := _detect_generator()
-	if generator != "":
-		args.append_array(["-G", generator])
+	# 只用 CMake 原生后端: Windows MinGW Makefiles / 其余 Unix Makefiles
+	args.append_array(["-G", "MinGW Makefiles" if OS.get_name() == "Windows" else "Unix Makefiles"])
 	# API 版本: CMakeLists 默认值对应的绑定快照存在则尊重(不传 -D);
 	# 否则在 godot-cpp 本地快照里选"≤ 引擎版本"的最新可用(避免默认 4.7 但无 4-7 快照导致失败)
 	var api := _api_version_to_pass(source_dir, String(info.get("api_default", "")))
@@ -711,9 +755,18 @@ func _has_snapshot(source_dir: String, api: String) -> bool:
 	return FileAccess.file_exists(_api_file(_abs(source_dir).path_join("godot-cpp/gdextension"), api))
 
 
-func _detect_generator() -> String:
-	var out: Array = []
-	return "Ninja" if OS.execute("ninja", ["--version"], out) == 0 else ""
+## 读取 CMakeCache 确认生成器是否为 Makefiles(后端一致性检查)
+func _cache_is_makefiles(build_dir: String) -> bool:
+	var f := FileAccess.open(build_dir.path_join("CMakeCache.txt"), FileAccess.READ)
+	if f == null:
+		return false
+	while not f.eof_reached():
+		var line := f.get_line()
+		if line.begins_with("CMAKE_GENERATOR:INTERNAL="):
+			f.close()
+			return line.contains("Makefiles")
+	f.close()
+	return false
 
 
 # ------------------------------------------------------------ 异步构建
@@ -722,6 +775,11 @@ func _build(build_dir: String) -> bool:
 	var type := _build_type()
 	_log("开始编译 (", type, ")…… 编辑器保持可用, 输出实时回显。")
 	var args := ["--build", build_dir, "--config", type.capitalize()]
+	# Makefiles 默认串行 → 必须显式并行; 可用 build_jobs 限制并发(0=自动16, 设小可降并发防卡)
+	var jobs := int(ProjectSettings.get_setting(KEY_JOBS, 0))
+	if jobs <= 0:
+		jobs = clampi(OS.get_processor_count(), 2, 16)
+	args.append_array(["--parallel", str(jobs)])
 	var pipe: Dictionary = OS.execute_with_pipe("cmake", PackedStringArray(args), false)
 	var pid: int = int(pipe.get("pid", 0))
 	var stdout: Variant = pipe.get("stdout")
@@ -733,8 +791,12 @@ func _build(build_dir: String) -> bool:
 		_print_out(out)
 		return code == 0
 	var tree := Engine.get_main_loop() as SceneTree
-	_total_targets = -1   # 每次构建重新解析 build.ninja(目录可能重建/缓存残留)
+	_total_targets = -1   # 每次构建重新解析 Makefile(目录可能重建/缓存残留)
 	_stall_warned = false
+	_stall_checked = false
+	_stall_killed = false
+	_prev_done_count = -1
+	_no_advance = 0
 	_state_write("编译中: 启动…")
 	# 进度双保险: (a) 管道实时文本; (b) 直接数构建目录里已生成的 .o/.obj ——
 	# 后者不依赖子进程输出缓冲(管道输出可能整段延迟), 无论是否有文本都能量化真实进度。
@@ -758,17 +820,41 @@ func _build(build_dir: String) -> bool:
 				_log_raw("[心跳] 编译仍在进行(已静默 %d 秒)… 已生成 %d 个目标(总数未知)" % [silent / 5, d])
 			if silent >= 300 and not _stall_warned and t > 0 and d >= t:   # 已满但仍卡 ≥60s → 一次性诊断引导
 				_stall_warned = true
-				_log_raw("所有编译目标已生成但进程仍未退出: 通常是 build.ninja 被并发写入/截断损坏")
-				_log_raw("(日志会先出现 'premature end of file; recovering'), 或同时开了多个 Godot 实例抢占同一构建目录。")
+				_log_raw("所有编译目标已生成但进程仍未退出: 通常是构建描述文件被并发写入/截断损坏,")
+				_log_raw("或同时开了多个 Godot 实例抢占同一构建目录。")
 				_log_raw("处理: 关闭全部 Godot → 删除该构建目录后重新运行(将重新配置), 并保持单实例。")
+			# 卡死熔断: 目标长期不增长 + 无编译器子进程存活 → 构建系统在等不存在的子进程(非编译慢)
+			if d == _prev_done_count:
+				_no_advance += 10
+			else:
+				_no_advance = 0
+				_prev_done_count = d
+			if _no_advance >= 60 and not _stall_checked and not _stall_killed:
+				var active := _active_compile_procs()
+				if active == 0:
+					_stall_checked = true
+					_log_raw("异常检测: %d 秒无新目标且无任何编译器进程 —— 构建疑似卡死, 尝试终止进程树。" % _no_advance)
+					if _stall_kill_enabled():
+						_kill_build_tree(pid)
+						_stall_killed = true
+						_log_raw("已终止卡死进程树(pid %d)。可直接重跑(从已编译部分继续); 反复出现请排查杀软实时扫描/编译器异常。" % pid)
+					else:
+						_log_raw("自动终止已关闭(ProjectSettings: %s=false)。请在任务管理器结束 cmake/make 后重跑。" % KEY_STALL_KILL)
+				else:
+					_log_raw("%d 秒无新目标, 仍有 %d 个编译器进程在跑(可能正在编译超大文件), 继续等待。" % [_no_advance, active])
+		if _stall_killed:
+			break
 		await tree.create_timer(0.2).timeout
 	_drain(stdout)
 	_drain(stderr)
-	var exit_code := OS.get_process_exit_code(pid)
 	if stdout is FileAccess:
 		(stdout as FileAccess).close()
 	if stderr is FileAccess:
 		(stderr as FileAccess).close()
+	if _stall_killed:
+		_log("构建已被工具终止(疑似卡死)。")
+		return false
+	var exit_code := OS.get_process_exit_code(pid)
 	if exit_code == 0:
 		_log("编译成功。")
 	else:
@@ -816,19 +902,18 @@ func _count_build_objects(build_dir: String) -> int:
 	return count
 
 
-## 编译目标总数: 统计 build.ninja 里的对象编译边 "<x>.o:" / "<x>.obj:"。
-## 不依赖规则名(CMake 各平台规则名可能是 cxx / CXX_COMPILER__x_unscanned_Debug 等)与扩展名差异
-## (Unix .o / Windows .obj), 只认"源编译出对象文件"的行。解析一次并缓存。
+## 编译目标总数: 统计 Makefile 里的对象编译边 "<x>.o:" / "<x>.obj:"。
+## 只认"源编译出对象文件"的目标行, 与规则名/扩展名差异(Unix .o / Windows .obj)无关。解析一次并缓存。
 func _total_compile_units(build_dir: String) -> int:
 	if _total_targets >= 0:
 		return _total_targets
 	_total_targets = 0
-	var ninja_file := build_dir.path_join("build.ninja")
-	if not FileAccess.file_exists(ninja_file):
+	var path := build_dir.path_join("Makefile")
+	if not FileAccess.file_exists(path):
 		return 0
 	var re := RegEx.new()
 	re.compile("\\.o(bj)?: ")
-	_total_targets = re.search_all(FileAccess.get_file_as_string(ninja_file)).size()
+	_total_targets = re.search_all(FileAccess.get_file_as_string(path)).size()
 	return _total_targets
 
 
