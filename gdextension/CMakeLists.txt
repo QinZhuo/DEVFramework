@@ -34,10 +34,29 @@ target_link_libraries(dev PRIVATE godot-cpp)
 set_target_properties(dev PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
 
 # 性能优化: 本机全部 SIMD 指令集(自动向量化)。
-# 注意: -march=native 生成的 DLL 依赖本机 CPU, 仅用于本机开发构建。
+# 注意: -march=native 生成的二进制依赖本机 CPU, 仅用于"目标架构=本机架构"的构建。
+# macOS 交叉构建(如 arm64 主机出 x86_64)时 native 会按本机 CPU 解析成 apple-m1,
+# x86 后端不认识该 CPU 名而报 "unknown target CPU", 此时自动降级:
+#   单一架构交叉 x86_64 → x86-64-v2 基线(SSE4.2/POPCNT, 2009+ x86 CPU 全支持);
+#   universal 双架构 → 不加 -march(双架构共享 flags, 用编译器默认基线)。
 # (w64devkit 的 GCC 未启用 LTO, 故仅用 -march=native)
 if(NOT MSVC)
-    target_compile_options(dev PRIVATE -march=native)
+    set(_dev_native ON)          # 默认本机构建 → native
+    if(APPLE)
+        execute_process(COMMAND uname -m OUTPUT_VARIABLE _dev_host OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+        set(_dev_target "${CMAKE_OSX_ARCHITECTURES}")
+        if(_dev_target STREQUAL "")
+            set(_dev_target "${_dev_host}")
+        endif()
+        if(NOT _dev_target STREQUAL _dev_host OR _dev_target MATCHES ";")
+            set(_dev_native OFF) # 交叉或 universal
+        endif()
+    endif()
+    if(_dev_native)
+        target_compile_options(dev PRIVATE -march=native)
+    elseif(_dev_target STREQUAL "x86_64")
+        target_compile_options(dev PRIVATE -march=x86-64-v2)
+    endif()
     # 禁用 FMA 融合: 使逐采样 float 运算与 Godot 引擎语义一致(引擎构建未开 FMA),
     # 保证 C++ 音频合成输出与旧 GDScript 渲染 bit 级一致(迁移无感)。
     target_compile_options(dev PRIVATE -ffp-contract=off)
