@@ -838,7 +838,6 @@ func _build(build_dir: String, type: String) -> bool:
 		return code == 0
 	var tree := Engine.get_main_loop() as SceneTree
 	_total_targets = -1   # 每次构建重新解析 Makefile(目录可能重建/缓存残留)
-	_stall_warned = false
 	_stall_checked = false
 	_stall_killed = false
 	_prev_done_count = -1
