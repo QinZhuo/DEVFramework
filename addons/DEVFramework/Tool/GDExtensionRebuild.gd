@@ -46,6 +46,7 @@ var _start_ms := 0
 var _last_progress := ""    # 最近一次解析到的 [k/N] 编译进度
 var _total_targets := -1    # build.ninja 编译目标总数缓存(-1=未解析)
 var _objects_logged := 0    # 上次打印磁盘进度时的目标数(≥30 才刷一行)
+var _stall_warned := false  # 目标全满但仍卡住时只提示一次
 
 
 func _run() -> void:
@@ -733,6 +734,7 @@ func _build(build_dir: String) -> bool:
 		return code == 0
 	var tree := Engine.get_main_loop() as SceneTree
 	_total_targets = -1   # 每次构建重新解析 build.ninja(目录可能重建/缓存残留)
+	_stall_warned = false
 	_state_write("编译中: 启动…")
 	# 进度双保险: (a) 管道实时文本; (b) 直接数构建目录里已生成的 .o/.obj ——
 	# 后者不依赖子进程输出缓冲(管道输出可能整段延迟), 无论是否有文本都能量化真实进度。
@@ -754,6 +756,11 @@ func _build(build_dir: String) -> bool:
 				_log_raw("[心跳] 编译仍在进行(已静默 %d 秒)… 已生成 %d/%d 目标文件" % [silent / 5, d, t])
 			else:
 				_log_raw("[心跳] 编译仍在进行(已静默 %d 秒)… 已生成 %d 个目标(总数未知)" % [silent / 5, d])
+			if silent >= 300 and not _stall_warned and t > 0 and d >= t:   # 已满但仍卡 ≥60s → 一次性诊断引导
+				_stall_warned = true
+				_log_raw("所有编译目标已生成但进程仍未退出: 通常是 build.ninja 被并发写入/截断损坏")
+				_log_raw("(日志会先出现 'premature end of file; recovering'), 或同时开了多个 Godot 实例抢占同一构建目录。")
+				_log_raw("处理: 关闭全部 Godot → 删除该构建目录后重新运行(将重新配置), 并保持单实例。")
 		await tree.create_timer(0.2).timeout
 	_drain(stdout)
 	_drain(stderr)
