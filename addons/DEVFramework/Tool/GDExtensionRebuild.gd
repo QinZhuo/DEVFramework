@@ -45,7 +45,7 @@ static var _me: GDExtensionRebuild   # 异步构建期间持有自身(菜单调�
 var _lines: Array[String] = []
 var _cache_dirty := false   # submodule 检出变化 → 构建缓存作废, 需重新配置
 var _start_ms := 0
-var _last_progress := ""    # 最近一次解析到的 [k/N] 编译进度
+var _raw_log_pos := 0       # raw_build.log 尾部读取游标
 var _total_targets := -1    # 编译目标总数缓存(Makefile 解析, -1=未解析)
 var _objects_logged := 0    # 上次打印磁盘进度时的目标数(≥30 才刷一行)
 var _stall_warned := false  # 目标全满但仍卡住时只提示一次
@@ -774,20 +774,38 @@ func _cache_is_makefiles(build_dir: String) -> bool:
 func _build(build_dir: String) -> bool:
 	var type := _build_type()
 	_log("开始编译 (", type, ")…… 编辑器保持可用, 输出实时回显。")
-	var args := ["--build", build_dir, "--config", type.capitalize()]
-	# Makefiles 默认串行 → 必须显式并行; 可用 build_jobs 限制并发(0=自动16, 设小可降并发防卡)
 	var jobs := int(ProjectSettings.get_setting(KEY_JOBS, 0))
 	if jobs <= 0:
 		jobs = clampi(OS.get_processor_count(), 2, 16)
-	args.append_array(["--parallel", str(jobs)])
-	var pipe: Dictionary = OS.execute_with_pipe("cmake", PackedStringArray(args), false)
+	# 子进程输出重定向到文件, 本进程定时尾读回显 —— 不经过 Godot execute_with_pipe 管道。
+	# 原因: Godot Windows 的管道实现存在读取竞态(高频起停子进程时读线程停摆 → 子进程写管道被堵 → 构建死锁),
+	# ninja/make 下均已复现。文件 IO 无此问题, 编辑器仍可用, 输出仍实时(受 stdout 块缓冲影响略有分批)。
+	var raw := _raw_log_path()
+	DirAccess.remove_absolute(raw)
+	_raw_log_pos = 0
+	var shell := "sh"
+	var run_args := PackedStringArray()
+	var cmd_line := "cmake --build \"%s\" --config %s --parallel %d > \"%s\" 2>&1" \
+			% [build_dir, type.capitalize(), jobs, raw]
+	if OS.get_name() == "Windows":
+		# 写入临时 .cmd 再执行, 避免 cmd /c 内联多层引号在含空格路径下转义出错
+		var bat := raw.get_base_dir().path_join("run_build.cmd")
+		var bf := FileAccess.open(bat, FileAccess.WRITE)
+		if bf:
+			bf.store_line("@echo off")
+			bf.store_line(cmd_line)
+			bf.store_line("exit /b %errorlevel%")
+			bf.close()
+		shell = "cmd.exe"
+		run_args = PackedStringArray(["/c", bat.replace("/", "\\")])
+	else:
+		run_args = PackedStringArray(["-c", cmd_line])
+	var pipe: Dictionary = OS.execute_with_pipe(shell, run_args, false)
 	var pid: int = int(pipe.get("pid", 0))
-	var stdout: Variant = pipe.get("stdout")
-	var stderr: Variant = pipe.get("stderr")
 	if pid <= 0:
-		_log("execute_with_pipe 不可用, 退化为阻塞执行(编辑器会卡住直到完成)。")
+		_log("异步执行不可用, 退化为阻塞执行(编辑器会卡住直到完成)。")
 		var out: Array = []
-		var code := OS.execute("cmake", PackedStringArray(args), out, true)
+		var code := OS.execute(shell, run_args, out, true)
 		_print_out(out)
 		return code == 0
 	var tree := Engine.get_main_loop() as SceneTree
@@ -798,18 +816,16 @@ func _build(build_dir: String) -> bool:
 	_prev_done_count = -1
 	_no_advance = 0
 	_state_write("编译中: 启动…")
-	# 进度双保险: (a) 管道实时文本; (b) 直接数构建目录里已生成的 .o/.obj ——
-	# 后者不依赖子进程输出缓冲(管道输出可能整段延迟), 无论是否有文本都能量化真实进度。
 	var tick := 0
 	var silent := 0
 	while OS.is_process_running(pid):
-		var had := _drain(stdout) or _drain(stderr)
+		var had := _drain_log(raw)
 		if had:
 			silent = 0
 		else:
 			silent += 1
 		tick += 1
-		if tick % 10 == 0:   # ~每 2s
+		if tick % 10 == 0:   # ~每 2s: 磁盘产物进度(独立于输出, 兜底可量化)
 			_report_disk_progress(build_dir)
 		if silent >= 50 and silent % 50 == 0:   # 静默 ≥10s 后每 10s 心跳一次
 			var d := _count_build_objects(build_dir)
@@ -845,12 +861,7 @@ func _build(build_dir: String) -> bool:
 		if _stall_killed:
 			break
 		await tree.create_timer(0.2).timeout
-	_drain(stdout)
-	_drain(stderr)
-	if stdout is FileAccess:
-		(stdout as FileAccess).close()
-	if stderr is FileAccess:
-		(stderr as FileAccess).close()
+	_drain_log(raw)   # 进程退出会 flush 全部缓冲, 收尾再读一次
 	if _stall_killed:
 		_log("构建已被工具终止(疑似卡死)。")
 		return false
@@ -860,6 +871,11 @@ func _build(build_dir: String) -> bool:
 	else:
 		_log("编译失败(退出码 %d), 请按上方报错定位。" % exit_code)
 	return exit_code == 0
+
+
+## 子进程原始输出落点(每次构建覆盖)
+func _raw_log_path() -> String:
+	return _abs("res://.godot/gdextension_build/raw_build.log")
 
 
 ## 定期把磁盘真实进度写入 state/日志(每 ~2s; 每前进 ≥30 个目标才刷一行日志, 避免刷屏)
@@ -913,38 +929,25 @@ func _total_compile_units(build_dir: String) -> int:
 		return 0
 	var re := RegEx.new()
 	re.compile("\\.o(bj)?: ")
-	_total_targets = re.search_all(FileAccess.get_file_as_string(path)).size()
+	var n := re.search_all(FileAccess.get_file_as_string(path)).size()
+	# Makefile 根只含本工程目标规则(godot-cpp 等子目录在递归子 make 里) → 数值过小视为未知, 只显示分子
+	_total_targets = n if n > 5 else 0
 	return _total_targets
 
 
-## 读一个管道中当前可读的全部文本; 返回是否有新内容
-func _drain(pipe) -> bool:
-	if pipe == null or not (pipe is FileAccess):
+## 读取原始构建日志自上次位置起的新内容, 逐行回显到 Output/镜像日志; 返回是否有新行
+func _drain_log(raw_path: String) -> bool:
+	var f := FileAccess.open(raw_path, FileAccess.READ)
+	if f == null:
 		return false
-	var fa := pipe as FileAccess
-	if fa.get_length() <= fa.get_position():
-		return false
-	var text := fa.get_as_text()
-	if text != "":
-		_log_raw(text)
-		_track_progress(text)
-		return true
-	return false
-
-
-static var _prog_re: RegEx = null   # [k/N] 编译进度
-
-## 解析 cmake 输出中的 [k/N] 进度 → 更新 state.txt(供状态工具实时查看)
-func _track_progress(text: String) -> void:
-	if _prog_re == null:
-		_prog_re = RegEx.new()
-		_prog_re.compile("\\[(\\d+)/(\\d+)\\]")
-	var cur := ""
-	for m in _prog_re.search_all(text):
-		cur = "%s/%s" % [m.get_string(1), m.get_string(2)]
-	if cur != "" and cur != _last_progress:
-		_last_progress = cur
-		_state_write("编译中: %s" % cur)
+	f.seek(_raw_log_pos)
+	var had := false
+	while not f.eof_reached():
+		_log_raw(f.get_line())
+		had = true
+	_raw_log_pos = f.get_position()
+	f.close()
+	return had
 
 
 # ------------------------------------------------------------ 部署: 找产物 → 按规格键改名放入落点
