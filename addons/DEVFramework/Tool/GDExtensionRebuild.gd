@@ -58,7 +58,7 @@ var _start_ms := 0
 var _raw_log_pos := 0       # raw_build.log 尾部读取游标
 var _total_targets := -1    # 编译目标总数缓存(Makefile 解析, -1=未解析)
 var _objects_logged := 0    # 上次打印磁盘进度时的目标数(≥30 才刷一行)
-var _stall_warned := false  # 目标全满但仍卡住时只提示一次
+
 var _prev_done_count := -1  # 上次心跳时的目标数(判断是否还在推进)
 var _no_advance := 0        # 目标数无推进的累计秒(心跳间隔 10s)
 var _stall_checked := false # 卡死检测已判定并处理
@@ -873,7 +873,7 @@ func _build(build_dir: String, type: String) -> bool:
 			else:
 				_no_advance = 0
 				_prev_done_count = d
-			if _no_advance >= 300 and not _stall_checked and not _stall_killed:
+			if _no_advance >= 500 and not _stall_checked and not _stall_killed:
 				var active := _active_compile_procs()
 				if active == 0:
 					_stall_checked = true
