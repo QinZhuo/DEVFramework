@@ -52,7 +52,7 @@ cmake --build gdextension/build --config Release
 # 按上表手动重命名为带平台后缀的文件名后即可使用
 ```
 
-构建缓存目录 `gdextension/build*/` 已在 `.gitignore` 中忽略，不入库。
+构建缓存与中间产物**统一放在 `res://.godot/gdextension_build/`**（GDExtensionRebuild 自动选择；`bin`/`Native` 内无后缀原始产物由工具部署后自动清理），工程目录内只保留源码与必要文件，不入库。
 
 ### 编辑器内一键构建（GDExtensionRebuild，通用工具）
 
@@ -66,8 +66,11 @@ cmake --build gdextension/build --config Release
   - **工程意图读 CMakeLists**：`add_library(<name>)` 认产物名、`*_OUTPUT_DIRECTORY` 认产物直出目录（本仓库已直出到 `Native/`）、`GODOTCPP_API_VERSION` 有默认则不再传 `-D`（尊重钉版）
   - **已有 CMakeCache 则完全以缓存为准**（生成器/编译器/API 都是配置时定的），只 `cmake --build`，零推断
   - 构建类型：`debug`/`release` 跟随当前编辑器（与 `.gdextension` 键对应）
-  - 构建目录：复用扩展源码下已有的 `build*`（CMakeCache）缓存；没有则用 `res://.godot/gdextension_build/`
-  - 生成器探测 `ninja`；仅无缓存且 CMakeLists 未钉 API 时才以引擎 major.minor 配置
+  - 构建缓存：统一 `res://.godot/gdextension_build/<源>-<os>-<arch>-<类型>`，按名复用；不入工程目录
+  - 部署后自动清理 `Native` 内无后缀原始产物；生成器探测 `ninja`；仅无缓存且 CMakeLists 未钉 API 时才以引擎 major.minor 配置
+- **自动闭环**（`ProjectSettings` 布尔开关，均默认开）：
+  - `dev_framework/gdextension_build/auto_update_submodule`：每次构建前把 `godot-cpp` 更新到与当前引擎匹配的版本——精确 tag（`godot-<引擎版本>-stable`，主次版本必须一致）优先，上游无对应 tag 时回退其默认分支 HEAD（携带最新引擎 API）；检出变化会作废构建缓存以重新生成绑定。git 不在 PATH 时自动走常见安装路径；网络不可达则告警并沿用现状，不中断构建
+  - `dev_framework/gdextension_build/auto_reload_editor`：构建+部署成功后延时自动 项目→重新加载当前项目，使新扩展立即生效
 - **生效需重载**：引擎只在启动时加载 `.gdextension`，编译完成后需 项目→重新加载当前项目（Windows 上编辑器会锁住正在加载的 dll，覆盖会失败 —— 工具会打印手动复制指引）。
 - **跨平台边界**：CMake 跨平台，脚本只按 OS 分支"产物键/架构/默认生成器"；前提是机器上有 cmake + 可被 cmake 发现的编译器（Windows 建议 MinGW 便携版 w64devkit 入 PATH；MSVC 需从 vcvars 环境启动编辑器）。
 

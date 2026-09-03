@@ -1,4 +1,4 @@
-@tool
+﻿@tool
 class_name GDExtensionRebuild
 extends EditorScript
 
@@ -19,12 +19,23 @@ extends EditorScript
 ##
 ## 其余自动判定: 源码目录(唯一工程根 res://gdextension, 多个 addons 候选按规格配对);
 ## 构建类型 debug/release 跟随当前编辑器; 生成器探测 ninja 否则交给 cmake。
-## 已知边界(引擎层面): 编辑器只在启动时加载扩展, 编译后需 项目→重新加载当前项目 生效;
-## Windows 上编辑器锁住正在加载的 dll 会致覆盖失败, 工具会打印手动复制指引。发布由 CI 负责。
+## 缓存纪律: 一切中间产物/CMake 缓存统一放 res://.godot/gdextension_build/(引擎自带全局忽略),
+## 不进入工程目录; 部署到规格目录后自动清理无后缀原始产物, 工程内只留必要文件。
+## 自动闭环(可用 ProjectSettings 布尔开关关闭, 均默认开):
+##   dev_framework/gdextension_build/auto_update_submodule  每次构建前把 godot-cpp 更新到与当前引擎匹配的版本:
+##     精确 tag(godot-<引擎版本>-stable)优先, 上游无对应 tag 时回退其默认分支 HEAD(携带最新引擎 API);
+##     检出变化会清掉构建缓存以重新生成绑定。
+##   dev_framework/gdextension_build/auto_reload_editor      构建+部署成功后自动 重载当前项目 使新扩展生效。
+## 已知边界(引擎层面): 编辑器只在启动时加载扩展; Windows 上编辑器锁住正在加载的 dll 会致覆盖失败,
+## 工具会打印手动复制指引。发布由 CI 负责(本工具仅本机迭代)。
+
+const KEY_UPDATE_SUBMODULE := "dev_framework/gdextension_build/auto_update_submodule"
+const KEY_RELOAD_EDITOR := "dev_framework/gdextension_build/auto_reload_editor"
 
 static var _me: GDExtensionRebuild   # 异步构建期间持有自身(菜单调用方不持有实例)
 
 var _lines: Array[String] = []
+var _cache_dirty := false   # submodule 检出变化 → 构建缓存作废, 需重新配置
 
 
 func _run() -> void:
@@ -44,6 +55,9 @@ func _run() -> void:
 
 	if not _precheck(source_dir):
 		return _finish()
+	# 自动同步 godot-cpp 到与当前引擎匹配的版本(检出变化会作废构建缓存)
+	if _opt(KEY_UPDATE_SUBMODULE, true):
+		await _sync_godot_cpp(source_dir)
 	var build_dir := _pick_build_dir(source_dir)
 	if build_dir.is_empty():
 		return _finish()
@@ -54,7 +68,12 @@ func _run() -> void:
 	if not ok:
 		return _finish()
 	_deploy(build_dir, target_res, info)
-	_log("构建完成。需 项目→重新加载当前项目 生效(引擎启动时才加载扩展)。")
+	_log("构建完成。")
+	if _opt(KEY_RELOAD_EDITOR, true):
+		_log("自动重载当前项目使新扩展生效……")
+		await _restart_editor()
+	else:
+		_log("需 项目→重新加载当前项目 生效(引擎启动时才加载扩展)。")
 	_finish()
 
 
@@ -296,31 +315,166 @@ func _precheck(source_dir: String) -> bool:
 	return true
 
 
-## 构建目录: 工程下 build*(CMakeCache) 优先; 没有则用 .godot/gdextension_build/(不污染工程目录)
+# ------------------------------------------------------------ godot-cpp 自动同步(对齐当前引擎版本)
+
+static var _git_path := ""   # 已探测到的 git 可执行文件缓存(""=未探测)
+
+## 定位 git: 编辑器进程 PATH 未必有 git, 兜底常见安装路径。静态(供解析器复用)
+static func _git_exe() -> String:
+	if _git_path == "":
+		for cand in [
+			"git",
+			"C:/Program Files/Git/cmd/git.exe",
+			"C:/Program Files/Git/bin/git.exe",
+			"C:/Program Files (x86)/Git/cmd/git.exe",
+			"C:/msys64/usr/bin/git.exe",
+			"C:/Users/QZ/scoop/apps/git/current/cmd/git.exe",
+		]:
+			if cand == "git" or FileAccess.file_exists(cand):
+				var out: Array = []
+				if OS.execute(cand, ["--version"], out) == 0:
+					_git_path = cand
+					return cand
+		_git_path = "git"   # 兜底按 PATH 名, 失败由调用方告警处理
+	return _git_path
+
+
+static func _git_exec(args: PackedStringArray, out: Array = []) -> int:
+	return OS.execute(_git_exe(), args, out)
+
+
+## 把 godot-cpp submodule 更新到与当前引擎匹配的版本。
+## 解析规则: 精确 tag(godot-<引擎版本>-stable) 优先; 上游无对应 tag 时回退其默认分支 HEAD。
+## 全程只读优先(ls-remote/rev-parse); 仅在版本不一致时 fetch+detach checkout。
+## 任何 git 失败都不中断构建 —— 打印告警并沿用现有 submodule。
+func _sync_godot_cpp(source_dir: String) -> void:
+	var gcpp := _abs(source_dir).path_join("godot-cpp")
+	var out: Array = []
+	if OS.execute(_git_exe(), ["-C", gcpp, "rev-parse", "--is-inside-work-tree"], out) != 0:
+		_log("godot-cpp 不是 git 工作树, 跳过自动更新。")
+		return
+	var vi: Dictionary = Engine.get_version_info()
+	var target := "%d.%d" % [int(vi.get("major", 4)), int(vi.get("minor", 0))]
+	_log("对齐 godot-cpp 到引擎版本 ", target, " ……")
+	var want := _resolve_godot_cpp_ref(gcpp, target)
+	if want.is_empty():
+		_log("无法解析 godot-cpp 对应版本(网络不可达?), 沿用当前 submodule。")
+		return
+	var head: Array = []
+	if OS.execute(_git_exe(), ["-C", gcpp, "rev-parse", "HEAD"], head) != 0:
+		return
+	var current := String(head[0]).strip_edges()
+	if current == String(want.get("sha")):
+		_log("godot-cpp 已是最新(", want.get("name"), ")。")
+		return
+	_log("检出 godot-cpp: ", current.substr(0, 8), " → ", want.get("name"))
+	var fetch: Array = []
+	var ok := false
+	if String(want.get("kind")) == "tag":
+		ok = OS.execute(_git_exe(), ["-C", gcpp, "fetch", "origin", "tag", String(want.get("name"))], fetch) == 0
+	else:
+		ok = OS.execute(_git_exe(), ["-C", gcpp, "fetch", "origin", String(want.get("name"))], fetch) == 0
+	_print_out(fetch)
+	if not ok:
+		_log("fetch 失败, 沿用当前 submodule。")
+		return
+	var co: Array = []
+	ok = OS.execute(_git_exe(), ["-C", gcpp, "checkout", "--detach", String(want.get("sha"))], co) == 0
+	_print_out(co)
+	if ok:
+		_cache_dirty = true
+		_log("godot-cpp 已更新, 将重建构建缓存。")
+	else:
+		_log("checkout 失败, 沿用当前 submodule。")
+
+
+## 解析 godot-cpp 应检出的引用(静态可测, 只 ls-remote, 不改动工作树)。
+## tag 命名如 godot-4.7-stable / godot-4.4.1-stable(patch 为 0 时省略); 取"主次版本与引擎一致"的最新 tag,
+## 无匹配(如上游尚无 4.7 tag)则回退默认分支 HEAD —— 其携带最新引擎 API, 避免错配旧版。
+static func _resolve_godot_cpp_ref(godot_cpp_abs: String, engine_version: String) -> Dictionary:
+	var tags: Array = []
+	if OS.execute(_git_exe(), ["-C", godot_cpp_abs, "ls-remote", "--tags", "origin"], tags) != 0:
+		return {}
+	var ev := engine_version.split(".")
+	var e_major := int(ev[0]) if ev.size() > 0 else 4
+	var e_minor := int(ev[1]) if ev.size() > 1 else 0
+	var best_base := ""
+	var best_sha := ""
+	var best_key := Vector2i(-1, -1)
+	var tag_re := RegEx.new()
+	tag_re.compile("^([0-9a-f]{40})\\s+refs/tags/godot-([0-9]+)\\.([0-9]+)(?:\\.([0-9]+))?-stable$")
+	for line in tags:
+		var m := tag_re.search(String(line).strip_edges())
+		if not m:
+			continue
+		var t_major := int(m.get_string(2))
+		var t_minor := int(m.get_string(3))
+		var t_patch := int(m.get_string(4)) if m.get_string(4) != "" else 0
+		# 精确匹配引擎次版本(4.7 → 只认 4.7 系 tag), 无则整体回退默认分支, 避免错配旧版
+		if t_major != e_major or t_minor != e_minor:
+			continue
+		if t_patch > best_key.y:
+			best_key = Vector2i(t_minor, t_patch)
+			best_sha = m.get_string(1)
+			best_base = "%d.%d" % [t_major, t_minor] if t_patch == 0 else "%d.%d.%d" % [t_major, t_minor, t_patch]
+	if best_base != "":
+		return {name = "godot-%s-stable" % best_base, sha = best_sha, kind = "tag"}
+	# 上游无 ≤ 引擎的 tag → 用默认分支 HEAD(godot-cpp 默认分支携带最新引擎 API)
+	var head: Array = []
+	if OS.execute(_git_exe(), ["-C", godot_cpp_abs, "ls-remote", "--symref", "origin", "HEAD"], head) != 0 or head.is_empty():
+		return {}
+	var branch := ""
+	var sha := ""
+	for line in head:
+		var s := String(line)
+		if s.begins_with("ref:"):
+			var idx := s.find("refs/heads/")
+			if idx >= 0:
+				var tail := s.substr(idx + "refs/heads/".length())
+				branch = tail.split("\t")[0].strip_edges()
+		elif sha == "":
+			sha = s.split("\t")[0].strip_edges()
+	if branch == "" or sha == "":
+		return {}
+	return {name = "origin/" + branch, sha = sha, kind = "branch"}
+
+
+func _restart_editor() -> void:
+	await (Engine.get_main_loop() as SceneTree).create_timer(2.0).timeout
+	if get_editor_interface() != null:
+		get_editor_interface().restart_editor(true)
+
+
+## 递归清空目录(作废缓存用)
+func _wipe_dir(dir_path: String) -> void:
+	var d := DirAccess.open(dir_path)
+	if d == null:
+		return
+	d.list_dir_begin()
+	var entry := d.get_next()
+	while entry != "":
+		if entry != "." and entry != "..":
+			if d.current_is_dir():
+				_wipe_dir(dir_path.path_join(entry))
+				d.remove(entry)
+			else:
+				d.remove(entry)
+		entry = d.get_next()
+	d.list_dir_end()
+
+
+func _opt(key: String, def_val: bool) -> bool:
+	return bool(ProjectSettings.get_setting(key, def_val))
+
+
+## 构建缓存统一放 res://.godot/gdextension_build/(引擎自带全局忽略, 不入库、不污染工程)。
+## 复用已有缓存(优先名称含当前 平台+构建类型 者, 再取最新); 没有则新建 <源>-<os>-<arch>-<类型>。
 func _pick_build_dir(source_dir: String) -> String:
-	var src_abs := _abs(source_dir)
-	var token := _os_token()
-	var in_tree: Array[String] = []
-	var in_tree_ok: Array[String] = []
-	var dir := DirAccess.open(src_abs)
-	if dir:
-		dir.list_dir_begin()
-		var entry := dir.get_next()
-		while entry != "":
-			if dir.current_is_dir() and entry.begins_with("build"):
-				var full := src_abs.path_join(entry)
-				if FileAccess.file_exists(full.path_join("CMakeCache.txt")):
-					in_tree.append(full)
-					if entry.to_lower().contains(token):
-						in_tree_ok.append(full)
-			entry = dir.get_next()
-		dir.list_dir_end()
-	if not in_tree_ok.is_empty():
-		return _newest_cache(in_tree_ok)
-	if not in_tree.is_empty():
-		return _newest_cache(in_tree)
 	var cache_root := _abs("res://.godot/gdextension_build")
+	var token := _os_token()
+	var type := _build_type()
 	var cached: Array[String] = []
+	var cached_ok: Array[String] = []
 	var cdir := DirAccess.open(cache_root)
 	if cdir:
 		cdir.list_dir_begin()
@@ -330,12 +484,17 @@ func _pick_build_dir(source_dir: String) -> String:
 				var full := cache_root.path_join(entry)
 				if FileAccess.file_exists(full.path_join("CMakeCache.txt")):
 					cached.append(full)
+					var low := entry.to_lower()
+					if low.contains(token) and low.contains(type):
+						cached_ok.append(full)
 			entry = cdir.get_next()
 		cdir.list_dir_end()
+	if not cached_ok.is_empty():
+		return _newest_cache(cached_ok)
 	if not cached.is_empty():
 		return _newest_cache(cached)
-	var fresh := cache_root.path_join("%s-%s-%s" % [source_dir.get_file(), _os_label(), _arch()])
-	_log("未发现已配置构建目录, 将新建: ", fresh)
+	var fresh := cache_root.path_join("%s-%s-%s-%s" % [source_dir.get_file(), _os_label(), _arch(), type])
+	_log("未发现已配置构建缓存, 将新建: ", fresh)
 	return fresh
 
 
@@ -351,6 +510,9 @@ static func _newest_cache(dirs: Array) -> String:
 
 
 func _ready_build_dir(build_dir: String, source_dir: String, info: Dictionary) -> bool:
+	if _cache_dirty and FileAccess.file_exists(build_dir.path_join("CMakeCache.txt")):
+		_log("submodule 已更新, 作废旧构建缓存: ", build_dir)
+		_wipe_dir(build_dir)
 	if FileAccess.file_exists(build_dir.path_join("CMakeCache.txt")):
 		_log("复用构建目录(以缓存配置为准): ", build_dir)
 		return true
@@ -445,18 +607,51 @@ func _deploy(build_dir: String, target_res: String, info: Dictionary) -> void:
 	var target_abs := _abs(target_res)
 	if artifact == target_abs:
 		_log("产物已就位(直出目标目录): ", target_abs)
-		return
-	DirAccess.make_dir_recursive_absolute(target_abs.get_base_dir())
-	_log("产物: ", artifact)
-	if _copy_binary(artifact, target_abs):
-		_log("已部署: ", target_res)
-		return
-	_log("覆盖目标失败: ", target_abs)
-	if OS.get_name() == "Windows":
-		_log("原因通常是编辑器正加载该 dll(Windows 文件锁)。请关闭编辑器后手动复制:")
 	else:
-		_log("请检查目标目录权限后重试, 或手动复制:")
-	_log("    copy  \"%s\"  →  \"%s\"" % [artifact, target_abs])
+		DirAccess.make_dir_recursive_absolute(target_abs.get_base_dir())
+		_log("产物: ", artifact)
+		if _copy_binary(artifact, target_abs):
+			_log("已部署: ", target_res)
+		else:
+			_log("覆盖目标失败: ", target_abs)
+			if OS.get_name() == "Windows":
+				_log("原因通常是编辑器正加载该 dll(Windows 文件锁)。请关闭编辑器后手动复制:")
+			else:
+				_log("请检查目标目录权限后重试, 或手动复制:")
+			_log("    copy  \"%s\"  →  \"%s\"" % [artifact, target_abs])
+			return
+	# 部署后清理该目录里的"无后缀原始产物", 只保留带平台后缀的必要文件
+	_cleanup_raw(target_abs.get_base_dir(), target_res.get_file())
+
+
+## 清理产物目录里的无后缀原始文件(libdev.dll/.so/.dylib 等 CMake 直出物), 只留 *.platform.* 最终文件
+func _cleanup_raw(native_dir: String, deployed_name: String) -> void:
+	var dir := DirAccess.open(native_dir)
+	if dir == null:
+		return
+	dir.list_dir_begin()
+	var entry := dir.get_next()
+	while entry != "":
+		if not dir.current_is_dir() and entry != deployed_name \
+				and (entry.ends_with(".dll") or entry.ends_with(".so") or entry.ends_with(".dylib") or entry.ends_with(".a")):
+			var stem := entry.get_basename()
+			# 带平台后缀的文件如 dev.windows.debug.x86_64.dll 的 stem 是 dev.windows.debug.x86_64, 不会命中
+			if stem == "lib" + _target_from_deployed(deployed_name) or stem == _target_from_deployed(deployed_name):
+				dir.remove(entry)
+				_log("清理原始产物: ", entry)
+		entry = dir.get_next()
+	dir.list_dir_end()
+
+
+## 从部署文件名反推 CMake 目标名: dev.windows.debug.x86_64.dll → dev; 前缀 lib 去掉
+func _target_from_deployed(deployed_name: String) -> String:
+	var base := deployed_name.get_basename()
+	var first_dot := base.find(".")
+	if first_dot > 0:
+		base = base.substr(0, first_dot)
+	if base.begins_with("lib"):
+		base = base.substr(3)
+	return base
 
 
 ## 在多个搜索根里找"名字匹配 CMake 目标"的最新共享库(跳过 godot-cpp 中间产物)
