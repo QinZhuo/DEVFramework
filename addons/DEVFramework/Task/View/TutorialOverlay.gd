@@ -9,7 +9,7 @@
 ##   guide.stop()                                  # 提前结束/跳过
 ## 低层手动路径: focus(target, target_def, block, click_to_complete, tip_text) / blur()
 ##
-## 主题命名空间 "TutorialGuide"(与 OptionSelector 一致, 走 Godot 标准主题查找链:
+## 主题命名空间 "TutorialOverlay"(与 OptionSelector 一致, 走 Godot 标准主题查找链:
 ## 本地 → 祖先 → 项目主题, 未定义时用 _DEFAULT_* 回退):
 ##   Color    dim_color         遮罩暗色
 ##   StyleBox frame_stylebox    挖孔边框样式
@@ -339,27 +339,27 @@ func _apply_theme() -> void:
 	_dim_color = _read_color("dim_color", _DEFAULT_DIM)
 	_arrow_color = _read_color("arrow_color", _DEFAULT_ARROW)
 	_arrow_size = float(_read_const("arrow_size", 28))
-	_frame_style = get_theme_stylebox("frame_stylebox", "TutorialGuide") \
-			if has_theme_stylebox("frame_stylebox", "TutorialGuide") else null
+	_frame_style = get_theme_stylebox("frame_stylebox", "TutorialOverlay") \
+			if has_theme_stylebox("frame_stylebox", "TutorialOverlay") else null
 	if _tip_panel:
-		var tip_box := get_theme_stylebox("tip_stylebox", "TutorialGuide") \
-				if has_theme_stylebox("tip_stylebox", "TutorialGuide") else null
+		var tip_box := get_theme_stylebox("tip_stylebox", "TutorialOverlay") \
+				if has_theme_stylebox("tip_stylebox", "TutorialOverlay") else null
 		if tip_box:
 			_tip_panel.add_theme_stylebox_override("panel", tip_box)
-		var tc := get_theme_color("tip_font_color", "TutorialGuide") \
-				if has_theme_color("tip_font_color", "TutorialGuide") else _DEFAULT_TIP_TEXT
+		var tc := get_theme_color("tip_font_color", "TutorialOverlay") \
+				if has_theme_color("tip_font_color", "TutorialOverlay") else _DEFAULT_TIP_TEXT
 		_tip_text_label.add_theme_color_override("default_color", tc)
-		var fsz := get_theme_font_size("tip_font_size", "TutorialGuide") \
-				if has_theme_font_size("tip_font_size", "TutorialGuide") else 48
+		var fsz := get_theme_font_size("tip_font_size", "TutorialOverlay") \
+				if has_theme_font_size("tip_font_size", "TutorialOverlay") else 48
 		_tip_text_label.add_theme_font_size_override("normal_font_size", fsz)
 
 
 func _read_color(name: String, fallback: Color) -> Color:
-	return get_theme_color(name, "TutorialGuide") if has_theme_color(name, "TutorialGuide") else fallback
+	return get_theme_color(name, "TutorialOverlay") if has_theme_color(name, "TutorialOverlay") else fallback
 
 
 func _read_const(name: String, fallback: int) -> int:
-	return get_theme_constant(name, "TutorialGuide") if has_theme_constant(name, "TutorialGuide") else fallback
+	return get_theme_constant(name, "TutorialOverlay") if has_theme_constant(name, "TutorialOverlay") else fallback
 
 
 # ------------------------------------------------------------
