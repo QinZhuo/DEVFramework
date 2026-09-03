@@ -67,9 +67,12 @@ cmake --build gdextension/build --config Release
   - **已有 CMakeCache 则完全以缓存为准**（生成器/编译器/API 都是配置时定的），只 `cmake --build`，零推断
   - 构建类型：`debug`/`release` 跟随当前编辑器（与 `.gdextension` 键对应）
   - 构建缓存：统一 `res://.godot/gdextension_build/<源>-<os>-<arch>-<类型>`，按名复用；不入工程目录
-  - 部署后自动清理 `Native` 内无后缀原始产物；生成器探测 `ninja`；仅无缓存且 CMakeLists 未钉 API 时才以引擎 major.minor 配置
+  - 部署后按 `*.gdextension [libraries]` 白名单清理 `Native`：**只保留各平台/类型/架构键声明的必要产物**（跨平台发布件不受影响），清掉无后缀原始/导入库(`.a`)、规格外历史库与临时残留(`~*`/`*.TMP`)；生成器探测 `ninja`；仅无缓存且 CMakeLists 未钉 API 时才以引擎 major.minor 配置
+- **增量保证**：**首装之后永不全量重建**。只要本地存在可编译的绑定快照（CMakeLists 钉版或引擎回退版），`godot-cpp` 同步就完全跳过——无网络、不切版本、不碰缓存；唯一可能的全量 = 首次构建，或本地彻底无绑定快照时的一次性对齐（对齐后回归纯增量）。不因上游 tag/分支漂移而反复重编。
+- **编辑器内自动显示**：构建完成/失败自动弹引擎顶部 Toaster 提示（Godot 4.3+），过程输出实时回显 Output 面板；同一输出自动镜像到 `res://.godot/gdextension_build/build.log`（含最终结果摘要），`state.txt` / `last_build.txt` 同步落盘——全程无需手动查询。
+- **通用性**：工具链(MinGW/w64devkit)与 git 按 `环境变量(MINGW_HOME/W64DEVKIT_HOME/MSYS2_ROOT/GIT_HOME)→PATH→常见目录扫描(scoop/Program Files/msys64)` 定位，**无任何机器/用户路径硬编码**，多项目多平台通用。
 - **自动闭环**（`ProjectSettings` 布尔开关，均默认开）：
-  - `dev_framework/gdextension_build/auto_update_submodule`：每次构建前把 `godot-cpp` 更新到与当前引擎匹配的版本——精确 tag（`godot-<引擎版本>-stable`，主次版本必须一致）优先，上游无对应 tag 时回退其默认分支 HEAD（携带最新引擎 API）；检出变化会作废构建缓存以重新生成绑定。git 不在 PATH 时自动走常见安装路径；网络不可达则告警并沿用现状，不中断构建
+  - `dev_framework/gdextension_build/auto_update_submodule`：`godot-cpp` 对齐（受"永不全量重建"约束）——本地有可编译绑定快照（钉版或引擎回退版）→ 完全跳过（无网络、不切版本）；仅本地完全无可用快照时，才按 精确 tag（`godot-<引擎版本>-stable`）→ 默认分支 HEAD 的顺序一次性对齐。git 不在 PATH 时自动走常见安装路径；网络不可达则告警并沿用现状，不中断构建
   - `dev_framework/gdextension_build/auto_reload_editor`：构建+部署成功后延时自动 项目→重新加载当前项目，使新扩展立即生效
 - **生效需重载**：引擎只在启动时加载 `.gdextension`，编译完成后需 项目→重新加载当前项目（Windows 上编辑器会锁住正在加载的 dll，覆盖会失败 —— 工具会打印手动复制指引）。
 - **跨平台边界**：CMake 跨平台，脚本只按 OS 分支"产物键/架构/默认生成器"；前提是机器上有 cmake + 可被 cmake 发现的编译器（Windows 建议 MinGW 便携版 w64devkit 入 PATH；MSVC 需从 vcvars 环境启动编辑器）。
