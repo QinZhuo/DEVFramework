@@ -8,16 +8,17 @@ extends EditorScript
 ## 一次运行自动完成: 发现扩展工程 → 读 CMakeLists 与 *.gdextension 分辨"如何构建/产物去哪"
 ## → CMake 配置(必要时)/异步编译(不卡编辑器, 实时回显) → 产物按规格改名部署。
 ##
-## 三条"事实源", 不猜:
+## 两条"事实源", 不猜、无兜底、零 *.gdextension 匹配:
 ##   1) CMakeLists.txt(唯一事实源): 解析 add_library 目标名 / *_OUTPUT_DIRECTORY 直出目录 /
-##      各平台条件块 OUTPUT_NAME → 精确推导本机产物文件名与绝对路径(CMake 直出, 无需搬移);
-##   2) *.gdextension [libraries]: 按产物文件名精确反查声明它的规格文件(确定性匹配,
-##      不依赖修改时间等启发式信号); 产物落点以 CMake 推导为准, 规格键仅作白名单清理;
-##   3) CMakeCache.txt(已配置过): 生成器/编译器/API 全以缓存为准, 只 cmake --build。
-## CMakeLists 非模板写法(未钉 OUTPUT_NAME/直出目录)时才回退旧的 规格平台键+修改时间 匹配。
+##      各平台条件块 OUTPUT_NAME → 精确推导 debug+release 双版本产物文件名与绝对路径
+##      (CMake 直出, 无需搬移); 产物路径即最终落点, 不涉及规格文件反查(引擎加载由 .gdextension 自行声明);
+##   2) CMakeCache.txt(已配置过): 生成器/编译器/API 全以缓存为准, 只 cmake --build。
+## 一次运行自动构建两个版本: 先当前编辑器类型(debug 编辑器优先出 debug), 再另一版本;
+## debug 与 release 各用独立构建缓存(CMAKE_BUILD_TYPE 不同不能共用)。
+## 任一步推导失败 → 明确报错终止(宁可失败也不猜测), 修正 CMakeLists 后重跑。
 ##
 ## 源码目录: 唯一工程根 res://gdextension(不存在才扫 addons/*/);
-## 构建类型 debug/release 跟随当前编辑器; 构建后端固定只用 CMake 原生 Makefiles。
+## 构建后端固定只用 CMake 原生 Makefiles。
 ## 缓存纪律: 一切中间产物/CMake 缓存统一放 res://.godot/gdextension_build/(引擎自带全局忽略),
 ## 不进入工程目录; 部署后按规格 [libraries] 白名单清理 Native —— 只保留各平台/类型/架构键声明的
 ## 必要产物, 清掉无后缀原始/导入库(.a)与规格外历史库及临时残留(~*/TMP), 工程内只留必要文件。
@@ -65,13 +66,10 @@ func _run() -> void:
 	if loc.is_empty():
 		return _finish()
 	var source_dir: String = loc.get("source")
-	var ext_file: String = loc.get("extension")
-	var target_res := String(loc.get("artifact"))
-	if target_res.is_empty():
+	var targets: Array = loc.get("targets")
+	if targets.is_empty():
 		return _finish()
 	_log("源码工程: ", source_dir)
-	_log("规格文件: ", ext_file)
-	_log("本机产物落点: ", target_res)
 
 	if not _precheck(source_dir):
 		return _finish_with("定位/工具链失败")
@@ -81,19 +79,26 @@ func _run() -> void:
 	if _opt(KEY_UPDATE_SUBMODULE, true):
 		_state_write("构建进行中: 同步 godot-cpp…")
 		await _sync_godot_cpp(source_dir)
-	var build_dir := _pick_build_dir(source_dir)
-	if build_dir.is_empty():
-		return _finish()
-	var info: Dictionary = loc.get("info")
-	_state_write("构建进行中: 配置 CMake…")
-	if not _ready_build_dir(build_dir, source_dir, info):
-		return _finish_with("CMake 配置失败")
-	var ok := await _build(build_dir)
-	if not ok:
-		return _finish_with("编译失败(查看 build.log)")
-	_deploy(build_dir, ext_file, target_res, info)
+	# 双版本依次: 配置 → 编译 → 部署验证 (debug 先行, 编辑器尽快可用; release 随后)
+	var done: Array[String] = []
+	for tg in targets:
+		var type := String(tg.get("type"))
+		var target_res := String(tg.get("artifact"))
+		_log("──── ", type, " 版 ────")
+		var build_dir := _pick_build_dir(source_dir, type)
+		if build_dir.is_empty():
+			return _finish()
+		var info: Dictionary = loc.get("info")
+		_state_write("构建进行中(%s): 配置 CMake…" % type)
+		if not _ready_build_dir(build_dir, source_dir, info, type):
+			return _finish_with("CMake 配置失败(%s)" % type)
+		var ok := await _build(build_dir, type)
+		if not ok:
+			return _finish_with("编译失败(%s, 查看 build.log)" % type)
+		_deploy(target_res, info)
+		done.append(target_res)
 	var elapsed := (Time.get_ticks_msec() - _start_ms) / 1000.0
-	var summary := "构建成功(用时 %.1fs)\n产物: %s\n日志: res://.godot/gdextension_build/build.log" % [elapsed, target_res]
+	var summary := "构建成功(debug + release, 用时 %.1fs)\n产物: %s\n日志: res://.godot/gdextension_build/build.log" % [elapsed, ", ".join(done)]
 	if _opt(KEY_RELOAD_EDITOR, true):
 		summary += "\n下一步: 2 秒后自动重载当前项目。"
 	else:
@@ -120,12 +125,11 @@ func _finish_with(result: String) -> void:
 
 # ------------------------------------------------------------ 零配置定位
 
-## 定位构建目标 —— 以 CMakeLists 为唯一事实源, 不再做模糊匹配:
-##   1) 解析 CMakeLists.txt 的 add_library 目标名 / *_OUTPUT_DIRECTORY 直出目录 /
-##      各平台条件块里的 OUTPUT_NAME;
+## 定位构建目标 —— 一切信息只从 CMakeLists.txt 获取, 无兜底:
+##   1) 解析 add_library 目标名 / *_OUTPUT_DIRECTORY 直出目录 / 各平台条件块 OUTPUT_NAME;
 ##   2) 由此精确推导"本机预期产物文件名 + 绝对路径"(CMake 直出, 无需搬移);
-##   3) 用产物文件名反查声明它的 *.gdextension 规格文件([libraries] 值精确匹配文件名)。
-## CMakeLists 未按模板钉产物名时, 才回退旧的 规格平台键+修改时间 匹配(兜底)。
+##   3) 产物路径即最终落点, 不涉及任何 *.gdextension 匹配(引擎加载由 .gdextension 自行声明)。
+## 任一步推导失败 → 直接报错终止, 不做猜测式匹配。
 func _locate() -> Dictionary:
 	var dirs: Array[String] = []
 	if _is_ext_source("res://gdextension"):
@@ -142,65 +146,45 @@ func _locate() -> Dictionary:
 			_log("    - 候选: ", d)
 	var info := _read_cmake_info(source_dir)
 
-	# 主路径: CMake 已钉产物名 → 产物路径完全可推导
-	var art := _expected_artifact(info)
-	if not art.is_empty():
-		var ext := _find_ext_by_artifact(String(art.get("file")))
-		if ext != "":
-			_log("已锁定(CMake→规格 精确匹配): ", source_dir, " + ", ext)
-			return {"source": source_dir, "extension": ext, "artifact": String(art.get("res")), "info": info, "mode": "cmake"}
-		_log("CMake 产物 %s 未被任何 *.gdextension 声明, 回退平台键匹配。" % String(art.get("file")))
-
-	# ---- 回退: 规格文件 [libraries] 平台键 + 修改时间(仅当 CMakeLists 非模板写法) ----
-	var ext_order: Array[String] = []
-	var seen := {}
-	for e in find_extension_files(source_dir):
-		if not seen.has(e):
-			seen[e] = true
-			ext_order.append(e)
-	if ext_order.is_empty():
-		_log("未找到 *.gdextension 规格文件(常见位置: addons/**/Native、addons/**、bin)。")
-		return {}
-	var want := "%s.%s.%s" % [_os_label(), _build_type(), _arch()]
-	var want_short := "%s.%s" % [_os_label(), _build_type()]
-	var runnable: Array[String] = []
-	for e in ext_order:
-		var keys := _parse_library_keys(e)
-		if keys.has(want) or keys.has(want_short):
-			runnable.append(e)
-	var pool: Array[String] = runnable if not runnable.is_empty() else ext_order
-	var ext_file: String = pool[0]
-	var newest := -1.0
-	for e in pool:
-		var m := FileAccess.get_modified_time(e)
-		if m > newest:
-			newest = m
-			ext_file = e
-	if dirs.size() > 1:
-		var by_ext := _source_matching_addon(ext_file, dirs)
-		if by_ext != "" and by_ext != source_dir:
-			source_dir = by_ext
-			info = _read_cmake_info(source_dir)
-	var target_res := _parse_library_target(ext_file)
-	if target_res.is_empty():
-		return {}
-	_log("已选择(回退匹配): ", source_dir, " + ", ext_file)
-	if not runnable.is_empty() and runnable.size() < ext_order.size():
-		_log("其余规格无本机(", want, ")条目, 已忽略。")
-	return {"source": source_dir, "extension": ext_file, "artifact": target_res, "info": info, "mode": "fallback"}
+	# 双版本推导: debug + release 各推导一次产物路径(先当前编辑器类型, 编辑器尽快可用)
+	var types: Array[String] = [_build_type()]
+	for t in ["debug", "release"]:
+		if not types.has(t):
+			types.append(t)
+	var targets: Array = []
+	for t in types:
+		var art := _expected_artifact(info, t)
+		if art.is_empty():
+			_log("CMakeLists.txt 缺少 ", t, " 版产物定义, 无法推导产物路径。")
+			_log("需要: add_library(<name> SHARED) + *_OUTPUT_DIRECTORY 直出目录 + OUTPUT_NAME 条目 ", _os_label(), ".", t, "。")
+			return {}
+		targets.append({"type": t, "artifact": String(art.get("res"))})
+	_log("已锁定(CMake 推导): ", source_dir)
+	for tg in targets:
+		_log("预期产物(", String(tg.get("type")), "): ", String(tg.get("artifact")))
+	return {"source": source_dir, "targets": targets, "info": info}
 
 
-## 由 CMake 信息推导本机预期产物: {file(文件名), res(res://落点), abs(绝对路径)}。
-## 依赖 CMakeLists 已钉 OUTPUT_NAME(按平台条件块) + OUTPUT_DIRECTORY 直出目录;
-## 未钉 OUTPUT_NAME 时按 CMake 默认规则用 target 名(Windows 无前缀 / macOS/Linux 带 lib 前缀)。
-func _expected_artifact(info: Dictionary) -> Dictionary:
+## 由 CMake 信息推导指定构建类型的预期产物: {file(文件名), res(res://落点), abs(绝对路径)}。
+## 产物名 = 平台.构建类型 对应的 OUTPUT_NAME 条目(CMake 实际行为);
+## CMakeLists 钉了 OUTPUT_NAME 却缺该条目 → 模板未覆盖, 报空不猜测;
+## 全文未钉 OUTPUT_NAME → 按 CMake 默认规则用 target 名(Windows 无前缀 / macOS/Linux 带 lib 前缀)。
+func _expected_artifact(info: Dictionary, type: String) -> Dictionary:
 	var out_dirs: Array = info.get("out_dirs", [])
 	var target := String(info.get("target", ""))
 	if out_dirs.is_empty() or target == "":
 		return {}
-	var name := String(info.get("output_name", ""))
+	var names: Dictionary = info.get("output_names", {})
+	var name := String(info.get("output_name", "")) if type == _build_type() else ""
 	if name == "":
-		name = target
+		if not names.is_empty():
+			name = String(names.get("%s.%s" % [_os_label(), type], ""))
+		if name == "":
+			if not names.is_empty():
+				_log("CMakeLists 钉了 OUTPUT_NAME 但缺少条目(", _os_label(), ".", type, "), 无法推导产物名。")
+				_log("现有平台条目: ", ", ".join(names.keys()))
+				return {}
+			name = target
 	var file := ""
 	match _os_label():
 		"windows":
@@ -213,26 +197,6 @@ func _expected_artifact(info: Dictionary) -> Dictionary:
 		return {}
 	var out_abs := String(out_dirs[0])
 	return {"file": file, "res": _abs_to_res(out_abs).path_join(file), "abs": out_abs.path_join(file)}
-
-
-## 在 addons 下反查声明了指定产物文件名的 *.gdextension([libraries] 值按文件名精确匹配)。
-## 匹配是确定性的: 产物文件名 ↔ 规格声明一一对应, 不依赖修改时间等启发式信号。
-func _find_ext_by_artifact(file_name: String) -> String:
-	var cands: Array[String] = []
-	_collect_ext("res://addons", cands, {}, 3)
-	var hits: Array[String] = []
-	for e in cands:
-		for val in _parse_library_keys(e).values():
-			if String(val).get_file() == file_name:
-				hits.append(e)
-				break
-	if hits.is_empty():
-		return ""
-	if hits.size() > 1:
-		_log("多个规格声明了同一产物, 取首个:")
-		for h in hits:
-			_log("    - ", h)
-	return hits[0]
 
 
 ## CMake if/elseif 条件文本 → "平台.构建类型" 归档键(仅识别本工具支持的模板写法)
@@ -265,17 +229,6 @@ func _abs_to_res(p: String) -> String:
 	return p
 
 
-## 规格文件位于某个"同样是工程候选"的 addons 目录下时, 判定归属
-static func _source_matching_addon(ext_file: String, dirs: Array) -> String:
-	var parts := ext_file.split("/", false)
-	if parts.size() >= 3 and parts[1] == "addons":
-		var addon_dir := "res://addons/%s" % parts[2]
-		for d in dirs:
-			if d == addon_dir:
-				return d
-	return ""
-
-
 ## 自动发现工程目录候选(静态, 供外部/MCP 复用): 项目根 gdextension/ + 各 addons/*/
 static func discover_source_dirs() -> Array[String]:
 	var out: Array[String] = []
@@ -300,81 +253,6 @@ static func _is_ext_source(dir_path: String) -> bool:
 			or FileAccess.file_exists(dir_path.path_join("SConstruct"))
 	var has_cpp := DirAccess.dir_exists_absolute(ProjectSettings.globalize_path(dir_path.path_join("godot-cpp")))
 	return has_build and has_cpp
-
-
-## 自动收集 *.gdextension(静态, 供外部/MCP 复用): 工程目录内/bin + addons/**/Native + addons/**
-static func find_extension_files(source_dir: String) -> Array[String]:
-	var found: Array[String] = []
-	var seen := {}
-	for probe in [source_dir, source_dir.path_join("bin")]:
-		_collect_ext(probe, found, seen, 0)
-	_collect_ext("res://addons", found, seen, 3)
-	found.sort()
-	return found
-
-
-static func _collect_ext(dir_path: String, out: Array[String], seen: Dictionary, depth: int) -> void:
-	if depth < 0 or seen.has(dir_path):
-		return
-	seen[dir_path] = true
-	var dir := DirAccess.open(dir_path)
-	if dir == null:
-		return
-	dir.list_dir_begin()
-	var entry := dir.get_next()
-	while entry != "":
-		if entry.begins_with("."):
-			entry = dir.get_next()
-			continue
-		var full := dir_path.path_join(entry)
-		if dir.current_is_dir():
-			if depth > 0:
-				_collect_ext(full, out, seen, depth - 1)
-			elif entry in ["Native", "bin"]:
-				_collect_ext(full, out, seen, 1)
-		elif entry.ends_with(".gdextension"):
-			out.append(full)
-		entry = dir.get_next()
-	dir.list_dir_end()
-
-
-## 解析 [libraries] 中当前 平台.类型[.架构] 键 → res:// 落点; 键缺失给出清单
-func _parse_library_target(ext_file: String) -> String:
-	var keys := _parse_library_keys(ext_file)
-	var want := "%s.%s.%s" % [_os_label(), _build_type(), _arch()]
-	var want_short := "%s.%s" % [_os_label(), _build_type()]
-	for try_key in [want, want_short]:
-		if keys.has(try_key):
-			return keys[try_key]
-	_log("规格文件中缺少本机条目 ", want, "(或 ", want_short, "), 现有条目:")
-	for k in keys:
-		_log("    - ", k, " = ", keys[k])
-	return ""
-
-
-## 解析 .gdextension 的 [libraries] 段(静态, 供外部/MCP 复用)
-static func _parse_library_keys(ext_file: String) -> Dictionary:
-	var keys := {}
-	var f := FileAccess.open(ext_file, FileAccess.READ)
-	if f == null:
-		return keys
-	var in_libraries := false
-	while not f.eof_reached():
-		var line := f.get_line().strip_edges()
-		if line.begins_with("["):
-			in_libraries = line.to_lower().begins_with("[libraries]")
-			continue
-		if not in_libraries or line == "" or line.begins_with(";"):
-			continue
-		var eq := line.find("=")
-		if eq < 0:
-			continue
-		var key := line.substr(0, eq).strip_edges()
-		var val := line.substr(eq + 1).strip_edges().trim_prefix('"').trim_suffix('"')
-		if key != "" and val != "":
-			keys[key] = val
-	f.close()
-	return keys
 
 
 # ------------------------------------------------------------ 读 CMakeLists 分辨"如何构建"(三个高可信 token)
@@ -418,7 +296,7 @@ func _read_cmake_info(project_dir: String) -> Dictionary:
 
 	# OUTPUT_NAME: 逐行跟踪 if/elseif/endif, 把各条件块里的值按 平台.构建类型 归档
 	var re_if := RegEx.new()
-	re_if.compile("^\\s*(?:el)?if\\s*\\(([^)]*)\\)")
+	re_if.compile("^\\s*(?:else)?if\\s*\\(([^)]*)\\)")
 	var re_endif := RegEx.new()
 	re_endif.compile("^\\s*endif\\s*\\(")
 	var re_name := RegEx.new()
@@ -755,11 +633,11 @@ func _kill_build_tree(pid: int) -> void:
 
 
 ## 构建缓存统一放 res://.godot/gdextension_build/(引擎自带全局忽略, 不入库、不污染工程)。
-## 复用已有缓存(优先名称含当前 平台+构建类型 者, 再取最新); 没有则新建 <源>-<os>-<arch>-<类型>。
-func _pick_build_dir(source_dir: String) -> String:
+## 复用已有缓存(优先名称含指定 平台+构建类型 者, 再取最新); 没有则新建 <源>-<os>-<arch>-<类型>。
+## debug 与 release 各用独立缓存(CMAKE_BUILD_TYPE 不同不能共用)。
+func _pick_build_dir(source_dir: String, type: String) -> String:
 	var cache_root := _abs("res://.godot/gdextension_build")
 	var token := _os_token()
-	var type := _build_type()
 	var cached: Array[String] = []
 	var cached_ok: Array[String] = []
 	var cdir := DirAccess.open(cache_root)
@@ -796,7 +674,7 @@ static func _newest_cache(dirs: Array) -> String:
 	return best
 
 
-func _ready_build_dir(build_dir: String, source_dir: String, info: Dictionary) -> bool:
+func _ready_build_dir(build_dir: String, source_dir: String, info: Dictionary, type: String) -> bool:
 	if _cache_dirty and FileAccess.file_exists(build_dir.path_join("CMakeCache.txt")):
 		_log("submodule 已更新, 作废旧构建缓存: ", build_dir)
 		_wipe_dir(build_dir)
@@ -817,7 +695,7 @@ func _ready_build_dir(build_dir: String, source_dir: String, info: Dictionary) -
 	var api := _api_version_to_pass(source_dir, String(info.get("api_default", "")))
 	if api != "":
 		args.append("-DGODOTCPP_API_VERSION=%s" % api)
-	args.append("-DCMAKE_BUILD_TYPE=%s" % _build_type_cap())
+	args.append("-DCMAKE_BUILD_TYPE=%s" % type.capitalize())
 	_log("配置 CMake: ", " ".join(args))
 	var out: Array = []
 	var code := OS.execute("cmake", args, out, true)
@@ -901,8 +779,7 @@ func _cache_is_makefiles(build_dir: String) -> bool:
 
 # ------------------------------------------------------------ 异步构建
 
-func _build(build_dir: String) -> bool:
-	var type := _build_type()
+func _build(build_dir: String, type: String) -> bool:
 	_log("开始编译 (", type, ")…… 编辑器保持可用, 输出实时回显。")
 	var jobs := int(ProjectSettings.get_setting(KEY_JOBS, 0))
 	if jobs <= 0:
@@ -1097,48 +974,56 @@ func _drain_log(raw_path: String) -> bool:
 	return had
 
 
-# ------------------------------------------------------------ 部署: 找产物 → 按规格键改名放入落点
+# ------------------------------------------------------------ 部署: CMake 直出验证 + 纯 CMake 推导的残留清理
 
-## 部署: 第一事实是 CMake 直出 —— 预期产物路径存在即完成, 不搬移不改名;
-## 仅当直出缺失(CMake 未配 OUTPUT_DIRECTORY 等)才兜底在构建目录里查找产物,
-## 复制为预期文件名 —— 复制目标同样由 CMakeLists 推导, 不做猜测式改名。
-func _deploy(build_dir: String, ext_file: String, target_res: String, info: Dictionary) -> void:
+## 部署: 唯一事实是 CMake 直出 —— 预期产物路径存在即完成, 不搬移不改名;
+## 不存在即报错(由定位阶段保证能走到这里时产物路径已确定), 不做猜测式查找/复制。
+func _deploy(target_res: String, info: Dictionary) -> void:
 	var target_abs := _abs(target_res)
-	if FileAccess.file_exists(target_abs):
-		_log("产物已就位(CMake 直出): ", target_res)
-	else:
-		var roots: Array[String] = [build_dir]
-		for d in info.get("out_dirs", []):
-			roots.append(String(d))
-		var artifact := _find_artifact(roots, String(info.get("target", "")))
-		if artifact.is_empty():
-			_log("未定位到产物, 请检查上方编译输出。")
-			return
-		DirAccess.make_dir_recursive_absolute(target_abs.get_base_dir())
-		if artifact == target_abs:
-			_log("产物已就位: ", target_abs)
-		else:
-			_log("产物(兜底定位): ", artifact)
-			if _copy_binary(artifact, target_abs):
-				_log("已部署: ", target_res)
-			else:
-				_log("覆盖目标失败: ", target_abs)
-				if OS.get_name() == "Windows":
-					_log("原因通常是编辑器正加载该 dll(Windows 文件锁)。请关闭编辑器后手动复制:")
-				else:
-					_log("请检查目标目录权限后重试, 或手动复制:")
-				_log("    copy  \"%s\"  →  \"%s\"" % [artifact, target_abs])
-				return
-	# 部署后白名单清理: 该目录只保留 *.gdextension [libraries] 声明的各平台必要产物
-	_cleanup_native(target_abs.get_base_dir(), ext_file, target_res)
+	if not FileAccess.file_exists(target_abs):
+		_log("预期产物未生成: ", target_abs)
+		_log("请确认 CMakeLists 已钉 OUTPUT_DIRECTORY 直出目录与各平台 OUTPUT_NAME, 并检查上方编译输出。")
+		return
+	_log("产物已就位(CMake 直出): ", target_res)
+	# 部署后清理: 白名单同样纯 CMake 推导 —— OUTPUT_NAME 各平台条目按平台后缀展开
+	_cleanup_native(target_abs.get_base_dir(), _cmake_keep_names(info))
 
 
-## 部署后清理产物目录: 只保留 *.gdextension [libraries] 声明过的必要文件(各平台/类型/架构键的库)。
-## 清掉三类"插件加载不需要"的残留: 无后缀原始产物/导入库(如 libdev.dll.a)、规格外历史库文件、
-## 系统锁或覆盖中断产生的临时件(~*/ *.TMP)。规格内跨平台发布件(如 mac dylib)一律保留。
-func _cleanup_native(native_dir: String, ext_file: String, deployed_res: String) -> void:
-	var keep := _library_whitelist(ext_file)
-	keep[deployed_res.get_file()] = true
+## CMake OUTPUT_NAME 全量平台条目 → 各平台产物文件名白名单。
+## 例: macos.debug→lib<名>.dylib / windows.debug→<名>.dll / linux.release→lib<名>.so
+func _cmake_keep_names(info: Dictionary) -> PackedStringArray:
+	var keep := PackedStringArray()
+	var names: Dictionary = info.get("output_names", {})
+	for key in names:
+		var k := String(key)
+		var os := k.split(".")[0]
+		var name := String(names[key])
+		match os:
+			"windows":
+				keep.append("%s.dll" % name)
+			"macos":
+				keep.append("lib%s.dylib" % name)
+			"linux":
+				keep.append("lib%s.so" % name)
+	if names.is_empty() and String(info.get("target", "")) != "":
+		# CMakeLists 未钉 OUTPUT_NAME: 按默认规则 target 名即产物名(本机平台)
+		match _os_label():
+			"windows":
+				keep.append("%s.dll" % String(info.get("target")))
+			"macos":
+				keep.append("lib%s.dylib" % String(info.get("target")))
+			"linux":
+				keep.append("lib%s.so" % String(info.get("target")))
+	return keep
+
+
+## 部署后清理产物目录: 只保留 CMake OUTPUT_NAME 推导出的各平台产物。
+## 清掉三类"插件加载不需要"的残留: 导入库(.a/.lib)、历史库文件、
+## 系统锁或覆盖中断产生的临时件(~*/ *.TMP)。其余平台发布件(在白名单内)一律保留。
+func _cleanup_native(native_dir: String, keep: PackedStringArray) -> void:
+	var keep_set := {}
+	for k in keep:
+		keep_set[k] = true
 	var dir := DirAccess.open(native_dir)
 	if dir == null:
 		return
@@ -1150,7 +1035,7 @@ func _cleanup_native(native_dir: String, ext_file: String, deployed_res: String)
 		var is_tmp := entry.begins_with("~") or low.ends_with(".tmp") or low.ends_with(".temp")
 		var is_lib := low.ends_with(".dll") or low.ends_with(".so") or low.ends_with(".dylib") \
 				or low.ends_with(".a") or low.ends_with(".lib")
-		if not dir.current_is_dir() and not keep.has(entry) and (is_tmp or is_lib):
+		if not dir.current_is_dir() and not keep_set.has(entry) and (is_tmp or is_lib):
 			if dir.remove(entry) == OK:
 				removed += 1
 				_log("清理非必要产物: ", entry)
@@ -1159,64 +1044,7 @@ func _cleanup_native(native_dir: String, ext_file: String, deployed_res: String)
 		entry = dir.get_next()
 	dir.list_dir_end()
 	if removed > 0:
-		_log("Native 仅保留规格声明的各平台产物, 已清理 ", removed, " 项。")
-
-
-## *.gdextension [libraries] 全部值(各平台/类型/架构) → 文件名集合(保留白名单)
-func _library_whitelist(ext_file: String) -> Dictionary:
-	var keep := {}
-	for val in _parse_library_keys(ext_file).values():
-		var file := String(val).get_file()
-		if file != "":
-			keep[file] = true
-	return keep
-
-
-## 在多个搜索根里找"名字匹配 CMake 目标"的最新共享库(跳过 godot-cpp 中间产物)
-func _find_artifact(roots: Array, target: String) -> String:
-	var stems := PackedStringArray()
-	if target != "":
-		stems.append(target)
-		stems.append("lib" + target)
-	var found: Array[String] = []
-	for r in roots:
-		_walk_artifact(String(r), 0, stems, found)
-	if found.is_empty():
-		return ""
-	found.sort_custom(func(a: String, b: String) -> bool:
-		return FileAccess.get_modified_time(a) > FileAccess.get_modified_time(b))
-	return found[0]
-
-
-func _walk_artifact(dir_path: String, depth: int, stems: PackedStringArray, out: Array[String]) -> void:
-	if depth > 3:
-		return
-	if dir_path.to_lower().ends_with("godot-cpp"):
-		return
-	var dir := DirAccess.open(dir_path)
-	if dir == null:
-		return
-	dir.list_dir_begin()
-	var entry := dir.get_next()
-	while entry != "":
-		if entry.begins_with("."):
-			entry = dir.get_next()
-			continue
-		var full := dir_path.path_join(entry)
-		if dir.current_is_dir():
-			_walk_artifact(full, depth + 1, stems, out)
-		elif entry.ends_with(".dll") or entry.ends_with(".so") or entry.ends_with(".dylib"):
-			var ok_stem := stems.is_empty()
-			if not ok_stem:
-				var stem := entry.get_basename()
-				for s in stems:
-					if stem == s:
-						ok_stem = true
-						break
-			if ok_stem:
-				out.append(full)
-		entry = dir.get_next()
-	dir.list_dir_end()
+		_log("Native 仅保留 CMake 声明的各平台产物, 已清理 ", removed, " 项。")
 
 
 # ------------------------------------------------------------ 平台信息
@@ -1229,6 +1057,7 @@ func _os_label() -> String:
 		_: return OS.get_name().to_lower()
 
 
+## 本机架构名(构建缓存目录隔离用; universal 归一为 x86_64)
 func _arch() -> String:
 	var arch := Engine.get_architecture_name().to_lower()
 	return "x86_64" if arch == "universal" else arch
@@ -1242,13 +1071,9 @@ func _os_token() -> String:
 	return _os_label()
 
 
-## 构建类型跟随当前编辑器(debug 编辑器 → debug 产物, 与 .gdextension 键对应)
+## 构建类型跟随当前编辑器(debug 编辑器 → debug 产物优先构建)
 func _build_type() -> String:
 	return "debug" if OS.is_debug_build() else "release"
-
-
-func _build_type_cap() -> String:
-	return _build_type().capitalize()
 
 
 # ------------------------------------------------------------ 小工具
@@ -1261,23 +1086,6 @@ func _res(p: String) -> String:
 
 func _abs(p: String) -> String:
 	return ProjectSettings.globalize_path(_res(p))
-
-
-## 字节级复制(失败返回 false 由调用方给指引)
-func _copy_binary(src: String, dst: String) -> bool:
-	var f_in := FileAccess.open(src, FileAccess.READ)
-	if f_in == null:
-		return false
-	var data := f_in.get_buffer(f_in.get_length())
-	f_in.close()
-	if data.is_empty():
-		return false
-	var f_out := FileAccess.open(dst, FileAccess.WRITE)
-	if f_out == null:
-		return false
-	f_out.store_buffer(data)
-	f_out.close()
-	return true
 
 
 func _print_out(out: Array) -> void:
