@@ -44,6 +44,8 @@ var _lines: Array[String] = []
 var _cache_dirty := false   # submodule 检出变化 → 构建缓存作废, 需重新配置
 var _start_ms := 0
 var _last_progress := ""    # 最近一次解析到的 [k/N] 编译进度
+var _total_targets := -1    # build.ninja 编译目标总数缓存(-1=未解析)
+var _objects_logged := 0    # 上次打印磁盘进度时的目标数(≥30 才刷一行)
 
 
 func _run() -> void:
@@ -730,9 +732,24 @@ func _build(build_dir: String) -> bool:
 		_print_out(out)
 		return code == 0
 	var tree := Engine.get_main_loop() as SceneTree
+	_state_write("编译中: 启动…")
+	# 进度双保险: (a) 管道实时文本; (b) 直接数构建目录里已生成的 .o/.obj ——
+	# 后者不依赖子进程输出缓冲(管道输出可能整段延迟), 无论是否有文本都能量化真实进度。
+	var tick := 0
+	var silent := 0
 	while OS.is_process_running(pid):
-		_drain(stdout)
-		_drain(stderr)
+		var had := _drain(stdout) or _drain(stderr)
+		if had:
+			silent = 0
+		else:
+			silent += 1
+		tick += 1
+		if tick % 10 == 0:   # ~每 2s
+			_report_disk_progress(build_dir)
+		if silent >= 50 and silent % 50 == 0:   # 静默 ≥10s 后每 10s 心跳一次
+			var d := _count_build_objects(build_dir)
+			var t := _total_compile_units(build_dir)
+			_log_raw("[心跳] 编译仍在进行(已静默 %d 秒)… 已生成 %d/%d 目标文件" % [silent / 5, d, t])
 		await tree.create_timer(0.2).timeout
 	_drain(stdout)
 	_drain(stderr)
@@ -748,16 +765,73 @@ func _build(build_dir: String) -> bool:
 	return exit_code == 0
 
 
-func _drain(pipe) -> void:
+## 定期把磁盘真实进度写入 state/日志(每 ~2s; 每前进 ≥30 个目标才刷一行日志, 避免刷屏)
+func _report_disk_progress(build_dir: String) -> void:
+	var total := _total_compile_units(build_dir)
+	var done := _count_build_objects(build_dir)
+	if total > 0:
+		_state_write("编译中: 已生成 %d/%d 目标" % [done, total])
+	else:
+		_state_write("编译中: 已生成 %d 个目标" % done)
+	if done - _objects_logged >= 30:
+		_objects_logged = done
+		if total > 0:
+			_log_raw("编译进度: %d/%d 目标" % [done, total])
+		else:
+			_log_raw("编译进度: 已生成 %d 个目标" % done)
+
+
+## 构建目录里已生成的编译单元(.o/.obj)数量 —— 独立于输出管道的真实进度
+func _count_build_objects(build_dir: String) -> int:
+	var count := 0
+	var stack: Array[String] = [build_dir]
+	while not stack.is_empty():
+		var dir := DirAccess.open(stack.pop_back())
+		if dir == null:
+			continue
+		dir.list_dir_begin()
+		var e := dir.get_next()
+		while e != "":
+			if e.begins_with("."):
+				e = dir.get_next()
+				continue
+			var full := dir.get_current_dir().path_join(e)
+			if dir.current_is_dir():
+				stack.append(full)
+			elif e.ends_with(".o") or e.ends_with(".obj"):
+				count += 1
+			e = dir.get_next()
+		dir.list_dir_end()
+	return count
+
+
+## 编译目标总数(从 build.ninja 统计 ".o: cxx/cc" 编译边, 只解析一次并缓存)
+func _total_compile_units(build_dir: String) -> int:
+	if _total_targets >= 0:
+		return _total_targets
+	_total_targets = 0
+	var ninja_file := build_dir.path_join("build.ninja")
+	if not FileAccess.file_exists(ninja_file):
+		return 0
+	var re := RegEx.new()
+	re.compile("\\.o: c(?:xx)? ")
+	_total_targets = re.search_all(FileAccess.get_file_as_string(ninja_file)).size()
+	return _total_targets
+
+
+## 读一个管道中当前可读的全部文本; 返回是否有新内容
+func _drain(pipe) -> bool:
 	if pipe == null or not (pipe is FileAccess):
-		return
+		return false
 	var fa := pipe as FileAccess
 	if fa.get_length() <= fa.get_position():
-		return
+		return false
 	var text := fa.get_as_text()
 	if text != "":
 		_log_raw(text)
 		_track_progress(text)
+		return true
+	return false
 
 
 static var _prog_re: RegEx = null   # [k/N] 编译进度
