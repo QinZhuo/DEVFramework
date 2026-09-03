@@ -800,8 +800,9 @@ func _build(build_dir: String) -> bool:
 		run_args = PackedStringArray(["/c", bat.replace("/", "\\")])
 	else:
 		run_args = PackedStringArray(["-c", cmd_line])
-	var pipe: Dictionary = OS.execute_with_pipe(shell, run_args, false)
-	var pid: int = int(pipe.get("pid", 0))
+	# 用 create_process 启动, 完全不建立管道: 子进程链若继承管道句柄会导致其等待 EOF 而死锁
+	# (此前 Ninja/Make 在 Godot 内异步卡死、引擎 PeekNamedPipe 报错的根因)。输出已重定向到文件。
+	var pid := OS.create_process(shell, run_args)
 	if pid <= 0:
 		_log("异步执行不可用, 退化为阻塞执行(编辑器会卡住直到完成)。")
 		var out: Array = []
@@ -918,20 +919,36 @@ func _count_build_objects(build_dir: String) -> int:
 	return count
 
 
-## 编译目标总数: 统计 Makefile 里的对象编译边 "<x>.o:" / "<x>.obj:"。
-## 只认"源编译出对象文件"的目标行, 与规则名/扩展名差异(Unix .o / Windows .obj)无关。解析一次并缓存。
+## 编译目标总数: 统计整个构建树所有 build.make 里的"对象编译目标"(去重)。
+## 覆盖根工程与 godot-cpp 子 make; 同一对象会有多行依赖声明, 故按目标路径去重后再计数。
+## 只认 "<path>.o/.obj" 形式的目标行, 与扩展名差异(Unix .o / Windows .obj)无关。解析一次并缓存。
 func _total_compile_units(build_dir: String) -> int:
 	if _total_targets >= 0:
 		return _total_targets
 	_total_targets = 0
-	var path := build_dir.path_join("Makefile")
-	if not FileAccess.file_exists(path):
-		return 0
-	var re := RegEx.new()
-	re.compile("\\.o(bj)?: ")
-	var n := re.search_all(FileAccess.get_file_as_string(path)).size()
-	# Makefile 根只含本工程目标规则(godot-cpp 等子目录在递归子 make 里) → 数值过小视为未知, 只显示分子
-	_total_targets = n if n > 5 else 0
+	var seen := {}
+	var stack: Array[String] = [build_dir]
+	while not stack.is_empty():
+		var dir := DirAccess.open(stack.pop_back())
+		if dir == null:
+			continue
+		dir.list_dir_begin()
+		var e := dir.get_next()
+		while e != "":
+			if e.begins_with("."):
+				e = dir.get_next()
+				continue
+			var full := dir.get_current_dir().path_join(e)
+			if dir.current_is_dir():
+				stack.append(full)
+			elif e == "build.make":
+				for line in FileAccess.get_file_as_string(full).split("\n"):
+					var target := line.split(":", 1)[0].strip_edges()
+					if (target.ends_with(".o") or target.ends_with(".obj")) and not seen.has(target):
+						seen[target] = true
+						_total_targets += 1
+			e = dir.get_next()
+		dir.list_dir_end()
 	return _total_targets
 
 
