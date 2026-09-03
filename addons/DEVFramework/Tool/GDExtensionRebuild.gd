@@ -862,11 +862,6 @@ func _build(build_dir: String, type: String) -> bool:
 				_log_raw("[心跳] 编译仍在进行(已静默 %d 秒)… 已生成 %d/%d 目标文件" % [silent / 5, d, t])
 			else:
 				_log_raw("[心跳] 编译仍在进行(已静默 %d 秒)… 已生成 %d 个目标(总数未知)" % [silent / 5, d])
-			if silent >= 300 and not _stall_warned and t > 0 and d >= t:   # 已满但仍卡 ≥60s → 一次性诊断引导
-				_stall_warned = true
-				_log_raw("所有编译目标已生成但进程仍未退出: 通常是构建描述文件被并发写入/截断损坏,")
-				_log_raw("或同时开了多个 Godot 实例抢占同一构建目录。")
-				_log_raw("处理: 关闭全部 Godot → 删除该构建目录后重新运行(将重新配置), 并保持单实例。")
 			# 卡死熔断: 目标长期不增长 + 无编译器子进程存活 → 构建系统在等不存在的子进程(非编译慢)
 			if d == _prev_done_count:
 				_no_advance += 10
