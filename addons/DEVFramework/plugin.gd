@@ -16,6 +16,8 @@ const CAMERA_VIEWFINDER_SCRIPT := "res://addons/DEVFramework/Camera/Editor/Camer
 
 const AUTOLOAD_NAME := "DevMCP"
 const AUTOLOAD_PATH := "res://addons/DEVFramework/MCP/MCPDevServer.gd"
+## 导出血 DevMCP autoload 用的键（导出时临时移除，避免编辑器专用脚本进正式包）
+const EXPORT_AUTOLOAD_KEY := "autoload/DevMCP"
 
 var _mcp: MCPDevServer
 var _debugger_plugin: MCPDebuggerPlugin
@@ -24,6 +26,7 @@ var _def_table: Control
 var _camera_gizmo: EditorNode3DGizmoPlugin
 var _camera_viewfinder: Control
 var _camera_viewfinder_button: Button
+var _pack_mcp_filter: EditorExportPlugin
 
 
 func _enter_tree() -> void:
@@ -38,6 +41,9 @@ func _enter_tree() -> void:
 	_register("dev_framework/audio/default_sample_rate", TYPE_INT, 44100)
 	# 先开启 MCP 调试服务器, 避免后续初始化(工具菜单/DefTable)出错时阻断调试链路
 	_set_mcp_enabled(true)
+	# 导出时剔除 DevMCP autoload（编辑器专用脚本不进正式包，避免解析崩溃）
+	_pack_mcp_filter = _PackMcpFilter.new(EXPORT_AUTOLOAD_KEY)
+	add_export_plugin(_pack_mcp_filter)
 	# 所有编辑器工具统一由 Tool 目录下 extends EditorScript 的脚本自动注册
 	EditorScriptMenuTool.register(self)
 	_setup_def_table()
@@ -50,6 +56,9 @@ func _exit_tree() -> void:
 	_teardown_camera_gizmo()
 	_teardown_def_table()
 	EditorScriptMenuTool.unregister(self)
+	if _pack_mcp_filter:
+		remove_export_plugin(_pack_mcp_filter)
+		_pack_mcp_filter = null
 	# 停用插件: 最后关闭 MCP
 	_set_mcp_enabled(false)
 
@@ -188,3 +197,29 @@ func _register(name: String, type: int, default) -> void:
 		ProjectSettings.set_setting(name, default)
 	ProjectSettings.add_property_info({"name": name, "type": type})
 	ProjectSettings.set_initial_value(name, default)
+
+
+## 导出过滤器：正式打包时临时移除 DevMCP autoload，结束后恢复。
+## 背景：MCPDevServer.gd 引用仅编辑器存在的 EditorInterface/EditorUndoRedoManager，
+## 若被打进正式包会导致该 autoload 解析失败而崩溃。本过滤器在导出一时移除它，
+## 平时测试不受影响（autoload 仍在）。
+class _PackMcpFilter extends EditorExportPlugin:
+	var _autoload_key: String
+	var _removed := false
+	var _prev: Variant
+
+	func _init(autoload_key: String) -> void:
+		_autoload_key = autoload_key
+
+	func _export_begin(_features: PackedStringArray, _is_debug: bool, _path: String, _flags: int) -> void:
+		if ProjectSettings.has_setting(_autoload_key) and ProjectSettings.get_setting(_autoload_key) != null:
+			_prev = ProjectSettings.get_setting(_autoload_key)
+			ProjectSettings.set_setting(_autoload_key, null)
+			ProjectSettings.save()
+			_removed = true
+
+	func _export_end() -> void:
+		if _removed:
+			ProjectSettings.set_setting(_autoload_key, _prev)
+			ProjectSettings.save()
+			_removed = false
