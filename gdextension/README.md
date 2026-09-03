@@ -54,6 +54,23 @@ cmake --build gdextension/build --config Release
 
 构建缓存目录 `gdextension/build*/` 已在 `.gitignore` 中忽略，不入库。
 
+### 编辑器内一键构建（GDExtensionRebuild，通用工具）
+
+`addons/DEVFramework/Tool/GDExtensionRebuild.gd` 是**通用、零配置**编辑器工具（不绑定本仓库），可构建任何符合 godot-cpp 生态约定的扩展。菜单 **项目 → 工具 → EditorScript → GDExtensionRebuild** 一键自动完成：发现扩展源码 → 解析 `*.gdextension` 的 `[libraries]` 得出本机产物名与落点 → CMake 配置/**异步编译**（不卡编辑器，实时回显）→ 产物按规格改名部署。
+
+对本仓库自动生效：自动发现 `res://gdextension`（含 CMakeLists + godot-cpp），自动解析 `addons/DEVFramework/Native/dev.gdextension`，把构建产物部署为 `dev.windows.debug.x86_64.dll` 等。
+
+- **零配置规则**（无需任何 ProjectSettings，不移动任何目录）：
+  - 源码目录：`res://gdextension` 或各 `addons/*/`（含 CMakeLists + godot-cpp）
+  - 规格文件：`addons/**/Native`、`addons/**`、`bin` 下的 `*.gdextension`；多个时优先"含本机 `[libraries]` 键"者，再取修改时间最新
+  - **工程意图读 CMakeLists**：`add_library(<name>)` 认产物名、`*_OUTPUT_DIRECTORY` 认产物直出目录（本仓库已直出到 `Native/`）、`GODOTCPP_API_VERSION` 有默认则不再传 `-D`（尊重钉版）
+  - **已有 CMakeCache 则完全以缓存为准**（生成器/编译器/API 都是配置时定的），只 `cmake --build`，零推断
+  - 构建类型：`debug`/`release` 跟随当前编辑器（与 `.gdextension` 键对应）
+  - 构建目录：复用扩展源码下已有的 `build*`（CMakeCache）缓存；没有则用 `res://.godot/gdextension_build/`
+  - 生成器探测 `ninja`；仅无缓存且 CMakeLists 未钉 API 时才以引擎 major.minor 配置
+- **生效需重载**：引擎只在启动时加载 `.gdextension`，编译完成后需 项目→重新加载当前项目（Windows 上编辑器会锁住正在加载的 dll，覆盖会失败 —— 工具会打印手动复制指引）。
+- **跨平台边界**：CMake 跨平台，脚本只按 OS 分支"产物键/架构/默认生成器"；前提是机器上有 cmake + 可被 cmake 发现的编译器（Windows 建议 MinGW 便携版 w64devkit 入 PATH；MSVC 需从 vcvars 环境启动编辑器）。
+
 ### 本地构建示例 (Windows + MinGW)
 
 ```bash
