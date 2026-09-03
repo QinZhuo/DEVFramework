@@ -1,4 +1,4 @@
-﻿@tool
+@tool
 class_name GDExtensionRebuild
 extends EditorScript
 
@@ -873,7 +873,7 @@ func _build(build_dir: String, type: String) -> bool:
 			else:
 				_no_advance = 0
 				_prev_done_count = d
-			if _no_advance >= 60 and not _stall_checked and not _stall_killed:
+			if _no_advance >= 300 and not _stall_checked and not _stall_killed:
 				var active := _active_compile_procs()
 				if active == 0:
 					_stall_checked = true
