@@ -161,6 +161,18 @@ static func await_state_safe(fs: Variant) -> Variant:
 	return null
 
 
+## 幂等连接信号：若调用方尚未连接该信号则 connect，防止重复 connect 报错 ERR_INVALID_PARAMETER。
+## [param sig] 目标信号（如 obj.my_signal）
+## [param callable] 连接的回调；注意用 bind 绑定稳定宿主后其恒等，is_connected 才能正确去重
+static func connect_once(sig: Signal, callable: Callable) -> void:
+	if not sig.is_connected(callable):
+		sig.connect(callable)
+
+## 幂等断开信号：仅当已连接时 disconnect
+static func safe_disconnect(sig: Signal, callable: Callable) -> void:
+	if sig.is_connected(callable):
+		sig.disconnect(callable)
+
 static func _is_active_function_state(v: Variant) -> bool:
 	if v == null or not (v is Object) or v.get_class() != "GDScriptFunctionState":
 		return false

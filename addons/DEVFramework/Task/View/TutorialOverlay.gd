@@ -1,9 +1,9 @@
 @tool
-## 教程管理器 — 遮罩/挖孔/边框/箭头/提示气泡一体化控件, 也是教程流程的唯一控制器
+## 教程引导覆盖层 — 遮罩/挖孔/边框/箭头/提示气泡一体化控件, 也是教程流程的唯一控制器
 ## (直接订阅 GroupTask 的逐步信号, 步骤进入→渲染、纯提示点击→判定完成), 类 Godot 内置控件, 支持主题定制。
 ##
 ## 用法(项目创建后挂到自己的 CanvasLayer):
-##   var guide := TutorialManager.new()
+##   var guide := TutorialOverlay.new()
 ##   guide.set_anchors_preset(Control.PRESET_FULL_RECT)
 ##   guide.start(flow, host)                       # 一行启动(推荐)
 ##   guide.stop()                                  # 提前结束/跳过
@@ -18,7 +18,7 @@
 ##   StyleBox tip_stylebox      提示气泡面板
 ##   Color    tip_font_color    气泡文字颜色
 ##   int      tip_font_size     气泡字号
-class_name TutorialManager extends Control
+class_name TutorialOverlay extends Control
 
 ## 空洞/孔内点击(仅 click_to_complete 步骤启用, 用于"点屏幕区域完成"兜底)
 signal hole_clicked()

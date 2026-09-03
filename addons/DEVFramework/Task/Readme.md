@@ -129,7 +129,7 @@ mode = 0                                             # SEQUENTIAL
 
 ```gdscript
 var layer := CanvasLayer.new(); layer.layer = 100; add_child(layer)
-var guide := TutorialManager.new()
+var guide := TutorialOverlay.new()
 guide.set_anchors_preset(Control.PRESET_FULL_RECT)
 guide.theme = my_theme                    # 可选：主题定制
 layer.add_child(guide)
@@ -303,7 +303,7 @@ guide.step_started.connect(func(step):
 2. **教程即任务**：`TutorialStepDef` 是 `SignalTaskDef` 子类，可独立复用为普通任务；同一条流程去掉表现字段就是通用任务树。
 3. **首次渲染手动调用**：`GroupTask.activate()` 不发射 `entity_changed`，激活后需手动 `guide.show_step(...)`，否则 Guide 停在模糊态遮挡全部点击（走 `guide.start()/bind_task()` 无此问题）。
 4. **要存档就用** **`.tres`**：运行时 `new()` 出来的 Def 没有 `resource_path`，存不下也还原不了。
-5. **完成统一由** **`TutorialManager`** **判定，不要在别处** **`complete()`**：纯提示步骤的点击完成由 TutorialManager 统一判定执行；外部再手动 `complete()` 会有重复推进/时序错乱风险。
+5. **完成统一由** **`TutorialOverlay`** **判定，不要在别处** **`complete()`**：纯提示步骤的点击完成由 TutorialOverlay 统一判定执行；外部再手动 `complete()` 会有重复推进/时序错乱风险。
 6. **分支优先用入口分流，其次** **`skip_if`**：不要试图在流程内部建分支图。
 7. 演示场景：`res://Scenes/Tutorial/TutorialDemo.tscn`（UI 按钮 + 3D 球体两步流程，含 `progress_changed` 进度显示）。
 
