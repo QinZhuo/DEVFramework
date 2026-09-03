@@ -47,6 +47,10 @@ if(APPLE)
     set_target_properties(dev PROPERTIES MACOSX_RPATH ON)
 endif()
 
+# 产物命名无需在此钉 OUTPUT_NAME —— GDExtensionRebuild 会把直出产物统一改名为规范名
+# (libdev.macos.debug.arm64.dylib 等, 与 addons/DEVFramework/Native/dev.gdextension [libraries] 对应)。
+# 可选: 若希望 CMake 直出名即规范名(零改名), 可加各平台条件块 OUTPUT_NAME, 工具自动兼容。
+
 # 编译产物直接输出到框架级共享原生库目录 addons/DEVFramework/Native/
 set_target_properties(dev PROPERTIES
     LIBRARY_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/../addons/DEVFramework/Native
