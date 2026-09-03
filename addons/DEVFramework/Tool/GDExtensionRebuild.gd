@@ -57,6 +57,7 @@ const KEY_RELOAD_EDITOR := "dev_framework/gdextension_build/auto_reload_editor"
 const KEY_SYNC_GDEXT := "dev_framework/gdextension_build/sync_gdextension"   # 部署后把实盘产物路径回写 *.gdextension([libraries])
 const KEY_CROSS_ARCHS := "dev_framework/gdextension_build/cross_archs"       # macOS 按声明自动交叉补缺架构
 const GDEXT_TYPES := ["debug", "release", "template_debug", "template_release"]   # 声明键中的构建类型 tag
+const GDEXT_ARCHS := ["arm64", "x86_64", "arm32", "x86_32", "universal"]          # 声明键/规范名中的架构 tag
 const KEY_STALL_KILL := "dev_framework/gdextension_build/stall_auto_kill"   # 检测到卡死(无新目标且无编译器进程)时自动终止进程树
 const KEY_JOBS := "dev_framework/gdextension_build/build_jobs"        # 并行度, 0=自动(默认16; 设小可降并发防卡)
 
@@ -124,18 +125,36 @@ func _run() -> void:
 		var actual := _deploy(target_res, info, type, arch)
 		if actual == "":
 			return _finish_with("产物部署失败(%s.%s, 查看 build.log)" % [type, arch])
-		_post_deploy(info, gdext_res, type, actual)
 		done.append(target_res)
 		if not type_archs.has(type):
 			type_archs[type] = []
 		type_archs[type].append(actual)
-	# 各类型多架构产物齐 → lipo 合并 universal(macOS 自带 lipo, 零额外依赖; 非 macOS/单架构自动跳过)
+	# 各类型多架构产物齐 → lipo 合并 universal 并删除输入架构文件(macOS 自带 lipo; 非 macOS/单架构自动跳过);
+	# 合并成功的类型: 声明切到 universal 键; 未合并的类型: 按架构文件同步声明。
+	# 轮间不做任何清理(防止删掉后续轮/合并所需文件), 全部完成后统一终清一次。
 	var target_name := String(info.get("target", ""))
+	var platform := _os_label()
 	if target_name != "":
 		for type in type_archs:
-			var uni := _lipo_merge(info, target_name, String(type), type_archs[type])
+			var files: Array = type_archs[type]
+			var uni := _lipo_merge(info, target_name, String(type), files)
 			if uni != "":
 				done.append(uni)
+				if gdext_res != "":
+					if _opt(KEY_SYNC_GDEXT, true):
+						_gdext_adopt_universal(gdext_res, platform, String(type), uni)
+					else:
+						_log("警告: 声明未指向 universal(%s.%s), 请切换 %s.%s.universal 键或开启 sync_gdextension。" % [type, type, platform, type])
+				continue
+			if gdext_res != "":
+				for f in files:
+					var fname := String(f)
+					if _opt(KEY_SYNC_GDEXT, true):
+						_gdext_sync(gdext_res, _abs_to_res(String(info.get("out_dirs", [])[0])).path_join(fname), platform, String(type), fname)
+					else:
+						_gdext_verify(gdext_res, platform, String(type), fname)
+	# 终清: 声明(此刻已是最终形态) + universal 产物之外的一切动态库残留
+	_final_cleanup(info, gdext_res, target_name)
 	var elapsed := (Time.get_ticks_msec() - _start_ms) / 1000.0
 	var types_txt: Array[String] = []
 	for tg in targets:
@@ -1078,27 +1097,47 @@ func _drain_log(raw_path: String) -> bool:
 ## Windows 边界: 编辑器锁住加载中的 dll 致改名失败 → 保留直出名并告警(声明同步按实盘名对齐, 保可用)。
 func _deploy(target_res: String, info: Dictionary, type: String, arch: String) -> String:
 	var out_dir: String = info.get("out_dirs", [])[0]
+	var target := String(info.get("target", ""))
+	var canonical := _canonical_file(target, type, arch)
 	var actual := ""
-	var target_abs := _abs(target_res)
-	if FileAccess.file_exists(target_abs):
-		actual = target_res.get_file()
+	var direct := _default_out_file(target)   # CMake 默认直出名(刚链接, mtime 最新, 内容必然新鲜)
+	if direct != "" and FileAccess.file_exists(String(out_dir).path_join(direct)):
+		# 默认名存在 → 本次链接产物, 强制改名归位(覆盖可能残留的旧规范名, 杜绝陈旧命中)
+		if _rename_lib(out_dir, direct, canonical):
+			_log("产物规范命名: ", direct, " → ", canonical)
+			actual = canonical
+		else:
+			_log("警告: 规范命名失败(文件可能被占用), 保留 ", direct, "; 声明同步将按实盘名对齐。")
+			actual = direct
+	elif FileAccess.file_exists(_abs(target_res)):
+		actual = canonical   # 直出名即规范名(CMake 钉了 OUTPUT_NAME)
 	else:
 		actual = _scan_dynamic_libs(out_dir)
 		if actual != "":
 			_log("规范名产物未直出, 实盘取最新动态库: ", actual)
 	if actual == "":
-		_log("预期产物未生成: ", target_abs)
+		_log("预期产物未生成: ", _abs(target_res))
 		_log("请确认 CMakeLists 已钉 *_OUTPUT_DIRECTORY 直出目录, 并检查上方编译输出。")
 		return ""
-	var canonical := _canonical_file(String(info.get("target", "")), type, arch)
 	if actual != canonical:
 		if _rename_lib(out_dir, actual, canonical):
 			_log("产物规范命名: ", actual, " → ", canonical)
 			actual = canonical
-		else:
-			_log("警告: 规范命名失败(文件可能被占用), 保留 ", actual, "; 声明同步将按实盘名对齐。")
 	_log("产物已就位: ", _abs_to_res(out_dir).path_join(actual))
 	return actual
+
+
+## CMake 默认直出名(macOS lib<名>.dylib / Windows <名>.dll / Linux lib<名>.so; 未钉 OUTPUT_NAME 时 CMake 的输出文件名)
+func _default_out_file(target: String) -> String:
+	match _os_label():
+		"windows":
+			return "%s.dll" % target
+		"macos":
+			return "lib%s.dylib" % target
+		"linux":
+			return "lib%s.so" % target
+		_:
+			return ""
 
 
 ## 同目录改名(先清旧规范名残留); 失败返回 false(Windows 编辑器锁定 dll 等场景)
@@ -1109,25 +1148,22 @@ func _rename_lib(dir_path: String, from_file: String, to_file: String) -> bool:
 	return DirAccess.rename_absolute(String(dir_path).path_join(from_file), to_abs) == OK
 
 
-## 部署后处理: 声明同步(或校验告警) → 清理。
-## 清理白名单 = *.gdextension [libraries] 全部键声明的文件(声明即白名单, 与加载需求天然一致);
-## 无声明可依时退回 CMake OUTPUT_NAME 推导; 两者皆空则跳过清理(宁可残留也不误删)。
-func _post_deploy(info: Dictionary, gdext_res: String, type: String, actual: String) -> void:
+## 终清: 全部轮次与合并完成后执行一次(轮间零清理, 合并输入绝不误删)。
+## 白名单 = 声明值文件(此刻已是最终形态: 已合并类型为 universal 键, 未合并类型为架构键)
+## + universal 产物 + 未合并类型的架构规范名防御(声明同步失败时仍保产物可用)。
+func _final_cleanup(info: Dictionary, gdext_res: String, target: String) -> void:
 	var native_dir: String = info.get("out_dirs", [])[0]
-	var platform := _os_label()
-	if gdext_res != "":
-		if _opt(KEY_SYNC_GDEXT, true):
-			_gdext_sync(gdext_res, _abs_to_res(native_dir).path_join(actual), platform, type, actual)
-		else:
-			_gdext_verify(gdext_res, platform, type, actual)
-	var target := String(info.get("target", ""))
 	var keep := _gdext_keep_files(gdext_res)
-	keep.append(_canonical_file(target, "debug"))     # 本机两类型规范名恒为白名单
-	keep.append(_canonical_file(target, "release"))
-	keep.append(actual)   # 防御: 本次落位文件必保(改名失败时的直出名)
+	for a in _declared_archs(gdext_res):   # 声明仍是架构键的类型(合并失败/未合并) → 规范名保护
+		keep.append(_canonical_file(target, "debug", a))
+		keep.append(_canonical_file(target, "release", a))
 	if _os_label() == "macos":
-		keep.append(_universal_file(target, "debug"))     # lipo 合并产物(可能先于重建生成)
+		keep.append(_universal_file(target, "debug"))     # lipo 合并产物恒保
 		keep.append(_universal_file(target, "release"))
+	if keep.is_empty():
+		_log("无清理白名单, 跳过 Native 清理。")
+		return
+	_cleanup_native(native_dir, keep)
 	if keep.is_empty():
 		_log("无清理白名单, 跳过 Native 清理。")
 		return
@@ -1157,11 +1193,10 @@ func _universal_file(target: String, type: String) -> String:
 	return "lib%s.macos.%s.universal.dylib" % [target, type]
 
 
-## lipo 合并: 同类型多架构产物 → universal 单文件。Godot 官方引擎发布即此做法:
-## 各架构独立构建(保留各自 -march 优化)后合并, 优于 CMAKE_OSX_ARCHITECTURES 一次出双架构
-## (后者 -march 不可用, fat binary 只能默认基线)。声明不动(架构键照常生效);
-## 发布想用 universal 时把声明切到 macos.<类型>.universal 键(与架构键二选一, 同用会重复警告)。
-## macOS 自带 lipo(Xcode CLT); 非 macOS / 单架构 / 开关关闭时跳过。失败返回 ""(不影响独立产物)。
+## lipo 合并: 同类型多架构产物 → universal 单文件, 成功后**删除输入架构文件**
+## (universal 为最终形态, 声明由 _gdext_adopt_universal 切到 universal 键; 输入由下次构建重新直出)。
+## Godot 官方引擎发布即此做法: 各架构独立构建(保留各自 -march 优化)后合并。
+## macOS 自带 lipo(Xcode CLT); 非 macOS / 单架构时跳过。失败返回 ""(不影响独立产物)。
 func _lipo_merge(info: Dictionary, target: String, type: String, files: Array) -> String:
 	if _os_label() != "macos" or files.size() < 2:
 		return ""
@@ -1178,7 +1213,103 @@ func _lipo_merge(info: Dictionary, target: String, type: String, files: Array) -
 		_log("lipo 合并失败(不影响各架构独立产物): ", " ".join(out))
 		return ""
 	_log("lipo 合并完成: ", _abs_to_res(out_dir).path_join(out_name), " ← ", ", ".join(files))
+	var removed := 0
+	for f in files:
+		var in_abs := String(out_dir).path_join(String(f))
+		if FileAccess.file_exists(in_abs) and DirAccess.remove_absolute(in_abs) == OK:
+			removed += 1
+		else:
+			_log("警告: 架构产物删除失败(可能被占用, 可手动删除): ", String(f))
+	if removed > 0:
+		_log("已删除合并输入架构产物 %d 项(universal 为最终形态)。" % removed)
 	return _abs_to_res(out_dir).path_join(out_name)
+
+
+## 声明切换 universal: 合并成功后调用 —— 本平台+本类型的架构专属键改写/删除, 统一为
+## "<平台>.<类型>.universal = universal 产物路径"(Godot 4.4+ 支持加载 universal 标签;
+## universal 与架构键同声明会触发引擎重复库警告, 故架构键必须移除)。
+## 首个架构键行原位改写为 universal 键(行数不变、无空行残留), 其余架构键行删除。
+func _gdext_adopt_universal(gdext_res: String, platform: String, type: String, uni_res: String) -> void:
+	var parsed := _gdext_parse(gdext_res)
+	if parsed.is_empty():
+		return
+	var lines: PackedStringArray = parsed["lines"]
+	var uni_key := "%s.%s.universal" % [platform, type]
+	var value := "\"%s\"" % uni_res
+	var uni_line := -1        # 已有 universal 键的行号
+	var first_arch_line := -1 # 首个架构专属键行号(无 universal 键时改写为 universal 键)
+	var remove_lines := {}    # 待删除的架构键行号
+	for ent in parsed["entries"]:
+		var key := String(ent.get("key"))
+		var tags := key.split(".")
+		if tags.is_empty() or tags[0] != platform:
+			continue
+		var has_type := false
+		var has_arch := false
+		for t in tags:
+			if GDEXT_TYPES.has(t):
+				has_type = true
+			elif GDEXT_ARCHS.has(t):
+				has_arch = true
+		if not has_type or not tags.has(type) or not has_arch:
+			continue
+		var ln := int(ent.get("line"))
+		if tags.has("universal"):
+			uni_line = ln
+		elif first_arch_line < 0:
+			first_arch_line = ln
+		else:
+			remove_lines[ln] = true
+	var target_line := -1
+	var write_key := ""
+	if uni_line >= 0:
+		target_line = uni_line
+		write_key = uni_key
+	elif first_arch_line >= 0:
+		target_line = first_arch_line
+		write_key = uni_key
+	if target_line >= 0:
+		if String(lines[target_line]) == "%s = %s" % [write_key, value]:
+			_log("声明已一致, 无需同步: ", String(gdext_res).get_file(), " [", uni_key, "]")
+		else:
+			lines[target_line] = "%s = %s" % [write_key, value]
+			_synced.append("%s → %s(切换 universal)" % [uni_key, uni_res])
+			_log("已同步声明(切换 universal): ", gdext_res, " [", uni_key, "] = ", value)
+	else:
+		lines.insert(int(parsed["lib_end"]), "%s = %s" % [uni_key, value])
+		_synced.append("%s → %s(新增)" % [uni_key, uni_res])
+		_log("已同步声明(新增): ", gdext_res, " [", uni_key, "] = ", value)
+	var out: Array[String] = []
+	for i in lines.size():
+		if remove_lines.has(i):
+			continue   # 删除多余架构键行
+		out.append(String(lines[i]))
+	var f := FileAccess.open(gdext_res, FileAccess.WRITE)
+	if f == null:
+		_log("声明写回失败: ", gdext_res)
+		return
+	f.store_string("\n".join(out))
+	f.close()
+
+
+## 从声明收集本平台键中的架构 tag 集合(去重; 无架构/仅 universal 键则返回空 —— 不需要架构文件保护)
+func _declared_archs(gdext_res: String) -> Array[String]:
+	var archs: Array[String] = []
+	if gdext_res == "":
+		return archs
+	var parsed := _gdext_parse(gdext_res)
+	if parsed.is_empty():
+		return archs
+	var platform := _os_label()
+	for ent in parsed["entries"]:
+		var key := String(ent.get("key"))
+		var tags := key.split(".")
+		if tags.is_empty() or tags[0] != platform:
+			continue
+		for t in tags:
+			if GDEXT_ARCHS.has(t) and t != "universal" and not archs.has(t):
+				archs.append(t)
+	return archs
 
 
 ## 实盘扫描: 输出目录里的动态库(dylib/dll/so), 取 mtime 最新 —— 覆盖 CMake 默认名/变量拼接名等
@@ -1195,6 +1326,9 @@ func _scan_dynamic_libs(dir_path: String) -> String:
 		if not dir.current_is_dir():
 			var low := e.to_lower()
 			if low.ends_with(".dylib") or low.ends_with(".dll") or low.ends_with(".so"):
+				if e.contains(".universal."):
+					e = dir.get_next()
+					continue   # universal 合并产物不是构建直出物, 不参与实盘兜底
 				var m := FileAccess.get_modified_time(String(dir_path).path_join(e))
 				if m > best_m:
 					best_m = m
@@ -1238,15 +1372,32 @@ func _gdext_parse(gdext_res: String) -> Dictionary:
 
 ## 声明键是否属于"本平台 + 本构建类型": 首 tag = 平台, 且键无任何类型 tag(通用键)或含目标类型。
 ## template_debug/template_release 等其他体系键不视为目标(不更新、不冲突)。
-static func _gdext_key_matches(key: String, platform: String, type: String) -> bool:
+static func _gdext_key_matches(key: String, platform: String, type: String, arch: String) -> bool:
 	var tags := key.split(".")
 	if tags.is_empty() or tags[0] != platform:
 		return false
 	var has_type := false
+	var arch_tags: Array[String] = []
 	for t in tags:
 		if GDEXT_TYPES.has(t):
 			has_type = true
-	return not has_type or tags.has(type)
+		elif GDEXT_ARCHS.has(t):
+			arch_tags.append(t)
+	if has_type and not tags.has(type):
+		return false
+	# 架构校验: 键含架构 tag → 必须与产物架构一致(杜绝 arm64 键被 x86_64 产物覆盖);
+	# 键无架构 tag(通用键) → 仅 universal 产物可写(单架构产物写通用键会破坏其他架构)。
+	if not arch_tags.is_empty():
+		return arch_tags.has(arch)
+	return arch == "universal"
+
+
+## 从规范名/声明值文件名中提取架构 tag(无架构段返回 "")
+static func _file_arch(file: String) -> String:
+	var re := RegEx.new()
+	re.compile("\\.(arm64|x86_64|arm32|x86_32|universal)\\.")
+	var m := re.search(file)
+	return m.get_string(1) if m != null else ""
 
 
 ## 声明同步: 以实盘产物为准, 把 [libraries] 里"本平台+本类型"的键值写成产物路径。
@@ -1263,7 +1414,7 @@ func _gdext_sync(gdext_res: String, file_res: String, platform: String, type: St
 	var found_val := ""
 	for ent in parsed["entries"]:
 		var key := String(ent.get("key"))
-		if _gdext_key_matches(key, platform, type):
+		if _gdext_key_matches(key, platform, type, _file_arch(file)):
 			found_key = key
 			found_line = int(ent.get("line"))
 			found_val = String(parsed["values"].get(key, ""))
@@ -1277,12 +1428,7 @@ func _gdext_sync(gdext_res: String, file_res: String, platform: String, type: St
 		_synced.append("%s → %s(更新)" % [found_key, file_res])
 		_log("已同步声明(更新): ", gdext_res, " [", found_key, "] = ", value)
 	else:
-		var arch := ""
-		var re_arch := RegEx.new()
-		re_arch.compile("\\.(arm64|x86_64|arm32|x86_32|universal)\\.")
-		var am := re_arch.search(file)
-		if am:
-			arch = am.get_string(1)
+		var arch := _file_arch(file)
 		var new_key := "%s.%s" % [platform, type]
 		if arch != "":
 			new_key += "." + arch
@@ -1308,7 +1454,7 @@ func _gdext_verify(gdext_res: String, platform: String, type: String, file: Stri
 	var seen := false
 	for ent in parsed["entries"]:
 		var key := String(ent.get("key"))
-		if not _gdext_key_matches(key, platform, type):
+		if not _gdext_key_matches(key, platform, type, _file_arch(file)):
 			continue
 		seen = true
 		var declared := String(parsed["values"].get(key, "")).get_file()
