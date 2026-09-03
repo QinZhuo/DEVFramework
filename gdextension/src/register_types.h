@@ -1,7 +1,7 @@
-#ifndef DECS_REGISTER_TYPES_H
-#define DECS_REGISTER_TYPES_H
+#ifndef DEV_REGISTER_TYPES_H
+#define DEV_REGISTER_TYPES_H
 
-void initialize_devecs_module();
-void uninitialize_devecs_module();
+void initialize_dev_module();
+void uninitialize_dev_module();
 
-#endif // DECS_REGISTER_TYPES_H
+#endif // DEV_REGISTER_TYPES_H

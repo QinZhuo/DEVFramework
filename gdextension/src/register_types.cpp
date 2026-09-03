@@ -16,7 +16,7 @@
 
 using namespace godot;
 
-void initialize_devecs_module(ModuleInitializationLevel p_level) {
+void initialize_dev_module(ModuleInitializationLevel p_level) {
 	if (p_level != MODULE_INITIALIZATION_LEVEL_SCENE) {
 		return;
 	}
@@ -30,22 +30,22 @@ void initialize_devecs_module(ModuleInitializationLevel p_level) {
 	GDREGISTER_CLASS(PCGCave3D);
 }
 
-void uninitialize_devecs_module(ModuleInitializationLevel p_level) {
+void uninitialize_dev_module(ModuleInitializationLevel p_level) {
 	if (p_level != MODULE_INITIALIZATION_LEVEL_SCENE) {
 		return;
 	}
 }
 
 extern "C" {
-// 与 Native/devecs.gdextension 中 entry_symbol 对应
-GDExtensionBool GDE_EXPORT devecs_library_init(
+// 与 Native/dev.gdextension 中 entry_symbol 对应
+GDExtensionBool GDE_EXPORT dev_library_init(
 		GDExtensionInterfaceGetProcAddress p_get_proc_address,
 		GDExtensionClassLibraryPtr p_library,
 		GDExtensionInitialization *r_initialization) {
 	godot::GDExtensionBinding::InitObject init_obj(p_get_proc_address, p_library, r_initialization);
 
-	init_obj.register_initializer(initialize_devecs_module);
-	init_obj.register_terminator(uninitialize_devecs_module);
+	init_obj.register_initializer(initialize_dev_module);
+	init_obj.register_terminator(uninitialize_dev_module);
 	init_obj.set_minimum_library_initialization_level(MODULE_INITIALIZATION_LEVEL_SCENE);
 
 	return init_obj.init();

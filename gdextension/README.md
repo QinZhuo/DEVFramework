@@ -1,7 +1,7 @@
 # gdextension — DEVFramework 框架级共享原生核心 (C++ / GDExtension)
 
 **整个 DEVFramework 的唯一 C++ 共享扩展**：ECS 的 `ECSCore`、未来 PCG 侵蚀加速等其他模块原生类
-都注册在这一个库里（`res://addons/DEVFramework/Native/devecs.gdextension`），共用一份二进制。
+都注册在这一个库里（`res://addons/DEVFramework/Native/dev.gdextension`），共用一份二进制。
 GDScript 侧统一走 `FrameworkNative.get_native(&"类名", [...])` 访问（见 `Native/FrameworkNative.gd`）。
 
 ## 目录结构
@@ -18,22 +18,22 @@ gdextension/
 ## 产物分发目录
 
 构建产物统一输出到 `res://addons/DEVFramework/Native/`，
-文件名需与 `devecs.gdextension` 中的 8 个平台条目严格对应：
+文件名需与 `dev.gdextension` 中的 8 个平台条目严格对应：
 
 | 平台 | Debug | Release |
 |------|-------|---------|
-| Windows x86_64 | `devecs.windows.debug.x86_64.dll` | `devecs.windows.release.x86_64.dll` |
-| Linux x86_64 | `libdevecs.linux.debug.x86_64.so` | `libdevecs.linux.release.x86_64.so` |
-| macOS arm64 | `libdevecs.macos.debug.arm64.dylib` | `libdevecs.macos.release.arm64.dylib` |
-| macOS x86_64 | `libdevecs.macos.debug.x86_64.dylib` | `libdevecs.macos.release.x86_64.dylib` |
+| Windows x86_64 | `dev.windows.debug.x86_64.dll` | `dev.windows.release.x86_64.dll` |
+| Linux x86_64 | `libdev.linux.debug.x86_64.so` | `libdev.linux.release.x86_64.so` |
+| macOS arm64 | `libdev.macos.debug.arm64.dylib` | `libdev.macos.release.arm64.dylib` |
+| macOS x86_64 | `libdev.macos.debug.x86_64.dylib` | `libdev.macos.release.x86_64.dylib` |
 
-> CMake 原生输出名为无后缀的 `devecs.dll` / `libdevecs.so` / `libdevecs.dylib`，
+> CMake 原生输出名为无后缀的 `dev.dll` / `libdev.so` / `libdev.dylib`，
 > 本地/CI 需按上表重命名后再发布。
 
 ## 新增原生能力（模块共享同一扩展）
 
 1. 在 `src/` 新建你的 `.cpp/.h`，在 `src/register_types.cpp` 里 `ClassDB::_register_class` 注册类。
-2. `CMakeLists.txt` 的 `add_library(devecs SHARED ...)` 里加入新 `.cpp`。
+2. `CMakeLists.txt` 的 `add_library(dev SHARED ...)` 里加入新 `.cpp`。
 3. 重编译 → 产物复制到 `addons/DEVFramework/Native/`（按平台后缀命名）。
 4. GDScript 侧用 `FrameworkNative.get_native(&"你的类名", [必需方法...])` 获取共享实例，
    **不要**各自再写一套 ClassDB 检测逻辑。
@@ -65,10 +65,10 @@ cmake -S gdextension -B gdextension/build-win -G Ninja \
       -DGODOTCPP_API_VERSION=4.7 -DCMAKE_BUILD_TYPE=Release
 cmake --build gdextension/build-win
 
-# 产物为无后缀 libdevecs.dll, 需复制为平台带后缀文件名供 .gdextension 加载
+# 产物为无后缀 libdev.dll, 需复制为平台带后缀文件名供 .gdextension 加载
 cd addons/DEVFramework/Native
-cp libdevecs.dll devecs.windows.debug.x86_64.dll
-cp libdevecs.dll devecs.windows.release.x86_64.dll
+cp libdev.dll dev.windows.debug.x86_64.dll
+cp libdev.dll dev.windows.release.x86_64.dll
 ```
 
 > 构建出的 MinGW DLL 仅依赖 `KERNEL32.dll` / `msvcrt.dll`，无额外运行时依赖，可直接分发。
@@ -98,7 +98,7 @@ cp libdevecs.dll devecs.windows.release.x86_64.dll
 - 自动回写只修改 `addons/DEVFramework/Native/`，不在触发路径白名单内，不会重新触发构建；
 - `GITHUB_TOKEN` 的 push 默认不触发新 workflow 运行，双重保障。
 
-**手动触发**：可在仓库 Actions 页对 `Build DevECS Native` 点击 `Run workflow`。
+**手动触发**：可在仓库 Actions 页对 `Build Dev Native` 点击 `Run workflow`。
 
 > 注意：CI 依赖 `gdextension/godot-cpp` submodule，若其指向的 commit 无法编译，需先更新
 > submodule 再提交。

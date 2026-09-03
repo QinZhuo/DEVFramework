@@ -12,10 +12,10 @@ gdextension/build*/
 
 # addons/DEVFramework/Native/ 是发布目录（框架级共享原生库）：
 # 带平台后缀的动态库（.macos.debug.arm64 等）必须提交，用户拿到即用
-# 无后缀的原始编译产物（libdevecs.dylib 等）忽略
-addons/DEVFramework/Native/libdevecs.dylib
-addons/DEVFramework/Native/libdevecs.so
-addons/DEVFramework/Native/libdevecs.dll
+# 无后缀的原始编译产物（libdev.dylib 等）忽略
+addons/DEVFramework/Native/libdev.dylib
+addons/DEVFramework/Native/libdev.so
+addons/DEVFramework/Native/libdev.dll
 # Godot 加载 GDExtension 时生成的 ~ 前缀临时副本，不入库
 addons/DEVFramework/Native/~*
 addons/VoxelSupport/Native/~*

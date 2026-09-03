@@ -3,7 +3,7 @@ extends RefCounted
 
 ## FrameworkNative / 原生共享库 自动化自检
 ##
-## 验证 addons/DEVFramework/Native/devecs.gdextension 注册的全部原生类:
+## 验证 addons/DEVFramework/Native/dev.gdextension 注册的全部原生类:
 ##   ECSCore / PCGErode / PCGWFC / PCGWFC3D / PCGWFCAnimator / PCGLSystem / PCGCave3D
 ## 检查: 加载 / 方法集 / 功能正确性 / 同 seed 可复现 / 缺库报错路径。
 
