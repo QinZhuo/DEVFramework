@@ -732,6 +732,7 @@ func _build(build_dir: String) -> bool:
 		_print_out(out)
 		return code == 0
 	var tree := Engine.get_main_loop() as SceneTree
+	_total_targets = -1   # 每次构建重新解析 build.ninja(目录可能重建/缓存残留)
 	_state_write("编译中: 启动…")
 	# 进度双保险: (a) 管道实时文本; (b) 直接数构建目录里已生成的 .o/.obj ——
 	# 后者不依赖子进程输出缓冲(管道输出可能整段延迟), 无论是否有文本都能量化真实进度。
@@ -749,7 +750,10 @@ func _build(build_dir: String) -> bool:
 		if silent >= 50 and silent % 50 == 0:   # 静默 ≥10s 后每 10s 心跳一次
 			var d := _count_build_objects(build_dir)
 			var t := _total_compile_units(build_dir)
-			_log_raw("[心跳] 编译仍在进行(已静默 %d 秒)… 已生成 %d/%d 目标文件" % [silent / 5, d, t])
+			if t > 0:
+				_log_raw("[心跳] 编译仍在进行(已静默 %d 秒)… 已生成 %d/%d 目标文件" % [silent / 5, d, t])
+			else:
+				_log_raw("[心跳] 编译仍在进行(已静默 %d 秒)… 已生成 %d 个目标(总数未知)" % [silent / 5, d])
 		await tree.create_timer(0.2).timeout
 	_drain(stdout)
 	_drain(stderr)
@@ -805,7 +809,9 @@ func _count_build_objects(build_dir: String) -> int:
 	return count
 
 
-## 编译目标总数(从 build.ninja 统计 ".o: cxx/cc" 编译边, 只解析一次并缓存)
+## 编译目标总数: 统计 build.ninja 里的对象编译边 "<x>.o:" / "<x>.obj:"。
+## 不依赖规则名(CMake 各平台规则名可能是 cxx / CXX_COMPILER__x_unscanned_Debug 等)与扩展名差异
+## (Unix .o / Windows .obj), 只认"源编译出对象文件"的行。解析一次并缓存。
 func _total_compile_units(build_dir: String) -> int:
 	if _total_targets >= 0:
 		return _total_targets
@@ -814,7 +820,7 @@ func _total_compile_units(build_dir: String) -> int:
 	if not FileAccess.file_exists(ninja_file):
 		return 0
 	var re := RegEx.new()
-	re.compile("\\.o: c(?:xx)? ")
+	re.compile("\\.o(bj)?: ")
 	_total_targets = re.search_all(FileAccess.get_file_as_string(ninja_file)).size()
 	return _total_targets
 
