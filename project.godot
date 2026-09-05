@@ -30,6 +30,7 @@ gdscript/warnings/untyped_declaration=1.0
 
 [dev_framework]
 
+gdextension_build/build_types=PackedStringArray("release")
 mcp/port=8932
 
 [editor_plugins]
