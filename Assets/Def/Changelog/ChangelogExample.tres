@@ -1,0 +1,34 @@
+[gd_resource type="Resource" script_class="ChangelogDef" load_steps=7 format=3]
+
+[ext_resource type="Script" path="res://addons/DEVFramework/Changelog/ChangelogDef.gd" id="1"]
+[ext_resource type="Script" path="res://addons/DEVFramework/Changelog/ChangelogEntryDef.gd" id="2"]
+[ext_resource type="Texture2D" path="res://icon.svg" id="3"]
+
+[sub_resource type="Resource" id="ChangelogEntry_1"]
+script = ExtResource("2")
+version = "0.5.0"
+date = "2026-09-08"
+category = 0
+text = "新增副本玩法：深渊回廊（3 人组队，掉落新套装）"
+player_visible = true
+target = ExtResource("3")
+
+[sub_resource type="Resource" id="ChangelogEntry_2"]
+script = ExtResource("2")
+version = "0.5.0"
+date = "2026-09-08"
+category = 1
+text = "优化：背包整理增加一键排序"
+player_visible = true
+
+[sub_resource type="Resource" id="ChangelogEntry_3"]
+script = ExtResource("2")
+version = "0.5.0"
+date = "2026-09-08"
+category = 3
+text = "开发向条目示例（玩家不可见）"
+player_visible = false
+
+[resource]
+script = ExtResource("1")
+entries = Array[ExtResource("2")]([SubResource("ChangelogEntry_1"), SubResource("ChangelogEntry_2"), SubResource("ChangelogEntry_3")])
