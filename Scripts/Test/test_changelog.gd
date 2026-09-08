@@ -7,7 +7,7 @@ extends TestCase
 
 func _setup(version := "0.5.0") -> void:
 	ProjectSettings.set_setting(ChangelogTool.SETTING_VERSION, version)
-	ChangelogTool.reset_seen_state()
+	ChangelogTool.reset_seen_version()
 
 
 func test_defs_load() -> void:
@@ -23,7 +23,7 @@ func test_defs_load() -> void:
 func test_first_run_no_update() -> void:
 	_setup()
 	# 首次运行：无已见版本记录，不弹窗
-	assert_eq(ChangelogTool.get_last_seen_version(), "", "首次运行已见版本应为空")
+	assert_eq(ChangelogTool.get_seen_version(), "", "首次运行已见版本应为空")
 	assert_false(ChangelogTool.has_update(), "首次运行不应弹更新日志")
 
 
@@ -42,23 +42,12 @@ func test_pending_excludes_newer_than_current() -> void:
 	assert_true(ChangelogTool.get_pending_entries().is_empty(), "高于当前版本的条目不应展示")
 
 
-func test_ignore_version() -> void:
-	_setup()
-	ChangelogTool.mark_seen("0.4.0")
-	assert_true(ChangelogTool.has_update(), "忽略前应提示")
-	ChangelogTool.ignore_version("0.5.0")
-	assert_false(ChangelogTool.has_update(), "忽略该版本后不应提示")
-	assert_true(ChangelogTool.is_ignored("0.5.0"), "应记录为已忽略")
-	ChangelogTool.unignore_version("0.5.0")
-	assert_true(ChangelogTool.has_update(), "取消忽略后应恢复提示")
-
-
 func test_mark_seen() -> void:
 	_setup()
 	ChangelogTool.mark_seen("0.4.0")
 	assert_true(ChangelogTool.has_update(), "记录旧版本后应提示")
 	ChangelogTool.mark_seen()  # 记录当前版本
-	assert_eq(ChangelogTool.get_last_seen_version(), "0.5.0", "应记录当前版本")
+	assert_eq(ChangelogTool.get_seen_version(), "0.5.0", "应记录当前版本")
 	assert_false(ChangelogTool.has_update(), "已看到最新版本后不应提示")
 
 
@@ -68,21 +57,18 @@ func test_downgrade_no_update() -> void:
 	assert_false(ChangelogTool.has_update(), "版本回退不应提示更新")
 
 
-func test_state_data_roundtrip() -> void:
+func test_seen_version_roundtrip() -> void:
 	_setup()
 	ChangelogTool.mark_seen("0.4.0")
-	ChangelogTool.ignore_version("0.4.1")
-	var data := ChangelogTool.get_state_data()  # 模拟并入游戏存档
-	assert_eq(data.get("version"), "0.4.0", "导出应含已见版本")
-	ChangelogTool.reset_seen_state()
-	assert_eq(ChangelogTool.get_last_seen_version(), "", "重置后已见版本应为空")
-	ChangelogTool.load_state_data(data)  # 模拟读档恢复
-	assert_eq(ChangelogTool.get_last_seen_version(), "0.4.0", "读档应恢复已见版本")
-	assert_true(ChangelogTool.is_ignored("0.4.1"), "读档应恢复忽略列表")
+	var save_val := ChangelogTool.get_seen_version()  # 模拟并入游戏存档
+	ChangelogTool.reset_seen_version()
+	assert_eq(ChangelogTool.get_seen_version(), "", "重置后已见版本应为空")
+	ChangelogTool.load_seen_version(save_val)  # 模拟读档恢复
+	assert_eq(ChangelogTool.get_seen_version(), "0.4.0", "读档应恢复已见版本")
 
 
-func test_load_state_data_missing_fields() -> void:
+func test_load_seen_version_default() -> void:
 	_setup()
-	ChangelogTool.load_state_data({})  # 旧存档缺字段
-	assert_eq(ChangelogTool.get_last_seen_version(), "", "缺字段应由默认值补齐")
-	assert_false(ChangelogTool.is_ignored("0.4.1"), "缺字段应由默认值补齐")
+	ChangelogTool.load_seen_version(null)  # 旧存档无该字段
+	assert_eq(ChangelogTool.get_seen_version(), "", "缺字段应视为空，不弹窗")
+	assert_false(ChangelogTool.has_update(), "首次（空已见）不应弹窗")
