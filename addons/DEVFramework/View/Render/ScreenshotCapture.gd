@@ -5,9 +5,13 @@ class_name ScreenshotCapture extends Node
 @export var linear_to_srgb: bool = true
 
 func _ready() -> void:
-	await await get_tree().create_timer(1).timeout
-	get_window().size = custom_resolution
-	printerr("set ", custom_resolution)
+	await get_tree().create_timer(1).timeout
+	if Engine.is_embedded_in_editor():
+		# 嵌入编辑器运行时 DisplayServer 禁止修改窗口尺寸，截图尺寸由 img.resize 保证
+		LogTool.error("截图", "嵌入编辑器运行，跳过窗口 resize（输出尺寸仍为 %s）" % custom_resolution)
+	else:
+		get_window().size = custom_resolution
+		printerr("set ", custom_resolution)
 
 func _input(event: InputEvent) -> void:
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and event.is_pressed() and event.is_double_click():
