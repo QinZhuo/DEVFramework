@@ -76,8 +76,9 @@ SaveTool.save_async(path, data)
 |---|---|---|
 | 属性数学 | `Modifier` / `ModifierValue`（base_value+修饰链重算） | — |
 | 属性/Buff 容器与语义 | — | `Buff` / `BuffComponent` / `AttributeComponent` / 各 Def 与 TagDef |
-| 效果系统 | `EffectDef`(协议) / `EffectsDef` / `BuiltinEffectDef` | 70+ 具体效果 Def、`GameContext` |
+| 效果系统 | `EffectDef`(协议) / `EffectsDef` / `SystemEffectDef` | 70+ 具体效果 Def、`GameContext` |
 | 流程状态 | `StateMachine` | MonitorGame 的状态枚举与转换表 |
+| 步进顺序 | `TickTool`（物理 tick 步进队列，按 `order_key` 定序）/ `GameTimer` | `Actor._tick_order()`（玩家先于敌方的策略）、`MonitorGame._physics_process`（接线点） |
 | 任务系统 | `Task`/`TaskDef` 协议 | 教程任务 .tres 定义 |
 | 回放命令 | `GameCommand`/`CommandHistory`/`InputSource` 协议 | `&"use_equip"` 等具体命令、`CartridgeInputSource` |
 | AI | Goap 全套（暂未使用） | — |

@@ -72,7 +72,7 @@ res://Scripts/        # 游戏脚本
 | `dev_framework/log/show_timestamps` | bool | false | 是否显示时间戳 |
 | `dev_framework/log/ignored_tags` | PackedStringArray | `[]` | 被忽略的日志标签 |
 | `dev_framework/save_tool/encrypt_salt` | String | 项目名 | 存档加密盐（备用） |
-| `dev_framework/mcp/ignored_error_patterns` | PackedStringArray | `[]` | eval 附带运行期错误的过滤子串（如 `"对象池"`），命中即不随 eval 结果返回 |
+| `dev_framework/mcp/ignored_error_patterns` | PackedStringArray | `[]` | 运行期错误的过滤子串（如 `"对象池"`），命中即不随结果返回。追加在内置模式之后——内置已含 `Unrecognized UID`（编辑器重启后 UID 缓存重建期的无害噪音）。对 eval 附带错误与通用工具诊断两条上报路径同时生效 |
 
 ---
 
@@ -108,7 +108,7 @@ Def
 │   └── ValueConditionDef  # 数值比较条件（=、!=、>、<、>=、<=）
 ├── EffectDef            # 效果（抽象）→ apply(context) / revert(context)
 │   ├── EffectsDef       # 效果组合（依次执行）
-│   └── BuiltinEffectDef # 内置文本效果（占位，仅描述）
+│   └── SystemEffectDef # 内置文本效果（占位，仅描述）
 ├── ValueDef             # 数值表达式（抽象）→ get_float / get_int
 │   ├── IntValueDef / FloatValueDef        # 常量
 │   ├── AddValueDef / SubtractValueDef     # 加减
@@ -369,7 +369,7 @@ var result = await AsyncTool.thread_call(work_callable)        # 后台线程执
 await AsyncTool.await_until(func(): return _flag)              # 每帧轮询
 await AsyncTool.await_signals(sig_a, sig_b)                    # 等待多个信号各触发一次
 await AsyncTool.call_in_frames(items, 30, process_fn)          # 分帧批量处理，防掉帧
-await AsyncTool.await_with_timeout(action, 5000, "取名")       # 带超时保护
+await AsyncTool.await_with_timeout(action, 5000, "取名")       # 等待到完成，超时只告警（看门狗）
 AsyncTool.await_emit(sig, args...)                             # 手动触发信号并同步 await 回调
 ```
 
@@ -395,6 +395,18 @@ TimeTool.set_modifier("slow_mo", 0.3)  # 按 key 叠加倍率修改器
 TimeTool.pause() / TimeTool.resume()
 TimeTool.get_current_scale()        # 当前最终 time_scale
 ```
+
+**步进队列（`TickTool` + `GameTimer`）** —— 让"同一物理 tick 内多个等待恢复的先后"可复现：
+
+```gdscript
+TickTool.defer(order_key, action)   # 登记"本 tick 末尾按序执行"的动作
+```
+
+宿主每物理 tick 末尾调用一次 `TickTool.tick()`（须在角色 `_physics_process` 之后）。派发按
+`order_key` 升序、同 key 按登记先后（FIFO）⇒ 顺序是队列内容的**纯函数**，与场景树顺序、启动时机、
+帧率都无关；`order_key` 的含义由项目决定（框架不解释）。未调用过 `tick()` 时 `defer` 立即执行 ——
+行为与不使用本工具一致，不会因未接线而挂住等待。`GameTimer` 是它的计时器载体：到期/提前停止都进
+同一队列，计时基准为物理 tick。
 
 ### 5.6 TranslationTool — 翻译
 
@@ -598,7 +610,7 @@ array_view.remove_item(item)
 | `GLSLShaderEffect` | 可编程后处理（填 `define_code` / `main_code` 实时编译） |
 | `Trail3D` | 拖尾网格 |
 | `BakedPool / BakedPoolManager` | 烘焙对象池（编辑器一键生成池子，运行时 `pool_get`/`pool_push`） |
-| `ScreenshotCapture` | 双击截图（支持透明背景 + 抖动量化） |
+| `ScreenshotCapture` | 延迟自动截图（`auto_capture_delay`，默认 3 秒；启动后自动截一张，无手动触发入口。默认不透明背景，需抠图时勾 `transparent_background`；含抖动量化） |
 | `SubView3D` | 3D 子视口（把 2D UI 投影到 3D 表面） |
 | `Background` | 视差滚动背景 |
 | `SwingFollow2D` | 摆动跟随动画 |
@@ -633,6 +645,7 @@ AI 助手 ──MCP Streamable HTTP──▶ http://127.0.0.1:8931/mcp  (Godot �
 |---|---|---|
 | `dev_framework/mcp/enabled` | `true` | MCP 服务器总开关 |
 | `dev_framework/mcp/port` | `8931` | 监听端口（仅本机 `127.0.0.1`）|
+| `dev_framework/mcp/log_tool_results` | `false` | 是否把**每次工具调用**（入参 + 返回摘要）打进 Godot 输出面板。默认关闭：日志捕获器挂在引擎 `print` 通道上，MCP 自己的回声会被 `get_logs` 原样返回给 AI，白占上下文并淹没项目日志。工具**报错**始终以 error 级别输出，不受此开关影响 |
 
 ### 3. AI 助手连接配置
 
@@ -707,8 +720,15 @@ claude mcp list        # 查看已配置
 | `validate` | **统一验证入口**（`kind=script/resource`）。script: 校验 GDScript 语法/可编译性（传 `path` 或 `code`，兼容非 `@tool`/纯工具类脚本）；resource: 校验资源/场景能否被引擎加载 |
 | `list_dir` | 列出目录内容（支持递归）|
 | `classdb_query` | 查询 Godot 类的 API（方法/属性/信号签名）或按关键字搜索类名，供 AI 写脚本前确认原生 API |
-| `get_logs` | **统一日志/警告/错误获取**：`kind=log/warning/error`、`source=auto/editor/game`（auto 时游戏运行中自动取游戏侧）、增量游标、重复合并 |
-| `clear_logs` | 清空日志/错误缓冲（`scope=all/logs/errors`，游戏运行中作用于游戏侧）|
+| `get_logs` | **编辑器侧**日志/警告/错误获取：`kind=log/warning/error`、增量游标、重复合并。恒读编辑器进程缓冲 |
+| `clear_logs` | 清空**编辑器侧**日志/错误缓冲（`scope=all/logs/errors`）|
+| `get_game_logs` | **游戏进程侧**日志（print/printerr），增量游标、重复合并。编辑器调用时经调试线转发 |
+| `get_game_errors` | **游戏进程侧**错误（脚本错误/assert/push_error，含文件/行号/栈追踪）。游戏断点暂停时仍可安全调用 |
+| `clear_game_logs` / `clear_game_errors` | 清空**游戏进程侧**缓冲（`scope=all/logs/errors`）|
+
+> 日志类工具的进程归属**只由工具名决定**：不带 `game_` 的读本进程缓冲，带 `game_` 的读游戏进程缓冲。
+> 早期 `get_logs` 另有 `source=auto/editor/game` 三档，其中 `auto` 会在游戏运行时静默改读游戏缓冲——
+> 查编辑器自己的错误却拿到游戏的错误，且调用方无从察觉。故已删除该参数，跨进程只保留一条通路。
 | `take_screenshot` | 截图四模式：text（节点布局文本化）/ game / editor / scene |
 | `get_scene_tree` | 获取当前编辑场景的节点树结构 |
 | `get_node_info` | 读取编辑场景中指定节点属性列表及当前值 |
@@ -721,7 +741,7 @@ claude mcp list        # 查看已配置
 | `get_editor_activity` | 感知编辑器当前状态（打开场景/选中节点/运行中游戏），用于 AI 与人类协作不踩踏 |
 | `get_project_info` | 项目信息统一入口：`section=basic`(默认)/`settings`(主场景/autoload/输入映射)/`classes`(全局类清单) |
 | `game_control` | 游戏运行控制：`action=start`(支持 uid:// 场景；已在运行时自动接管重启)/`stop` |
-| `reload_project` | **软重启（重载）编辑器**：修改框架代码后调用以统一全局类脚本代次让新逻辑生效（原重扫逻辑已由编辑器自动处理）；`save=true` 自动保存场景、`delay_sec` 延迟触发；重启期间 MCP 断开、回来自动恢复 |
+| `restart_editor` | **重启编辑器**：修改框架代码后调用以统一全局类脚本代次让新逻辑生效（原重扫逻辑已由编辑器自动处理）；**总会先保存全部已打开的场景**（封装 `EditorInterface.restart_editor(true)`）；`delay_sec` 延迟触发；重启期间 MCP 断开、回来自动恢复 |
 | `eval_code` | 在编辑器内执行一段 GDScript 代码并返回结果。**支持 await**：代码含 `await` 时等待协程完成后回传最终返回值（`timeout_ms` 默认 8000/上限 15000，超时协程继续后台执行、实例自动延迟回收）|
 | `open_scene` | 在编辑器打开指定场景 |
 | `set_main_scene` | 设置项目主场景并保存 |
@@ -735,7 +755,7 @@ claude mcp list        # 查看已配置
 | `run_tests` | 运行项目单元测试（`Scripts/Test/`，extends TestCase，test_ 开头方法自动发现；支持协程用例）。返回统计与失败明细 |
 | `refresh_tools` | 手动重建 MCP 工具注册表：改框架脚本后调用，客户端重拉 tools/list 即生效（免重启） |
 
-> **提示**：修改插件代码（`MCPDevServer.gd` 等）后，新工具需**重启编辑器**才会注册（脚本热重载不会重建工具注册表）。可调用 `reload_project` 工具一键软重启（合并自原 restart_editor），或改完后调 `refresh_tools` 重建注册表。
+> **提示**：修改插件代码（`MCPDevServer.gd` 等）后，新工具需**重启编辑器**才会注册（脚本热重载不会重建工具注册表）。可调用 `restart_editor` 工具一键重启（保存后重启），或改完后调 `refresh_tools` 重建注册表。
 
 ### 5. 典型 AI 调试流程
 
@@ -865,7 +885,7 @@ var data = await SaveTool.load_async("user://save.json", SaveTool.Mode.JSON)
 运行中的编辑器对**已注册全局类脚本**的 `reload()` 静默无效——磁盘是新代码，运行实例永远执行旧逻辑，且无任何提示。
 - 症状：新加的方法调用报 "Nonexistent function"、行为与源码不符
 - 根因：GDScriptCache 命中缓存时不校验文件 mtime（引擎 issue #49298）；外部编辑器的改动依赖编辑器窗口聚焦时的 mtime 比对（issue #72825）
-- **自动化路径（推荐）**：MCP 工具 `reload_project` —— 封装 `EditorInterface.restart_editor(save=true)`，AI 改完框架代码后自主调用，延迟 1 秒触发软重启（先送达确认响应再重启），编辑器自动保存、自动重启、MCP 自动回连，用户零操作
+- **自动化路径（推荐）**：MCP 工具 `restart_editor` —— 直接封装 `EditorInterface.restart_editor(true)`，AI 改完框架代码后自主调用，延迟 1 秒触发（先送达确认响应再重启），引擎先保存全部已打开的场景再重启、MCP 自动回连，用户零操作
 - 缓解：`refresh_tools` 可重建工具注册表（仅工具清单，不解决类逻辑）
 - 辅助：开启编辑器设置 `text_editor/behavior/files/auto_reload_scripts_on_external_change` 后，普通项目脚本的外部修改会自动重载（历史版本有 bug，4.4+ 基本可用）
 
