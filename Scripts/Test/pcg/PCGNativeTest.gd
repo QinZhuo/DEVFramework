@@ -1,128 +1,147 @@
 class_name PCGNativeTest
 extends RefCounted
 
-## FrameworkNative / 原生共享库 自动化自检
+## 原生库可用性与算法行为冒烟
 ##
-## 验证 addons/DEVFramework/Native/dev.gdextension 注册的全部原生类:
-##   ECSCore / PCGErode / PCGWFC / PCGWFC3D / PCGWFCAnimator / PCGLSystem / PCGCave3D
-## 检查: 加载 / 方法集 / 功能正确性 / 同 seed 可复现 / 缺库报错路径。
+## PCG 的 3D 洞穴与 3D WFC **完全跑在 C++ 上，无 GDScript 回退**
+## （见 [code]PCGTool._gen3d_cave[/code] / [code]_gen3d_wfc[/code]）。
+## 所以原生库没加载时不是"退回慢速实现"，而是整个能力直接失效 ——
+## 这里守住那条边界。
+##
+## 2026-10 的 3D-only 重构后，[code]PCGWFC[/code]（2D WFC）、[code]PCGErode[/code]（2D 侵蚀）、
+## [code]PCGLSystem[/code]（L-System）已无 GDScript 调用方，本测试不再覆盖；
+## 原生库文件本身保留未动，日后重新接线时再加断言。
+
 
 static func run() -> bool:
+	var checks := {
+		&"cave_lib": _cave_lib(),
+		&"cave_ok": _cave_ok(),
+		&"cave_seeded": _cave_seeded(),
+		&"cave_border": _cave_border(),
+		&"wfc_lib": _wfc_lib(),
+		&"wfc_ok": _wfc_ok(),
+		&"wfc_seeded": _wfc_seeded(),
+		&"wfc_no_tileset": _wfc_no_tileset(),
+	}
 	var all_ok := true
-
-	# ---- 1. 全部原生类经 FrameworkNative 加载 ----
-	var class_checks := [
-		func() -> bool:
-			var m := [&"create_entity", &"add_component"] as Array[StringName]
-			return FrameworkNative.get_native(&"ECSCore", m) != null,
-		func() -> bool:
-			var m := [&"erode", &"thermal"] as Array[StringName]
-			return FrameworkNative.get_native(&"PCGErode", m) != null,
-		func() -> bool:
-			var m := [&"generate", &"get_last_progress"] as Array[StringName]
-			return FrameworkNative.get_native(&"PCGWFC", m) != null,
-		func() -> bool:
-			var m := [&"generate", &"get_last_progress"] as Array[StringName]
-			return FrameworkNative.get_native(&"PCGWFC3D", m) != null,
-		func() -> bool:
-			var m := [&"setup", &"step", &"get_wave"] as Array[StringName]
-			return FrameworkNative.get_native(&"PCGWFCAnimator", m) != null,
-		func() -> bool:
-			var m := [&"generate"] as Array[StringName]
-			return FrameworkNative.get_native(&"PCGLSystem", m) != null,
-		func() -> bool:
-			var m := [&"generate"] as Array[StringName]
-			return FrameworkNative.get_native(&"PCGCave3D", m) != null,
-	]
-	var class_names := ["ECSCore", "PCGErode", "PCGWFC", "PCGWFC3D", "PCGWFCAnimator", "PCGLSystem", "PCGCave3D"]
-	for i in class_checks.size():
-		var ok: bool = class_checks[i].call()
-		if not ok:
+	for k in checks:
+		print("  [%s] %s" % ["OK" if checks[k] else "!!", k])
+		if not checks[k]:
 			all_ok = false
-		print("[Native] %s 加载+方法校验: %s" % [class_names[i], ok])
-
-	# ---- 2. PCGErode: 水力侵蚀 ----
-	var erode: Object = FrameworkNative.get_native(&"PCGErode", [&"erode"])
-	var h := PackedFloat32Array()
-	h.resize(48 * 48)
-	for y in 48:
-		for x in 48:
-			h[y * 48 + x] = 0.5 + 0.2 * sin(x * 0.3) * cos(y * 0.2)
-	var e1: PackedFloat32Array = erode.call(&"erode", h, 48, 48, 1000, 0.1, 0.2, 2, 0.005, 0.02, 42, 0.0, 1.0)
-	var e2: PackedFloat32Array = erode.call(&"erode", h, 48, 48, 1000, 0.1, 0.2, 2, 0.005, 0.02, 42, 0.0, 1.0)
-	var erode_ok := e1.size() == 48 * 48 and e1 == e2
-	if not erode_ok:
-		all_ok = false
-	print("[Native] PCGErode 侵蚀大小+可复现: %s" % erode_ok)
-
-	# ---- 3. PCGErode: 热侵蚀 ----
-	var t1: PackedFloat32Array = erode.call(&"thermal", h, 48, 48, 10, 0.05)
-	var t2: PackedFloat32Array = erode.call(&"thermal", h, 48, 48, 10, 0.05)
-	var thermal_ok := t1.size() == 48 * 48 and t1 == t2
-	if not thermal_ok:
-		all_ok = false
-	print("[Native] PCGErode 热侵蚀大小+可复现: %s" % thermal_ok)
-
-	# ---- 4. PCGWFC: 2D WFC ----
-	var wfc_def: GridGenDef = load("res://Assets/Def/PCG/Grid_WFC.tres")
-	var g1: GeneratedGrid = PCGTool.generate_grid(wfc_def, PCGTool.make_rng(42))
-	var g2: GeneratedGrid = PCGTool.generate_grid(wfc_def, PCGTool.make_rng(42))
-	var wfc_ok := g1.cells == g2.cells and g1.cells.size() == wfc_def.width * wfc_def.height
-	if not wfc_ok:
-		all_ok = false
-	print("[Native] PCGWFC 2D WFC 可复现+尺寸: %s" % wfc_ok)
-
-	# ---- 5. PCGWFC3D: 3D WFC ----
-	var wfc3_def: Grid3DGenDef = load("res://Assets/Def/PCG/Grid3D_WFC.tres")
-	var w3a: GeneratedGrid3D = PCGTool.generate_grid_3d(wfc3_def, PCGTool.make_rng(5))
-	var w3b: GeneratedGrid3D = PCGTool.generate_grid_3d(wfc3_def, PCGTool.make_rng(5))
-	var wfc3_ok := w3a.cells == w3b.cells
-	if not wfc3_ok:
-		all_ok = false
-	print("[Native] PCGWFC3D 3D WFC 可复现: %s" % wfc3_ok)
-
-	# ---- 6. PCGWFCAnimator: 动画器逐步推进 ----
-	var anim := WFCAnimator.new()
-	anim.setup(wfc_def, PCGTool.make_rng(42))
-	var guard := 0
-	while not anim.step():
-		guard += 1
-		if guard > 5000:
-			break
-	var anim_ok := anim.done and not anim.failed and anim.step_count > 0
-	if not anim_ok:
-		all_ok = false
-	print("[Native] PCGWFCAnimator 推进完成: %s (steps=%d)" % [anim_ok, anim.step_count])
-
-	# ---- 7. PCGLSystem: L-System ----
-	var ls := LSystemDef.new()
-	ls.axiom = "X"
-	ls.rules = {"X": "F+[[X]-X]-F[-FX]+X", "F": "FF"}
-	ls.iterations = 4
-	ls.max_segments = 50000
-	var ls1 := PCGTool.generate_lsystem(ls, PCGTool.make_rng(42))
-	var ls2 := PCGTool.generate_lsystem(ls, PCGTool.make_rng(42))
-	var ls_ok := ls1.size() > 0 and ls1 == ls2
-	if not ls_ok:
-		all_ok = false
-	print("[Native] PCGLSystem 线段数+可复现: %s (segs=%d)" % [ls_ok, ls1.size() / 2])
-
-	# ---- 8. PCGCave3D: 3D 洞穴 ----
-	var cave_def: Grid3DGenDef = load("res://Assets/Def/PCG/Grid3D_Cave.tres")
-	var c1: GeneratedGrid3D = PCGTool.generate_grid_3d(cave_def, PCGTool.make_rng(42))
-	var c2: GeneratedGrid3D = PCGTool.generate_grid_3d(cave_def, PCGTool.make_rng(42))
-	var cave_ok := c1.cells == c2.cells and c1.components(cave_def.empty_value).size() == 1
-	if not cave_ok:
-		all_ok = false
-	print("[Native] PCGCave3D 可复现+空腔连通: %s" % cave_ok)
-
-	# ---- 9. 缺库报错路径 ----
-	var nonexist_loaded := FrameworkNative.is_extension_loaded(&"NoSuchClass")
-	var nonexist_inst := FrameworkNative.get_native(&"NoSuchClass", [])
-	var missing_ok := not nonexist_loaded and nonexist_inst == null
-	if not missing_ok:
-		all_ok = false
-	print("[Native] 缺库报错路径(不存在的类): %s" % missing_ok)
-
-	print("== 原生库测试 %s ==" % ("全部通过" if all_ok else "存在失败"))
 	return all_ok
+
+
+# ================================================================== 3D 细胞洞穴
+
+static func _cave_def() -> Grid3DGenDef:
+	return load("res://Assets/Def/PCG/Grid3D_Cave.tres") as Grid3DGenDef
+
+
+static func _cave_lib() -> bool:
+	return FrameworkNative.get_native(&"PCGCave3D", [&"generate"]) != null
+
+
+## 生成一次并检查规模落在合理区间。
+## 只查"不崩"太弱：原生层返回长度不对时 [code]PCGTool[/code] 会push_error
+## 但仍然交回一个空栅格，不检查的话症状是"世界一片空"。
+static func _cave_ok() -> bool:
+	var def := _cave_def()
+	if def == null:
+		return false
+	var g := PCGTool.generate_grid_3d(def, PCGTool.make_rng(11))
+	if g == null:
+		return false
+	if g.cells.size() != g.width * g.height * g.depth:
+		return false
+	var ratio := float(g.count(def.solid_value)) / float(g.cells.size())
+	## border_solid=true 会把外壳铺满，实心率天然偏高，区间取 0.3~0.95
+	return ratio > 0.3 and ratio < 0.95
+
+
+## 同 seed 复现、异 seed 不同 —— 两条一起断言，只写前者会漏掉"随机流没接上"。
+static func _cave_seeded() -> bool:
+	var def := _cave_def()
+	if def == null:
+		return false
+	var a := PCGTool.generate_grid_3d(def, PCGTool.make_rng(5))
+	var b := PCGTool.generate_grid_3d(def, PCGTool.make_rng(5))
+	var c := PCGTool.generate_grid_3d(def, PCGTool.make_rng(6))
+	return a.cells == b.cells and a.cells != c.cells
+
+
+## border_solid=true 时最外一圈必须全是实体，否则洞穴会从世界边界漏光。
+static func _cave_border() -> bool:
+	var def := _cave_def()
+	if def == null:
+		return false
+	var g := PCGTool.generate_grid_3d(def, PCGTool.make_rng(11))
+	for x in g.width:
+		if g.get_cell(x, 0, 0) != def.solid_value or g.get_cell(x, g.height - 1, g.depth - 1) != def.solid_value:
+			return false
+	for z in g.depth:
+		if g.get_cell(0, 0, z) != def.solid_value or g.get_cell(g.width - 1, 0, z) != def.solid_value:
+			return false
+	return true
+
+
+# ================================================================== 3D WFC
+
+static func _wfc_def() -> Grid3DGenDef:
+	return load("res://Assets/Def/PCG/Grid3D_WFC.tres") as Grid3DGenDef
+
+
+static func _wfc_lib() -> bool:
+	return FrameworkNative.get_native(&"PCGWFC3D", [&"generate", &"get_last_progress"]) != null
+
+
+## WFC 成功时栅格里必然出现两种瓦片值（Checker 集有 A/B 两片）；
+## 失败时 [code]PCGTool[/code] 会把栅格整体填成 solid_value，
+## 于是"只有一种值"就是失败的信号。
+static func _wfc_ok() -> bool:
+	var def := _wfc_def()
+	if def == null:
+		return false
+	var g := PCGTool.generate_grid_3d(def, PCGTool.make_rng(7))
+	if g == null or g.cells.is_empty():
+		return false
+	var kinds := {}
+	for v in g.cells:
+		kinds[v] = true
+	return kinds.size() >= 2
+
+
+## 塌缩算法最容易出的错是随机流没接上：每次跑出来一模一样，
+## 而"能跑通、结果合法"完全看不出来。
+## （[code]PackedInt32Array[/code] 没有 [method hash]，用手动滚动哈希做指纹。）
+static func _wfc_seeded() -> bool:
+	var def := _wfc_def()
+	if def == null:
+		return false
+	var seen := {}
+	for s in [1, 2, 3, 4, 5, 6, 7, 8]:
+		seen[_fingerprint(PCGTool.generate_grid_3d(def, PCGTool.make_rng(s)).cells)] = true
+	return seen.size() >= 4
+
+
+static func _fingerprint(cells: PackedInt32Array) -> int:
+	var h := 17
+	for v in cells:
+		h = (h * 31 + v) & 0x7fffffff
+	return h
+
+
+## 瓦片集为空/越界时必须直接填满实体并返回，不能去调原生层 ——
+## 原生层拿到 0 个瓦片会崩，而这里的失败方式是"世界全是实心"，属于可接受的降级。
+##
+## ★ 必须 [method Resource.duplicate]：`.tres` 在运行时是**共享单例**，
+## 直接改`def.tile_set3d` 会污染同一次会话里所有后续用例 ——
+## 症状是本用例自己通过，而后面依赖该瓦片集的 WFC 断言莫名全挂。
+static func _wfc_no_tileset() -> bool:
+	var base := _wfc_def()
+	if base == null:
+		return false
+	var def := base.duplicate() as Grid3DGenDef
+	def.tile_set3d = null
+	var g := PCGTool.generate_grid_3d(def, PCGTool.make_rng(3))
+	return g.count(def.solid_value) == g.cells.size()

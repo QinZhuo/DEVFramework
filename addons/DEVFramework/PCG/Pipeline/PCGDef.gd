@@ -5,7 +5,7 @@ class_name PCGDef extends Def
 ## 用法:
 ##   var out: Dictionary = PCGTool.generate(pcg_def)        # 使用 def.seed
 ##   var out: Dictionary = PCGTool.generate(pcg_def, 42)    # 覆盖种子
-##   var grid: GeneratedGrid = out["terrain"]
+##   var grid: GeneratedGrid3D = out["terrain"]
 
 ## 基础种子（同一配置 + 同一种子必然复现）
 @export var seed := 0

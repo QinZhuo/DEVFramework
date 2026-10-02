@@ -5,7 +5,7 @@ class_name PCGContext extends RefCounted
 var seed := 0
 ## 当前生成器的随机源（由管线派生，同一 seed 必可复现）
 var rng := RandomNumberGenerator.new()
-## 生成结果：key → GeneratedGrid / PackedVector2Array / Array
+## 生成结果：key → GeneratedGrid3D / PackedVector3Array / Array
 var output: Dictionary = {}
 
 func has(key: String) -> bool:

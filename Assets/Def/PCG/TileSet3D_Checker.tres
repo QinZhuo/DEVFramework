@@ -1,7 +1,7 @@
 [gd_resource type="Resource" script_class="TileSetDef3D" format=3 uid="uid://dmkst17v44stf"]
 
-[ext_resource type="Script" uid="uid://bn7kquaae1grr" path="res://addons/DEVFramework/PCG/Def/TileSetDef3D.gd" id="1_script"]
-[ext_resource type="Script" uid="uid://cbqtjwngam8mk" path="res://addons/DEVFramework/PCG/Def/TileDef3D.gd" id="2_tile"]
+[ext_resource type="Script" uid="uid://bn7kquaae1grr" path="res://addons/DEVFramework/PCG/Voxel/Def/TileSetDef3D.gd" id="1_script"]
+[ext_resource type="Script" uid="uid://cbqtjwngam8mk" path="res://addons/DEVFramework/PCG/Voxel/Def/TileDef3D.gd" id="2_tile"]
 
 [sub_resource type="Resource" id="Tile_A"]
 script = ExtResource("2_tile")

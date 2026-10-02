@@ -267,39 +267,80 @@ world.tick(delta)
 整个 DEVFramework 的 C++ 原生能力集中在**唯一一个共享扩展**：
 `res://addons/DEVFramework/Native/dev.gdextension`（编译产物也在该目录）。任何模块的原生类都注册在这一个库里，共用一份二进制。当前已注册：
 - `ECSCore` — ECS 高性能实体组件系统
-- `PCGErode` — PCG 高度图侵蚀加速（C++ 水力粒子液滴含悬崖/沉积参数 + 热侵蚀平滑坡面）
-- `PCGWFC` / `PCGWFC3D` — PCG 2D/3D 波函数坍缩加速（大图快 ~30 倍）
-- `PCGWFCAnimator` — PCG WFC 过程动画器（有状态逐步推进，可视化生成过程）
-- `PCGLSystem` — PCG L-System 生长展开加速（大迭代快数十倍）
+- `PCGWFC3D` — PCG 3D 波函数坍缩加速（大图快 ~30 倍）
 - `PCGCave3D` — PCG 3D 细胞洞穴加速（26 邻域平滑，快数百倍）
+- `PCGWFC` / `PCGWFCAnimator` / `PCGErode` / `PCGLSystem` — 2D WFC、过程动画器、2D 高度图侵蚀、L-System；
+  随2026-10 的 3D-only 重构已无 GDScript 调用方（原生库保留未动）
 
 由 **`FrameworkNative`**（`Native/FrameworkNative.gd`）统一懒加载与校验：
 - `FrameworkNative.get_native(&"ECSCore", required_methods)` — 按类名取共享实例（缓存 + 方法集版本校验）
-- `FrameworkNative.get_native(&"PCGErode", [&"erode"])` / `&"PCGWFC"` / `&"PCGLSystem"` — PCG 算法加速
+- `FrameworkNative.get_native(&"PCGWFC3D", [&"collapse"])` / `&"PCGCave3D"` — PCG 算法加速
 - `FrameworkNative.instantiate_script(script)` — 稳定的脚本实例化（规避全局类注册时序问题）
 - `FrameworkNative.refresh(...)` — 清缓存（库热重载/测试）
 
 新增模块原生能力时：把 C++ 类注册进 `dev.gdextension`（需源码重编译），GDScript 侧通过 `FrameworkNative.get_native(&"你的类名", [...])` 访问，不要各自维护一份 ClassDB 检测逻辑。
 
-### 4.7 PCG 程序化内容生成（`PCG/`）
+### 4.7 PCG 3D 程序化生成运行时（`PCG/`）
 
-框架内置一套 **程序化内容生成** 模块，遵循 Def → Entity → Tool 三层模式：
-所有生成参数都是 `.tres` 资源（策划可配），同一 `seed` 必然复现，支持 2D/3D、配置管线与 seed 增量存档。
+模块只服务一件事：**生成 3D 模型世界**。生成参数全是 `.tres`（策划可配），同一 `seed` 必然复现，
+支持配置管线与 seed 增量存档。2D 栅格地图生成（高度图/路网/河流道路/程序化纹理/L-System/模板拼接）
+已于 2026-10 整体移除 —— 那是俯视地图数据，与 3D 模型是两类产物。
+
+**核心主张：一份生成数据，两种投影。** `SdfField`（带材质槽位的连续场）是唯一中间表示，
+烘焙只做一次；`MeshExtractor` 出 lowpoly 网格、`VoxelExtractor` 出体素模型，
+画风挂在投影/材质阶段。实测烘焙占总耗时 99.9% 以上，所以双产物几乎不加钱、两产物必然同形、换画风不重算几何。
 
 ```gdscript
-# 单步：网格生成
-var def: GridGenDef = load("res://Assets/Def/PCG/Grid_Cave.tres")
-var grid := PCGTool.generate_grid(def, PCGTool.make_rng(seed))
+# 结构层：3D 体素栅格（地表 / 3D 洞穴 / 3D WFC）
+var def := load("res://Assets/Def/PCG/Grid3D_Cave.tres") as Grid3DGenDef
+var grid := PCGTool.generate_grid_3d(def, PCGTool.make_rng(seed))
 
-# 管线：地形→群系→河流→道路→资源点→战利品 一条龙
-var out: Dictionary = PCGTool.generate(pipeline_def, seed)
+# 造型层：一次烘焙，两个产物
+var b := PropGenTool.bake(MyGen.new(), def_with_voxel_res, seed)
+b.mesh      # → lowpoly 网格（ModelBaker.build_node）
+b.voxel# → 体素模型（ModelBaker.build_voxel_node）
 ```
 
-**能力一览**：8 种 2D 网格算法（噪声地形/细胞洞穴/迷宫/随机游走/BSP/WFC/Voronoi/模板拼接）、
-3D 体素（地表/3D 洞穴/3D WFC）、生物群系、河流/道路、散布（2D/3D）、内容生成（加权/名字/马尔可夫/词缀）、
-2D/3D 分块世界、WFC 高级（固定格/回溯/重试/过程动画）、异步生成、seed+增量存档。
+模块内贯彻一条硬约束：**单个物体的生成，与整个世界的布局，是两件必须分开的事。**
 
-**完整使用说明见 [`PCG/Readme.md`](PCG/Readme.md)**。
+| | 独立物体生成 | 世界布局 |
+|---|---|---|
+| 契约 | `PropGen`（实现 `local_bounds` / `build`） | `PropLayoutTool` |
+| 回答 | **这个东西长什么样** | **这个东西站哪、朝哪** |
+| 知道世界吗 | **不知道**（不接触任何世界坐标） | 只知道尺寸、朝向、地面高度 |
+| 输出 | `PropBuild`（纯局部空间） | `Placement`（世界变换） |
+
+两者之间只有**一个**交接面 `PropBuild`：生成器交出「我占地 6×4.8，正面朝 +Z，贴地」，
+布局器拿到后**永不询问**「你是什么」。因此不存在「一个世界数据包吞掉所有内容」。
+
+```gdscript
+# ① 造形状（项目自己的生成器，框架不预设任何一种物体）
+var build := PropGenTool.bake(ShopGen.new(), def, seed)
+
+# ② 摆位置（框架只认尺寸与朝向，不认"这是商店"）
+var p := PropLayoutTool.solve(build, seed, Vector2(10, 0), 0.0, ground_y,
+    {&"snap": PropLayoutTool.Snap.MIN, &"align_dir": Vector2(0, -1)})
+
+# ③ 存档只有 6 个字段，无网格；读档时重跑 assemble() 完整还原
+```
+
+- **贴地策略**：`MIN`（建筑，宁陷勿浮）/ `MAX`（悬空，宁悬勿陷）/ `CENTER`（路面随地形起伏）/ `NONE`。
+- **避让**：OBB 分离轴（SAT），非外接圆——后者对 45° 对角摆放会误判。
+- **地面高度**走鸭子类型（`func(x, z) -> float`），布局层因此**不认识任何地形类**。
+- **分帧组装是框架职责**：`assemble()` 同步跑完会堵死主线程近 20 s（实测 14 单体烘焙 18485 ms / 布局 3 ms），
+  需要响应式界面时用 `assemble_step()` + `assemble_finish()` 每帧让出一帧。
+
+**能力一览**：3D 栅格 4 种算法、3D 散布（泊松/抖动/随机）、3D 分块世界、生成管线（`PCGDef` 多生成器协同）、
+分块稠密 SDF（32³ 块、窄带、跨块连续）+ Surface Nets / Dual Contouring 提取、
+`ModelGraph` 节点图（18 种节点，Geometry Nodes 风格）、三渲二风格（`ToonStyleDef`/`ToonPaletteDef`/`SceneStylePack`）、
+异步生成、seed + 增量存档。
+
+**完整使用说明见 [`PCG/Readme.md`](PCG/Readme.md)**（含踩坑记录，如`rng.state = rng.seed` 会让 PCG32 序列退化、
+薄几何遇粗体素烘焙出空网格、`voxel_res` 未下发到配方导致体素静默失效等）。
+
+**演示场景（项目层 `Scenes/PCG/`）**：`PCGDemo3D.tscn`（四条能力线）、`ChunkDemo3D.tscn`（分块世界）、
+`PCGModelGallery.tscn`（节点图 → 双产物）、`PCGStyleDemo.tscn`（一个配置换整个场景）、
+`PCGWorldAssemble.tscn`（生成与布局解耦，点选换形状实测站位位移 0.0 m）。
 
 ### 4.8 Camera 虚拟机位（`Camera/`）
 
@@ -430,7 +471,7 @@ await ActorTool.load_data(root, data)
 
 **架构分层**（对齐程序化纹理的 PCG 先例）：
 - **生成（Audio 模块，自包含）**：`Audio/Tool/AudioSynthTool.gd`（Def→采样数据，含 `render_data`/`generate`/`randomize_def` 等）+ 配置 Def（`Audio/Def/*`）+ 运行时展开（`Audio/Entity/AudioSequence.gd`）+ C++ `AudioSynthEngine`。
-- **PCG 管线桥接**：`PCG/Def/AudioGenDef.gd`（`extends PCGGeneratorDef`）把 Audio 接入 PCG 管线——同种子可生成配套音效/BGM；依赖方向 PCG→Audio 单向。
+- **PCG 管线桥接**：`PCG/Pipeline/AudioGenDef.gd`（`extends PCGGeneratorDef`）把 Audio 接入 PCG 管线——同种子可生成配套音效/BGM；依赖方向 PCG→Audio 单向。
 - **通用管理（AudioTool）**：播放任意 `AudioStream`（`play_stream`）、程序化 BGM（`play_loop`，内部经 AudioSynthTool 生成）、总线效果、WAV 保存、流查询、编辑器预览/烘焙——**非 PCG 专属，任何音频都可用**。
 - AudioTool 保留生成方法的兼容代理（标注见 PCG）。
 
@@ -514,7 +555,7 @@ AudioTool.list_examples()                      # 列出全部示例
 | `CSVDataAccess` | CSV 读写（`get_csv_value` / `set_csv_value` 等） |
 | `ArrayViewTool` | 数组视图通用逻辑：`get_item_name` / `create_view` / `free_view`（配合对象池） |
 | `TweenViewTool` | Tween 显隐控制与释放：`update_visible` / `finish_and_free` |
-| `PCGTool` | PCG 统一入口：噪声/网格(2D/3D)/群系/散布/内容/河流道路/分块世界/管线/异步/序列化 |
+| `PCGTool` | PCG 统一入口：3D 栅格(地表/洞穴/WFC)/3D 散布/分块世界/管线/异步/seed 派生 |
 | `CameraTool` | Camera 模块统一入口：`get_brain` / `get_camera` / `get_current` / `activate` / `deactivate` / `find` / `snap` |
 | `DevProjectSetup` | 一键创建项目目录结构（编辑器菜单触发） |
 | `SpriteFramesToAnimationLibrary` | `EditorScript`：将选中的 SpriteFrames 生成 AnimationLibrary |
@@ -820,7 +861,9 @@ verify_fix {action:"abort"}                        # 结束会话
 - 代码按类目放到 `Scripts/Def/`、`Scripts/Entity/`、`Scripts/View/`，不要把所有脚本塞进单个场景脚本。
 - **UI 等可显示内容一律用场景（.tscn）搭建，不要用代码 `new`**（见框架 `View/*` 与 `UITool`）。改动 UI 优先在场景里调整节点属性，而非写代码生成。
 - 优先**配置驱动**：能通过 `.tres` 资源配置的数据（数值、效果、标签、GOAP 行动/目标）就用资源，不硬编码在脚本里。
-- **程序化生成走 PCG 模块**：涉及地形/地牢/内容/群系等生成，一律用 `addons/DEVFramework/PCG/`（`PCGTool` + `*Def` 资源 + seed 可复现），不要手写生成算法；参数放 `.tres`，见 [`PCG/Readme.md`](PCG/Readme.md)。
+- **程序化生成走 PCG 模块**：涉及 3D 世界/地形/地牢/单体造型等生成，一律用 `addons/DEVFramework/PCG/`（`PCGTool` + `*Def` 资源 + seed 可复现），不要手写生成算法；参数放 `.tres`，见 [`PCG/Readme.md`](PCG/Readme.md)。
+- **造型与摆放分成两件事**：物体造型实现 `PropGen`（只写 SDF 组合、不碰世界坐标），摆放交给 `PropLayoutTool`（只认尺寸/朝向/地面高度），两者唯一的交接面是 `PropBuild`——**不要写"世界生成器"把两头揉在一起**，见 [`PCG/Readme.md`](PCG/Readme.md)。
+- **要体素模型就设 `voxel_res`**：同一份 `SdfField` 烘一次既出 lowpoly 网格也出体素模型，不要为体素另写一套生成器；注意扁长物体会退化，调用前检查 `has_voxel()`。
 - 写脚本时使用显式类型标注（`func foo(x: int) -> void`）、`@onready` 获取节点引用、`@export` 暴露可调参数，与 `Scenes/AI/GoapDemo.gd` 等示例风格一致。
 
 **MCP 工具使用规范**
