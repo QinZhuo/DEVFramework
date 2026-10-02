@@ -14,11 +14,12 @@ const TICK_INTERVAL := 0.2
 @onready var log_box: RichTextLabel = $VBox/LogBox
 
 ## 演示用 UI 输入源：按钮点击入队，模拟循环轮询消费
+## 签名必须与 InputSource.poll(_request: Variant = null) 一致，否则整个脚本编译失败
 class UiSource extends InputSource:
 	var pending: Array = []
 	func push(p: Array) -> void:
 		pending.append(p)
-	func poll(_tick: int, _request: Dictionary = {}) -> Array:
+	func poll(_request: Variant = null) -> Array:
 		return pending.pop_front() if not pending.is_empty() else []
 
 var _history := CommandHistory.new()
@@ -44,7 +45,7 @@ func _process(delta: float) -> void:
 
 
 func _step() -> void:
-	var decision := _ui.poll(_tick)
+	var decision := _ui.poll({"tick": _tick})
 	_tick += 1
 	score_label.text = "tick %d    得分 %d" % [_tick, _score]
 	if _picks >= TOTAL_PICKS or decision.is_empty():
@@ -78,16 +79,18 @@ func _on_replay() -> void:
 
 	_score = 0
 	for cmd in restored.commands:
-		var decision := source.poll(cmd.tick)
+		var decision := source.poll({"tick": cmd.tick})
 		if decision.is_empty():
 			_log("[color=red]回放失败：tick %d 输入缺失[/color]" % cmd.tick)
 			return
 		_apply(GameCommand.new(&"pick_col", cmd.tick, decision))
 
-	var ok := source.consumed == inputs
-	_log("[color=%s]回放%s：consumed %s 与记录一致，最终得分 %d（共 %d 条命令）[/color]"
+	# 决策段必须被完整消费：ReplayInputSource.verify_consumed() 返回空串即一致
+	var leftover := source.verify_consumed()
+	var ok := leftover.is_empty()
+	_log("[color=%s]回放%s：决策段%s与记录一致，最终得分 %d（共 %d 条命令）[/color]"
 			% ["green" if ok else "red", "成功" if ok else "失败",
-			"完全" if ok else "不", _score, restored.size()])
+			"完全" if ok else "未%s" % leftover, _score, restored.size()])
 
 
 func _on_pick(col: int) -> void:

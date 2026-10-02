@@ -21,7 +21,7 @@ func _ready() -> void:
 	layer.layer = 100
 	add_child(layer)
 	var guide := TutorialOverlay.new()
-	guide.name = "TutorialGuide"
+	guide.name = "TutorialOverlay"
 	guide.set_anchors_preset(Control.PRESET_FULL_RECT)
 	layer.add_child(guide)
 

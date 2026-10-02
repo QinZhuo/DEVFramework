@@ -228,7 +228,7 @@ func test_pure_tip_modes() -> void:
 
 	var layer := CanvasLayer.new()
 	host.add_child(layer)
-	var guide := TutorialGuide.new()
+	var guide := TutorialOverlay.new()
 	guide.set_anchors_preset(Control.PRESET_FULL_RECT)
 	layer.add_child(guide)
 	await tree.process_frame
@@ -293,7 +293,7 @@ func test_advance_by_action_and_funnel_signals() -> void:
 
 	var layer := CanvasLayer.new()
 	host.add_child(layer)
-	var guide := TutorialGuide.new()
+	var guide := TutorialOverlay.new()
 	guide.set_anchors_preset(Control.PRESET_FULL_RECT)
 	layer.add_child(guide)
 	await tree.process_frame
@@ -351,7 +351,7 @@ func test_target_control_grabs_focus() -> void:
 
 	var layer := CanvasLayer.new()
 	host.add_child(layer)
-	var guide := TutorialGuide.new()
+	var guide := TutorialOverlay.new()
 	guide.set_anchors_preset(Control.PRESET_FULL_RECT)
 	layer.add_child(guide)
 	await tree.process_frame
