@@ -13,6 +13,10 @@ extends Node3D
 ## 3. **全程无贴图**。色阶 / 描边 / 轮廓光 / 雾全部由 [ToonShader] 与
 ##    [ToonStyleDef] 给，材质表现干净、轮廓明确 —— 这正是三渲二与 PBR 的分界线。
 ##
+## 4. **切风格包连镜头一起切**。三套预设的长焦 / 景深 / 背景 / 暗角各不相同
+##    （见 [MiniatureStage]），由 `pack.apply_stage()` 一次装好。切到"微缩童话"
+##    时画面会变成"长焦 + 浅景深 + 收暗边缘"，而不是同一堆模型换层皮。
+##
 ## 操作：左键拖拽旋转 / 滚轮缩放 / 顶部按钮切换风格与输出形态 / R 换种子
 
 ## 输出形态常量。与 [code]SceneStylePack.Output[/code] 一一对应，
@@ -21,6 +25,11 @@ extends Node3D
 const OUT_MESH := 0
 const OUT_VOXEL := 1
 const OUT_BOTH := 2
+
+## 基准取景距离（米），按 **70° 默认视场角**下的距离标定。
+## 风格包的长焦 FOV 会让画面猛地凑近，`apply_stage` 据此换算出的
+## `stage_distance_hint` 才是实际相机距离 —— 否则切风格包时观众看到的是"突然变焦"。
+const BASE_DIST := 62.0
 
 @export var pack_key: StringName = &"jp_street"
 
@@ -73,7 +82,22 @@ func _pick_pack(k: StringName) -> void:
 	pack_key = k
 	_asm = null
 	_build_base()
+	_apply_stage()
 	_assemble()
+
+## 把风格包的镜头 / 环境 / 暗角装到场景里。
+##
+## `apply_stage` 内部会顺手算好 `stage_distance_hint`（长焦该退多远），
+## 所以这里紧接着就要 `_update_camera()` —— 顺序反了会出现
+## "切完风格包画面还停在旧景别上，等滚轮一动才跳"。
+func _apply_stage() -> void:
+	if _pack == null:
+		return
+	## `apply_stage` 内部会一并把主光对准 `style.key_light_dir`
+	## （见 [MiniatureStage.apply_key_light]：色阶方向是 uniform，实灯必须跟着走，
+	##  否则色阶亮面与实灯亮面错开一道，硬边阴影与色阶互相打架且不报错）。
+	_pack.apply_stage(self, camera, BASE_DIST)
+	_update_camera()
 
 func _build_buttons() -> void:
 	if row_style == null:
@@ -155,9 +179,12 @@ func _assemble() -> void:
 	title.text = "%s ｜ 种子 %d" % [_pack.title, _seed]
 	## 回退数量挂进日志而不是只留在代码里：一旦"体素形态"看起来少了东西，
 	## 这里必须能一眼看出是**哪些单体没被体素化**，而不是让人去猜。
+	## 镜头参数同样入日志：微缩感三要素任一为 0，画面就会退回"游戏截图"，
+	## 而这既不报错也不崩，只能靠这一行数字自证。
 	var extra := ("｜ %d 个无体素产物，回退网格" % n_fallback) if n_fallback > 0 else ""
-	_log("%s ｜ %d 个单体 ｜ 网格 %d ｜ 体素 %d%s ｜ 烘焙 %d ms（分 %d 帧）" % [
-		_pack.title, _placements.size(), _n_mesh, _n_vox, extra, bake_ms, frames])
+	_log("%s ｜ %d 个单体 ｜ 网格 %d ｜ 体素 %d%s ｜ 长焦 %.0f° 虚化 %.2f 暗角 %.2f ｜ 烘焙 %d ms（分 %d 帧）" % [
+		_pack.title, _placements.size(), _n_mesh, _n_vox, extra,
+		_pack.camera_fov, _pack.dof_amount, _pack.vignette_strength, bake_ms, frames])
 	if hint != null:
 		hint.text = _pack.desc
 
@@ -246,7 +273,12 @@ func _unhandled_input(event: InputEvent) -> void:
 			_assemble()
 
 func _update_camera() -> void:
-	var dist := 62.0 * _zoom
+	## 距离用风格包算出的长焦距离（`stage_distance_hint`），没有则退回基准值。
+	## 两者的差别就是"微缩感三要素之①长焦" —— 同样的模型，长焦一压透视就出来了。
+	var base := BASE_DIST
+	if _pack != null and _pack.stage_distance_hint > 0.0:
+		base = _pack.stage_distance_hint
+	var dist := base * _zoom
 	camera.position = _look_at + Vector3(
 		sin(_yaw) * cos(_pitch), sin(_pitch), cos(_yaw) * cos(_pitch)) * dist
 	camera.look_at(_look_at, Vector3.UP)

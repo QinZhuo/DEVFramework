@@ -44,7 +44,15 @@ static func bake(gen: PropGen, def: PropGenDef, seed_value: int, salt := 0) -> P
 
 ## 把 PropBuild 实例化为节点。父节点负责世界变换 ——
 ## 本工具不碰位置，位置归 [PropLayoutTool]。
-static func instantiate(build: PropBuild, material: Material = null) -> MeshInstance3D:
-	if build == null or build.is_empty():
+##
+## [param form] 投影形态，见 [enum PropBuild.Form]。
+## [param material] 单 [Material] 或逐调色板索引取色的 [Callable]，见
+## [method PropBuild.to_mesh_instance]。
+## [b]注意[/b] 这里**不**再把"网格为空"当作失败直接返回 null：
+## 纯体素产物（网格空、体素非空）是合法形态，交给 [method PropBuild.to_mesh_instance]
+## 按 form 决定退回体素。仍返回 null 的只有"两种产物都没有"的空 build。
+static func instantiate(build: PropBuild, material: Variant = null,
+		form: PropBuild.Form = PropBuild.Form.AUTO) -> MeshInstance3D:
+	if build == null or (build.is_empty() and not build.has_voxel()):
 		return null
-	return build.to_mesh_instance(material)
+	return build.to_mesh_instance(material, form)

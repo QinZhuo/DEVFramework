@@ -251,10 +251,16 @@ func _merge_slice(f: int, s: int, mask: PackedInt32Array, used: PackedByteArray,
 
 ## 把一个四边形并入对应调色板的分组（多调色板 → 多 surface）
 func _emit_quad(pi: int, f: int, base: Vector3i, du: int, dv: int) -> void:
-	var b: Dictionary = _buckets.get(pi)
-	if b == null:
-		b = _new_box()
-		_buckets[pi] = b
+	## 这里**不能**写 `var b: Dictionary = _buckets.get(pi)` 再 `if b == null`：
+	## Dictionary 缺键时 get 返回 null，而把 null 赋给一个静态类型为 Dictionary 的
+	## 局部变量在 Godot 4.4+ 是**运行期错误**（不是警告），会在赋值那一行直接抛出，
+	## 后面的 null 判断根本没机会执行。而"缺键"恰恰是**每个新调色板索引的第一个面**
+	## 的正常情形 —— 等于贪心网格化每次都在第一个四边形上崩，
+	## 而 has_voxel() / count_solid() 这些不碰网格的接口全都不受影响，
+	## 于是"体素产物齐全"与"网格化能跑"看起来毫不相干。
+	if not _buckets.has(pi):
+		_buckets[pi] = _new_box()
+	var b: Dictionary = _buckets[pi]
 	if not _face_of.has(pi):
 		_face_of[pi] = f
 	_push_quad(b, f, base, du, dv)

@@ -26,6 +26,68 @@ static func surface(style: ToonStyleDef, palette: ToonPaletteDef, use_vertex_col
 	return style.make_material(palette, use_vertex_color, vcol_strength, slot_ramp)
 
 
+## 单一分件色材质：把 [member ToonPaletteDef.base] 换成 [param base_color] 造一份色阶材质。
+##
+## ============================ 为什么需要它 ============================
+## [method surface] 只认"一份配色方案一个主色"，所以多分件场景里所有部件会拿到
+## 同一个主色 —— 体素调色板把网格切成了几十个 surface，逐 surface 挂同一个材质，
+## 于是**分色数据全在、渲染上看不出差别**（且不报任何错）。
+##
+## 三档怎么派生（与 [method ToonStyleDef.make_material] 的档位算法对齐）：
+## 暗档向 [member ToonPaletteDef.shade] 与 [member ToonPaletteDef.deep] 靠，
+## **亮档不在这里派生** —— 它由 [method ToonStyleDef.make_material] 拿
+## [member ToonPaletteDef.base]（此处即 [param base_color]）唯一地派生一次。
+## 也就是**换色相、不换画风**：档数 / 暗部染色 / 轮廓光 / 雾全部沿用 [param style]，
+## 所以一堆零件仍然是同一种画风。
+static func part_material(style: ToonStyleDef, palette: ToonPaletteDef,
+		base_color: Color) -> ShaderMaterial:
+	if style == null:
+		return null
+	if palette == null:
+		return style.make_material(null)
+	var sub := ToonPaletteDef.new()
+	sub.base = base_color
+	## —— 亮档必须留成base_color 原值，不能在这里预混 ——
+	## [method ToonStyleDef.make_material] 拿到 palette 后**一定会**再执行一次
+	## `palette.base.lerp(palette.light, 0.55)`。这里若先混一遍，同一个亮档端点
+	## 就被 55% 混了两次（等效约 0.80），亮档必然贴到近白 —— 奶白/米色这类
+	## 本身高明的部件色（面包店、墙面）会直接烧成纯白，整张画面褪成一片白。
+	## 所以这里**只**预混暗档，亮档原样交给 [method ToonStyleDef.make_material]
+	## 按base_color 唯一地派生一次。
+	sub.shade = base_color.lerp(palette.shade, 0.62)
+	sub.deep = base_color.lerp(palette.deep, 0.72)
+	sub.accent = palette.accent
+	sub.accent2 = palette.accent2
+	sub.outline = palette.outline
+	return style.make_material(sub)
+
+
+## 逐调色板索引取色的材质提供者（体素分件的正规出口）。
+##
+## 返回 `func(palette_index: int, face_dir: int) -> Material`，正好是
+## [method SdfVoxel.to_greedy_mesh] / [method PropBuild.to_mesh_instance] 认的签名。
+##
+## 索引 → 颜色走 [method ToonPaletteDef.to_array]（固定 swatch 色板会原样取出，
+## 没有则退化成色阶），颜色 → 材质走 [method part_material]，材质**只造一次并缓存**：
+## 体素网格的 surface 数可能上百，逐 surface 重建材质会让显存与切换成本翻几十倍。
+static func voxel_material_provider(style: ToonStyleDef,
+		palette: ToonPaletteDef) -> Callable:
+	if style == null:
+		return Callable()
+	var pal := palette if palette != null else ToonPaletteDef.new()
+	var colors := pal.to_array(255)
+	if colors.is_empty():
+		return Callable()
+	var cache := {}
+	return func(palette_index: int, _face_dir: int) -> Material:
+		if cache.has(palette_index):
+			return cache[palette_index]
+		var m := part_material(style, pal,
+			colors[clampi(palette_index, 0, colors.size() - 1)])
+		cache[palette_index] = m
+		return m
+
+
 ## 倒壳描边材质。`extra_width` 会**加**到 `style.outline_width` 上：
 ## 网格已经用 `build_outline_mesh()` 沿法线推开过，就传 `-style.outline_width` 抵消。
 static func outline(style: ToonStyleDef, palette: ToonPaletteDef,
@@ -170,18 +232,29 @@ const OUTLINE_META := &"toon_screen_outline"
 ## `use_vertex_color` / `slot_ramp` 透传给 [method surface]：网格顶点色或槽位色带是
 ## 语义分件色时置 true / 传入色带。两条同时给时的错配告警由
 ## [method ToonStyleDef.make_material] 统一发出（本函数不重复报，否则一次调用会响两次）。
+##
+## `keep_material` 为 true 时**不碰** [member MeshInstance3D.material]，只负责描边。
+## 典型场景是体素分件：表面材质已按调色板索引逐面指定（[method VoxelExtractor] 的
+## `tint_regions` 产物），再统一赋值会把所有分件色压成同一个颜色。此时描边与
+## 表面材质是两件正交的事，交给本函数只做描边那一半。
 static func apply(mi: MeshInstance3D, style: ToonStyleDef, palette: ToonPaletteDef,
 		outline_parent: Node = null, use_vertex_color := false,
-		slot_ramp: Texture2D = null) -> Node3D:
+		slot_ramp: Texture2D = null, keep_material := false) -> Node3D:
 	if mi == null or style == null:
 		return null
-	mi.material = surface(style, palette, use_vertex_color, 1.0, slot_ramp)
+	if not keep_material:
+		mi.material = surface(style, palette, use_vertex_color, 1.0, slot_ramp)
 	_clear_outline(mi)
 	match style.outline_mode:
 		ToonStyleDef.OutlineMode.INVERTED_HULL:
 			return _spawn_hull(mi, style, palette, outline_parent)
 		ToonStyleDef.OutlineMode.SCREEN_SPACE:
-			_screen_space_outline(mi, true)
+			if _screen_space_outline(mi, true):
+				return mi
+			# 没挂 OutlineEffect 就退倒壳。两者观感都是"一圈硬边"，
+			# 而"配置漏了一个后处理 ⇒ 整个描边消失"是严重得多的问题。
+			push_warning("[ToonMaterial] 场景未挂 OutlineEffect，屏幕空间描边自动降级为倒壳。")
+			return _spawn_hull(mi, style, palette, outline_parent)
 		_:
 			pass # OFF：材质已换好，不需要描边
 	return mi
@@ -210,14 +283,16 @@ static func _spawn_hull(mi: MeshInstance3D, style: ToonStyleDef, palette: ToonPa
 
 
 ## 屏幕空间描边：复用框架的 `OutlineEffect` 后处理（不自己实现膨胀算法）。
-## 槽位 0 未挂实例时（Compositor 没配）只警告并放弃描边，**不崩也不留半成品**。
-static func _screen_space_outline(mi: MeshInstance3D, on: bool) -> void:
+##
+## 返回是否真的挂上了。槽位 0 没有实例（Compositor 没配）时返回 false，
+## 由调用方决定降级路线 —— 这里**不崩、也不留半成品**，
+## 更不会静默当作"已描边"（那会让整套画风悄悄丢掉最关键的一层轮廓）。
+static func _screen_space_outline(mi: MeshInstance3D, on: bool) -> bool:
 	if OutlineEffect._instances.is_empty():
-		push_warning("[ToonMaterial] 未找到 OutlineEffect 实例（Compositor 未配置），"
-			+ "屏幕空间描边已跳过；改用 OutlineMode.INVERTED_HULL 可正常出描边。")
-		return
+		return false
 	OutlineEffect.set_outlined(on, mi)
 	mi.set_meta(OUTLINE_META, on)
+	return true
 
 
 ## 清掉本模块此前挂上的描边（两种模式都清）。

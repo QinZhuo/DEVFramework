@@ -38,6 +38,15 @@ static func _jp_street() -> SceneStylePack:
 	p.gen_def = _gen(0.30, 0.0, 0)
 	p.street_step = 4.0
 	p.output = SceneStylePack.Output.MESH
+	_stage(p, 46.0, 0.35, SceneStylePack.Backdrop.SKY)
+	p.sky_top_color = Color(0.34, 0.56, 0.86, 1)
+	p.sky_horizon_color = Color(0.88, 0.93, 0.97, 1)
+	## 街景跨度大（街道 3 段 × 4 米步长），远景虚化起点必须推远，
+	## 否则整条街糊成一片，"沿街看过去"的纵深全没了
+	p.dof_far_distance = 70.0
+	p.dof_far_transition = 30.0
+	p.vignette_strength = 0.30
+	p.env_fog_gain = 0.8
 	p.recipes = [
 		_r("street", "res://Scripts/Gen/StreetGen.gd", 3, PropRecipe.Place.STREET, 0.40),
 		_r("shop", "res://Scripts/Gen/ShopGen.gd", 6, PropRecipe.Place.STREET_SIDE, 0.30),
@@ -58,6 +67,19 @@ static func _wa_shrine() -> SceneStylePack:
 	p.gen_def = _gen(0.26, 0.0, 0)
 	p.street_step = 5.0
 	p.output = SceneStylePack.Output.MESH
+	## 和风黄昏：长焦 + 中度虚化 + 重雾 + 天空背景。
+	## 暖冷分离靠"暖天空 + 冷阴影"（wa_shoji 的阴影色本来就偏冷），暗角再压一点暖。
+	_stage(p, 34.0, 0.55, SceneStylePack.Backdrop.SKY)
+	p.sky_top_color = Color(0.52, 0.40, 0.58, 1)
+	p.sky_horizon_color = Color(0.98, 0.78, 0.62, 1)
+	p.backdrop_color = Color(0.32, 0.28, 0.30, 1)
+	p.dof_far_distance = 48.0
+	p.dof_far_transition = 24.0
+	p.vignette_strength = 0.50
+	p.vignette_warmth = 0.28
+	p.env_fog_gain = 1.3
+	p.env_saturation = 1.06
+	p.exposure = 1.05
 	## ★ 摆放策略的硬约束：[WorldAssembler] 的 STREET 是**唯一主街**，
 	## `_recipe_at()` 只取第一个 STREET 配方、其余 STREET 配方在 assemble_finish 里直接 pass。
 	## 于是"路面上再摆一种东西"必须改用 ROADSIDE —— 曾经把鸟居设成 STREET，
@@ -82,6 +104,17 @@ static func _mini_fairy() -> SceneStylePack:
 	p.gen_def = _gen(0.22, 0.06, 64)
 	p.street_step = 6.0
 	p.output = SceneStylePack.Output.VOXEL
+	## 微缩感三要素在这里给满：长焦 22°（比另两套更"长"）+ 强虚化 + 明显暗角。
+	## 背景用纯色而不是天空 —— "拍在台布上的树脂模型"才是这套的立意；
+	## 配上 `env_fog_sky_affect = false`，背景保持干净，不会被雾压成灰。
+	_stage(p, 22.0, 0.75, SceneStylePack.Backdrop.FLAT)
+	p.backdrop_color = Color(0.90, 0.91, 0.93, 1)
+	p.dof_far_distance = 34.0
+	p.dof_far_transition = 16.0
+	p.vignette_strength = 0.55
+	p.env_fog_gain = 1.2
+	p.env_saturation = 1.04
+	p.exposure = 1.08
 	## 童话村同样需要一条主街：STREET_SIDE 的落位**依赖街道当锚**，
 	## 没有 street 配方时它们会全部退化到 (0, ±40) 两个点上互相穿插。
 	##
@@ -98,6 +131,17 @@ static func _mini_fairy() -> SceneStylePack:
 
 
 # ================================================================== 内部
+
+## 一次性铺好"镜头与舞台"的三件套：长焦视场角 / 景深强度 / 背景模式。
+##
+## 抽出来是因为三套预设都得写，而**每次都得写全**：
+## 只改 FOV 不动 `dof_far_distance` 的后果是"镜头变长了但整幅画一样清楚"，
+## 观感上等于什么都没改 —— 微缩感三要素缺一即失效，且不会报任何错。
+static func _stage(p: SceneStylePack, fov: float, dof: float, back: SceneStylePack.Backdrop) -> void:
+	p.camera_fov = fov
+	p.dof_amount = dof
+	p.backdrop = back
+
 
 ## 造烘焙 Def。[param vres] 为体素最长边分辨率，0 = 不产体素。
 static func _gen(voxel: float, sharpen: float, vres: int) -> PropGenDef:

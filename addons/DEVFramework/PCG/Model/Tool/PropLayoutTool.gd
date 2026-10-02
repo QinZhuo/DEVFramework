@@ -34,8 +34,12 @@ class Placement extends RefCounted:
 	func origin() -> Vector3:
 		return xform.origin
 
-	func instantiate(material: Material = null) -> MeshInstance3D:
-		var mi := PropGenTool.instantiate(build, material)
+	## [param form] 投影形态，见 [enum PropBuild.Form]。
+	## 体素场景整场要一致，所以由调用方（通常是 [method DioramaBuilder.spawn]）统一下发 ——
+	## 单个摆放自己挑形态会让同一场景里混进两种网格。
+	func instantiate(material: Variant = null,
+			form: PropBuild.Form = PropBuild.Form.AUTO) -> MeshInstance3D:
+		var mi := PropGenTool.instantiate(build, material, form)
 		if mi:
 			mi.transform = xform
 		return mi

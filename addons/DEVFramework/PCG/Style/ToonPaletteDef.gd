@@ -46,6 +46,18 @@ var title := ""
 ## （顺序见 `_role_of_index()`）。几何层因此可以问"墙是什么色"而本文件不必知道什么是墙。
 @export var material_hints: Array[String] = []
 
+## 固定色板（逐个挑选，不做插值）。非空时 [method to_array] 原样返回它。
+##
+## ============================ 为什么需要固定色板 ============================
+## [method ramp] 只能在 base → shade → deep 这**三个锚点之间插值**，也就是只能在一个色相上
+## 改变明度。而实际的三渲二配色是**成片手挑**的：奶白墙 / 陶红瓦 / 深棕木 / 暖黄灯光，
+## 四种颜色的色相彼此无关，插值一个都出不来。硬用 ramp 的结果是所有部件沦为
+## "同一个颜色的深浅"，店铺的层次感全部丢失。
+##
+## 所以这里给一条旁路：填了 swatches，[method to_array] 就原样吐出来。
+## 典型用法是体素 / MagicaVoxel 风格的固定 16 色板。
+@export var swatches: Array[Color] = []
+
 #endregion
 
 
@@ -113,10 +125,19 @@ func _color_of(role: StringName) -> Color:
 ##      `to_array(SdfField.SLOT_NONE)` 返回 255 个颜色，占 0 ~ 254，255 天然空着。
 ##
 ## 色阶分布略偏暗部（幂次 < 1），使暗面层次比亮面更厚——这是动画阴影的观感。
+##
+## [b]固定色板优先[/b]：[member swatches] 非空时原样返回它，跳过整个插值过程。
+## 返回长度**恒等于 n**：不够用 [member base] 补齐。
+## 宁可重复主色也绝不返回短的——下游（体素调色板、槽位色带）都按索引取色，
+## 长度不足会越界，而越界往往表现为"最后一个部件颜色错乱"，极难定位。
 func to_array(n: int) -> Array[Color]:
 	var out: Array[Color] = []
 	var count := clampi(n, 0, 255)
 	if count <= 0:
+		return out
+	if not swatches.is_empty():
+		for i in count:
+			out.append(swatches[i] if i < swatches.size() else base)
 		return out
 	if count == 1:
 		out.append(base)

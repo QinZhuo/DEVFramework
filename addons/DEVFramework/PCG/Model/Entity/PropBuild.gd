@@ -33,12 +33,61 @@ func triangle_count() -> int:
 func collision_radius() -> float:
 	return footprint.length() * 0.5
 
+## 输出形态 —— 决定 [method to_mesh_instance] 用哪一份产物出网格。
+##
+## [b]为什么需要显式指定[/b]：体素产物此前没有任何渲染入口，
+## 而 [method is_empty] 只看网格，于是"纯体素模型"（网格空、体素有）
+## 会安静地渲染成空节点 —— 不报错、不进日志，只是画面上什么都没有。
+## 双投影要能被比较、要能被单独出图，就必须能显式点选投影形态。
+enum Form {
+	AUTO,         ## 有网格走网格；网格空而体素非空时退回体素（修掉"纯体素渲染成空"）
+	MESH,         ## 强制光滑等值面网格
+	VOXEL_GREEDY, ## 强制体素·贪心合并：体素模型的常规输出（面数低）
+	VOXEL_ITEM,   ## 强制体素·逐块方块：Minecraft / MagicaVoxel 观感，
+	              ## 也是验证"体素一致性"的基准形态 —— 每个方块独立可辨
+}
+
 ## 生成资源节点（局部变换，父节点负责摆到世界里）
-func to_mesh_instance(material: Material = null) -> MeshInstance3D:
+##
+## [param material] 故意用 [Variant] 而非 [Material]，它可以是两种东西：
+## · [Material] —— 单材质。体素形态下所有调色板索引都用它（历史行为）。
+## · [Callable] —— `func(palette_index: int, face_dir: int) -> Material`，
+##   逐索引取色。这是让 [method PropGen.voxel_regions] 声明的部位分色**真正显示出来**
+##   的唯一出口：索引怎么算由提取器管，索引 → 材质由调用方管。
+##
+## [param form] 见 [enum Form]。默认 [constant Form.AUTO] 保持历史行为（走网格），
+## 但网格为空而体素非空时会自动退回贪心体素。
+func to_mesh_instance(material: Variant = null, form: Form = Form.AUTO) -> MeshInstance3D:
 	var mi := MeshInstance3D.new()
-	if not is_empty():
-		mi.mesh = mesh.to_arraymesh(material)
 	mi.name = "Mesh"
+	var want := form
+	if want == Form.AUTO:
+		want = Form.MESH if not is_empty() \
+			else (Form.VOXEL_GREEDY if has_voxel() else Form.MESH)
+	## 网格形态只认单个 Material：调用方传了 Callable 时按"无材质"处理，
+	## 而不是把 Callable 塞给 to_arraymesh（那是 Variant→Material 的隐式转换，会炸）。
+	var flat: Material = material if material is Material else null
+	match want:
+		Form.VOXEL_GREEDY, Form.VOXEL_ITEM:
+			if not has_voxel():
+				push_warning("[PropBuild] 强制体素形态但体素产物为空（voxel_res 太小？"\
+				+ "形状与分辨率不匹配时会静默退化）→ 回退网格")
+				if not is_empty():
+					mi.mesh = mesh.to_arraymesh(flat)
+				return mi
+			## 材质在体素侧是"按调色板索引逐索引取"的 Callable，不是单个材质。
+			var provider := Callable()
+			if material is Callable:
+				provider = material
+			elif flat != null:
+				provider = func(_pi: int, _face_dir: int) -> Material:
+					return flat
+			mi.mesh = voxel.to_greedy_mesh(provider) if want == Form.VOXEL_GREEDY \
+				else voxel.to_item_mesh(provider)
+			mi.name = "Voxel"
+		_:
+			if not is_empty():
+				mi.mesh = mesh.to_arraymesh(flat)
 	return mi
 
 ## 旋转 yaw 后的占地半尺寸向量（用于贴地采样与分离）

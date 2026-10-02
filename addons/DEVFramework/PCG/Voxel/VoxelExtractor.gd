@@ -39,11 +39,13 @@ const CLOSED_CHECK_MAX := 200000
 ## | `&"threshold"` | 0.0 | 实心判定距离；`d < threshold` 即实心。正值 = 膨胀 |
 ## | `&"band"` | field.band | 场外/缺失体素的距离值，会自动抬到 ≥ threshold 以免误判实心 |
 ## | `&"palette"` | `[]` | 调色板；给了就按**归一化高度**分层配色（体素产物最常见的上色方式） |
+## | `&"tint_regions"` | `[]` | 部位分色：`[{&"aabb": AABB（场全局坐标）, &"index": int}, ...]`，按顺序首个命中即用；都没命中才回退高度分层。通常由 [method PropGen.voxel_regions] 提供 |
 ## | `&"shrink"` | 0.0 | 等值面整体向内推的体素数，用于让体素块之间出现细缝、产生"倒角感" |
 ## | `&"margin"` | 0.0 | 窄带盒外扩的**米数**。默认 0 就够：窄带盒本身已经含一个 `field.band` 的余量，
 ##   而默认 band = 3 * voxel_size，本来就是为"表面附近"设计的。只有当 threshold 膨胀量
 ##   大于 band、或想让体素网格留出空白边框时才需要给正数（**按模型尺寸给**，给米数不按倍数给）
 ## | `&"fit"` | `"band"` | 用哪套范围定体素网格：`"band"` = 窄带（跟随形状，推荐）/ `"field"` = 整场分配范围（形状顶到场边界、窄带被截断时用） |
+## | `&"cell"` | `0.0` | 体素方块的**物理边长**（米），> 0 时压过 res。要"一场景里所有物体用同一种方块"就填它 |
 ##
 ## 体素网格的定位用的是**窄带包围盒**（模型真正占据的范围）而不是整场分配范围：
 ## 分块世界式的场会留大量余量，按整场算会让 res 被留白稀释 —— 细腿、帽檐
@@ -53,7 +55,14 @@ const CLOSED_CHECK_MAX := 200000
 static func extract(field: SdfField, res: int, opts := {}) -> SdfVoxel:
 	var v := SdfVoxel.new()
 	v.res = res
-	if field == null or res <= 0 or field.chunks.is_empty():
+	## `cell` = 直接指定体素方块的**物理边长**（米），给了就压过 res。
+	## 这不是"多一个参数"的问题，而是分寸问题：res 是"最长边切几格"，
+	## 换算出的边长 = 窄带盒最长边 / res，而窄带盒比模型本身宽出约 2×band
+	## （band 默认 3×voxel_size，即 0.36~0.8 米）。于是"同一份 res 换算规则"下，
+	## 7.9 米的大楼误差 9%，1.16 米的长椅误差 66% —— 同一场景里的方块大小能差一倍以上，
+	## 而日志里所有数字都"正常"。要"全场统一方块"就必须能直接说边长是多少米。
+	var cell := float(_opt(opts, &"cell", 0.0))
+	if field == null or (res <= 0 and cell <= 0.0) or field.chunks.is_empty():
 		return v
 	## 局部包围盒：SdfTool.*_bounds 给世界坐标，减掉 field.origin 即场局部空间 ——
 	## 与 MeshExtractor 的 `c.origin - field.origin` 完全一致，两条输出路径因此可同框比对。
@@ -67,7 +76,7 @@ static func extract(field: SdfField, res: int, opts := {}) -> SdfVoxel:
 	var margin := float(_opt(opts, &"margin", 0.0))
 	if margin != 0.0:
 		lb = AABB(lb.position - Vector3.ONE * margin, lb.size + Vector3.ONE * (margin * 2.0))
-	var grid := _grid(lb.size, res)
+	var grid := _grid(lb.size, res, cell)
 	var voxel: float = grid[0]
 	var dims: Vector3i = grid[1]
 	if voxel <= 0.0 or dims.x <= 0 or dims.y <= 0 or dims.z <= 0:
@@ -104,6 +113,9 @@ static func extract(field: SdfField, res: int, opts := {}) -> SdfVoxel:
 	var _cs := 0
 	var _cd := PackedFloat32Array()
 	var layers := v.palette.size()
+	## 部位分色表：[{&"aabb": AABB（场全局坐标）, &"index": int}, ...]，按顺序首个命中即用。
+	## 空 = 纯高度分层（历史行为）。见 [method _tinted]。
+	var tint: Array = opts.get(&"tint_regions", opts.get("tint_regions", []))
 	for z in dims.z:
 		var wz := oz + (float(z) + 0.5) * voxel
 		var lz := floori((wz - field.origin.z) / fvs)
@@ -138,8 +150,53 @@ static func extract(field: SdfField, res: int, opts := {}) -> SdfVoxel:
 						## 跨块边界的 1~2 格：交回给场做钳制（它认得邻块，缺失时返回 band）
 						d = field.get_voxel(lx, ly, lz)
 				if d < th:
-					v.data[row + x] = pv
+					v.data[row + x] = _tinted(tint, wx, wy, wz, pv)
+	## 部位索引钳到调色板长度内。超界不会崩，但会在网格化时多出一个
+	## **没有材质可挂的 surface**（[method SdfVoxel.to_greedy_mesh] 按索引建桶），
+	## 那个部位就变成一片默认白 —— 又是一个"只丢颜色不报错"的坑。
+	## 单趟钳位 + 只警告一次，让写错索引的人一眼看到写的是几。
+	##
+	## 必须放过 [constant SdfVoxel.EMPTY]（=255）：空体素本来就存 255，
+	## 它不是"第 256 号颜色"，第一版漏了这个判断，把每个空体素都当成越界索引，
+	## 于是每次抽取都刷一条假警告 —— 假警报和漏警报一样会让人忽略真警报。
+	if layers > 0:
+		var over := -1
+		for i in v.data.size():
+			var d := v.data[i]
+			if d != SdfVoxel.EMPTY and d >= layers:
+				if over < 0:
+					over = d
+				v.data[i] = layers - 1
+		if over >= 0:
+			push_warning("[VoxelExtractor] 部位分色索引 %d 超出调色板长度 %d，已钳到最后一位。" % [
+				over, layers])
 	return v
+
+
+## 取某个体素的调色板索引。
+##
+## [param base] 是原本的高度分层结果，作为回退值。
+##
+## ============================ 为什么需要部位分色 ============================
+## 纯高度分层（[method _layer_index]）只能表达"下浅上深"这类**与高度相关**的配色。
+## 但体素场景里真正要区分的往往是**与高度无关的部位**：门框要深棕、窗户要暖黄发光、
+## 招牌要红 —— 它们可能出现在任意高度。按高度上色会把这些部件涂成所在楼层的墙色。
+##
+## 所以让**生成器自报**部位到调色板索引的映射（[method PropGen.voxel_regions]）：
+## 框架只负责按 AABB 命中测试，不理解"门"或"窗"是什么 —— 那是生成器的知识。
+##
+## 命中测试用 [method AABB.has_point]：体素中心 (wx,wy,wz) 与生成器局部空间同源
+## （PropGen 的场原点为零向量），所以生成器给的 AABB 直接可用，框架不做换算。
+static func _tinted(tint: Array, wx: float, wy: float, wz: float, base: int) -> int:
+	if tint.is_empty():
+		return base
+	var p := Vector3(wx, wy, wz)
+	for r in tint:
+		var reg: Dictionary = r
+		var box: Variant = reg.get(&"aabb", reg.get("aabb", null))
+		if box is AABB and (box as AABB).has_point(p):
+			return int(reg.get(&"index", reg.get("index", 0)))
+	return base
 
 #endregion
 
@@ -462,11 +519,15 @@ static func _parity_hit(tris: PackedVector3Array, p: Vector3, items: PackedInt32
 
 ## 由包围盒尺寸与最长边分辨率推出等比体素网格。体素边长 = 最长边 / res（保持立方）。
 ## 返回 `[voxel: float, size: Vector3i]`；短边至少 1 体素，避免退化成 0 厚。
-static func _grid(box: Vector3, res: int) -> Array:
+##
+## [param cell] > 0 时直接用它当边长（见 [method extract] 的说明），此时 res 不参与换算，
+## 只影响"切几格"的副产品读数。窄带盒多出来的余量此时只多出几圈空体素，
+## 不会再去改变方块本身的物理尺寸 —— 这正是"直接给边长"与"给分辨率"的本质差别。
+static func _grid(box: Vector3, res: int, cell := 0.0) -> Array:
 	var longest := maxf(box.x, maxf(box.y, box.z))
 	if longest <= 0.0:
 		return [0.0, Vector3i.ZERO]
-	var voxel := longest / float(maxi(res, 1))
+	var voxel := cell if cell > 0.0 else longest / float(maxi(res, 1))
 	## 减一个极小量：6.0/0.5 在二进制里可能是 12.000001，直接 ceili 会多出一层空片
 	var ex := maxf(box.x / voxel - 1e-6, 1e-6)
 	var ey := maxf(box.y / voxel - 1e-6, 1e-6)

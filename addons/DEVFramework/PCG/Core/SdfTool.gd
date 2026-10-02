@@ -111,10 +111,20 @@ static func sd_ngon(v: Vector2, r: float, n: int) -> float:
 		var tk := Vector2(-nk.y, nk.x)                  ## 边的切向
 		var d_plane := v.dot(nk) - apothem
 		hd = maxf(hd, d_plane)
-		var proj := v - nk * d_plane                    ## 投影到该边所在直线
 		var mid := nk * apothem                         ## 边中点
-		var t := clampf((proj - mid).dot(tk), -half_len, half_len)
-		best = minf(best, (proj - (mid + tk * t)).length())
+		var t := clampf((v - mid).dot(tk), -half_len, half_len)
+		## 距离必须拿**原始点** v 去量，不能拿它在直线上的垂足去量。
+		##
+		## 曾经的写法是 `proj = v - nk * d_plane` 再算 `|proj - (mid + tk*t)|`。
+		## 垂足 proj 本身就落在这条边上（t 已经把它夹进线段内），于是
+		## `proj - 最近点` 恒等于 0 ⇒ 多边形**内部任意一点**的距离都被算成 0，
+		## 只有外部点还算得对。后果是 [method sd_prism] 内部永不取负：
+		## 整根柱子退化成一层零厚度的壳 —— 树干、塔身、井圈全部只剩上半截，
+		## 而画面不报错，只是"模型莫名其妙少了一截"。
+		##
+		## 用 v 量则法向分量 `d_plane` 被计入，内部点到边的距离就是内切半径那一档，
+		## 符号仍由半平面项 [code]hd[/code] 决定 —— 内外一致，才配叫"有符号距离"。
+		best = minf(best, (v - (mid + tk * t)).length())
 	return signf(hd) * best
 
 ## —— 算子 ——

@@ -1,0 +1,104 @@
+[gd_scene load_steps=5 format=3]
+
+[ext_resource type="Script" path="res://Scenes/PCG/PCGDioramaDemo.gd" id="1_demo"]
+
+[sub_resource type="Environment" id="Environment_diorama"]
+background_mode = 1
+background_color = Color(0.09, 0.11, 0.15, 1)
+ambient_light_source = 3
+ambient_light_energy = 1.0
+tonemap_mode = 2
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_panel"]
+content_margin_left = 14.0
+content_margin_top = 12.0
+content_margin_right = 14.0
+content_margin_bottom = 12.0
+bg_color = Color(0.07, 0.09, 0.12, 0.9)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(0.85, 0.65, 0.42, 1)
+corner_radius_top_left = 8
+corner_radius_top_right = 8
+corner_radius_bottom_right = 8
+corner_radius_bottom_left = 8
+
+[node name="DioramaDemo" type="Node3D"]
+script = ExtResource("1_demo")
+
+[node name="World" type="Node3D" parent="."]
+unique_name_in_owner = true
+
+[node name="Camera3D" type="Camera3D" parent="."]
+unique_name_in_owner = true
+transform = Transform3D(1, 0, 0, 0, 0.92, 0.39, 0, -0.39, 0.92, 0, 10, -17)
+fov = 62.0
+current = true
+
+[node name="KeyLight" type="DirectionalLight3D" parent="."]
+unique_name_in_owner = true
+transform = Transform3D(0.7, -0.35, -0.61, 0, 0.87, -0.5, 0.71, 0.35, 0.61, 0, 30, 0)
+light_energy = 1.15
+shadow_enabled = true
+
+[node name="Env" type="WorldEnvironment" parent="."]
+unique_name_in_owner = true
+environment = SubResource("Environment_diorama")
+
+[node name="UI" type="CanvasLayer" parent="."]
+layer = 10
+
+[node name="Panel" type="PanelContainer" parent="UI"]
+anchors_preset = 1
+anchor_left = 1.0
+anchor_right = 1.0
+offset_left = -480.0
+offset_top = 20.0
+offset_right = -20.0
+offset_bottom = 268.0
+grow_horizontal = 0
+theme_override_styles/panel = SubResource("StyleBoxFlat_panel")
+
+[node name="VBox" type="VBoxContainer" parent="UI/Panel"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="Title" type="Label" parent="UI/Panel/VBox"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_font_sizes/font_size = 18
+text = "用例四 · 体素面包店街角"
+horizontal_alignment = 1
+
+[node name="Log" type="Label" parent="UI/Panel/VBox"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(0, 56)
+layout_mode = 2
+text = "…"
+autowrap_mode = 3
+
+[node name="Hint" type="Label" parent="UI/Panel/VBox"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(0, 46)
+layout_mode = 2
+theme_override_colors/font_color = Color(0.68, 0.76, 0.9, 1)
+theme_override_font_sizes/font_size = 12
+text = "…"
+autowrap_mode = 3
+
+[node name="RowForm" type="HBoxContainer" parent="UI/Panel/VBox"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="Row" type="HBoxContainer" parent="UI/Panel/VBox"]
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="Regen" type="Button" parent="UI/Panel/VBox/Row"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+text = "换种子 (R)"

@@ -3,13 +3,15 @@ class_name ModelBaker extends RefCounted
 ## 节点图烘焙器 —— 把一张 [ModelGraph] 烘成 [PropBuild]，**一次烘焙出双产物**
 ##
 ## ============================ 它解决什么 ============================
-## [method PropGenTool.bake] 只能从"一个手写 build() 的 PropGen 实例"出发，
-## 而且只产出低多边形网格。这里补上两件事：
-## · **输入**换成节点图 —— 配方可复用、可参数化、可换风格不重搭；
-## · **输出**扩成双产物 —— 低多边形网格（[SdfMesh]）与体素网格（[SdfVoxel]）
-##   **共用同一次场烘焙**。这是"一份数据两种用途"成立的成本前提：
-##   烘焙（实测占总耗时 99.9% 以上，见 SDF/Readme.md 性能小节）只做一次，
-##   两个提取步骤相对它都很便宜。
+## 框架层有两条烘焙入口，产物形状相同、输入不同：
+## · [method PropGenTool.bake] —— 输入是"一个手写 build() 的 [PropGen] 实例"，适合单件造型
+## · 本文件 —— 输入是**节点图**（[ModelGraph]）。配方因此可复用、可参数化、
+##   可换风格而不重搭；这是"配置驱动"在单体造型上的落点。
+##
+## 两条入口的输出**完全一致**：低多边形网格（[SdfMesh]）+ 体素网格（[SdfVoxel]），
+## 且两者**共用同一次场烘焙**。这是"一份数据两种用途"成立的成本前提：
+## 烘焙（实测占总耗时 99.9% 以上，见 Readme.md 性能小节）只做一次，
+## 两个提取步骤相对它都很便宜。
 ##
 ## ============================ 职责划分：图管结构，风格管质感 ============================
 ## · [ModelGraph] 决定**有什么部件、怎么组合**（屋顶、门窗、烟囱…）
@@ -18,6 +20,10 @@ class_name ModelBaker extends RefCounted
 ## 所以同一张图换风格即可得到不同质感的模型，而结构不变。
 ## 若你希望连质感也由图控制（图里已有 [ModelHardenNode] / [ModelShellNode]），
 ## 传 `"style_geometry": false` 关掉本层的场级几何调整，避免重复施加。
+##
+## == 分层红线 ==
+## 本文件在**框架层**：认识图、场、提取器、风格 Def，不认识任何具体内容。
+## 项目层要做的是"写图 + 组装场景"，见 `Scripts/Gen/`。
 ##
 ## == 典型用法 ==
 ## [codeblock]
@@ -204,7 +210,7 @@ static func _footprint_of(mesh: SdfMesh) -> Vector2:
 
 # ================================================================== 可视化
 
-## 装配成可视节点：三渲二材质 + 倒壳描边。
+## 装配成可视节点：三渲二材质 + 描边。
 ## 父节点负责摆到世界里 —— 本工具不碰位置，位置归 [PropLayoutTool]。
 static func build_node(b: PropBuild, opt := {}) -> Node3D:
 	var root := Node3D.new()
@@ -225,6 +231,10 @@ static func build_node(b: PropBuild, opt := {}) -> Node3D:
 ##
 ## `&"greedy"`（默认 true）走贪心合并 —— 面色干净、面数低，适合三渲二与微缩感；
 ## false 走逐体素方块，是"看得见的方块"效果，更接近 Minecraft / MagicaVoxel 产物。
+##
+## `&"outline"` 默认 **true**（与 [method build_node] 对齐）：两条投影路径若一条描边一条不描，
+## 同一个场景里两种产物会给出完全不同的观感 —— 而"体素是裸块"正是最容易漏掉的坑。
+## 想要"看得见的方块"效果时显式传 false。
 static func build_voxel_node(v: SdfVoxel, opt := {}) -> Node3D:
 	var root := Node3D.new()
 	root.name = String(opt.get("name", "Voxel"))
@@ -240,11 +250,17 @@ static func build_voxel_node(v: SdfVoxel, opt := {}) -> Node3D:
 	mi.mesh = mesh
 	mi.name = "Voxels"
 	root.add_child(mi)
-	if style != null and palette != null and bool(opt.get("outline", false)):
-		ToonMaterial.apply(mi, style, palette, root)
+	if style != null and palette != null and bool(opt.get("outline", true)):
+		## keep_material = true：材质已由 provider 逐槽位给过了，
+		## 这里再统一赋值会把所有槽位压成同一个主色，分色就白做了。
+		ToonMaterial.apply(mi, style, palette, root, false, null, true)
 	return root
 
 ## 体素调色板 → 材质。贪心合并出的每个调色板槽位一个材质。
+##
+## 材质**按槽位自己的颜色**造（[method ToonMaterial.part_material]），不是拿整份
+## [param palette] 造一份再发给所有槽位 —— 后者会让体素网格切出几十个 surface、
+## 每个都挂同一个主色材质，分色数据全在而画面上看不出任何差别，且不报任何错。
 static func _make_provider(colors: PackedColorArray, style: ToonStyleDef,
 		palette: ToonPaletteDef) -> Callable:
 	if style == null or palette == null:
@@ -256,6 +272,8 @@ static func _make_provider(colors: PackedColorArray, style: ToonStyleDef,
 		used[_nearest_color(colors, colors[s])] = true
 	var mats := {}
 	for k in used.keys():
-		mats[k] = style.make_material(palette)
-	return func(slot: int) -> Material:
+		mats[k] = ToonMaterial.part_material(style, palette, colors[k])
+	## 签名必须是两参：[method SdfVoxel.to_greedy_mesh] 按
+	## `func(palette_index, face_dir)` 调用，少一个形参就是运行期 "Too many arguments"。
+	return func(slot: int, _face_dir: int) -> Material:
 		return mats.get(slot, null)

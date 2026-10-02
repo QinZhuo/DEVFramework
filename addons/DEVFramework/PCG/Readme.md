@@ -79,8 +79,10 @@ PCG/
 │  PCGDef / PCGGeneratorDef / PCGContext / PCGTool
 ├─ Style/      三渲二风格
 │  ToonStyleDef / ToonPaletteDef / ToonShader / ToonMaterial
+│  MiniatureStage（长焦 / 景深 / 环境 / 暗角的装配器）
 └─ World/      场景级成套配置
    SceneStylePack
+   DioramaDef / DioramaRecipe / DioramaBuild / DioramaBuilder（微缩小场景组装）
 ```
 
 **功能轴自包含**：整个 `PCG/` 目录删掉，框架其余部分仍能编译运行。
@@ -261,29 +263,156 @@ SdfTool.refresh_band_bounds(field)      # 改写 data 后必须调，窄带缓�
 `SdfField` 带**材质槽位**（`slot_at_world` / `SLOT_NONE`），槽位最终写进
 网格顶点色与体素调色板 —— 于是"换配色"不用重算几何，"换分件色"也不用。
 
+### 4.5 微缩小场景组装器：DioramaBuilder
+
+项目层 `WorldAssembler` 摆的是**街道**（沿路排布、贴地采样）；微缩小场景摆的是
+**底座上的簇**：一块展示底座 + 若干圈道具，没有街道也没有地形高度，落位是纯极坐标。
+框架层给出这套组装器，项目层只负责往里填生成器（`DioramaPresets`）。
+
+```gdscript
+var def := DioramaDef.new()            # 底座 + 环带 + 背板弧
+var recipes := [ ... ]                 # DioramaRecipe[]，每条一种道具
+var b := DioramaBuilder.build(def, recipes, seed)      # 同步（测试与烘焙用）
+
+var asm := DioramaBuilder.new()                       # 分帧（演示场景用）
+asm.begin(def, recipes, seed)
+while not asm.step():                                # step() 返回 true 即已推进完
+    bar.value = asm.progress() * 100.0
+var b := asm.finish()                                 # finish() 才做吸附与分桶
+
+DioramaBuilder.spawn(b, self, null, PropBuild.Form.VOXEL_ITEM)   # 产出节点
+DioramaBuilder.save_data(b)            # 只存 seed + transform，7 字段/条
+```
+
+| 概念 | 归属 | 要点 |
+|---|---|---|
+| `DioramaDef` | 底座与环带 | `inner_radius` / `ring_step` 定环带，`backdrop_angle` + `backdrop_arc` 定背板弧；`base_radius()` 与 `base_half_extent()` 都由 `base_gen` **现算**，不手填 |
+| `DioramaRecipe` | 一条配方 | 复用 `PropRecipe` 的字段，另加 `role` / `layout` / `band` / `facing` / 抖动 |
+| `DioramaBuild` | 产物 | 按角色分桶 `subjects` / `env` / `props`，`all()` 是三者之和 |
+| `DioramaBuilder` | 组装器 | 烘焙 → 落位 → `relax` → 越界剔除 → 体素吸附 → 分桶 |
+
+三种落位语义（`DioramaRecipe.Layout`）：
+
+| 布局 | 角位怎么来 | 半径 | 典型用途 |
+|---|---|---|---|
+| `CENTER` | 显式 `angle`（给主体定镜头侧） | 显式 `radius` | 主体，且必须唯一 |
+| `BACKDROP` | **`count` 在弧上均分（含两端）** | 显式 `radius` | 围合背板 |
+| `RING` | `angle` 是**相位**，第 i 个再 `+360°·i/count` | `radius_for_band(band)` | 同一类道具均分整圈 |
+
+`RING` 的 `angle` 是相位而不是"所有实例的同一个角"：两盏路灯会相差 180°，
+而不是叠在同一坐标上让 `relax` 原地打转。
+
+**体素"统一正方体"的两条约束**（缺一条就散）：
+
+- 边长一致靠 `voxel_cell` 直达提取器（物理量直接指定，不能"按最长边切几格"）；
+- 位置一致靠 `voxel_grid_snap`，且吸附必须发生在 `relax` **之后** ——
+  每个单体的体素格点锚在**它自己的局部原点**上，先吸附再避让等于白做。
+
+```gdscript
+print(b.story())        # 人类可读的组成清单
+print(b.validate())     # 缺底座 / 主体不唯一 / 体素化退化 —— 静默失败全靠它兜住
+```
+
+`validate()` 存在的理由和 `has_voxel()` 一样：**少一类道具时组装器不报错**，
+画面只是"安静地少东西"。
+
 ---
 
 ## 五、风格层
 
+### 5.1 三渲二：引擎管光影，shader 管色
+
 ```gdscript
 var style   = ToonStyleDef.presets()[&"anime_clean"]    # 多硬 / 多光滑 / 描边多粗
 var palette = ToonPaletteDef.presets()[&"anime_daylight"]
-ToonMaterial.apply(mi, style, palette, parent)         # 上材质 + 倒壳描边
+ToonMaterial.apply(mi, style, palette, parent)         # 上材质 + 描边
 ```
 
-`SceneStylePack` 是**场景级成套配置**：画风 + 配色 + 配方表 + 布局参数 + 输出形态，
-一个配置切换整个场景。
+`ToonShader` 用 `render_mode diffuse_toon, specular_disabled`：**引擎的 toon 光照是
+唯一带阴影贴图通道的路径**，光影阶梯交给它；shader 自己只写 `EMISSION`
+（固有色分档 + 染色阴影地板 + 补光 + 轮廓光 + 块高光），因为 `EMISSION` 不受光 ——
+阴影里会显色而不是死黑。
+
+> **踩过的弯路（都在 Godot 4.7.2 上实测过）**：
+>
+> 1. 片元着色器**没有 `light()` 内置函数** —— 拿不到任何逐像素光数据，
+>    唯一带阴影贴图的通道就是**引擎光照对 `ALBEDO` 的乘法**。
+> 2. 片元内置量 **`LIGHT` 也不存在**（`VIEW` / `NORMAL` / `CAMERA_POSITION_WORLD` 存在）。
+>    写 `v_light = LIGHT;` 会在**任何阶段**编译失败：
+>    `表达式中的标识符未知："LIGHT"`（顶点阶段同样没有）。
+> 3. 所以"哪一面亮"只能由 CPU 侧传方向进来，即 uniform **`u_key_dir`**
+>    （来源 `ToonStyleDef.key_light_dir`）。这反而是对的：色阶是**画风**，
+>    本就不该随"场景里恰好哪盏灯最亮"而漂移。
+>    **代价是必须与实灯同向**，否则色阶亮面与实灯亮面错开一道、
+>    硬边阴影与色阶互相打架 —— 不崩、不报错、只能靠肉眼发现。
+>    `MiniatureStage.apply_key_light()` 就是为此存在，`apply_stage()` 会自动调它。
+> 4. `normalize()` 遇零向量产出 NaN，会污染整片元，故一律过 `safe_dir()`
+>    （无光 / 忘配时退化为 `(0,0,1)`，而不是 NaN）。
+
+`ToonStyleDef` 里与调色板无关的光照向参数（`shadow_floor` / `key_light_color` /
+`key_light_dir` / `fill_dir` / `fill_color` / `fill_strength`）会在 `make_material()` 里
+**先于**调色板分支写入 —— 否则 `make_material(null)` 会产出一份无雾无补光的哑光材质。
+
+主光的摆法**不用 `Node3D.look_at()`**：它要求节点已在场景树里，而编辑器搭场景
+（节点还没 `add_child`）与单元测试（临时 `Node3D` 不进树）都不满足，会拿到
+`Node not inside tree. Use look_at_from_position() instead.`。
+`MiniatureStage` 自己拼正交基并显式换到 host 的局部空间。
+
+### 5.2 描边双通道（自动降级）
+
+| 通道 | 实现 | 适用 |
+|---|---|---|
+| `INVERTED_HULL` | 额外画一圈背面外扩壳 | 任何场景，零依赖 |
+| `SCREEN_SPACE` | 复用场景里的 `OutlineEffect` 后处理 | 有后处理时更干净 |
+
+`ToonMaterial.apply()` 在 `SCREEN_SPACE` 找不到 `OutlineEffect` 时会 **push_warning
+并自动降级为倒壳**。体素产物（`ModelBaker.build_voxel_node`）**默认带描边**
+（`outline` 默认 `true`），与 `build_node` 对齐 —— 要"看得见的方块"得显式传 `false`。
+
+### 5.3 微缩舞台：长焦 + 浅景深 + 边缘收暗
+
+`[ToonStyleDef]` 只管单个物体长什么样，而微缩感三要素里前两者**根本不在材质上**。
+材质再干净，广角 + 全清晰 + 亮边缘 = "游戏截图"，不是"模型照片"。
+
+```gdscript
+var pack = SceneStylePresets.presets()[&"mini_fairy"]
+pack.apply_stage(self, camera, 62.0)      # FOV + 景深 + 环境 + 暗角一次到位
+camera.position += dir * pack.stage_distance_hint   # 长焦必须同步后退
+```
+
+| 要素 | 实现 | 备注 |
+|---|---|---|
+| ① 长焦 | `Camera3D.fov` 调小 | 用 `MiniatureStage.frame_scale(fov)` 换算后退倍率，否则画面会猛地凑近 |
+| ② 浅景深 | `CameraAttributesPractical` 的 near/far 虚化 | **没有 `focus_distance`**（实测 ClassDB），对焦带用 near/far distance + transition 表达 |
+| ③ 边缘收暗 | `ToonShader.MINIATURE_VIGNETTE` 挂 `CanvasLayer` | `Environment` 里**没有暗角项**，只能自己画；层序号必须小于 UI 层 |
+
+`apply_stage()` 还会顺手做一件**不属于三要素但同样要跟画风走**的事：把主光对准
+`style.key_light_dir`（`MiniatureStage.apply_key_light()`）。
+只动**一盏**灯（缺省名 `KeyLight`），找不到才新建，且**保留作者调过的强度与阴影开关** ——
+切风格包不该拆掉手动布光。重复调用不会越堆越多盏。
+
+曝光只能落在 `Environment.tonemap_exposure`（`CameraAttributesPractical` 没有这个属性）。
+`SSAO` / `glow` 被**显式关掉**：这是画风决策而非画质档位（前者糊脏色阶、后者糊硬描边）。
+
+`SceneStylePack` 是**场景级成套配置**：画风 + 配色 + 配方表 + 布局参数 + 输出形态
++ 镜头与舞台，一个配置切换整个场景。
 
 ```gdscript
 var pack = SceneStylePresets.presets()[&"wa_shrine"]   # 项目层预设
 var asm  = WorldAssembler.from_pack(pack, ground_y)    # 项目层组装器
 pack.apply_material(mi)
+pack.apply_stage(self, camera)
 ```
 
-**分层边界**：`SceneStylePack` 在框架层，只认识框架类型；`recipes` 是未类型化
-`Array`（鸭子类型）；内置的具体预设（"日式街道 / 和风神社 / 微缩童话"）引用项目生成器脚本，
+**分层边界**：`SceneStylePack` / `MiniatureStage` 在框架层，只认识框架类型；
+`recipes` 是未类型化 `Array`（鸭子类型），`MiniatureStage` 对 `pack` 也**不加类型注解**；
+内置的具体预设（"日式街道 / 和风神社 / 微缩童话"）引用项目生成器脚本，
 因此落在 `Scripts/Gen/SceneStylePresets.gd`。`WorldAssembler.from_pack()` 建在项目层，
 依赖方向才是单向的（项目 → 框架）。
+
+雾色 / 环境光色的**真值只在 `style` 上**（`style.fog_color` / `style.ambient`），
+`MiniatureStage` 直接读、不另填一份 —— 两处各填一次的颜色必然会互相打架。
+风格包上只留 `Environment` 能表达而 `ToonStyleDef` 表达不了的（后期调色、暗角、背景模式）。
 
 ---
 
@@ -332,6 +461,9 @@ PCG 初始化状态（state + increment），state 是"当前状态"。把 state
 | 把单体摆到世界里 | `PropLayoutTool.solve/relax` → `Placement` |
 | 换画风 | 换 `ToonStyleDef`/`ToonPaletteDef`，**不重算几何** |
 | 换整个场景风格 | 换 `SceneStylePack` |
+| 加"微缩摆件感" | `pack.apply_stage(self, camera, 62.0)` + 用 `pack.stage_distance_hint` 当相机距离 |
+| 只调暗角 | `MiniatureStage.apply_vignette(host, pack)`（层序号 < UI 层） |
+| 长焦该退多远 | `MiniatureStage.frame_scale(fov)`（基准 70°） |
 
 ---
 
@@ -364,8 +496,9 @@ grep -E "res://(Scripts|Assets|Scenes)/" addons/DEVFramework/PCG -r --include="*
 | `PCGDemo3D.tscn` | 四条能力线：3D 栅格（4 算法 + 进度条 + 导航桥接）/ 3D 散布 / 生成管线 / 场→网格+体素双产物 |
 | `ChunkDemo3D.tscn` | 分块世界懒加载、跨块连续、seed 存档、玩家改动增量 |
 | `PCGModelGallery.tscn` | 节点图配方 → 双产物网格墙 |
-| `PCGStyleDemo.tscn` | 一个配置换整个场景；同一份数据落成网格 / 体素 / 两者对照 |
+| `PCGStyleDemo.tscn` | 一个配置换整个场景（**含镜头 / 景深 / 暗角**）；同一份数据落成网格 / 体素 / 两者对照 |
 | `PCGWorldAssemble.tscn` | 生成与布局解耦：换 seed 只换造型，站位位移实测 0.0 m |
+| `PCGDioramaDemo.tscn` | 微缩小场景：底座 + 簇式落位（CENTER / BACKDROP / RING）、分帧烘焙进度、体素"统一正方体" + 反向外壳描边 |
 
 ### 测试（`Scripts/Test/pcg/`，经 `test_pcg.gd` 接入 TestRunner）
 
@@ -378,6 +511,7 @@ grep -E "res://(Scripts|Assets|Scenes)/" addons/DEVFramework/PCG -r --include="*
 | `PCGSdfLayoutTest` | 布局层全程不生成真实几何（证明它不认识几何细节） |
 | `PCGSdfWorldTest` | 端到端：生成 → 布局 → 存档 → 读档还原 |
 | `PCGSdfStyleTest` | 风格包结构完整、配方可烘、设置下发到每个配方 |
+| `PCGSdfDioramaTest` | 三种落位语义、越界剔除、体素边长全场一致、格点吸附、分帧 == 同步 == 独立重烘、存档 7 字段 |
 | `PCTBenchmarkTest` | 性能基准（手动调用 `PCTBenchmarkTest.run()`，非断言用例） |
 
 ---
@@ -395,6 +529,10 @@ grep -E "res://(Scripts|Assets|Scenes)/" addons/DEVFramework/PCG -r --include="*
 | 烘焙十几秒窗口白屏 | `assemble()` 同步跑完堵死主线程 | 用 `assemble_step()` + `assemble_finish()` 分帧 |
 | 薄几何烘焙出空网格 | 体素比几何最薄处还粗 / `local_bounds` 没盖住 | 调细体素；检查 `bounds_hint` |
 | 自引用脚本编译失败 | 新脚本 `class_name` 尚未进全局类表 | 运行时 `load(SELF_PATH)` 绕开编译期解析 |
+| 两件围合件叠在同一个角上 | `BACKDROP` 的角位由 **`count` 在弧上均分**，`count=1` 时 `t` 恒为 -0.5 | 一条 `count=2` 的配方，别拆成两条 `count=1` |
+| 同类道具全挤在一处 | 把 `RING` 的 `angle` 当成"所有实例的同一个角" | `angle` 是**相位**，第 i 个自动 `+360°·i/count` |
+| 体素"统一正方体"散了 | `relax` 之后再吸附才有效；先吸附等于白做 | `voxel_grid_snap` 必须在 `finish()` 里、避让之后 |
+| 路灯这类细长物体体素产物为空 | 体素比几何最薄处还粗，跨不满一格 | 细杆要 `voxel_cell` ≤ 0.3 m；`has_voxel()` 为假时回退网格 |
 
 ---
 

@@ -48,9 +48,17 @@ var _field: SdfField
 
 ## 体素产物的调色板档数上限。
 ## 体素网格的 data 是 PackedByteArray（0~255），但**分件色根本用不到 254 档** ——
-## 真实分件（木 / 瓦 / 漆 / 纸…）通常十几种到头，给多了只是让调色板白白变胖。
+## 真实分件（木 / 瓦 / 漆 / 纸…）通常二十几种到头。
 ## 另注意 254 是提取器内部的结构色占位，本上限刻意远离它。
-const VOXEL_PALETTE_MAX := 16
+##
+## ============================ 为什么是 32 而不是 16 ============================
+## [method ToonPaletteDef.to_array] 返回的长度**恒等于传入值**，不够时拿
+## [member ToonPaletteDef.base] **补齐**。所以调色板比这个上限短不是"少几档"，
+## 而是**多出来的部位被静默涂成主色** —— 第 17 号部位若在 16 档表里，
+## 它和"没声明部位"的主体色一模一样，画面上完全看不出是配色表不够用。
+## 用例四就踩过：树冠顶层要一个浅苔绿，加到第 17 格后渲染成亮黄（钳位兜底），
+## 而日志里一行错都没有。把上限留出两倍余量，就是为了让这种静默降级更难发生。
+const VOXEL_PALETTE_MAX := 32
 
 ## 局部包围盒（米）。框架据此分配场；建议 y 从 0 起算，便于布局层贴地。
 @abstract func local_bounds() -> AABB
@@ -86,6 +94,28 @@ func prepare() -> void:
 func meta() -> Dictionary:
 	return {}
 
+## 体素**部位分色**：声明"局部空间里哪一块用调色板第几号色"。
+##
+## 返回 `[{&"aabb": AABB（局部坐标）, &"index": int}, ...]`，按顺序首个命中即用其 index；
+## 都没命中才回退"按归一化高度分层"。默认空 = 只有高度分层。
+##
+## ============================ 为什么需要这个钩子 ============================
+## 没有它时，体素配色**只能按高度**分（见 [method VoxelExtractor.extract] 的 palette）。
+## 这能表达"下浅上深"，但表达不了真正要区分的部位：门框要深棕、窗要暖黄发光、
+## 招牌要红 —— 这些与高度无关，按高度上色会被涂成所在楼层的墙色。
+## 而"哪块是门"恰恰是生成器独有的知识，框架不该也不必理解。
+##
+## [b]坐标系[/b]：局部空间，与 [method local_bounds] 和 [method fill_shape] 收到的 `p`
+## **完全同一套**（[method PropGenDef.make_field] 的场原点是零向量），框架不做任何换算。
+## y 从 0 起算时最省心。
+##
+## [b]调色板索引从 1 起[/b]：0 号留给未命中的部分（通常是主体色）。
+## 索引不要超过 [constant VOXEL_PALETTE_MAX] - 1：超出的会被提取器钳到最后一位并
+## 告警一次，而没进这张表的新颜色会被 [method ToonPaletteDef.to_array] 拿主色顶替 ——
+## 两者都是"不崩、但颜色不对"。
+func voxel_regions() -> Array:
+	return []
+
 ## 用形状函数一次性填充局部场 —— build() 里最常用的入口。
 ## [param fn] 签名 func(local_pos: Vector3) -> float，返回有符号距离（负 = 实心）。
 func fill_shape(fn: Callable) -> void:
@@ -115,10 +145,33 @@ func generate() -> PropBuild:
 	## 位置很关键：必须排在 harden 之后（硬边化改写了 data，晚于它会拿到未量化的场），
 	## 也必须早于 `_field = null`（场一丢就没得提了）。
 	var vox: SdfVoxel = null
-	if gd.voxel_res > 0:
+	## 两个开关任一为正就产体素。只认 voxel_res 会让"只填 voxel_cell"的用法
+	## （[method DioramaRecipe.voxel_cell] 推荐的填法）安静地拿到空体素产物 ——
+	## 网格照常出图，只是体素那一份没了，不报任何错。
+	if gd.voxel_res > 0 or gd.voxel_cell > 0.0:
 		var vopts := {}
 		if gd.voxel_palette != null:
 			vopts[&"palette"] = gd.voxel_palette.to_array(VOXEL_PALETTE_MAX)
+		## 部位分色：生成器自报"哪块是什么颜色"，原样交给提取器。
+		## 默认空数组 = 纯高度分层，行为与既有生成器完全一致。
+		##
+		## 无需坐标换算：[method PropGenDef.make_field] 建场时 origin 传的是 Vector3.ZERO，
+		## 而 [method SdfField.get_chunk] 按 `origin + ck * chunk_size * voxel_size` 算块原点，
+		## 所以提取器遍历出来的坐标与 [method fill_shape] 收到的 p、与 [method local_bounds]
+		## **三者同源**，都是生成器局部空间。margin 只是把场分配得更大，不参与坐标。
+		var regs := voxel_regions()
+		if not regs.is_empty():
+			var conv := []
+			for r in regs:
+				var reg: Dictionary = r
+				var box: Variant = reg.get(&"aabb", null)
+				if box is AABB:
+					conv.append({&"aabb": box, &"index": int(reg.get(&"index", 0))})
+			if not conv.is_empty():
+				vopts[&"tint_regions"] = conv
+		## 显式给的物理边长压过 res —— 见 [member PropGenDef.voxel_cell]。
+		if gd.voxel_cell > 0.0:
+			vopts[&"cell"] = gd.voxel_cell
 		vox = VoxelExtractor.extract(_field, gd.voxel_res, vopts)
 	_field = null
 

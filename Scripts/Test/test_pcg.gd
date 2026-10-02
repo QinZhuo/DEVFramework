@@ -12,6 +12,7 @@ extends TestCase
 ##   PCGSdfWorldTest           端到端：独立生成器 + 组装器的整体结构性质
 ##   PCGSdfSlotTest            材质槽位：填充 / 覆盖 / 夹紧 / 窄带（只操作场，毫秒级）
 ##   PCGSdfStyleTest           风格包 + 双产物：配置完整性、体素开关、下发链路
+##   PCGSdfDioramaTest         微缩小场景：簇式落位语义、体素边长一致、分帧一致、存档
 
 
 func test_determinism() -> void:
@@ -43,6 +44,13 @@ func test_sdf_slot() -> void:
 ## 所以这组断言的价值全在"逐条核对数量与产物"，而不是只看一个总布尔。
 func test_sdf_style() -> void:
 	assert_true(PCGSdfStyleTest.run(), "PCG 风格包测试存在失败项，详见输出日志")
+
+
+## 微缩小场景同样如此：少一类道具时组装器不报错，只是画面"安静地少东西"。
+## 这组额外盯住两条只有簇式布局才有的性质 —— 环带 angle 是相位（否则同类叠在一起）、
+## 全场体素边长一致（否则"统一正方体"不成立）。
+func test_sdf_diorama() -> void:
+	assert_true(PCGSdfDioramaTest.run(), "PCG 微缩场景测试存在失败项，详见输出日志")
 
 
 ## 性能基准不是断言，只打印耗时。名字不带 test_ 前缀的用例不会被 runner 自动执行，

@@ -14,6 +14,7 @@ class_name ToonStyleDef extends Def
 ## | 几何向 | roughen / voxel_size / shell / smooth_k | SDF 硬边化与等值面提取（`geometry_params()`） |
 ## | 渲染向 | bands / band_softness / shadow_tint / spec_* | `ToonShader.TOON_SURFACE` |
 ## | 轮廓向 | outline_* / rim_* | `ToonShader.TOON_OUTLINE` 或框架的 `OutlineEffect` |
+## | 光照向 | shadow_floor / key_light_color / key_light_dir / shadow_tint_follow / fill_* | `ToonShader.TOON_SURFACE` 的 EMISSION 段 |
 ## | 环境向 | ambient* / fog_* | 同上（雾与低对比环境光，微缩感的关键） |
 ##
 ## 两者**必须成套改**：只调色阶不改 `roughen`，出来的就是"上漆手办"而非动画。
@@ -76,6 +77,47 @@ enum OutlineMode {
 
 ## 块状高光阈值（半程向量 N·H）：越大高光越小越集中
 @export_range(0.0, 1.0, 0.01) var spec_threshold := 0.72
+
+#endregion
+
+
+#region 光照向
+
+## 阴影地板强度：引擎把阴影处的 ALBEDO 乘黑，这一层决定"阴影里该是什么颜色"。
+## 0 = 纯硬刻（阴影死黑） / 0.30~0.45 = 通透的赛璐璐阴影（推荐）
+@export_range(0.0, 1.0, 0.01) var shadow_floor := 0.32
+
+## 主光颜色。**只用于在 CPU 侧推导阴影色**——GPU 侧的明暗仍由场景里的真实光源决定。
+## 存在的意义：日式阴影的惯例是"阴影色 = 主光的冷偏移"，而不是随手挑一个紫；
+## 把主光色记在风格里，两边才不会脱节。
+@export var key_light_color := Color(1.0, 0.96, 0.90)
+
+## 主光方向（世界空间，指向光的来向）——**必须与场景里的 DirectionalLight3D 同向**。
+##
+## 为什么色阶要自己给方向：Godot 4 的 spatial shader **没有 `LIGHT` 片元内置量**
+## （也没有 `light()`），实测 `表达式中的标识符未知："LIGHT"`。所以"这一块该用
+## 第几档颜色"只能由 CPU 侧传一个固定方向进来。
+##
+## 这不是缺陷而是画风的正确形态：色阶是**画风**，本就该由风格包决定，
+## 且不该随"场景里恰好哪盏灯最亮"而漂移。
+##
+## 代价就是**必须与实灯对齐**：不一致时色阶亮面和实灯亮面会错开一道，
+## 硬边阴影与色阶互相打架（表现是"物体上一道硬边，别处亮暗还反着来"）。
+@export var key_light_dir := Vector3(-0.45, 0.82, -0.36)
+
+## 阴影色跟随主光的程度：0 = 完全用手填的 `shadow_tint`；
+## 1 = 完全由 `key_light_color` 推导。换主光时阴影色自动跟着走
+@export_range(0.0, 1.0, 0.01) var shadow_tint_follow := 0.35
+
+## 补光方向（世界空间，指向光的来向）：从主光对面偏上打，给暗面一层包裹式提亮。
+## 做成材质参数而不是真放一盏灯，是因为"暗面提亮"是画风事实，不是场景事实
+@export var fill_dir := Vector3(-0.45, 0.30, -0.60)
+
+## 补光颜色：通常是主光的补色（主光暖 → 补光偏冷）
+@export var fill_color := Color(0.60, 0.68, 0.95)
+
+## 补光强度：0 = 不补。背光面只剩阴影色会显得死板，0.15~0.35 之间最自然
+@export_range(0.0, 1.0, 0.01) var fill_strength := 0.22
 
 #endregion
 
@@ -169,6 +211,10 @@ static func _warn_dual_channel(use_vertex_color: bool, slot_ramp: Texture2D) -> 
 ##
 ## 两条同时给**不是错误**，只是槽位纹理会盖掉顶点色，故只 `push_warning` 一次不断言：
 ## 断言会把一个本来合法、只是被降级的组合变成运行期硬失败，可诊断性反而更差。
+##
+## 早退（`palette == null`）放在调色之后、所有与配色无关的参数都写完之后——
+## 否则 `make_material(null)` 会得到一份"没有轮廓光、没有雾、没有补光"的哑光材质，
+## 那比直接报错难查得多。
 func make_material(palette: ToonPaletteDef, use_vertex_color := false,
 		vcol_strength := 1.0, slot_ramp: Texture2D = null) -> ShaderMaterial:
 	_warn_dual_channel(use_vertex_color, slot_ramp)
@@ -180,6 +226,28 @@ func make_material(palette: ToonPaletteDef, use_vertex_color := false,
 	mat.set_shader_parameter(&"u_use_slot_tex", slot_ramp != null)
 	if slot_ramp != null:
 		mat.set_shader_parameter(&"u_slot_ramp", slot_ramp)
+
+	# ---- 与配色方案无关的参数，一律在 null 早退之前写完 ----
+	mat.set_shader_parameter(&"u_bands", bands)
+	mat.set_shader_parameter(&"u_band_soft", band_softness)
+	mat.set_shader_parameter(&"u_shadow_tint", derived_shadow_tint())
+	mat.set_shader_parameter(&"u_shadow_floor", shadow_floor)
+	mat.set_shader_parameter(&"u_key_dir", key_light_dir.normalized())
+	mat.set_shader_parameter(&"u_fill_dir", fill_dir.normalized())
+	mat.set_shader_parameter(&"u_fill_color", fill_color)
+	mat.set_shader_parameter(&"u_fill_strength", fill_strength)
+	mat.set_shader_parameter(&"u_ambient", ambient)
+	mat.set_shader_parameter(&"u_ambient_energy", ambient_energy)
+	mat.set_shader_parameter(&"u_spec_step", spec_step)
+	mat.set_shader_parameter(&"u_spec_color", spec_color)
+	mat.set_shader_parameter(&"u_spec_threshold", spec_threshold)
+	mat.set_shader_parameter(&"u_spec_soft", maxf(band_softness, 0.02))
+	mat.set_shader_parameter(&"u_rim_color", rim_color)
+	mat.set_shader_parameter(&"u_rim_strength", rim_strength)
+	mat.set_shader_parameter(&"u_rim_power", rim_power)
+	mat.set_shader_parameter(&"u_fog_color", fog_color)
+	mat.set_shader_parameter(&"u_fog_density", fog_density)
+
 	if palette == null:
 		return mat
 	# 三档：亮档掺 palette.light（暖白主导），暗档取 shade↔deep 中间（不压到最深）
@@ -192,22 +260,44 @@ func make_material(palette: ToonPaletteDef, use_vertex_color := false,
 	mat.set_shader_parameter(&"u_tier_light", tier_light)
 	mat.set_shader_parameter(&"u_tier_mid", tier_mid)
 	mat.set_shader_parameter(&"u_tier_dark", tier_dark)
-	mat.set_shader_parameter(&"u_bands", bands)
-	mat.set_shader_parameter(&"u_band_soft", band_softness)
-	mat.set_shader_parameter(&"u_shadow_tint", shadow_tint)
-	mat.set_shader_parameter(&"u_shadow_mix", 0.30)
-	mat.set_shader_parameter(&"u_ambient", ambient)
-	mat.set_shader_parameter(&"u_ambient_energy", ambient_energy)
-	mat.set_shader_parameter(&"u_spec_step", spec_step)
-	mat.set_shader_parameter(&"u_spec_color", spec_color)
-	mat.set_shader_parameter(&"u_spec_threshold", spec_threshold)
-	mat.set_shader_parameter(&"u_spec_soft", maxf(band_softness, 0.02))
-	mat.set_shader_parameter(&"u_rim_color", rim_color)
-	mat.set_shader_parameter(&"u_rim_strength", rim_strength)
-	mat.set_shader_parameter(&"u_rim_power", rim_power)
-	mat.set_shader_parameter(&"u_fog_color", fog_color)
-	mat.set_shader_parameter(&"u_fog_density", fog_density)
 	return mat
+
+
+## 按主光推导"日式阴影色"，再与手填的 `shadow_tint` 按 `shadow_tint_follow` 插值。
+##
+## 推导规则就是赛璐璐的通行做法（与 Unity Stylized / anime cel 那套一致）：
+##   ① 色相往冷紫推 0.075 圈 —— anime 阴影的标志性色偏，不是补色对撞
+##   ② 饱和度略升、明度压到约 0.62 —— 阴影要"有颜色但更沉"，不能变灰
+##   ③ alpha 原样透传：shader 用它当整套染色的总开关
+func derived_shadow_tint() -> Color:
+	if shadow_tint_follow <= 0.0:
+		return shadow_tint
+	var derived := Color.from_hsv(fposmod(key_light_color.h + 0.075, 1.0),
+		clampf(key_light_color.s * 1.15, 0.0, 1.0), key_light_color.v * 0.62, shadow_tint.a)
+	return shadow_tint.lerp(derived, shadow_tint_follow)
+
+
+## 供场景摆主光用：**`DirectionalLight3D` 放到本返回值处、再 `look_at(目标点)` 即可**。
+##
+## 之所以给"位置"而不是给欧拉角 / Basis：`DirectionalLight3D` 沿自身局部 **-Z** 出光，
+## 而"局部 -Z 该朝哪"要同时考虑上方向，绕顺序与正负号极易搞反。这里直接给出
+## "光该站在哪"，把朝向交给 `look_at` —— 那是引擎自己的约定，不会有歧义。
+##
+## 用法：`light.position = style.key_light_position(); light.look_at(Vector3.ZERO)`
+func key_light_position(distance := 10.0) -> Vector3:
+	return -key_light_aim() * maxf(distance, 0.01)
+
+
+## 归一化后的主光来向。零向量 / 与 UP 近乎共线时都退化成一个安全的斜上方向，
+## 否则 `normalized()` 出 NaN、或 `look_at` 因上方向退化而报 `上方向与前方向共线`。
+func key_light_aim() -> Vector3:
+	var d := key_light_dir
+	if d.length_squared() < 0.000001:
+		d = Vector3(-0.45, 0.82, -0.36)
+	d = d.normalized()
+	if absf(d.dot(Vector3.UP)) > 0.999:
+		d = Vector3(0.0, 0.0, -1.0)
+	return d
 
 #endregion
 
@@ -221,7 +311,10 @@ static func presets() -> Dictionary:
 			"title": "清透日系",
 			"desc": "2 档硬边色阶 + 倒壳细描边 + 强轮廓光。街边店面 / 载具 / 主角道具的默认画风",
 			"roughen": 0.25, "voxel_size": 0.12, "bands": 2, "band_softness": 0.04,
-			"shadow_tint": Color(0.42, 0.38, 0.62), "outline_mode": OutlineMode.INVERTED_HULL,
+			"shadow_tint": Color(0.42, 0.38, 0.62), "shadow_floor": 0.30,
+			"key_light_color": Color(1.0, 0.96, 0.90), "shadow_tint_follow": 0.35,
+			"fill_color": Color(0.58, 0.68, 0.95), "fill_strength": 0.20,
+			"outline_mode": OutlineMode.INVERTED_HULL,
 			"outline_width": 0.012, "rim_strength": 0.7, "rim_power": 2.4,
 			"ambient_energy": 0.32, "fog_density": 0.008,
 		}),
@@ -229,7 +322,13 @@ static func presets() -> Dictionary:
 			"title": "黄昏童话",
 			"desc": "3 档柔和过渡 + 粗描边 + 暖雾。绘本 / 温泉小镇 / 夜景灯火类可爱场景",
 			"roughen": 0.15, "voxel_size": 0.10, "bands": 3, "band_softness": 0.16,
-			"shadow_tint": Color(0.58, 0.44, 0.58), "spec_step": true,
+			"shadow_tint": Color(0.58, 0.44, 0.58), "shadow_floor": 0.38,
+			# 黄昏主光偏橙 ⇒ 阴影往紫走，这是黄昏绘本阴影的经典配色
+			"key_light_color": Color(1.0, 0.86, 0.72), "shadow_tint_follow": 0.45,
+			# 黄昏 ⇒ 光位压低。色阶边界跟着压低，物体才会有一道"横切"的暖亮面
+			"key_light_dir": Vector3(-0.62, 0.36, -0.70),
+			"fill_color": Color(0.95, 0.78, 0.72), "fill_strength": 0.26,
+			"spec_step": true,
 			"outline_mode": OutlineMode.INVERTED_HULL, "outline_width": 0.020,
 			"rim_strength": 0.5, "rim_power": 1.8, "ambient_energy": 0.42,
 			"ambient": Color(0.92, 0.82, 0.84), "fog_color": Color(0.98, 0.84, 0.78),
@@ -239,19 +338,33 @@ static func presets() -> Dictionary:
 			"title": "微缩模型",
 			"desc": "低对比 + 强环境光 + 极细描边 + 重雾，模拟「放在桌上看的树脂模型」",
 			"roughen": 0.25, "voxel_size": 0.08, "bands": 3, "band_softness": 0.20,
-			"shadow_tint": Color(0.68, 0.68, 0.76), "spec_step": true,
+			"shadow_tint": Color(0.68, 0.68, 0.76), "shadow_floor": 0.42,
+			"key_light_color": Color(1.0, 0.97, 0.94), "shadow_tint_follow": 0.30,
+			# 微缩是"摆在桌上的台灯" ⇒ 光位高且偏正前，色阶边界落在顶面而非侧面
+			"key_light_dir": Vector3(-0.28, 0.90, -0.34),
+			"fill_color": Color(0.86, 0.90, 1.0), "fill_strength": 0.35,
+			"spec_step": true,
 			"spec_threshold": 0.80,
 			"outline_mode": OutlineMode.INVERTED_HULL, "outline_width": 0.005,
 			"outline_color": Color(0.42, 0.40, 0.46, 1.0),
 			"rim_strength": 0.35, "rim_power": 3.2,
-			"ambient_energy": 0.55, "ambient": Color(0.90, 0.90, 0.94),
-			"fog_color": Color(0.90, 0.91, 0.94), "fog_density": 0.022,
+			"ambient_energy": 0.42, "ambient": Color(0.72, 0.75, 0.86),
+			# 雾密度是**每米**的，着色器按 `1 - exp(-d * density)` 把固有色往雾色上拉。
+			# 原先 0.022 + 近白雾色是按"桌面尺度"设的，但 diorama 实际有 14 米对径、
+			# 相机在 19 米外 —— 19 米处雾已达 0.34、背板侧 0.42，
+			# 固有色被洗掉四成，再叠近白环境光就整张过曝（实测截图）。
+			# 雾只能"把远处轻轻推远"，不能盖住画面。
+			# 再降到 0.003：雾按"距相机"算，而微缩长焦把相机推到 52 米外，
+			# 0.006 在那里仍有 27% 洗白；0.003 约 10%，只够"轻轻推远"。
+			"fog_color": Color(0.72, 0.75, 0.84), "fog_density": 0.003,
 		}),
-		&"anime_flat": _preset({
+	&"anime_flat": _preset({
 			"title": "低多边形块面",
 			"desc": "极粗量化 + 2 档色阶 + 无描边。远景山体 / 大地块的省算力画法",
 			"roughen": 1.0, "voxel_size": 0.40, "bands": 2, "band_softness": 0.02,
-			"shadow_tint": Color(0.50, 0.50, 0.66),
+			"shadow_tint": Color(0.50, 0.50, 0.66), "shadow_floor": 0.26,
+			"key_light_color": Color(0.95, 0.96, 1.0), "shadow_tint_follow": 0.30,
+			"fill_color": Color(0.72, 0.78, 0.95), "fill_strength": 0.18,
 			"outline_mode": OutlineMode.OFF, "rim_strength": 0.25, "rim_power": 3.0,
 			"ambient_energy": 0.40, "fog_density": 0.012,
 		}),
@@ -260,7 +373,12 @@ static func presets() -> Dictionary:
 			"desc": "薄壳抽壳 + 3 档柔过渡 + 无描边 + 强环境光。鸟居 / 和室 / 灯笼纸面质感",
 			"roughen": 0.10, "voxel_size": 0.09, "shell": 0.06, "smooth_k": 0.05,
 			"bands": 3, "band_softness": 0.22,
-			"shadow_tint": Color(0.55, 0.58, 0.70), "spec_step": true,
+			"shadow_tint": Color(0.55, 0.58, 0.70), "shadow_floor": 0.40,
+			"key_light_color": Color(1.0, 0.95, 0.88), "shadow_tint_follow": 0.40,
+			# 和风黄昏：低角度侧逆，纸面与石灯笼的受光面窄而长
+			"key_light_dir": Vector3(-0.68, 0.42, -0.60),
+			"fill_color": Color(0.80, 0.86, 1.0), "fill_strength": 0.30,
+			"spec_step": true,
 			"spec_color": Color(1.0, 0.97, 0.88),
 			"outline_mode": OutlineMode.INVERTED_HULL, "outline_width": 0.008,
 			"outline_color": Color(0.16, 0.18, 0.26, 1.0),
@@ -272,7 +390,10 @@ static func presets() -> Dictionary:
 			"title": "清透糖果",
 			"desc": "光滑几何 + 2 档亮色阶 + 粗描边 + 强轮廓光。糖果屋 / 玩具 / UI 立绘道具",
 			"roughen": 0.01, "voxel_size": 0.07, "bands": 2, "band_softness": 0.03,
-			"shadow_tint": Color(0.72, 0.56, 0.80), "spec_step": true,
+			"shadow_tint": Color(0.72, 0.56, 0.80), "shadow_floor": 0.34,
+			"key_light_color": Color(1.0, 0.94, 0.92), "shadow_tint_follow": 0.30,
+			"fill_color": Color(0.85, 0.80, 1.0), "fill_strength": 0.24,
+			"spec_step": true,
 			"spec_threshold": 0.66, "spec_color": Color(1.0, 1.0, 1.0),
 			"outline_mode": OutlineMode.INVERTED_HULL, "outline_width": 0.016,
 			"outline_color": Color(0.36, 0.22, 0.40, 1.0),

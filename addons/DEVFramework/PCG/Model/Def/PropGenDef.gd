@@ -41,6 +41,15 @@ class_name PropGenDef extends Def
 ## 参考量级：48~64 适合微缩模型，96+ 才看得出细节。
 @export_range(0, 256, 1) var voxel_res := 0
 
+## 体素方块的**物理边长**（米）。> 0 时压过 [member voxel_res]。
+##
+## 为什么要单独一个字段：res 是"最长边切几格"，实际边长 = 窄带盒最长边 / res，
+## 而窄带盒比模型宽出约 2×band（默认 3×voxel_size）。同一场景里模型尺寸差几倍时，
+## 这个余量带来的误差也跟着差几倍 —— 实测 7.9 米的大楼偏大 9%，1.16 米的长椅偏大 66%，
+## 于是"统一方块"不成立，而所有中间数字看起来都正常。
+## 要让全场方块一样大，就直接说边长是多少米。
+@export_range(0.0, 1.0, 0.005, "or_greater") var voxel_cell := 0.0
+
 ## 体素调色板。为空则用提取器默认色（几何仍然正确，只是没有分件色）。
 ## 建议直接给场景风格包里的 [ToonPaletteDef]，让体素与网格同属一套配色。
 @export var voxel_palette: ToonPaletteDef = null
