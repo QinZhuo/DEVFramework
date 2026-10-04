@@ -7,12 +7,6 @@
 
 #include "audio_synth.h"
 #include "ecs_core.h"
-#include "pcg_erode.h"
-#include "pcg_wfc.h"
-#include "pcg_wfc3d.h"
-#include "pcg_wfc_animator.h"
-#include "pcg_lsystem.h"
-#include "pcg_cave3d.h"
 
 using namespace godot;
 
@@ -22,12 +16,6 @@ void initialize_dev_module(ModuleInitializationLevel p_level) {
 	}
 	GDREGISTER_CLASS(AudioSynthEngine);
 	GDREGISTER_CLASS(ECSCore);
-	GDREGISTER_CLASS(PCGErode);
-	GDREGISTER_CLASS(PCGWFC);
-	GDREGISTER_CLASS(PCGWFC3D);
-	GDREGISTER_CLASS(PCGWFCAnimator);
-	GDREGISTER_CLASS(PCGLSystem);
-	GDREGISTER_CLASS(PCGCave3D);
 }
 
 void uninitialize_dev_module(ModuleInitializationLevel p_level) {

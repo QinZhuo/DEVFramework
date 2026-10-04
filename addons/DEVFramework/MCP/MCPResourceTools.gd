@@ -108,7 +108,7 @@ static func register(add_tool: Callable) -> void:
 	add_tool.call("create_resource",
 		"创建 .tres 资源配置: 指定脚本(class_name 或 res://脚本路径)与属性字典, 写入 res:// 或 user:// 路径。配置驱动开发时创建 Def 资源用。注意: 新建脚本 class_name 需先 restart_editor 才能被引擎识别, 若创建失败请先 reload。",
 		{"type": "object", "properties": {
-			"path": MCPToolSchema.str_arg("要创建的 .tres 完整路径(如 res://Assets/Def/PCG/MyDef.tres)"),
+			"path": MCPToolSchema.str_arg("要创建的 .tres 完整路径(如 res://Assets/Def/Audio/MyDef.tres)"),
 			"script": {"type": "string", "description": "脚本 class_name 或 res:// 脚本路径(如 Grid3DGenDef 或 res://addons/.../Grid3DGenDef.gd)"},
 			"properties": {"type": "object", "description": "属性字典(键=导出属性名, 值=属性值), 可嵌套资源/数组"}
 		}, "required": ["path", "script"]},
@@ -117,7 +117,7 @@ static func register(add_tool: Callable) -> void:
 	add_tool.call("get_resource_info",
 		"读取 .tres/.tscn 资源的完整属性树(递归), 便于理解配置结构。返回类型/导出属性/嵌套子资源/引用的脚本。排查配置或了解 Def 资源用。",
 		{"type": "object", "properties": {
-			"path": MCPToolSchema.str_arg("资源 res:// 路径(如 res://Assets/Def/PCG/Grid_Cave.tres)"),
+			"path": MCPToolSchema.str_arg("资源 res:// 路径(如 res://Assets/Def/Audio/MyDef.tres)"),
 			"max_depth": {"type": "integer", "description": "嵌套资源最大展开深度, 默认 5"}
 		}, "required": ["path"]},
 		_handle_get_resource_info)
@@ -387,8 +387,6 @@ const _RESOURCE_DOCS := [
 		"desc": "框架总览: 各模块入口与用法索引。体量最大, 建议先取标题索引再按需精读。"},
 	{"uri": "res://addons/DEVFramework/ECS/Readme.md", "name": "ECS 使用说明",
 		"desc": "ECS 实体组件系统: SoA 列存、命令缓冲、prefab 批量实例化、存档。"},
-	{"uri": "res://addons/DEVFramework/PCG/Readme.md", "name": "PCG 3D 程序化生成",
-		"desc": "PCG 模块: 3D 栅格/分块世界/生成管线 + SdfField 双投影(网格与体素) + 三渲二风格。"},
 	{"uri": "res://addons/DEVFramework/Camera/Readme.md", "name": "Camera 虚拟机位",
 		"desc": "Camera 模块: 机位(视角/跟随/blend)与面板类 UI 的机位切换。"},
 	{"uri": "res://addons/DEVFramework/AI/Readme.md", "name": "GOAP AI",

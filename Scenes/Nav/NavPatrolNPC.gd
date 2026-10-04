@@ -2,7 +2,7 @@ extends CharacterBody3D
 ## 3D 三态 AI NPC — 用 Godot 自带 NavigationAgent3D 在导航网格上自动寻路移动
 ##
 ## 状态机：PATROL（随机巡逻）→ CHASE（目标进入视野，追逐）→ FLEE（目标过近，逃跑）
-## 演示 PCG 导航桥接 + 引擎原生寻路的连续移动 + 简单行为切换。
+## 演示引擎原生寻路的连续移动 + 简单行为切换。
 
 enum AIState { PATROL, CHASE, FLEE }
 

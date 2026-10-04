@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.17)
 
 # Dev 原生核心 (GDExtension) — DEVFramework 框架级共享原生库
-# 整个框架的 C++ 能力(ECS / PCG / Audio 等)都注册在这一个扩展里,
+# 整个框架的 C++ 能力(ECS / Audio 等)都注册在这一个扩展里,
 # 编译产物统一输出到 addons/DEVFramework/Native/。
 # 多平台构建: godot-cpp 官方模板同款 CMake 方案
 # 用法:
@@ -21,12 +21,6 @@ add_library(dev SHARED
     src/register_types.cpp
     src/audio_synth.cpp
     src/ecs_core.cpp
-    src/pcg_erode.cpp
-    src/pcg_wfc.cpp
-    src/pcg_wfc3d.cpp
-    src/pcg_wfc_animator.cpp
-    src/pcg_lsystem.cpp
-    src/pcg_cave3d.cpp
 )
 
 target_link_libraries(dev PRIVATE godot-cpp)

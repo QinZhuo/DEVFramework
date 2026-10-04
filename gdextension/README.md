@@ -1,6 +1,6 @@
 # gdextension — DEVFramework 框架级共享原生核心 (C++ / GDExtension)
 
-**整个 DEVFramework 的唯一 C++ 共享扩展**：ECS 的 `ECSCore`、未来 PCG 侵蚀加速等其他模块原生类
+**整个 DEVFramework 的唯一 C++ 共享扩展**：ECS 的 `ECSCore`、Audio 的 `AudioSynthEngine` 等模块原生类
 都注册在这一个库里（`res://addons/DEVFramework/Native/dev.gdextension`），共用一份二进制。
 GDScript 侧统一走 `FrameworkNative.get_native(&"类名", [...])` 访问（见 `Native/FrameworkNative.gd`）。
 

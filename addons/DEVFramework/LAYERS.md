@@ -83,8 +83,7 @@ SaveTool.save_async(path, data)
 | 回放命令 | `GameCommand`/`CommandHistory`/`InputSource` 协议 | `&"use_equip"` 等具体命令、`CartridgeInputSource` |
 | AI | Goap 全套（暂未使用） | — |
 | 镜头 | `VirtualCamera3D` / `CameraBrain3D` / `CameraTool`（机位竞争 + 混合数学 + 叠加偏移协议） | `PlayerCamera`（鼠标跟随手感、震屏参数、场景机位摆放） |
-| PCG 生成 | `PCG/`（3D 栅格 / 分块世界 / 管线 + `SdfField` 场 / `PropGen`/`PropBuild`/`PropGenTool`/`PropLayoutTool`/`ModelGraph` + 三渲二风格 + `SceneStylePack`） | `Scripts/Gen/`（`ShopGen`/`HospitalGen`/`VehicleGen`/`StreetGen` + `WorldAssembler`/`PropRecipe`/`SceneStylePresets`） |
-| 其余 | ECS / PCG / Tween / View / Audio / Tool | Actor 及其组件、View 子类 |
+| 其余 | ECS / Tween / View / Audio / Tool | Actor 及其组件、View 子类 |
 
 ---
 
@@ -109,7 +108,7 @@ MCP 辅助：改/删共享资源前先 `find_resource_users` 查双向依赖；�
 | 轨道 | 目录 | 放什么 |
 |---|---|---|
 | **分层轴** | `Def/` `Entity/` `View/` `Tool/` 根部 | 核心骨架：被所有功能共用的基类协议（EffectDef/ValueDef/SignalDef）、纯数学原语（ModifierValue）、横切工具 |
-| **功能轴** | `<Module>/{Def,Entity,Tool}/` 自包含 | 可拔插功能域：AI、ECS、PCG、Audio、Task、GameCommand、Tween、Camera |
+| **功能轴** | `<Module>/{Def,Entity,Tool}/` 自包含 | 可拔插功能域：AI、ECS、Audio、Task、GameCommand、Tween、Camera |
 
 **归属三问**（新增功能时按序自问）：
 1. **删除测试**：整文件夹删掉后框架其余部分还能编译运行吗？能→功能轴；不能→分层轴
@@ -117,11 +116,14 @@ MCP 辅助：改/删共享资源前先 `find_resource_users` 查双向依赖；�
 3. **共变率**：一个需求总是同时改这组文件吗？是→功能轴
 
 **红线**：禁止把同一功能域的 Def 与 Entity 劈到分层轴两处（2026-08 已归位 Task/Audio，见第八节）。
-跨模块依赖必须单向且显式注释（如 PCG→Audio 经 PCG/Pipeline/AudioGenDef 桥接，Audio 不反向依赖 PCG）。
+跨模块依赖必须单向且显式注释（如 GameCommand→ECS、Camera→UI，各模块不得反向依赖）。
 
 ---
 
 ## 八、历史决策记录
+
+> **现状标注**：以下条目记录 PCG 模块在本仓库存续期间的设计决策，相关目录已移出，路径描述仅作历史存档。
+> 3D 程序化生成现为独立插件项目 `d:\Work\GodotProject\PCG`；查当前用法请去该项目的 Readme。
 
 **2026-10：PCG 全量重构为「3D 生成运行时」，SDF 并入（功能轴）**
 - 动因：模块原为「2D 栅格地图生成 + 3D 体素补丁」，2D 占代码量 92.6%；这类产物是俯视地图数据，与"3D 模型"是两类产物，混在一处会让真正的 3D 能力被淹没。需求明确：PCG 专职服务 3D 模型世界生成，同一份数据既能产体素模型也能产 lowpoly 场景。
@@ -130,7 +132,7 @@ MCP 辅助：改/删共享资源前先 `find_resource_users` 查双向依赖；�
 - 核心主张（成为模块的轴）：**烘焙只做一次**。`SdfField` 是唯一中间表示，MeshExtractor 与 VoxelExtractor 各自只是投影；实测烘焙占总耗时 99.9% 以上，所以双产物几乎不加钱、两产物必然同形、换画风不必重算几何。
 - 分层落点：`SceneStylePack` 留在框架但只含机制（画风+配色+配方表+布局参数+输出形态），三套具体预设引用项目生成器脚本，故拆到 `Scripts/Gen/SceneStylePresets.gd`；`WorldAssembler.from_pack()` 建在项目层，依赖方向单向（项目 → 框架）。
 - 决策：**不保留 2D 兼容层**。保留会让"只做 3D"这件事在代码里失效，而 2D 产物已有替代路径（地图可由体素栅格顶视导出）。
-- 遗留：`PCGErode`（2D 高度图侵蚀）与 `PCGLSystem`（L-System）两个原生类已无 GDScript 调用方，暂不强改原生库。
+- 遗留：`PCGErode` / `PCGLSystem` 等 PCG 原生类已随 PCG 模块移出，其源码已删，但已编译的 `dev.gdextension` 仍注册着它们（无调用方，不阻塞运行，重编译后消失）。
 - 验证：`Scripts/Test/pcg/` 8 个测试经 `test_pcg.gd` 单桥接接入 TestRunner；演示收敛为 `Scenes/PCG/` 5 个 3D 场景。
 
 **2026-10：SDF 模块按「生成 / 布局」双契约定位（功能轴）**〔本条已被上一条取代：`SDF/` 已整体并入 `PCG/`，文档迁至 `PCG/Readme.md`〕

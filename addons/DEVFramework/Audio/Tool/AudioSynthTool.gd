@@ -1,9 +1,7 @@
 @tool
-## 程序化音频生成工具(PCG 模块) — 从 AudioSynthDef 生成采样数据
-## 归属 PCG: 与 TextureGenDef(程序化纹理) 同级的"内容生成"职责
+## 程序化音频生成工具 — 从 AudioSynthDef 生成采样数据
 ##   Def → AudioSequence(事件展开) → AudioSynthEngine(C++ 逐采样合成) → 母带(int16 立体声)
 ## 通用播放/总线/保存/查询请用 AudioTool(通用音频管理, 非生成)
-## PCG 管线接入: PCG/Pipeline/AudioGenDef.gd(extends PCGGeneratorDef) 包装本工具的渲染
 class_name AudioSynthTool
 
 ## ======= 生成(Def → 采样数据) =======
