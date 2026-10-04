@@ -5,7 +5,6 @@
 #include <godot_cpp/core/defs.hpp>
 #include <godot_cpp/godot.hpp>
 
-#include "audio_synth.h"
 #include "ecs_core.h"
 
 using namespace godot;
@@ -14,7 +13,6 @@ void initialize_dev_module(ModuleInitializationLevel p_level) {
 	if (p_level != MODULE_INITIALIZATION_LEVEL_SCENE) {
 		return;
 	}
-	GDREGISTER_CLASS(AudioSynthEngine);
 	GDREGISTER_CLASS(ECSCore);
 }
 

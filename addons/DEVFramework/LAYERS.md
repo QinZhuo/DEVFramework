@@ -83,7 +83,7 @@ SaveTool.save_async(path, data)
 | 回放命令 | `GameCommand`/`CommandHistory`/`InputSource` 协议 | `&"use_equip"` 等具体命令、`CartridgeInputSource` |
 | AI | Goap 全套（暂未使用） | — |
 | 镜头 | `VirtualCamera3D` / `CameraBrain3D` / `CameraTool`（机位竞争 + 混合数学 + 叠加偏移协议） | `PlayerCamera`（鼠标跟随手感、震屏参数、场景机位摆放） |
-| 其余 | ECS / Tween / View / Audio / Tool | Actor 及其组件、View 子类 |
+| 其余 | ECS / Tween / View / Tool | Actor 及其组件、View 子类 |
 
 ---
 
@@ -108,11 +108,11 @@ MCP 辅助：改/删共享资源前先 `find_resource_users` 查双向依赖；�
 | 轨道 | 目录 | 放什么 |
 |---|---|---|
 | **分层轴** | `Def/` `Entity/` `View/` `Tool/` 根部 | 核心骨架：被所有功能共用的基类协议（EffectDef/ValueDef/SignalDef）、纯数学原语（ModifierValue）、横切工具 |
-| **功能轴** | `<Module>/{Def,Entity,Tool}/` 自包含 | 可拔插功能域：AI、ECS、Audio、Task、GameCommand、Tween、Camera |
+| **功能轴** | `<Module>/{Def,Entity,Tool}/` 自包含 | 可拔插功能域：AI、ECS、Task、GameCommand、Tween、Camera |
 
 **归属三问**（新增功能时按序自问）：
 1. **删除测试**：整文件夹删掉后框架其余部分还能编译运行吗？能→功能轴；不能→分层轴
-2. **API 宽度**：对外是少量入口类（GoapAgent/ECSWorld/AudioTool）→功能轴；是被广泛继承的基础协议（EffectDef 被 70+ 类继承）→分层轴
+2. **API 宽度**：对外是少量入口类（GoapAgent/ECSWorld/CameraTool）→功能轴；是被广泛继承的基础协议（EffectDef 被 70+ 类继承）→分层轴
 3. **共变率**：一个需求总是同时改这组文件吗？是→功能轴
 
 **红线**：禁止把同一功能域的 Def 与 Entity 劈到分层轴两处（2026-08 已归位 Task/Audio，见第八节）。

@@ -267,10 +267,9 @@ world.tick(delta)
 整个 DEVFramework 的 C++ 原生能力集中在**唯一一个共享扩展**：
 `res://addons/DEVFramework/Native/dev.gdextension`（编译产物也在该目录）。任何模块的原生类都注册在这一个库里，共用一份二进制。当前已注册：
 - `ECSCore` — ECS 高性能实体组件系统
-- `AudioSynthEngine` — Audio 模块逐采样合成内核
 
-> 已编译产物 `dev.gdextension` 内**仍注册着 6 个 PCG 原生类**（`PCGWFC3D` / `PCGCave3D` / `PCGWFC` /
-> `PCGWFCAnimator` / `PCGErode` / `PCGLSystem`）。它们的 C++ 源码随 PCG 模块一并移除，
+> 已编译产物 `dev.gdextension` 内**仍注册着已移除模块的原生类**：6 个 PCG 原生类（`PCGWFC3D` / `PCGCave3D` /
+> `PCGWFC` / `PCGWFCAnimator` / `PCGErode` / `PCGLSystem`）与 `AudioSynthEngine`。它们的 C++ 源码已随之移除，
 > 但**没有任何 GDScript 调用方**，故不阻塞运行；下次重编译 `dev.gdextension` 时会自动消失。
 
 由 **`FrameworkNative`**（`Native/FrameworkNative.gd`）统一懒加载与校验：
@@ -405,84 +404,34 @@ var data = await ActorTool.save_data(root)
 await ActorTool.load_data(root, data)
 ```
 
-### 5.8 程序化音频生成（AudioSynthTool + 通用 AudioTool）
+### 5.8 通用音频管理（AudioTool）
 
-**架构分层**：
-- **生成（Audio 模块，自包含）**：`Audio/Tool/AudioSynthTool.gd`（Def→采样数据，含 `render_data`/`generate`/`randomize_def` 等）+ 配置 Def（`Audio/Def/*`）+ 运行时展开（`Audio/Entity/AudioSequence.gd`）+ C++ `AudioSynthEngine`。
-- **通用管理（AudioTool）**：播放任意 `AudioStream`（`play_stream`）、程序化 BGM（`play_loop`，内部经 AudioSynthTool 生成）、总线效果、WAV 保存、流查询、编辑器预览/烘焙——**任何音频都可用，不承担生成桥接职责**。
-
-用 `AudioSynthDef` 描述声音，一键生成 3A 级音效 / BGM / 氛围 / 循环音乐，无需外部音频素材：
+> 程序化音频合成（Def 驱动的逐采样合成、C++ `AudioSynthEngine` 内核、风格/编曲模板与示例音效库）
+> 已于 2026-10 从本仓移除。AudioTool 现在只做**通用音频管理**：播放任意 `AudioStream`、总线效果、
+> WAV 保存、流查询、效果录音。
 
 ```gdscript
-# 一行播放示例音效 / 无限循环 BGM(全链路: 自动总线、自动释放)
-AudioTool.play_example("SFX_Laser")            # 音效一行
-var bgm := AudioTool.play_loop(load("res://Assets/Def/Audio/Examples/BGM_Loop_Adventure.tres"))  # 无限循环 BGM
-
-# 完整控制
-var def: AudioSynthDef = AudioTool.example_def("SFX_Laser")     # 加载示例定义
-var stream := AudioTool.generate_and_save(def, "res://out/sfx.wav")  # 生成并导出 .wav
-AudioTool.play(def)                            # 生成并播放(自动路由到定义的总线)
-AudioTool.get_stream_info(stream)              # 查询时长/采样率/循环信息
-AudioTool.list_examples()                      # 列出全部示例
+AudioTool.play_stream(stream, -6.0, "SFX")          # 播放任意音频流(播放结束自动释放)
+AudioTool.get_stream_info(stream)                   # 查询时长/采样率/声道/循环
+AudioTool.save_wav(stream, "res://out/sfx.wav")      # 导出标准立体声 WAV
+AudioTool.save_resource(stream, "res://out/sfx.tres")# 存为 Godot 音频资源(可直接拖入播放器)
+AudioTool.setup_audio_buses()                       # 一键生成 Master/SFX/BGM/UI 标准总线布局
 ```
 
-- **渲染管线**：`Def → AudioSequence（展开事件）→ AudioSynthEngine（C++ 逐采样合成，gdextension/src/audio_synth.cpp）→ AudioSynthTool（归一化/软削波/int16 母带）`。
-- **风格模板层**（`StyleDef`）：**风格配方**一键生成完整 BGM Def——配置全局（BPM/调性/和声/效果链）+ 声部列表（角色+音色模板+力度/八度）+ 鼓模式 + 段落。内置 **12 个音色模板**（`lead_square/lead_fm/pad_saw/bass_acid/pluck/drum_kick` 等）与 **8 种风格预设**（`StyleDef.preset("HOUSE")` 等：Chiptune/Rock/House/Jazz/Trap/Cinematic/World/Ambient）。`.build()` 返回可播放 `AudioSynthDef`；参考资源 `Examples/Style_House.tres`。
-- **合成内核 C++ 实现**：PolyBLEP 抗锯齿振荡器（6 波形）、**FM 频率调制**（调制器-载波对，DX7 风格电钢/钟/贝斯）、**Karplus-Strong 拨弦**（物理建模吉他/竖琴/古筝）、SVF 滤波器（低/带/高通，可被**LFO 扫频**）、ADSR 包络（支持曲线）、**LFO 自动化层**（`AudioLFODef` 可同时调制滤波/音量/声像/音高，实现扫频/抽吸/自动声像/颤音等音色演化）、鼓合成（KICK / SNARE / HAT / HAT_OPEN / TOM / CLAP）全部由**共享原生库 `AudioSynthEngine`** 实现（`FrameworkNative.get_native(&"AudioSynthEngine")`，无 GDScript 回退）。这些是 Godot 不提供的数据级合成 API，故自研并放原生层以获得实时性能；**其余通用能力一律用 Godot 已有功能**。
-- **自动编曲**（`AudioMusicDef`）：音阶音池 + 加权随机游走旋律 + 和弦进行 + 鼓节奏音型；**段落结构**（`AudioMusicSectionDef`）支持 intro/verse/chorus/outro 等曲式——每段独立小节数/和声进行/强度/乐器启停/八度偏移，声部间段落无缝拼接。
-- **和声深度**：ChordType 覆盖三和弦→13 和弦全系（含 9/11/13、挂留、加九等 21 种）；`chord_quality` 逐音级指定和弦色彩（调式交换/借用和弦）；声部级 + 段落级 `transpose_semitones` 转调（副歌升调等）；`AudioMusicDef.preset_progression("II_V_I")` 等 10 组常用和声进行预设（含 12 小节蓝调/爵士循环/小室进行）。
-- **鼓模式预设库**（`DrumPatternDef`）：行模式节奏型（每字符一步，`K/S/H/h/T/C/x`），任意步数（16=十六分/12=三连音/24=十六分三连）+ 切分 + 深度摇摆；内置 ROCK/HOUSE/TRAP/BREAKBEAT/FUNK/TECHNO/REGGAE/BALLAD 预设（`DrumPatternDef.preset("HOUSE")`），`AudioMusicDef.drum_pattern` 接入，按 `drum_kit` 分轨到不同鼓声部。
-- **循环 BGM**：`AudioTool.play_loop()` 一次性烘焙完整 loop 流（`AudioStreamWAV.loop_mode` 原生循环），交给 Godot 通用 `AudioStreamPlayer` 播放，无实时渲染负担。
-- **后台线程**：`AudioTool.generate_async(def)` 放 worker 线程渲染，避免阻塞主线程。
-
-**只自研"无法用内置实现"的部分，其余全部用 Godot 已有功能：**
+**音频处理全部交给 Godot 内置能力，框架不做任何逐采样合成**：
 
 | 能力 | 实现 | 说明 |
 |---|---|---|
-| 振荡/滤波/包络/鼓 | **C++ 原生 `AudioSynthEngine`** | Godot 无逐采样合成 API，必须自研；放共享原生库（`dev.gdextension`），性能远高于 GDScript 逐采样 |
-| 混响 / 延迟 / 失真 / 限幅 / 压缩 / EQ | **Godot 内置 `AudioEffect`** | 播放时经 `AudioSynthDef.bus` + `fx_chain` 路由到带效果的总线；**离线烘焙同样支持**——用内置 `AudioEffectRecord` 录音法把效果链固化进 .wav（`bake_wav(..., bake_fx=true)`，默认开启）|
-| WAV 写盘 | 自写 44 字节标准 PCM 头 | 4.7.1 内置 `save_to_wav()` 会把 16bit 立体声写成 mono 头（数据仍交错），Godot 重导入后声道/时长错乱，故自写标准头 |
-| 循环播放 | **Godot 通用 `AudioStreamPlayer` + `AudioStreamWAV.loop_mode`** | `AudioTool.play_loop()` 先完整生成 loop 流再交给引擎原生播放 |
-| 总线布局 | **Godot 内置 `AudioServer` / `AudioBusLayout`** | `AudioTool.setup_audio_buses()` 一键生成 Master/SFX/BGM/UI 布局并写入项目设置 |
+| 播放 / 循环 | **Godot 内置 `AudioStreamPlayer`** | `play_stream()` 播放结束自动释放；循环用 `AudioStreamWAV.loop_mode` |
+| 混响 / 延迟 / 失真 / 限幅 / 压缩 / EQ | **Godot 内置 `AudioEffect`** | 播放时路由到带效果的总线；`create_fx(name)` 取标准预设、`fxs_from_names([...])` 批量构建 |
+| 总线布局 | **Godot 内置 `AudioServer` / `AudioBusLayout`** | `setup_audio_buses()` 生成布局并写入项目设置；`ensure_bus()` 幂等建任意效果总线 |
+| 效果录音 | 内置 `AudioEffectRecord` | `render_with_fx(stream, fx)` 真实播放 + 录音固化效果链（需可用音频设备） |
+| WAV 写盘 | 自写 44 字节标准 PCM 头 | 见下方说明 |
 
-- `AudioTool.ensure_bus()` 按需幂等创建任意效果总线；`resolve_bus()` 为带 `fx_chain` 的定义自动建 `FX_<bus>` 效果总线。
-- `AudioTool.play_stream()` 播放结束后自动释放节点；`play_loop()` 返回的循环 BGM 播放器自动挂到定义的总线。
+标准预设名：`reverb` / `reverb_hall` / `delay` / `distortion` / `limiter` / `compressor` / `eq_lowpass` / `eq_highpass` / `eq_bandpass` / `spectrum`。
 
-| 类 | 说明 |
-|---|---|
-| `AudioSynthDef` | 根定义：类别（SFX/BGM/AMBIENT/LOOP）、采样率、主音量、软削波、`bus` + `fx_chain`（总线效果链）、循环/淡出 |
-| `AudioVoiceDef` | 声部（Tone/DRUM），含振荡器组、滤波器、ADSR、声像、音量 |
-| `AudioMusicDef` | 自动编曲配方；`AudioPatternDef` 显式四分音符节拍 |
-| `AudioSequence` / `AudioSynthEngine` | 事件展开（GDScript）/ C++ 逐采样合成核心（共享原生库） |
-| `AudioTool` / `DevAudioExamples` | **统一入口**：渲染/生成/播放/保存/总线/示例 全部集成 / 一键生成示例定义 |
-
-`AudioTool` 是音频功能的**唯一对外入口**，内部再分为：合成内核（C++ `AudioSynthEngine` 逐采样合成 + `soft_clip`/`midi_to_freq`/`Wave` 小函数）、合成渲染（`render_data`/`build_stream`/`render`）、生成（`generate`/`generate_async`）、播放（`play`/`play_stream`/`play_loop`/`play_example`）、保存（`save_wav`/`save_resource`/`generate_and_save`/`bake_wav`）、查询（`get_stream_info`/`list_examples`/`example_def`）、**调试与基准**（`inspect_def` 定义一键分析 / `benchmark` 渲染耗时基准）、总线管理（`ensure_bus`/`resolve_bus`/`create_fx`/`setup_audio_buses`）、编辑器预览（`play_editor_preview`/`stop_editor_preview`）。
-
-### Inspector 预览与烘焙
-
-每个 `AudioSynthDef` 资源自带两个内建按钮（`@export_tool_button`，无需任何插件代码）：
-
-- `▶ 播放 ／ ■ 停止`：**切换式**按钮——空闲时后台生成并按 `bus`/`fx_chain` 试听（BGM 自动循环），生成中或播放中再点则停止。
-- `随机生成音效` / `微调变体`：sfxr 灵感一键工具——**随机生成**全参数重随机（默认 `random_preserve_wave` 保持波形/声部基础，`mutate_locked` 中列出的顶层属性不被改动）；**微调变体**在现有参数上小幅扰动并重新掷编曲种子，快速批量产出"相似但不同"的候选，点完自动试听。结构（声部数/振荡器数）恒保持，空定义会自动补默认结构保证出声。
-- `烘焙 WAV...`：异步后台生成并写出标准立体声 WAV 到约定目录 `res://Assets/Audio/Baked/<Def名>.wav`，**默认把 `fx_chain` 效果链一起烘焙进文件**（内置 `AudioEffectRecord` 录音法，`AudioTool.bake_wav(def, path, bake_fx=false)` 可关闭），完成后自动刷新资源面板。**长 BGM 建议烘焙成 wav 资源供游戏直接加载**（引擎导入后为 QOA 压缩，播放开销极小）。
-
-`fx_chain` 为 **Godot 原生 `Array[AudioEffect]` 资源数组**——直接在 Inspector 里从音频效果资源列表选取并展开调参（混响 / 延迟 / 失真 / 限幅 / 压缩 / EQ 等任意内置效果）；代码侧可用 `AudioTool.create_fx("reverb")` 取标准预设、`AudioTool.fxs_from_names(["reverb", "delay"])` 批量构建。标准预设名：`reverb` / `reverb_hall` / `delay` / `distortion` / `limiter` / `compressor` / `eq_lowpass` / `eq_highpass` / `eq_bandpass` / `spectrum`。
-
-> 生成较重的 BGM（16 秒）约需 2 倍实时（后台线程；C++ `AudioSynthEngine` 实测 16s BGM 渲染约 0.3s），一次性烘焙成 `.wav` 资源供游戏加载；循环 BGM 用 `AudioTool.play_loop()`（完整流 + 通用播放器）。
-
-**人性化随机**：`AudioMusicDef` / `AudioPatternDef` 上新增 `pitch_jitter_cents`（每音符音高 ±音分抖动）与 `timing_jitter_ms`（每音符触发时间 ±毫秒抖动），消除重复旋律/打击乐的机械感；`AudioPatternDef.random_seed` 控制抖动变体。
-
-**淡入淡出**：`AudioSynthDef.fade_in`（头部淡入，离线烘焙与 `play_loop()` 完整流均生效，仅首轮）与 `fade_out`（尾部淡出）。注意：循环 BGM 若设 `fade_in`，因 `loop_begin=0` 每圈会重复淡入，建议循环曲用 0。
-
-**算法审查与参数语义**（对照 Godot 引擎源码 + 业界标准实现）：
-- 合成内核（PolyBLEP/SVF/ADSR/FM/Karplus-Strong/鼓/PCG32 RNG/常量功率声像/母带）与标准实现一致；`AudioStreamWAV.loop_begin/end` 为**帧**单位。
-- **转调同步**：`transpose_semitones` 对旋律/和弦/贝斯/琶音一致生效（旋律基于音池 + 转调叠加）。
-- `AudioOscillatorDef.phase_offset`：振荡器初始相位；`AudioFilterDef.cutoff_lfo_amount`：滤波截止随声部 LFO 线性调制（配合 `AudioLFODef`）。
-- 冗余：`AudioVoiceDef.drum_length` 已废弃（鼓时长由事件与指数衰减决定），打包层保留占位以稳定布局。
-
-**示例音效库**（共 25 个）：激光/爆炸/金币/受击/跳跃/UI 点击/能量拾取/脚步声/翻滚/魔法/重击/**FM 电钢(DX7)**/**拨弦(Karplus-Strong)**/**Acid Bass(LFO 扫频)** + **10 种风格 BGM**：冒险/氛围/8位 Chiptune/摇滚/House/Trap/爵士/电影管弦/世界拨弦/综合 Showcase。
-
-`Scenes/AudioDemo/AudioDemo.tscn` 是**程序化音频风格画廊**：10 种风格一键生成 BGM，点击后 InfoLabel 展示该风格的**音色构成与用到的能力**（如「爵士: FM 电钢 7/9 和弦 + 摇摆鼓 → 和声深度 + 鼓模式摇摆」），直观理解程序化生成能做到的程度。
+- `resolve_bus(bus, fx)`：`fx` 非空时自动建 `FX_<bus>` 效果总线，`play_stream()` 内部自动调用。
+- WAV 写盘说明：4.7.1 内置 `AudioStreamWAV.save_to_wav()` 会把 16bit 立体声写成 mono 头（数据仍交错），Godot 重导入后声道/时长错乱，故 `save_wav()` 自写标准头。
 
 ### 5.9 其他工具
 

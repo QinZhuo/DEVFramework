@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.17)
 
 # Dev 原生核心 (GDExtension) — DEVFramework 框架级共享原生库
-# 整个框架的 C++ 能力(ECS / Audio 等)都注册在这一个扩展里,
+# 整个框架的 C++ 能力(ECS 等)都注册在这一个扩展里,
 # 编译产物统一输出到 addons/DEVFramework/Native/。
 # 多平台构建: godot-cpp 官方模板同款 CMake 方案
 # 用法:
@@ -19,7 +19,6 @@ add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/godot-cpp ${CMAKE_CURRENT_BINARY_DI
 
 add_library(dev SHARED
     src/register_types.cpp
-    src/audio_synth.cpp
     src/ecs_core.cpp
 )
 
@@ -51,8 +50,8 @@ if(NOT MSVC)
     elseif(_dev_target STREQUAL "x86_64")
         target_compile_options(dev PRIVATE -march=x86-64-v2)
     endif()
-    # 禁用 FMA 融合: 使逐采样 float 运算与 Godot 引擎语义一致(引擎构建未开 FMA),
-    # 保证 C++ 音频合成输出与旧 GDScript 渲染 bit 级一致(迁移无感)。
+    # 禁用 FMA 融合: 使浮点运算与 Godot 引擎语义一致(引擎构建未开 FMA),
+    # 保证 C++ 端结果与 GDScript 侧 bit 级一致。
     target_compile_options(dev PRIVATE -ffp-contract=off)
 endif()
 
