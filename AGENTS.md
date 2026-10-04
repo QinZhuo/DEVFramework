@@ -20,5 +20,6 @@
   框架不再做任何逐采样合成，音频处理一律用 Godot 内置 `AudioStreamPlayer` / `AudioEffect` / `AudioServer`。
 - 已编译产物 `Native/dev.gdextension` 内**仍注册着 `AudioSynthEngine`**，但已无 GDScript 调用方，不阻塞运行；
   重编译该扩展后自动消失。
-- `Assets/Audio/Baked/` 下已渲染的成品 `.wav` 予以保留（现为普通音频资产，用 `AudioTool.play_stream()` 播放），
-  但**已无生成来源**，删除后无法重建。
+- 已渲染的示例成品 **未保留**：`Assets/Audio/Baked/` 及其中的 `.wav` 随模块一并移除。
+  `Assets/Audio/AudioBusLayout.tres` 保留（项目总线布局，`project.godot` 仍引用）。
+  ⚠ 合成代码已删除，wav 无法重建 —— 今后需要音频素材时用外部导入或引擎内置音源，不要指望本仓再生成。

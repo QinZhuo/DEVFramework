@@ -109,7 +109,7 @@ static func register(add_tool: Callable) -> void:
 		"创建 .tres 资源配置: 指定脚本(class_name 或 res://脚本路径)与属性字典, 写入 res:// 或 user:// 路径。配置驱动开发时创建 Def 资源用。注意: 新建脚本 class_name 需先 restart_editor 才能被引擎识别, 若创建失败请先 reload。",
 		{"type": "object", "properties": {
 			"path": MCPToolSchema.str_arg("要创建的 .tres 完整路径(如 res://Assets/Def/MyDef.tres)"),
-			"script": {"type": "string", "description": "脚本 class_name 或 res:// 脚本路径(如 Grid3DGenDef 或 res://addons/.../Grid3DGenDef.gd)"},
+			"script": {"type": "string", "description": "脚本 class_name 或 res:// 脚本路径(如 ChangelogDef 或 res://addons/.../ChangelogDef.gd)"},
 			"properties": {"type": "object", "description": "属性字典(键=导出属性名, 值=属性值), 可嵌套资源/数组"}
 		}, "required": ["path", "script"]},
 		_handle_create_resource)
@@ -267,7 +267,7 @@ static func _handle_create_resource(args: Dictionary) -> Dictionary:
 	elif script_ref.begins_with("class:"):
 		script = load(script_ref.trim_prefix("class:")) as Script
 	else:
-		# 全局类名(如 Grid3DGenDef): 查全局类列表找脚本路径
+		# 全局类名(如 ChangelogDef): 查全局类列表找脚本路径
 		var all_classes := ProjectSettings.get_global_class_list()
 		for c in all_classes:
 			if str(c.get("class", "")) == script_ref:
