@@ -76,7 +76,12 @@ func palette() -> ToonPaletteDef:
 	p.title = title
 	p.resource_name = title
 	p.swatches = SWATCHES.duplicate()
+	## 亮档 ramp **不能用 STEAM 白**：[ToonStyleDef.make_material] 的亮档是
+	## `base.lerp(light, 0.55)` —— 拿 (0.92,0.93,0.95) 的白去混，
+	## 黄铜 (0.85,0.68,0.32) 的橙味剩不到一半，整幅画就只剩"米白 + 暗紫"两色
+	## （实测：甲板顶与气囊顶全成白纸，暖铜味荡然无存）。
+	## 亮档必须是**黄铜自己的提亮版**，白留给 spec 高光与蒸汽口。
 	return apply_ramp(p,
-		SWATCHES[BRASS], SWATCHES[STEAM],
+		SWATCHES[BRASS], Color(0.976, 0.863, 0.549),
 		Color(0.451, 0.376, 0.310), Color(0.259, 0.204, 0.196),
 		Color(0.129, 0.098, 0.110))

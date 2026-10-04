@@ -1,27 +1,26 @@
 @tool
 class_name ToonStyleDef extends Def
-## 三渲二造型与渲染风格 —— "怎么画"，回答"这个物体该长成什么样、长成什么样才好看"
+## 造型与渲染风格 —— "怎么画"，回答"这个物体该长成什么样、长成什么样才好看"
 ##
-## == 核心设计：风格 = 几何参数 + 渲染参数 ==
+## == 核心设计：几何为主，渲染交给引擎 ==
 ##
-## 三渲二的观感有**一半长在几何上**，另一半才在着色器上：
-##   · 光滑曲面 + 色阶着色 = 塑料感（像手办上漆，不像动画）
-##   · 棱面几何 + 硬边色阶 = 动画赛璐璐（这才是目标）
-## 所以本文件把"画风"拆成两半，各自独立可调：
+## 微缩观感**主要长在几何上**：棱面几何 + 适度粗糙的 PBR 表面就已经成立，
+## 光照与阴影交给引擎的 `StandardMaterial3D`。所以本文件把"画风"拆成两半：
 ##
 ## | 组 | 字段 | 消费者 |
 ## |---|---|---|
 ## | 几何向 | roughen / voxel_size / shell / smooth_k | SDF 硬边化与等值面提取（`geometry_params()`） |
-## | 渲染向 | bands / band_softness / shadow_tint / spec_* | `ToonShader.TOON_SURFACE` |
-## | 轮廓向 | outline_* / rim_* | `ToonShader.TOON_OUTLINE` 或框架的 `OutlineEffect` |
-## | 光照向 | shadow_floor / key_light_color / key_light_dir / shadow_tint_follow / fill_* | `ToonShader.TOON_SURFACE` 的 EMISSION 段 |
-## | 环境向 | ambient* / fog_* | 同上（雾与低对比环境光，微缩感的关键） |
+## | 材质向 | roughness / metallic / specular | `make_material()` → `StandardMaterial3D` |
+## | 轮廓向 | outline_* | `ToonMaterial.outline()` 的 `grow_amount` + `cull_front`，或框架的 `OutlineEffect` |
+## | 光照向 | key_light_dir | `MiniatureStage` 摆 `DirectionalLight3D` 的位置 |
+## | 环境向 | ambient* / fog_* / vignette_* | `MiniatureStage` 写进 `Environment` 与暗角层 |
 ##
-## 两者**必须成套改**：只调色阶不改 `roughen`，出来的就是"上漆手办"而非动画。
+## 另有一批字段标注为**已停用**（原自写 3D shader 的遗留），保留是为了不破坏既有
+## `.tres` 与 presets，迁移去向见对应 region 的说明。
 ##
 ## == 分层红线 ==
 ## 本 Def 是纯静态配置（`Def` 基类纪律）。它不认识 SDF 场、不认识网格、不认识节点树：
-## 几何侧只通过 `geometry_params()` 读参数，渲染侧只通过 `make_material()` 取材质。
+## 几何侧只通过 `geometry_params()` 读参数，材质侧只通过 `make_material()` 出材质。
 ## **不含任何具体语义**——它不认识"屋顶"，只提供"棱面化到 0.25"这种能力。
 
 ## 内置风格的标题（仅 presets 写入）。不叫 `name`——`name` 是基类的翻译名属性，不可重复声明。
@@ -57,67 +56,94 @@ enum OutlineMode {
 #endregion
 
 
-#region 渲染向
+#region 引擎材质向
 
-## 色阶档数：2 = 清透硬边（大片亮面 + 一刀暗面）/ 3 = 常规动画（亮 / 中 / 暗）
+## 表面粗糙度：0 = 镜面 / 1 = 全哑光。微缩模型偏哑光，金属件靠 `metallic` 而不是压 roughness。
+@export_range(0.0, 1.0, 0.01) var roughness := 0.72
+
+## 金属度：0 = 介电质 / 1 = 纯金属。**> 0.5 时 [member ToonPaletteDef.base] 即金属的反射色**，
+## 压到 0 会让黄铜看起来像上了漆的塑料；给到 1 则 diffuse 消失、只剩环境反射。
+@export_range(0.0, 1.0, 0.01) var metallic := 0.0
+
+## 高光强度（映射到 `StandardMaterial3D.metallic_specular`）：金属件给 0.5~0.7 出金属亮边，
+## 0 则连高光都没有，粗糙的金属会显得像脏灰泥
+@export_range(0.0, 1.0, 0.01) var specular := 0.35
+
+#endregion
+
+
+#region 已停用：原自写 3D shader 的参数（保留字段，不参与渲染）
+#
+# 下面这些字段曾经喂给 `ToonShader.TOON_SURFACE`，那支 GLSL 已删除，
+# 材质改用引擎内置 `StandardMaterial3D`（理由见 [ToonShader] 文件头）。
+#
+# **字段刻意保留、不删**：它们已经写进 `.tres` 资源与 `Scripts/Gen/DioramaPresets.gd`
+# 的各套预设里，删字段会让那些资源在加载时丢属性、让 presets 直接编译不过。
+# 保留即"已知无效"，比"悄悄还在生效但看不出来"安全。
+#
+# 想找回对应的画面表现，改去这些地方（都是引擎侧、而非材质侧）：
+#   · 色阶 / 块状高光 → `bands`、`band_softness`、`spec_*`：引擎没有"硬阶漫反射"，
+#     要硬边阴影就开 `Light3D` 的阴影并把 `Environment.tonemap_mode` 调开；
+#   · 暗部染色 / 阴影地板 → `shadow_tint`、`shadow_floor`：改由场景 `Environment`
+#     的 `ambient_light_color` / `ambient_light_energy` 与 `DirectionalLight3D.light_color`
+#     决定，暗部不再是材质里的常量加色；
+#   · 补光 → `fill_dir`、`fill_color`、`fill_strength`：改放一盏真实的
+#     `OmniLight3D`，位置对着 `fill_dir`，强度对着 `fill_strength`。
+
+## 色阶档数。**已停用**：改用 `StandardMaterial3D` 后无色阶，明暗由引擎光照连续给出。
 @export_range(2, 4, 1) var bands := 2
 
-## 档位过渡宽度（0~0.5，占一档的比例）：0 = 完全硬阶（日式赛璐璐），
-## 略大于 0 时只在台阶边界做极窄过渡，起抗锯齿作用而不破坏硬边观感
+## 档位过渡宽度。**已停用**：色阶整体已移除，本字段不再有任何消费者。
 @export_range(0.0, 0.5, 0.01) var band_softness := 0.06
 
-## 暗部染色：**不要用黑**。日式动画的阴影是往冷 / 往紫染一层色，不是压暗
+## 暗部染色。**已停用**：染色曾靠 EMISSION 常量底噪实现，材质不再有 EMISSION。
 @export var shadow_tint := Color(0.45, 0.40, 0.65)
 
-## 是否画二渲二的块状高光（逆光下的一点白）
+## 阴影色跟随主光的程度。**已停用**：仅 `derived_shadow_tint()` 用过它，而那个结果已无处可去。
+@export_range(0.0, 1.0, 0.01) var shadow_tint_follow := 0.35
+
+## 阴影地板强度。**已停用**：材质不再写 EMISSION，引擎把阴影处的 ALBEDO 乘黑即可。
+@export_range(0.0, 1.0, 0.01) var shadow_floor := 0.32
+
+## 主光颜色。**已停用**：曾用于 CPU 侧推导阴影色；现在光照色直接来自场景里的 `Light3D`。
+@export var key_light_color := Color(1.0, 0.96, 0.90)
+
+## 是否画块状高光。**已停用**：改由 `metallic` + `specular` 走引擎 PBR 高光。
 @export var spec_step := false
 
-## 块状高光颜色：默认取暖白，高光一着色就偏黄会显脏
+## 块状高光颜色。**已停用**：同上。
 @export var spec_color := Color(1.0, 0.98, 0.94)
 
-## 块状高光阈值（半程向量 N·H）：越大高光越小越集中
+## 块状高光阈值。**已停用**：同上。
 @export_range(0.0, 1.0, 0.01) var spec_threshold := 0.72
+
+## 补光方向。**已停用**：改放真实 `OmniLight3D`，本字段仅作"该把灯放哪"的记录。
+@export var fill_dir := Vector3(-0.45, 0.30, -0.60)
+
+## 补光颜色。**已停用**：同上，颜色改由那盏灯的 `light_color` 给。
+@export var fill_color := Color(0.60, 0.68, 0.95)
+
+## 补光强度。**已停用**：同上，强度改由那盏灯的 `light_energy` 给。
+@export_range(0.0, 1.0, 0.01) var fill_strength := 0.22
+
+## 轮廓光颜色 / 强度 / 收束指数。**已停用**：轮廓光曾在 EMISSION 里按 fresnel 加色，
+## 现已随 EMISSION 一起移除。边缘亮感改用 `metallic` 的环境反射，或在场景里补一盏背光。
+@export var rim_color := Color(1.0, 0.95, 0.88)
+@export_range(0.0, 2.0, 0.01) var rim_strength := 0.6
+@export_range(0.5, 8.0, 0.1) var rim_power := 2.5
 
 #endregion
 
 
 #region 光照向
 
-## 阴影地板强度：引擎把阴影处的 ALBEDO 乘黑，这一层决定"阴影里该是什么颜色"。
-## 0 = 纯硬刻（阴影死黑） / 0.30~0.45 = 通透的赛璐璐阴影（推荐）
-@export_range(0.0, 1.0, 0.01) var shadow_floor := 0.32
-
-## 主光颜色。**只用于在 CPU 侧推导阴影色**——GPU 侧的明暗仍由场景里的真实光源决定。
-## 存在的意义：日式阴影的惯例是"阴影色 = 主光的冷偏移"，而不是随手挑一个紫；
-## 把主光色记在风格里，两边才不会脱节。
-@export var key_light_color := Color(1.0, 0.96, 0.90)
-
-## 主光方向（世界空间，指向光的来向）——**必须与场景里的 DirectionalLight3D 同向**。
+## 主光方向（世界空间，指向光的来向）—— **必须与场景里的 DirectionalLight3D 同向**。
+## [MiniatureStage] 用本字段摆那盏主光，所以风格与实灯天然对齐，不会各走各的。
 ##
-## 为什么色阶要自己给方向：Godot 4 的 spatial shader **没有 `LIGHT` 片元内置量**
-## （也没有 `light()`），实测 `表达式中的标识符未知："LIGHT"`。所以"这一块该用
-## 第几档颜色"只能由 CPU 侧传一个固定方向进来。
-##
-## 这不是缺陷而是画风的正确形态：色阶是**画风**，本就该由风格包决定，
-## 且不该随"场景里恰好哪盏灯最亮"而漂移。
-##
-## 代价就是**必须与实灯对齐**：不一致时色阶亮面和实灯亮面会错开一道，
-## 硬边阴影与色阶互相打架（表现是"物体上一道硬边，别处亮暗还反着来"）。
+## 注意：改用 `StandardMaterial3D` 后材质不再需要这个方向（色阶已移除），
+## 但它仍是"这套画风主光从哪来"的唯一记录处，`MiniatureStage` 与调试工具都读它，
+## 因此**不要连同上面那批停用字段一起删掉**。
 @export var key_light_dir := Vector3(-0.45, 0.82, -0.36)
-
-## 阴影色跟随主光的程度：0 = 完全用手填的 `shadow_tint`；
-## 1 = 完全由 `key_light_color` 推导。换主光时阴影色自动跟着走
-@export_range(0.0, 1.0, 0.01) var shadow_tint_follow := 0.35
-
-## 补光方向（世界空间，指向光的来向）：从主光对面偏上打，给暗面一层包裹式提亮。
-## 做成材质参数而不是真放一盏灯，是因为"暗面提亮"是画风事实，不是场景事实
-@export var fill_dir := Vector3(-0.45, 0.30, -0.60)
-
-## 补光颜色：通常是主光的补色（主光暖 → 补光偏冷）
-@export var fill_color := Color(0.60, 0.68, 0.95)
-
-## 补光强度：0 = 不补。背光面只剩阴影色会显得死板，0.15~0.35 之间最自然
-@export_range(0.0, 1.0, 0.01) var fill_strength := 0.22
 
 #endregion
 
@@ -127,21 +153,13 @@ enum OutlineMode {
 ## 轮廓实现方式。倒壳逐物体、屏幕空间全局统一；两者可同时开（屏幕空间管远景、倒壳管近景）
 @export var outline_mode: OutlineMode = OutlineMode.INVERTED_HULL
 
-## 轮廓宽度：**NDC 单位下的半宽**（屏幕空间恒定，与距离无关）。
-## 0.006 = 极细 / 0.012 = 日式细描边 / 0.020 = 绘本粗描边
+## 轮廓宽度：**世界空间外扩量（米）**。倒壳走 `StandardMaterial3D.grow_amount`，
+## 单位与 [method ToonMaterial.build_outline_mesh] 一致，两条路径可互相换算 / 抵消。
+## 远景会细到看不见（那台相机在几十米外，6 mm 只有 1 像素不到），需要粗描边就往上调。
 @export_range(0.0, 0.08, 0.001) var outline_width := 0.012
 
-## 轮廓颜色：深紫褐 / 深藏青。留空（全透明）时回退 `ToonPaletteDef.outline`
+## 轮廓颜色：深紫褐 / 深藏青。留空（全透明）时回退 [member ToonPaletteDef.outline]
 @export var outline_color := Color(0.20, 0.15, 0.24, 1.0)
-
-## 轮廓光颜色：日式动画的边缘亮边，暖白最自然
-@export var rim_color := Color(1.0, 0.95, 0.88)
-
-## 轮廓光强度：0 = 关闭。这是"廉价感 vs 通透感"的分水岭，建议不低于 0.4
-@export_range(0.0, 2.0, 0.01) var rim_strength := 0.6
-
-## 轮廓光收束指数：越大越细亮（HDR 的 anime cel 常用 2~4）
-@export_range(0.5, 8.0, 0.1) var rim_power := 2.5
 
 #endregion
 
@@ -180,101 +198,65 @@ func geometry_params() -> Dictionary:
 
 #region 材质
 
-## 分件色双通道的错配告警：整个会话只报一次，避免批量装配时刷屏。
-static var _warned_dual_channel := false
-
-
-## 两条固有色通道同时开启时提醒一次。**只警告、不断言、不改返回值。**
+## 组装表面材质 —— 引擎内置 [StandardMaterial3D]，不再自写 spatial shader。
 ##
-## 之所以只是"降级"而非"错误"：两条都给本身合法（比如调用方想临时用纹理覆盖），
-## 实际生效的是优先级更高的一条——可诊断的静默降级，好过运行期硬失败。
-static func _warn_dual_channel(use_vertex_color: bool, slot_ramp: Texture2D) -> void:
-	if slot_ramp == null or not use_vertex_color or _warned_dual_channel:
-		return
-	_warned_dual_channel = true
-	push_warning("[ToonStyleDef.make_material] slot_ramp 与 use_vertex_color 同时开启："
-		+ "shader 里槽位纹理优先级更高，顶点色会被静默覆盖（两者都只影响中档固有色）。"
-		+ "分件色请只开一条——顶点色 = 一次提取一套颜色（批量烘焙快）；"
-		+ "槽位纹理 = 同一网格换多套配色（不重提网格）。")
-
-
-## 组装色阶材质。档位颜色由本文件按配色方案**算好**再传给 shader——
-## 调色只改 `ToonPaletteDef`，shader 与本文件都不必动。
+## == 为什么这么简单 ==
+## 明暗、阴影、能量守恒全部交给引擎的光照管线。这里只写"这件东西是什么色、
+## 表面有多粗糙、是不是金属"，三行就完事。原先那套色阶 + EMISSION 常量底噪
+## 的做法已删除，理由（以及它如何在 `tonemap = LINEAR` 下把顶面烧成一片白）
+## 见 [ToonShader] 文件头。
 ##
-## `use_vertex_color` = 打开"语义分件取色（顶点色）"：网格顶点色（由 `SlotPalette.to_array()`
-## 烘进 ARRAY_COLOR）成为中档基色，亮档/暗档仍向本风格的暖白与暗部染色靠拢。
-## 于是屋顶/墙/木/玻璃各拿各的固有色，而整体仍是同一种画风。
+## == 固有色怎么来 ==
+## [param palette] 非空时取 [member ToonPaletteDef.base] 作为 `albedo_color`。
+## 分件场景（体素多 surface）走 [method ToonMaterial.part_material]，
+## 每个部件一份材质、各自的 `base`，因此**逐部件分色在这里天然成立**，
+## 不需要任何 shader 通道去查表。
 ##
-## `slot_ramp` = 打开"语义分件取色（槽位纹理）"：传 `ToonMaterial.make_slot_ramp()`
-## 烘出的 256×1 色带，shader 按 `UV2.x` 查色。**换配色只换这张纹理，网格不用重提**，
-## 且优先级高于 `use_vertex_color`。两者都默认关闭 —— 不分件的单色模型不必付这份开销。
+## `use_vertex_color` = 打开"语义分件取色（顶点色）"：网格顶点色（`ARRAY_COLOR`）
+## 直接乘进固有色。这是**引擎内置能力**（`vertex_color_use_as_albedo`），
+## 替代原先自写 shader 里的 `u_use_vcol` 分支。默认关闭。
 ##
-## 两条同时给**不是错误**，只是槽位纹理会盖掉顶点色，故只 `push_warning` 一次不断言：
-## 断言会把一个本来合法、只是被降级的组合变成运行期硬失败，可诊断性反而更差。
+## `vcol_strength` = 顶点色的权重。引擎只提供"乘上去"这一个开关，没有强度档，
+## 所以按等效方式换算：**把固有色往白色推**（权重越低越白），
+## 效果与"顶点色影响越弱"一致。这是近似而非精确等价，故此处不做断言级保证。
 ##
-## 早退（`palette == null`）放在调色之后、所有与配色无关的参数都写完之后——
-## 否则 `make_material(null)` 会得到一份"没有轮廓光、没有雾、没有补光"的哑光材质，
-## 那比直接报错难查得多。
+## `slot_ramp` = 旧的"槽位纹理"通道，**已不支持**：`StandardMaterial3D` 没有
+## 按 `UV2.x` 查色带的等价功能（它的 UV 通道固定给 albedo / 遮蔽等用途）。
+## 给了非 null 就 `push_warning` 一次并忽略——**不静默丢弃**，否则"换配色不用重提网格"
+## 这个承诺会继续误导调用方。想要"同一网格换多套配色"，用顶点色通道重新提取即可。
+##
+## `palette == null` 时给一份中性灰哑光材质（可直接用于预览），而不是 null：
+## 返回 null 会让调用方的 `mi.material = ...` 变成"材质被清空"，症状是物体变透明，
+## 比直接报错难查得多。
 func make_material(palette: ToonPaletteDef, use_vertex_color := false,
-		vcol_strength := 1.0, slot_ramp: Texture2D = null) -> ShaderMaterial:
-	_warn_dual_channel(use_vertex_color, slot_ramp)
-	var mat := ShaderMaterial.new()
-	mat.shader = ToonShader.surface_shader()
-	mat.set_shader_parameter(&"u_use_vcol", use_vertex_color)
-	mat.set_shader_parameter(&"u_vcol_strength", clampf(vcol_strength, 0.0, 1.0))
-	# 色带纹理给了就接管固有色；没给则保持关闭，uniform 留 null 也绝不会被采样
-	mat.set_shader_parameter(&"u_use_slot_tex", slot_ramp != null)
+		vcol_strength := 1.0, slot_ramp: Texture2D = null) -> StandardMaterial3D:
+	var mat := StandardMaterial3D.new()
+	mat.roughness = roughness
+	mat.metallic = metallic
+	mat.metallic_specular = specular
+	mat.vertex_color_use_as_albedo = use_vertex_color
 	if slot_ramp != null:
-		mat.set_shader_parameter(&"u_slot_ramp", slot_ramp)
-
-	# ---- 与配色方案无关的参数，一律在 null 早退之前写完 ----
-	mat.set_shader_parameter(&"u_bands", bands)
-	mat.set_shader_parameter(&"u_band_soft", band_softness)
-	mat.set_shader_parameter(&"u_shadow_tint", derived_shadow_tint())
-	mat.set_shader_parameter(&"u_shadow_floor", shadow_floor)
-	mat.set_shader_parameter(&"u_key_dir", key_light_dir.normalized())
-	mat.set_shader_parameter(&"u_fill_dir", fill_dir.normalized())
-	mat.set_shader_parameter(&"u_fill_color", fill_color)
-	mat.set_shader_parameter(&"u_fill_strength", fill_strength)
-	mat.set_shader_parameter(&"u_ambient", ambient)
-	mat.set_shader_parameter(&"u_ambient_energy", ambient_energy)
-	mat.set_shader_parameter(&"u_spec_step", spec_step)
-	mat.set_shader_parameter(&"u_spec_color", spec_color)
-	mat.set_shader_parameter(&"u_spec_threshold", spec_threshold)
-	mat.set_shader_parameter(&"u_spec_soft", maxf(band_softness, 0.02))
-	mat.set_shader_parameter(&"u_rim_color", rim_color)
-	mat.set_shader_parameter(&"u_rim_strength", rim_strength)
-	mat.set_shader_parameter(&"u_rim_power", rim_power)
-	mat.set_shader_parameter(&"u_fog_color", fog_color)
-	mat.set_shader_parameter(&"u_fog_density", fog_density)
-
+		_warn_slot_ramp_unsupported()
 	if palette == null:
+		mat.albedo_color = Color(0.80, 0.80, 0.80)
 		return mat
-	# 三档：亮档掺 palette.light（暖白主导），暗档取 shade↔deep 中间（不压到最深）
-	var tier_light := palette.base.lerp(palette.light, 0.55)
-	var tier_mid := palette.base.lerp(palette.shade, 0.45)
-	var tier_dark := palette.shade.lerp(palette.deep, 0.5)
-	if bands <= 2:
-		# 只有 2 档时让中档与暗档重合 ⇒ 实际就是"亮面 + 一刀暗面"的清透画法
-		tier_mid = tier_dark
-	mat.set_shader_parameter(&"u_tier_light", tier_light)
-	mat.set_shader_parameter(&"u_tier_mid", tier_mid)
-	mat.set_shader_parameter(&"u_tier_dark", tier_dark)
+	# 权重 <1 时往白推，等效于"顶点色影响减弱"（引擎只有乘上去这一个开关）
+	mat.albedo_color = palette.base.lerp(Color.WHITE, 1.0 - clampf(vcol_strength, 0.0, 1.0)) \
+			if use_vertex_color else palette.base
 	return mat
 
 
-## 按主光推导"日式阴影色"，再与手填的 `shadow_tint` 按 `shadow_tint_follow` 插值。
-##
-## 推导规则就是赛璐璐的通行做法（与 Unity Stylized / anime cel 那套一致）：
-##   ① 色相往冷紫推 0.075 圈 —— anime 阴影的标志性色偏，不是补色对撞
-##   ② 饱和度略升、明度压到约 0.62 —— 阴影要"有颜色但更沉"，不能变灰
-##   ③ alpha 原样透传：shader 用它当整套染色的总开关
-func derived_shadow_tint() -> Color:
-	if shadow_tint_follow <= 0.0:
-		return shadow_tint
-	var derived := Color.from_hsv(fposmod(key_light_color.h + 0.075, 1.0),
-		clampf(key_light_color.s * 1.15, 0.0, 1.0), key_light_color.v * 0.62, shadow_tint.a)
-	return shadow_tint.lerp(derived, shadow_tint_follow)
+## 槽位色带已无等价实现时的告警。整个会话只报一次，避免批量装配时刷屏。
+static var _warned_slot_ramp := false
+
+
+static func _warn_slot_ramp_unsupported() -> void:
+	if _warned_slot_ramp:
+		return
+	_warned_slot_ramp = true
+	push_warning("[ToonStyleDef.make_material] slot_ramp 已不再生效：材质改用引擎内置 "
+		+ "StandardMaterial3D，它没有'按 UV2.x 查色带'的通道。本次调用按未给处理。"
+		+ "需要语义分件色请改用 use_vertex_color（重新提取一次网格）。")
 
 
 ## 供场景摆主光用：**`DirectionalLight3D` 放到本返回值处、再 `look_at(目标点)` 即可**。
@@ -283,9 +265,19 @@ func derived_shadow_tint() -> Color:
 ## 而"局部 -Z 该朝哪"要同时考虑上方向，绕顺序与正负号极易搞反。这里直接给出
 ## "光该站在哪"，把朝向交给 `look_at` —— 那是引擎自己的约定，不会有歧义。
 ##
+## == 方向约定：同向，不取反 ==
+## [member key_light_dir] 是**光源所在的方向**（来向），不是光行进的向量：
+## 预设里一律写成 y 为正（`Vector3(-0.62, 0.55, -0.55)` = 光从右上后方来），
+## [method MiniatureStage.apply_key_light] 也正是拿它当 `_basis_with_z()` 的 +Z，
+## 而 +Z 才是"来光方向"。所以站位与它**同侧**、不取反。
+##
+## 取反过一次，后果不报错也不崩，只是画面整个反了：光源落到 `y = -11` 的地下，
+## 顶面全部背光（只剩环境光那层托底），投影也投到背光的那一面 ——
+## 实测画面是"顶面死灰、底座上一道与光照方向自相矛盾的斜切三角形"。
+##
 ## 用法：`light.position = style.key_light_position(); light.look_at(Vector3.ZERO)`
 func key_light_position(distance := 10.0) -> Vector3:
-	return -key_light_aim() * maxf(distance, 0.01)
+	return key_light_aim() * maxf(distance, 0.01)
 
 
 ## 归一化后的主光来向。零向量 / 与 UP 近乎共线时都退化成一个安全的斜上方向，
@@ -357,8 +349,8 @@ static func presets() -> Dictionary:
 			# 再降到 0.003：雾按"距相机"算，而微缩长焦把相机推到 52 米外，
 			# 0.006 在那里仍有 27% 洗白；0.003 约 10%，只够"轻轻推远"。
 			"fog_color": Color(0.72, 0.75, 0.84), "fog_density": 0.003,
-		}),
-	&"anime_flat": _preset({
+					}),
+					&"anime_flat": _preset({
 			"title": "低多边形块面",
 			"desc": "极粗量化 + 2 档色阶 + 无描边。远景山体 / 大地块的省算力画法",
 			"roughen": 1.0, "voxel_size": 0.40, "bands": 2, "band_softness": 0.02,
@@ -420,12 +412,16 @@ static func _preset(cfg: Dictionary) -> ToonStyleDef:
 
 
 ## 覆写展示文案（不覆写 `_to_string()`——它内部调 `tr()`，翻译模块相关）
-## 形如 `"清透日系 · 2档 · 描边0.012"`
+## 形如 `"清透日系 · 粗糙0.72 · 描边0.012"`。
+## 注意展示的是**几何 + PBR**参数：色阶（`bands`）已随自写 3D shader 一起停用，
+## 再显示"几档"会让人以为改它能改画面。
 func get_desc(_data) -> String:
-	var parts := "%s · %d档 · %s" % [
-		title if not title.is_empty() else name, bands,
+	var parts := "%s · 粗糙%.2f · %s" % [
+		title if not title.is_empty() else name, roughness,
 		"无描边" if outline_mode == OutlineMode.OFF else "描边%.3f" % outline_width,
 	]
+	if metallic > 0.5:
+		parts += " · 金属"
 	if roughen > 0.0:
 		parts += " · 棱面%.2f" % roughen
 	return parts

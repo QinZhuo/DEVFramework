@@ -23,8 +23,9 @@ extends RefCounted
 ##   5. 体素与网格**同源**：格点容器罩住网格包围盒、中心重合、边长跟着几何尺度走、
 ##      实心体素数随几何体积变化（不是一份"看着对"的常量副本）
 ##   6. 镜头与舞台：字段语义自洽 + [MiniatureStage] 真的写进了场景 + 重复调用不叠层
-##   7. 主光对齐：实灯出光方向必须与材质里的 `u_key_dir` 同向（Godot 没有 `LIGHT`
-##      内置量，色阶方向只由这个 uniform 决定，两者错开即出现"硬边阴影与色阶打架"）
+##   7. 主光对齐：实灯出光方向必须与 `style.key_light_dir` 同向，且表面材质就是引擎内置的
+##      `StandardMaterial3D`、粗糙度/金属度直接来自风格字段（不再有自写 shader 的 `u_key_dir`，
+##      明暗全交给实灯——灯与风格一旦各记一份，画面就会静默错开）
 
 const PACK_PATH := "res://Scripts/Gen/SceneStylePresets.gd"
 
@@ -303,13 +304,22 @@ static func _stage_checks(all_ok: bool, packs: Dictionary) -> bool:
 		## `Condition "!is_inside_tree()" is true`，把断言变成一片噪音。
 		## host 自身是单位变换，故此处局部 == 世界。
 		var to_light := sun.transform.basis.z
-		var mat: ShaderMaterial = mini.style.make_material(mini.palette)
-		var shader_key: Vector3 = mat.get_shader_parameter(&"u_key_dir")
-		all_ok = _ck(all_ok, to_light.dot(shader_key) > 0.999,
-			"主光局部 +Z（光的来向）应与材质 u_key_dir 同向，实得点积 %s，灯 %s vs uniform %s" % [
-				snappedf(to_light.dot(shader_key), 0.0001), to_light, shader_key])
+		## 材质已改用引擎内置 `StandardMaterial3D`，不再有 `u_key_dir` uniform；
+		## 主光方向只剩 `style.key_light_aim()` 这一个记录处，而摆灯与断言都读它，
+		## 所以"灯与风格同源"这条不变——只是校验对象从 uniform 换成了字段。
+		var style_key: Vector3 = mini.style.key_light_aim()
+		all_ok = _ck(all_ok, to_light.dot(style_key) > 0.999,
+			"主光局部 +Z（光的来向）应与 style.key_light_dir 同向，实得点积 %s，灯 %s vs 字段 %s" % [
+				snappedf(to_light.dot(style_key), 0.0001), to_light, style_key])
+		var mat: StandardMaterial3D = mini.style.make_material(mini.palette)
+		all_ok = _ck(all_ok, mat is StandardMaterial3D,
+			"make_material 必须返回引擎内置 StandardMaterial3D，实得 %s" % [
+				mat.get_class() if mat != null else "null"])
+		all_ok = _ck(all_ok, is_equal_approx(mat.roughness, mini.style.roughness)
+				and is_equal_approx(mat.metallic, mini.style.metallic),
+			"材质粗糙度/金属度应直接来自 style.roughness / style.metallic，不另填一份")
 		all_ok = _ck(all_ok, sun.shadow_enabled,
-			"主光必须开阴影：关掉后 diffuse_toon 仍有明暗台阶，但没有任何投影")
+			"主光必须开阴影：改用 PBR 后光照完全来自实灯，关阴影就没有明暗也没有投影")
 
 	# —— frame_scale 的换算关系 ——
 	all_ok = _ck(all_ok, absf(MiniatureStage.frame_scale(70.0) - 1.0) < 0.001,

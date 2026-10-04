@@ -43,9 +43,10 @@ func material_provider(style: ToonStyleDef) -> Callable:
 
 ## 覆写 base/shade/deep/outline 四个 ramp 语义色。
 ##
-## 保留 ramp 语义是必要的：虽然色阶档数、暗部染色、轮廓光、雾都来自 [ToonStyleDef]，
-## 但 swatch 色板本身并不携带"这套配色的暗部是什么"——
-## 少了这四个锚点，[ToonMaterial] 的 tinted 分支会退回手挑的单色档位。
+## 材质改用引擎内置 `StandardMaterial3D` 后，实际渲染只读 [member ToonPaletteDef.base]，
+## 其余三个锚点不再有渲染消费者 —— 但它们仍是**语义记录**：swatch 色板本身不携带
+## "这套配色的暗部 / 描边应该是什么"，删掉这四个字段后，
+## 任何想改回手部描边、暗部着色的下游都得重新推导一遍配色意图。
 func apply_ramp(p: ToonPaletteDef, base: Color, light: Color,
 		shade: Color, deep: Color, outline: Color) -> ToonPaletteDef:
 	p.base = base

@@ -320,7 +320,7 @@ print(b.validate())     # 缺底座 / 主体不唯一 / 体素化退化 —— �
 
 ## 五、风格层
 
-### 5.1 三渲二：引擎管光影，shader 管色
+### 5.1 渲染：全部用引擎内置材质，不自写 3D shader
 
 ```gdscript
 var style   = ToonStyleDef.presets()[&"anime_clean"]    # 多硬 / 多光滑 / 描边多粗
@@ -328,30 +328,37 @@ var palette = ToonPaletteDef.presets()[&"anime_daylight"]
 ToonMaterial.apply(mi, style, palette, parent)         # 上材质 + 描边
 ```
 
-`ToonShader` 用 `render_mode diffuse_toon, specular_disabled`：**引擎的 toon 光照是
-唯一带阴影贴图通道的路径**，光影阶梯交给它；shader 自己只写 `EMISSION`
-（固有色分档 + 染色阴影地板 + 补光 + 轮廓光 + 块高光），因为 `EMISSION` 不受光 ——
-阴影里会显色而不是死黑。
+`ToonStyleDef.make_material()` 返回**引擎自带的 `StandardMaterial3D`**，只写三件事：
+`albedo_color`（取 `palette.base`）、`roughness` / `metallic` / `metallic_specular`、
+以及可选的 `vertex_color_use_as_albedo`。明暗、阴影、能量守恒全部走引擎光照管线。
 
-> **踩过的弯路（都在 Godot 4.7.2 上实测过）**：
+> **为什么删掉原来那套自写 GLSL**（都在 Godot 4.7 上实测过）：
 >
 > 1. 片元着色器**没有 `light()` 内置函数** —— 拿不到任何逐像素光数据，
 >    唯一带阴影贴图的通道就是**引擎光照对 `ALBEDO` 的乘法**。
 > 2. 片元内置量 **`LIGHT` 也不存在**（`VIEW` / `NORMAL` / `CAMERA_POSITION_WORLD` 存在）。
 >    写 `v_light = LIGHT;` 会在**任何阶段**编译失败：
 >    `表达式中的标识符未知："LIGHT"`（顶点阶段同样没有）。
-> 3. 所以"哪一面亮"只能由 CPU 侧传方向进来，即 uniform **`u_key_dir`**
->    （来源 `ToonStyleDef.key_light_dir`）。这反而是对的：色阶是**画风**，
->    本就不该随"场景里恰好哪盏灯最亮"而漂移。
->    **代价是必须与实灯同向**，否则色阶亮面与实灯亮面错开一道、
->    硬边阴影与色阶互相打架 —— 不崩、不报错、只能靠肉眼发现。
->    `MiniatureStage.apply_key_light()` 就是为此存在，`apply_stage()` 会自动调它。
-> 4. `normalize()` 遇零向量产出 NaN，会污染整片元，故一律过 `safe_dir()`
->    （无光 / 忘配时退化为 `(0,0,1)`，而不是 NaN）。
+> 3. 于是"暗部染色 / 补光 / 轮廓光"只能统统塞进 `EMISSION`。`EMISSION` **不受光衰减**，
+>    在 `tonemap = LINEAR` 下这些常量加色极易把顶面烧成一片白（实测截图），
+>    而且完全不吃阴影 —— 阴影处反而比亮处更亮。
+> 4. 与其和引擎光照管线打架，不如把这部分交回给引擎：想要暗部染色就调
+>    `Environment.ambient_light_color`，想要补光就真的放一盏 `OmniLight3D`。
+>
+> 相应地，`bands` / `band_softness` / `shadow_*` / `spec_*` / `fill_*` / `rim_*`
+> 这些字段**保留但已停用**（不删是为了不破坏既有 `.tres` 与 presets）。
+> 想找回对应表现，去 `Environment` 与场景里的 `Light3D` 上调，别往材质里加。
+>
+> 仍保留的唯一一支自写 shader 是 `ToonShader.MINIATURE_VIGNETTE`（屏幕暗角）——
+> 那是 2D 后处理，且 `Environment` 里**确实没有暗角项**，不属于"3D 表面渲染"。
 
-`ToonStyleDef` 里与调色板无关的光照向参数（`shadow_floor` / `key_light_color` /
-`key_light_dir` / `fill_dir` / `fill_color` / `fill_strength`）会在 `make_material()` 里
-**先于**调色板分支写入 —— 否则 `make_material(null)` 会产出一份无雾无补光的哑光材质。
+描边同样是引擎内置能力：`StandardMaterial3D` 的 `grow = true` + `grow_amount`（米）
++ `cull_mode = CULL_FRONT` + `shading_mode = UNSHADED`。注意 `grow` 是 **bool**，
+不是枚举，没有 `GROW_DIRECTIONS_*`；`grow_amount` 取负值即向内收缩，
+所以几何外扩与材质外扩能互相抵消。
+
+主光方向的记录处是 `ToonStyleDef.key_light_dir`：材质已不再需要它，但
+`MiniatureStage.apply_key_light()` 靠它摆灯、测试靠它校验，两边不会各记一份。
 
 主光的摆法**不用 `Node3D.look_at()`**：它要求节点已在场景树里，而编辑器搭场景
 （节点还没 `add_child`）与单元测试（临时 `Node3D` 不进树）都不满足，会拿到

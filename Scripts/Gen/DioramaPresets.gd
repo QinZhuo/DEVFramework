@@ -74,7 +74,7 @@ const GEN_DIR_STEAM := "res://Scripts/Gen/Diorama/Steampunk/"
 ## 除了 [method DioramaBuilder.build] 要的 `def` / `recipes`，还带三样**演示层**的东西：
 ## [codeblock]
 ##   &"skin"  : DioramaSkin     —— 这一幅的配色契约（逐索引取色的唯一出口）
-##   &"style" : ToonStyleDef    —— 这一幅的画风（含雾 / 描边 / 色阶，见各预设说明）
+##   &"style" : ToonStyleDef    —— 这一幅的画风（含 PBR 参数 / 雾 / 描边，见各预设说明）
 ##   &"view"  : Dictionary      —— 取景：dist / look / pitch / yaw
 ##   &"env"   : Dictionary      —— 曝光 / 对比 / 饱和 / 长焦 / 景深 / 背景色
 ## [/codeblock]
@@ -121,12 +121,14 @@ static func presets() -> Dictionary:
 			&"style": _steam_style(),
 			&"cell": STEAM_CELL,
 			## 台面 14.5×10.5、最高的是锅炉安全阀 2.0 米 ⇒ 24 米、视点 2.4 米。
-			## 背景压到很暗（0.24）：黄铜是暖亮色，深冷的底子才把它衬出来 ——
+			## 背景压到很暗：Color 是**线性**值，0.045 转显示才约 0.24 的暗灰蓝。
+			## 直接写 0.24 看着"暗"，实际转 sRGB 后是 0.53 的中灰，整幅画会被抬亮。
+			## 黄铜是暖亮色，深冷的底子才把它衬出来 ——
 			## 换浅背景的话整幅画会"糊在雾里"，金属的分量全丢。
 			&"view": {&"dist": 24.0, &"look": Vector3(0.0, 2.4, -0.6),
 				&"pitch": 0.55, &"yaw": PI},
-			&"env": {&"exposure": 0.62, &"contrast": 1.12, &"saturation": 1.22,
-				&"fov": 30.0, &"dof": 0.50, &"backdrop": Color(0.24, 0.25, 0.30)},
+			&"env": {&"exposure": 0.78, &"contrast": 1.10, &"saturation": 1.15,
+				&"fov": 30.0, &"dof": 0.50, &"backdrop": Color(0.045, 0.048, 0.062)},
 		},
 	}
 
@@ -592,28 +594,25 @@ static func _steam_style() -> ToonStyleDef:
 	s.resource_name = s.title
 	s.roughen = 0.30
 	s.voxel_size = STEAM_CELL
-	s.bands = 3
-	s.band_softness = 0.14
-	s.shadow_tint = Color(0.48, 0.44, 0.56)
-	s.shadow_floor = 0.34
+	## 金属感靠 `metallic` 不靠压 roughness：铜铁件本身不脏，只是要有一道环境反射边。
+	## 这里**不能**给全局 metallic > 0 —— 分件材质由 [method ToonPaletteDef.by_hint]
+	## 逐索引取色，但粗糙度/金属度是 [ToonStyleDef] 上的**全局**字段，一给就木头也变金属。
+	## 保持 0 + 给足 specular，让每个 swatch 各自靠固有色区分。
+	s.roughness = 0.55
+	s.metallic = 0.0
+	s.specular = 0.55
 	s.key_light_color = Color(1.0, 0.94, 0.84)
-	s.shadow_tint_follow = 0.40
-	s.key_light_dir = Vector3(-0.55, 0.70, -0.45)
-	s.fill_color = Color(0.62, 0.70, 0.95)
-	s.fill_strength = 0.30
-	s.spec_step = true
-	## 0.88 而不是常用的 0.70：体素贪心网格的法线是**分面主法线**，
-	## 同一块顶面上所有像素的 N·H 几乎相同 —— 阈值一松就是"整块顶面一起白掉"，
-	## 金属感反而没了（实测：甲板与气囊顶全成白纸）。收紧到 0.88 只留真正的镜面角。
-	s.spec_threshold = 0.88
-	s.spec_color = Color(1.0, 0.97, 0.90)
+	## 光位压到侧上（y 0.55）：金属的高光交界要斜着切过形体才像金属。
+	## 更要紧的是 —— 高光判据是 N·H，光从正上方打、所有朝上的面 N·H≈1，
+	## 实测整块甲板顶与气囊顶一起白掉。光位压低后顶面才退出镜面角。
+	s.key_light_dir = Vector3(-0.62, 0.55, -0.55)
 	s.outline_mode = ToonStyleDef.OutlineMode.INVERTED_HULL
 	s.outline_width = 0.006
 	s.outline_color = Color(0.16, 0.13, 0.14, 1.0)
-	s.rim_strength = 0.70
-	s.rim_power = 2.2
 	s.ambient = Color(0.70, 0.72, 0.80)
-	s.ambient_energy = 0.40
+	## 0.50：环境光是这里唯一的暗部托底（自写 shader 的 EMISSION 补偿已删除），
+	## 给低了飞艇吊舱背光面就是一块死黑 —— 实测飞艇整个黑掉。
+	s.ambient_energy = 0.50
 	s.fog_color = Color(0.60, 0.62, 0.70)
 	s.fog_density = 0.004
 	return s

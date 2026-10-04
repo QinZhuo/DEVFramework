@@ -10,8 +10,9 @@ extends Node3D
 ##    让同一个单体同时给出 lowpoly 网格与体素网格，两者**共用同一次场烘焙**，
 ##    所以切到"两者"模式看到的不是两个模型在对齐，而是**同一个模型的两种解读**。
 ##
-## 3. **全程无贴图**。色阶 / 描边 / 轮廓光 / 雾全部由 [ToonShader] 与
-##    [ToonStyleDef] 给，材质表现干净、轮廓明确 —— 这正是三渲二与 PBR 的分界线。
+## 3. **全程无贴图**。表面材质就是引擎内置的 `StandardMaterial3D`（粗糙度 / 金属度 /
+##    固有色由 [ToonStyleDef] 给），描边走引擎的 `grow` + `cull_front`，
+##    暗角是 [ToonShader] 里唯一保留的自写 shader（2D 后处理）。
 ##
 ## 4. **切风格包连镜头一起切**。三套预设的长焦 / 景深 / 背景 / 暗角各不相同
 ##    （见 [MiniatureStage]），由 `pack.apply_stage()` 一次装好。切到"微缩童话"
@@ -94,8 +95,8 @@ func _apply_stage() -> void:
 	if _pack == null:
 		return
 	## `apply_stage` 内部会一并把主光对准 `style.key_light_dir`
-	## （见 [MiniatureStage.apply_key_light]：色阶方向是 uniform，实灯必须跟着走，
-	##  否则色阶亮面与实灯亮面错开一道，硬边阴影与色阶互相打架且不报错）。
+	## （见 [MiniatureStage.apply_key_light]：材质已不再自算色阶，明暗全来自实灯，
+	##  所以这盏灯的朝向就是画面亮暗的唯一来源，跟风格字段错开不会报错、只会看着不对）。
 	_pack.apply_stage(self, camera, BASE_DIST)
 	_update_camera()
 
@@ -141,7 +142,12 @@ func _build_base() -> void:
 	var mi := MeshInstance3D.new()
 	mi.name = "Base"
 	mi.mesh = cyl
-	mi.position = Vector3(_look_at.x, -0.62, _look_at.z)
+	## 台面必须**明确低于**地面（地面恒为 y=0，见 _ground_y）。
+	## 原本取 -0.62 是为了让顶面落在 -0.02，结果只比地面高 2 厘米：
+	## 台座半径 60 米横贯整个画面，相机又在 62 米外，这点间隙在深度缓冲里
+	## 直接打平成共面，斜切的分界线就是z-fighting —— 看着像"底座半亮半暗"，
+	## 实际是渲染精度问题，跟网格法线无关。0.45 米的下沉同时把台沿变成可见台阶。
+	mi.position = Vector3(_look_at.x, -cyl.height * 0.5 - 0.45, _look_at.z)
 	var m := StandardMaterial3D.new()
 	m.albedo_color = Color(0.88, 0.86, 0.82) if is_mini else Color(0.55, 0.62, 0.52)
 	m.roughness = 1.0

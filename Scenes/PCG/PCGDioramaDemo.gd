@@ -114,7 +114,7 @@ func _apply_preset(key: StringName) -> void:
 
 # ================================================================== 舞台
 
-## 舞台三件套：主光（方向**必须**与色阶的 key_light_dir 同向）、环境、相机。
+## 舞台三件套：主光（方向**必须**与 `style.key_light_dir` 同向）、环境、相机。
 ##
 ## 为什么不复用 [method MiniatureStage.apply]：那份方法连**配色方案**一起接管，
 ## 而本场景的固有色来自 [VoxelSkin] 的 17 色 swatch（体素分件索引表），
@@ -127,7 +127,10 @@ func _setup_stage() -> void:
 		key_light.position = _style.key_light_position(20.0)
 		key_light.look_at(Vector3.ZERO, Vector3.UP)
 		key_light.light_color = _style.key_light_color
-		key_light.light_energy = 1.15
+		## 材质已改用引擎内置 `StandardMaterial3D`，画面输出 = ALBEDO ×（直射 + 环境）。
+		## 原来那个 0.72 是为了抵消自写 shader 的 EMISSION 常量底噪而压的，
+		## 底噪删掉后压这么低反而整体发灰，故回到常规亮度。
+		key_light.light_energy = 1.0
 		key_light.shadow_enabled = true
 	if env_node != null:
 		var e := Environment.new()
@@ -138,40 +141,65 @@ func _setup_stage() -> void:
 		var env_bd: Dictionary = _pack.get(&"env", {})
 		e.background_color = env_bd.get(&"backdrop",
 			_style.fog_color.lerp(Color(0.10, 0.12, 0.18), 0.55))
+		## 环境光**开着、但压得很低**。自写 shader 的 EMISSION 段已删除，
+		## 环境光不再有"托底"那份手工补偿 —— 若这里沿用 `AMBIENT_SOURCE_DISABLED`，
+		## 背光面会直接掉成死黑（微缩观感的"低对比"全靠这层）。
+		## 但也不能用默认的 1.0：它是往 ALBEDO 上再乘一遍，高明度固有色
+		##（奶白 0.95、黄铜 0.98）会连同直射光一起被推过 1.0 clip 成白纸。
+		## 取 [member ToonStyleDef.ambient_energy] 一档（默认 0.35）。
 		e.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
 		e.ambient_light_color = _style.ambient
 		e.ambient_light_energy = _style.ambient_energy
-		## 雾是"微缩感"的来源：把 12 米的街角压成桌面上一块 30 厘米的摆件。
-		## 但**只由着色器那一层负责**（[member ToonStyleDef.fog_density] →
-		## `u_fog_density`），不开Godot 原生雾：原生雾是屏幕空间深度混合，会无差别
-		## 把整个画面（含高明度的奶白墙体）拉向背景色，与着色器雾叠成两层同密度雾，
-		## 实测把用例四整张画面烧成近白。
-		e.fog_enabled = false
-		## —— 曝光与后期调色：这一段漏了会把整张画面烧成白纸——
+		## —— 曝光与后期调色——
 		## [method MiniatureStage.apply] 本来会配好它，但本场景刻意不走那份（配色
 		## 来源会打架），于是**连后期一起漏掉了**，只剩 `Environment.new()` 的默认值：
-		## 曝光 1.0 + 后期调色关闭。而三渲二靠的是**硬边色阶**，必须保留线性 tonemap
-		## （换 AgX/Filmic 会把色阶的对比抹平），代价就是线性**没有高光滚降**：
-		## 本场景固有色整体高明度（奶白墙 0.95）、主光近白、环境光 0.42，三者相乘
-		## 直接越过 1.0 被 clip —— 屏幕上色相全部丢失，就是"烘焙正常、几何正常、
-		## 网格与体素两种形态都对，却糊成一张没有颜色的白纸"。
+		## 曝光 1.0 + 后期调色关闭。本场景固有色整体高明度（奶白墙 0.95）、
+		## 主光近白、环境光 0.35，三者相乘容易越过 1.0 被 clip。
 		## 所以这里降曝光把峰值拉回线性范围（顺带让背景色比主体暗一档，
-		## 奶白墙得以从背景里跳出来），再补回调色：饱和度略升把三渲二的大平色
-		## 从"塑料"拉回"插画"。数值来自 [member SceneStylePack.env_saturation] 一档。
-		## 曝光与饱和度由预设的 `env` 给：高明度色板（面包店奶白 0.95）
-		## 需要压到 0.75，中明度的（村庄草地 0.48~0.7）压到 0.88 就够 ——
+		## 奶白墙得以从背景里跳出来），再补回调色：饱和度略升把大平色
+		## 从"塑料"拉回"插画"。数值来自预设的 `env` 一档，
+		## 高明度色板（面包店奶白 0.95）与中明度的（村庄草地 0.48~0.7）各需不同曝光，
 		## 一幅画一套，没有通用值。
 		var env_cfg: Dictionary = _pack.get(&"env", {})
 		e.tonemap_exposure = float(env_cfg.get(&"exposure", 0.80))
 		e.adjustment_enabled = true
 		e.adjustment_contrast = float(env_cfg.get(&"contrast", 1.05))
 		e.adjustment_saturation = float(env_cfg.get(&"saturation", 1.10))
-		## SSAO 会在色阶交界糊出一圈脏灰（把两档色糊成三档脏色），glow 会让描边与
-		## 高光溢出轮廓糊成一团。两者都不报错、只是"看着不对"，所以显式关掉。
+		## SSAO 会在棱角交界糊出一圈脏灰，glow 会让描边与高光溢出轮廓糊成一团。
+		## 两者都不报错、只是"看着不对"，所以显式关掉。
 		e.ssao_enabled = false
 		e.glow_enabled = false
 		env_node.environment = e
 	_setup_lens()
+	_setup_fog()
+
+
+## 装上雾 —— 必须在 [method _setup_lens] **之后**调，因为它要读长焦换算出来的相机距离。
+##
+## 雾是"微缩感"的来源：把十几米的街角压成桌面上一块摆件。自写 shader 里那层雾
+## （`u_fog_density`）随材质一起删了，所以**雾只剩引擎原生这一条路**，关掉就没有纵深压缩。
+##
+## ============================ 为什么密度要按相机距离归一化 ============================
+## [member ToonStyleDef.fog_density] 的语义是"**每米**的衰减率"，但它是按**场景自身尺度**
+## 设的（底座半径 9 m ⇒ 纵深约 18 m）。而 Godot 原生雾的 `d` 是**到相机的深度**，
+## 长焦又把相机推到了 50 m 开外 —— 直接把 0.008 塞进去，整幅画在 50 m 处就吃掉
+## `1 - exp(-0.008 × 50) ≈ 33%` 的对比，整张画面被洗成灰紫（实测截图）。
+##
+## 所以按"目标距离处雾浓度不变"反解：要让 `density' × cam_dist == fog_density × scene_depth`，
+## 即 `density' = fog_density × scene_depth / cam_dist`。这样风格字段继续保持
+## "每米、场景尺度"的原语义，别的调用方直接用也不会踩这个坑。
+func _setup_fog() -> void:
+	if env_node == null or env_node.environment == null:
+		return
+	var e := env_node.environment
+	e.fog_enabled = true
+	e.fog_light_color = _style.fog_color
+	## 场景自身的纵深：直径。取不到 def 就退回一个保守的小值（宁少勿多）。
+	var scene_depth := 18.0
+	if _def != null:
+		scene_depth = maxf(_def.base_radius() * 2.0, 1.0)
+	var cam_dist := _base_dist * MiniatureStage.frame_scale(_lens.camera_fov, BASE_FOV)
+	e.fog_density = _style.fog_density * scene_depth / maxf(cam_dist, 1.0)
 
 
 ## 装上微缩感三要素里缺的两项：长焦（相机 FOV）与边缘收暗（暗角层），外加景深。

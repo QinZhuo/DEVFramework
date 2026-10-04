@@ -18,8 +18,8 @@ class_name MiniatureStage extends RefCounted
 ## 缺任何一项都还看，但不叠加就只是"有雾的普通场景"。
 ##
 ## 另外还搬一样**不属于三要素但同样要跟画风走**的东西：主光方向（[method apply_key_light]）。
-## 三渲二的色阶方向是 `u_key_dir` 这个 uniform（Godot 没有 `LIGHT` 内置量），
-## 实灯不对齐就会出现"色阶亮面与实灯亮面错开一道、硬边阴影与色阶打架"的怪相。
+## 材质已改用引擎内置 `StandardMaterial3D`，明暗**完全来自实灯**，
+## 所以这盏灯不再只是"锦上添花的补光"，而是画面亮暗的唯一来源。
 ##
 ## ============================ 边界在哪 ============================
 ## * 本类**只搬运数值与朝向**：读风格包的字段 → 写进相机 / `Environment` / 屏幕 shader / 灯的朝向。
@@ -112,11 +112,9 @@ static func frame_scale(fov_deg: float, ref_fov_deg := 70.0) -> float:
 ## 找（或建）一盏主平行光，并把它对准 [ToonStyleDef] 声明的光向。
 ##
 ## == 为什么"对齐"是硬要求而不是锦上添花 ==
-## Godot 4 的 spatial shader **没有 `LIGHT` 片元内置量**（也没有 `light()`），
-## 所以 [ToonShader] 里"哪一面亮"是由 `u_key_dir` 这个 uniform 决定的 ——
-## 方向由**画风**给，不由场景里恰好哪盏灯亮决定。
-## 实灯不对齐时，色阶亮面与实灯亮面会错开一道，硬边阴影与色阶互相打架：
-## 表现是"物体上一道硬边，别处亮暗还反着来"，**不报错、不崩，只能靠肉眼发现**。
+## 材质改用引擎内置 `StandardMaterial3D` 之后，`style.key_light_dir` 就是
+## **这盏灯的唯一记录处**：方向由画风给，不由场景里恰好哪盏灯亮决定。
+## 记录与实灯一旦错开，画面表现为"亮面和投影不在一处"，**不报错、不崩，只能靠肉眼发现**。
 ##
 ## == 为什么只动一盏、且保留已有节点 ==
 ## * 只动**找到的那一盏**（缺省名 [constant KEY_LIGHT_NAME]）：场景里可能有作者
@@ -139,7 +137,7 @@ static func apply_key_light(host: Node, pack) -> DirectionalLight3D:
 		sun.name = KEY_LIGHT_NAME
 		host.add_child(sun)
 		# 新建的灯必须给足默认值，否则场景"看起来就是没打光"：
-		# diffuse_toon 拿到的 N·L 恒为 0 ⇒ 全画面只剩背光档。
+		# 材质走 PBR，N·L 恒为 0 时全画面只剩环境光的底色。
 		sun.light_energy = 1.15
 		sun.light_color = st.key_light_color
 		sun.shadow_enabled = true
@@ -153,7 +151,7 @@ static func apply_key_light(host: Node, pack) -> DirectionalLight3D:
 	##   · 位置只是"够远的方向哨兵"—— 平行光只看方向，与距离无关；
 	##   · `host` 可能带任意变换（也可能不在树里），故用 `affine_inverse()` 换算；
 	##   · 顺带把方向**回写**进 `style.key_light_dir`，让"灯实际朝哪"与
-	##     "材质里 u_key_dir 是多少"永远同源，不会各记一份。
+	##     "风格里记录的是多少"永远同源，不会各记一份。
 	var host_pos := Vector3.ZERO
 	var to_local := Transform3D.IDENTITY
 	if host.is_inside_tree():
@@ -211,7 +209,11 @@ static func _basis_with_z(z_dir: Vector3, up := Vector3.UP) -> Basis:
 ##
 ## 返回实际使用的 [Environment]（`we.environment` 为空时会新建一个并挂回去），
 ## 便于调用方接着微调，也便于测试断言。
-static func apply_environment(we: WorldEnvironment, pack) -> Environment:
+##
+## [param cam_distance] 是相机到场景的实际距离（米）。**雾密度必须按它归一化**，
+## 原因见[method _fog_density_for]。不传（≤0）时退化为"不缩放"，适合贴脸机位。
+static func apply_environment(we: WorldEnvironment, pack,
+		cam_distance := 0.0) -> Environment:
 	if pack == null:
 		return null
 	if we == null:
@@ -265,13 +267,13 @@ static func apply_environment(we: WorldEnvironment, pack) -> Environment:
 	env.ambient_light_color = amb
 	env.ambient_light_energy = amb_energy
 
-	# ---- 雾：指数雾，与 ToonShader 里 `1 - exp(-d * density)` 的材质雾同源 ----
-	# 两者叠在一起是有意的：材质雾只染三渲二材质（连地面台座这种普通材质都不染），
-	# 环境雾则把整个画面统一压进"小盒子"。gain 是给"场景级雾比材质级雾更重"的场合留的旋钮。
+	# ---- 雾：指数雾。密度按相机距离归一化，理由见 _fog_density_for ----
+	# gain 是给"场景级雾比材质级雾更重"的场合留的旋钮。
 	env.fog_enabled = bool(pack.env_fog_enabled)
 	env.fog_mode = Environment.FOG_MODE_EXPONENTIAL
 	env.fog_light_color = fog_col
-	env.fog_density = maxf(0.0, float(fog_density) * float(pack.env_fog_gain))
+	env.fog_density = _fog_density_for(float(fog_density), cam_distance,
+		float(pack.env_fog_gain))
 	# 雾不染天空：微缩摆件的背景要干净，雾一染背景整张图就"灰掉了"
 	env.fog_sky_affect = bool(pack.env_fog_sky_affect)
 
@@ -293,6 +295,30 @@ static func apply_environment(we: WorldEnvironment, pack) -> Environment:
 	if bool(pack.disable_glow):
 		env.glow_enabled = false
 	return env
+
+
+## 把风格字段里的"每米雾密度"换算成能直接塞进 [member Environment.fog_density] 的值。
+##
+## ============================ 为什么必须换算 ============================
+## [member ToonStyleDef.fog_density] 是**按场景自身尺度**设的（十几米的 diorama，
+## 0.003~0.018），而 Godot 原生雾的 `d` 是**到相机的深度**。微缩长焦又把相机推到
+## 50~60 m 外 —— 直接把 0.008 塞进去，整幅画在 50 m 处就吃掉
+## `1 - exp(-0.008 × 50) ≈ 33%` 的对比，画面被洗成一片均匀的灰紫（实测截图）。
+##
+## 所以按"**场景所在的深度上雾浓度不变**"反解：令 `density' × cam_dist`
+## 等于 `density × scene_depth`，即 `density' = density × scene_depth / cam_dist`。
+## 这样风格字段继续保持"每米、场景尺度"的原语义，换机位、换焦段都不用重调。
+##
+## `scene_depth` 用 [constant FOG_REFERENCE_DEPTH]（本框架服务的微缩场景对径约 18 m）。
+## `cam_distance ≤ 0`（调用方没给、贴脸机位）时**不缩放**。
+const FOG_REFERENCE_DEPTH := 18.0
+
+
+static func _fog_density_for(density: float, cam_distance: float, gain: float) -> float:
+	var d := maxf(0.0, density * gain)
+	if cam_distance <= 0.0:
+		return d
+	return d * FOG_REFERENCE_DEPTH / maxf(cam_distance, 1.0)
 
 
 ## 找一个可用的 [WorldEnvironment]：子树里已有就复用，没有就挂在 [param host] 下新建。
@@ -397,8 +423,23 @@ static func apply(host: Node, cam: Camera3D, pack, we: WorldEnvironment = null) 
 	if host == null or pack == null:
 		return null
 	apply_camera(cam, pack)
-	apply_environment(we if we != null else ensure_environment(host), pack)
+	apply_environment(we if we != null else ensure_environment(host), pack,
+		_camera_distance(cam, pack))
 	apply_key_light(host, pack)
 	return apply_vignette(host, pack)
+
+
+## 相机到场景中心的距离（米），供雾密度归一化用。
+##
+## 优先读相机实位（`cam.global_position`），因为长焦后退是调用方在 `apply` **之后**
+## 才做的，此刻相机多半还在原点；此时退回风格包给的 `stage_distance_hint`。
+static func _camera_distance(cam: Camera3D, pack) -> float:
+	if cam != null:
+		var d := cam.global_position.length()
+		if d > 0.001:
+			return d
+	if pack != null and "stage_distance_hint" in pack:
+		return float(pack.stage_distance_hint)
+	return 0.0
 
 #endregion

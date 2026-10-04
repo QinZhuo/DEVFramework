@@ -1,64 +1,61 @@
 @tool
 class_name ToonMaterial
-## 三渲二材质与描边装配 —— 把「风格 + 配色」变成节点树里能直接看的东西
+## 材质与描边装配 —— 把「风格 + 配色」变成节点树里能直接看的东西
 ##
 ## 职责边界：本文件是**唯一**允许创建 MeshInstance3D / 写 material 的地方。
-## 风格参数来自 `ToonStyleDef`，颜色来自 `ToonPaletteDef`，GLSL 来自 `ToonShader`，
+## 风格参数来自 `ToonStyleDef`，颜色来自 `ToonPaletteDef`，
 ## 本文件只做装配，不含任何美术判断（除了"要不要画描边"这一条路由）。
+##
+## == 渲染全部用引擎内置材质 ==
+## 表面是 `StandardMaterial3D`，描边是同一材质的 `grow_amount` + `cull_mode = CULL_FRONT`。
+## 本模块不再产出任何 spatial shader（原先那套色阶 + EMISSION 底噪的 GLSL 已删除，
+## 删掉的理由见 [ToonShader] 文件头）。
 ##
 ## == 两种倒壳描边，不要叠加 ==
 ##   · `build_outline_mesh()` —— **几何外扩**：把顶点沿法线推开，壳体是真实几何。
-##     宽度是**世界空间恒定**（近处粗、远处细），适合导出 / 无 shader 管线 / 需要实体壳。
-##   · `outline()` —— **着色器外扩**：宽度是**屏幕空间恒定**，适合实时观看。
-## 两者效果重叠：已经外扩过网格就别再给着色器留宽度，否则描边粗一倍。
-## `apply()` 默认走着色器外扩（实时观感优先），并在文档里给出接几何外扩的做法。
+##     宽度是**世界空间恒定**（近处粗、远处细），适合导出 / 需要实体壳。
+##   · `outline()` —— **材质外扩**：同一份网格换个材质，靠 `grow_amount` 推开，
+##     不额外占几何。两者的 `outline_width` 同单位（米），故 `extra_width` 能直接抵消。
+## 两者效果重叠：已经外扩过网格就别再给材质留宽度，否则描边粗一倍。
+## `apply()` 默认走材质外扩，并在文档里给出接几何外扩的做法。
+##
+## == 宽度单位只有一个 ==
+## 两条路径都以**世界空间米**为 `outline_width` 的单位，`_hull_width()` 才敢拿
+## `voxel_size` 去夹上限——若哪条路径改按 NDC 解释，同一个数值在 60 m 机位下会
+## 膨胀成 0.1 m（比体素边长还大），壳体互相穿插，画面糊成大色块。
 
 #region 材质
 
-## 主色阶材质。`palette` 为 null 时返回只带 shader 的裸材质（可安全用于预览）。
+## 表面材质。`palette` 为 null 时返回一份中性灰哑光材质（可安全用于预览）。
 ##
-## `use_vertex_color` = 让网格顶点色（`SlotPalette` 烘的语义分件色）参与取色，
+## `use_vertex_color` = 让网格顶点色参与取色（引擎内置 `vertex_color_use_as_albedo`），
 ## 详见 [method ToonStyleDef.make_material]。默认关闭。
 static func surface(style: ToonStyleDef, palette: ToonPaletteDef, use_vertex_color := false,
-		vcol_strength := 1.0, slot_ramp: Texture2D = null) -> ShaderMaterial:
+		vcol_strength := 1.0, slot_ramp: Texture2D = null) -> StandardMaterial3D:
 	if style == null:
 		return null
 	return style.make_material(palette, use_vertex_color, vcol_strength, slot_ramp)
 
 
-## 单一分件色材质：把 [member ToonPaletteDef.base] 换成 [param base_color] 造一份色阶材质。
+## 单一分件色材质：把 [member ToonPaletteDef.base] 换成 [param base_color] 造一份材质。
 ##
 ## ============================ 为什么需要它 ============================
 ## [method surface] 只认"一份配色方案一个主色"，所以多分件场景里所有部件会拿到
 ## 同一个主色 —— 体素调色板把网格切成了几十个 surface，逐 surface 挂同一个材质，
 ## 于是**分色数据全在、渲染上看不出差别**（且不报任何错）。
 ##
-## 三档怎么派生（与 [method ToonStyleDef.make_material] 的档位算法对齐）：
-## 暗档向 [member ToonPaletteDef.shade] 与 [member ToonPaletteDef.deep] 靠，
-## **亮档不在这里派生** —— 它由 [method ToonStyleDef.make_material] 拿
-## [member ToonPaletteDef.base]（此处即 [param base_color]）唯一地派生一次。
-## 也就是**换色相、不换画风**：档数 / 暗部染色 / 轮廓光 / 雾全部沿用 [param style]，
-## 所以一堆零件仍然是同一种画风。
+## 改用引擎材质后这里反而更简单：**材质链只读 [member ToonPaletteDef.base]**，
+## 暗档 / 亮档的预混逻辑（曾因漏传 `light` 导致"所有部件亮档被洗成 55% 白"）
+## 已随色阶一起消失，不需要任何派生。`base` 之外的颜色字段仍由语义取色
+## （[method ToonPaletteDef.by_hint]）那条路使用，与材质无关。
 static func part_material(style: ToonStyleDef, palette: ToonPaletteDef,
-		base_color: Color) -> ShaderMaterial:
+		base_color: Color) -> StandardMaterial3D:
 	if style == null:
 		return null
 	if palette == null:
 		return style.make_material(null)
 	var sub := ToonPaletteDef.new()
 	sub.base = base_color
-	## —— 亮档必须留成base_color 原值，不能在这里预混 ——
-	## [method ToonStyleDef.make_material] 拿到 palette 后**一定会**再执行一次
-	## `palette.base.lerp(palette.light, 0.55)`。这里若先混一遍，同一个亮档端点
-	## 就被 55% 混了两次（等效约 0.80），亮档必然贴到近白 —— 奶白/米色这类
-	## 本身高明的部件色（面包店、墙面）会直接烧成纯白，整张画面褪成一片白。
-	## 所以这里**只**预混暗档，亮档原样交给 [method ToonStyleDef.make_material]
-	## 按base_color 唯一地派生一次。
-	sub.shade = base_color.lerp(palette.shade, 0.62)
-	sub.deep = base_color.lerp(palette.deep, 0.72)
-	sub.accent = palette.accent
-	sub.accent2 = palette.accent2
-	sub.outline = palette.outline
 	return style.make_material(sub)
 
 
@@ -90,18 +87,35 @@ static func voxel_material_provider(style: ToonStyleDef,
 
 ## 倒壳描边材质。`extra_width` 会**加**到 `style.outline_width` 上：
 ## 网格已经用 `build_outline_mesh()` 沿法线推开过，就传 `-style.outline_width` 抵消。
+##
+## ============================ 全部用引擎内置能力 ============================
+## 倒壳描边不需要写 shader，`StandardMaterial3D` 四个属性就够：
+##   · [member BaseMaterial3D.grow] 是 **bool**（不是枚举），置 true 即开启沿法线外扩，
+##     引擎内部等价于"双向生长"；
+##   · [member BaseMaterial3D.grow_amount] 外扩量，**单位是米**，
+##     与 [method build_outline_mesh] 的外扩量同单位，两条路径可互相换算 / 抵消
+##     （取负值即向内收缩，所以 `extra_width = -outline_width` 确实能抵消掉几何外扩）；
+##   · [member BaseMaterial3D.cull_mode] 设 [constant BaseMaterial3D.CULL_FRONT]
+##     只画背面 —— 本体把正面全挡住，露出来的就正好是外圈那一圈；
+##   · [member BaseMaterial3D.shading_mode] 设 unshaded，于是描边不参与光照，
+##     任何光照下都是同一个纯色（原先 `unshaded` 是写在 GLSL 的 `render_mode` 上）。
+##
+## 代价：世界空间外扩在远景会细到看不见，而引擎没有"屏幕空间下限"这种下限兜底
+## （原 shader 的 `u_min_ndc`）。需要远景也看得见描边，就把 `outline_width` 调大。
 static func outline(style: ToonStyleDef, palette: ToonPaletteDef,
-		extra_width := 0.0) -> ShaderMaterial:
+		extra_width := 0.0) -> StandardMaterial3D:
 	if style == null:
 		return null
-	var mat := ShaderMaterial.new()
-	mat.shader = ToonShader.outline_shader()
+	var mat := StandardMaterial3D.new()
 	# 风格层是描边色的最终决定者；留空（全透明）时回退配色方案的描边色
 	var col := style.outline_color
 	if col.a <= 0.0:
 		col = palette.outline if palette else Color(0.20, 0.15, 0.24, 1.0)
-	mat.set_shader_parameter(&"u_outline_color", col)
-	mat.set_shader_parameter(&"u_width", _hull_width(style, extra_width))
+	mat.albedo_color = col
+	mat.grow = true
+	mat.grow_amount = _hull_width(style, extra_width)
+	mat.cull_mode = BaseMaterial3D.CULL_FRONT
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	return mat
 
 
