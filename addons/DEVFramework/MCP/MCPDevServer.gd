@@ -202,7 +202,7 @@ const ERR_UNSUPPORTED_VERSION := -32022
 ## 重新拉取"是错的 —— 那不是本服务器能保证的事, 别再让文案暗示它。
 const LIST_TTL_MS := 600000
 
-const SERVER_NAME := "devframework-godot-mcp"
+const SERVER_NAME := "godot-dev-mcp"
 const SERVER_VERSION := "0.3.0"
 
 ## 模式

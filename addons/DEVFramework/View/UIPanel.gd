@@ -5,7 +5,7 @@
 ## [method close] — 执行离开动画并从 [UITool] 自动注销，动画结束后隐藏。
 ## 通过连接 [signal on_open] / [signal on_close] 等信号实现自定义动画。
 ##
-## 状态机实现见 [UIPanelFlow]（与 [UIPanel3D] 共用，避免两份实现漂移）。
+## 状态机实现见 [UIPanelTool]（与 [UIPanel3D] 共用，避免两份实现漂移）。
 ##
 ## 使用方式：
 ##   [codeblock]
@@ -53,29 +53,29 @@ signal on_closed()
 # 公开接口
 # ============================================================
 
-## 打开面板。完整流程见 [UIPanelFlow.open]。
+## 打开面板。完整流程见 [UIPanelTool.open]。
 func open() -> void:
-	await UIPanelFlow.open(self)
+	await UIPanelTool.open(self)
 
-## 关闭面板。完整流程见 [UIPanelFlow.close]。
+## 关闭面板。完整流程见 [UIPanelTool.close]。
 func close() -> void:
-	await UIPanelFlow.close(self)
+	await UIPanelTool.close(self)
 
-## 节点离开场景树时自动注销（兜底，见 [UIPanelFlow.on_exit_tree]）。
+## 节点离开场景树时自动注销（兜底，见 [UIPanelTool.on_exit_tree]）。
 func _exit_tree() -> void:
-	UIPanelFlow.on_exit_tree(self)
+	UIPanelTool.on_exit_tree(self)
 
 ## 切换打开/关闭。
 func toggle() -> void:
-	await UIPanelFlow.toggle(self)
+	await UIPanelTool.toggle(self)
 
 ## 弹窗模式：打开面板并等待关闭（可用于异步等待面板交互结果）。
 func popup() -> void:
-	await UIPanelFlow.popup(self)
+	await UIPanelTool.popup(self)
 
 ## 等待面板关闭，返回关闭时版本是否仍为本轮（面板被重新 open() 后旧等待返回 false）。
 func await_closed() -> bool:
-	return await UIPanelFlow.await_closed(self)
+	return await UIPanelTool.await_closed(self)
 
 ## 返回键处理，由 UITool.back() 调用。子类可重写自定义返回行为，默认关闭面板。
 func _back() -> void:

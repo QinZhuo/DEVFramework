@@ -1,7 +1,7 @@
-class_name UIPanelFlow
+class_name UIPanelTool
 extends RefCounted
 
-## [UIPanel] / [UIPanel3D] 的共享打开/关闭状态机。
+## [UIPanel] / [UIPanel3D] 的共享打开/关闭状态机(纯静态工具, 与 [UITool] 同族)。
 ##
 ## 两个面板基类必须分别继承 [Control] / [Node3D](GDScript 无多继承), 无法共享基类,
 ## 于是把两处共用的流程收敛到本类、面板只做薄转调 —— 避免两份近乎逐行相同的实现各自漂移

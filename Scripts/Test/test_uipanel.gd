@@ -1,6 +1,6 @@
 extends TestCase
 
-## UIPanel / UIPanel3D 共享状态机(UIPanelFlow)回归。
+## UIPanel / UIPanel3D 共享状态机(UIPanelTool)回归。
 ##
 ## 锁定三条契约:
 ## 1) 生命周期顺序 open → opened → close → closed, 且 close 结束时必须**隐藏**;
