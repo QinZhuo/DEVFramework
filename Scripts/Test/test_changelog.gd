@@ -3,11 +3,19 @@ extends TestCase
 
 ## 更新日志（ChangelogTool）回归测试。
 ## 依赖示例内容：res://Assets/Def/Changelog/ChangelogExample.tres（v0.5.0，3 个条目：2 玩家可见 + 1 开发向）
+##
+## 环境钉死：debug_only 条目是否展示取决于 DebugTool.is_debug_mode()，而其默认 = 编辑器 或 调试分支
+## —— 编辑器进程恒为 true。不对它做注入的话，本文件断言的就是"跑在哪个进程里"而非"过滤逻辑对不对"。
 
 
 func _setup(version := "0.5.0") -> void:
 	ProjectSettings.set_setting(ChangelogTool.SETTING_VERSION, version)
 	ChangelogTool.reset_seen_version()
+	DebugTool.set_debug_checker(func(): return false)  # 非 Debug 环境：开发向条目应被过滤
+
+
+func cleanup() -> void:
+	DebugTool.set_debug_checker(Callable())  # 幂等还原默认判定，避免污染同进程内其它用例
 
 
 func test_defs_load() -> void:
@@ -33,6 +41,14 @@ func test_pending_filter() -> void:
 	assert_true(ChangelogTool.has_update(), "0.5.0 > 0.4.0 应提示更新")
 	var entries := ChangelogTool.get_pending_entries()
 	assert_eq(entries.size(), 2, "只应返回玩家可见的 2 条（开发向条目被过滤）")
+
+
+func test_pending_keeps_debug_entry_in_debug_mode() -> void:
+	_setup()
+	DebugTool.set_debug_checker(func(): return true)  # 显式切到 Debug 环境
+	ChangelogTool.mark_seen("0.4.0")
+	assert_true(ChangelogTool.has_update(), "0.5.0 > 0.4.0 应提示更新")
+	assert_eq(ChangelogTool.get_pending_entries().size(), 3, "Debug 模式下应保留开发向条目")
 
 
 func test_pending_excludes_newer_than_current() -> void:

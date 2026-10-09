@@ -323,10 +323,7 @@ static func _cond_key(cond: String) -> String:
 
 ## 绝对路径 → res:// 路径(项目根内); 项目根外原样返回
 func _abs_to_res(p: String) -> String:
-	var root := _abs("res://")
-	if p.begins_with(root):
-		return "res://" + p.substr(root.length())
-	return p
+	return FileTool.abs_to_res(p)
 
 
 ## 自动发现工程目录候选(静态, 供外部/MCP 复用): 项目根 gdextension/ + 各 addons/*/
@@ -1406,12 +1403,9 @@ func _gdext_adopt_universal(gdext_res: String, platform: String, type: String, u
 		if remove_lines.has(i):
 			continue   # 删除多余架构键行
 		out.append(String(lines[i]))
-	var f := FileAccess.open(gdext_res, FileAccess.WRITE)
-	if f == null:
+	if FileTool.atomic_write_text(gdext_res, "\n".join(out)) != OK:
 		_log("声明写回失败: ", gdext_res)
 		return
-	f.store_string("\n".join(out))
-	f.close()
 
 
 ## 从声明收集本平台键中的架构 tag 集合(去重; 无架构/仅 universal 键则返回空 —— 不需要架构文件保护)
@@ -1566,12 +1560,9 @@ func _gdext_sync(gdext_res: String, file_res: String, platform: String, type: St
 		lines.insert(at, "%s = %s" % [new_key, value])
 		_synced.append("%s → %s(新增)" % [new_key, file_res])
 		_log("已同步声明(新增): ", gdext_res, " [", new_key, "] = ", value)
-	var f := FileAccess.open(gdext_res, FileAccess.WRITE)
-	if f == null:
+	if FileTool.atomic_write_text(gdext_res, "\n".join(lines)) != OK:
 		_log("声明写回失败: ", gdext_res)
 		return
-	f.store_string("\n".join(lines))
-	f.close()
 
 
 ## sync 关闭时的退化模式: 只校验不回写 —— 声明与实盘不一致时明确告警(引擎将加载失败)。
@@ -1729,9 +1720,7 @@ func _plan_build_types() -> Array[String]:
 # ------------------------------------------------------------ 小工具
 
 func _res(p: String) -> String:
-	if p.begins_with("res://"):
-		return p
-	return "res://%s" % p.trim_prefix("/")
+	return FileTool.to_res_path(p)
 
 
 func _abs(p: String) -> String:
@@ -1778,19 +1767,13 @@ func _toast(text: String) -> void:
 
 ## 阶段/结果状态文件(实时阶段/进度; 供查看, 非必要)
 func _state_write(text: String) -> void:
-	var f := FileAccess.open(_abs("res://.godot/gdextension_build/state.txt"), FileAccess.WRITE)
-	if f:
-		f.store_string(text)
-		f.close()
+	FileTool.write_text(_abs("res://.godot/gdextension_build/state.txt"), text)
 
 
 ## 最终摘要(成败/用时/产物/下一步): 自动重载前落盘 + 同步进 build.log/Output,
 ## 让 build.log 尾部即可看到最终结果(不依赖任何手动查询入口)
 func _summary_write(text: String) -> void:
-	var f := FileAccess.open(_abs("res://.godot/gdextension_build/last_build.txt"), FileAccess.WRITE)
-	if f:
-		f.store_string(text)
-		f.close()
+	FileTool.write_text(_abs("res://.godot/gdextension_build/last_build.txt"), text)
 	for line in text.split("\n"):
 		if line != "":
 			_log_raw(line)

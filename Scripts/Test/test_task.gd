@@ -189,11 +189,11 @@ func test_prerequisite_blocks_activation() -> void:
 	assert_true(task.is_active, "前置满足后应激活")
 
 
-func test_rewards_apply_on_complete() -> void:
-	# 完成奖励: complete 时按序 apply, 且不随重复 complete 重复发放
+func test_next_effect_applies_on_complete() -> void:
+	# 完成动作(奖励): complete 时 apply(context), 且不随重复 complete 重复发放
 	var reward := FakeReward.new()
 	var def := SignalTaskDef.new()
-	def.rewards = [reward]
+	def.next = reward
 	var task := Task.create(def)
 	var ctx := {"root": null}
 	task.activate(ctx)
@@ -237,7 +237,7 @@ func test_skip_if_grants_reward_and_whole_group() -> void:
 	var cond := FakeCondition.new()
 	cond.met = true
 	def.skip_if = cond
-	def.rewards = [reward]
+	def.next = reward
 	var task := Task.create(def)
 	task.activate({"root": null})
 	assert_true(task.is_completed, "条件已满足应直接完成")

@@ -23,3 +23,7 @@ func test_hooks() -> void:
 
 func test_parallel_smoke() -> void:
 	assert_true(PTParallelTest.run(), "ECS 并行调度冒烟测试失败，详见输出日志")
+
+
+func test_cache_freshness() -> void:
+	assert_true(PTCacheTest.run(), "ECS 缓存失效契约自检失败，详见输出日志")

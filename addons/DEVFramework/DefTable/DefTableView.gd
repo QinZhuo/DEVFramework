@@ -8,7 +8,8 @@ extends Control
 const DefTableGridClass := preload("res://addons/DEVFramework/DefTable/DefTableGrid.gd")
 const DefTableCellClass := preload("res://addons/DEVFramework/DefTable/DefTableCell.gd")
 const ROW_HEIGHT := 24.0
-const DEFS_BASE := "res://Assets/Def/"
+## Def 根目录: 复用 Def 的唯一常量, 避免多处各写一份字面量而漂移
+const DEFS_BASE := Def.DEFS_BASE
 const MAX_COL_WIDTH := 600.0
 ## 单元格内容左右内边距(与 DefTableCell 的 CELL_MARGIN_L/R 一致):
 ## 列宽测量/行高测量都减此值得到"渲染可用宽", 保证测量与渲染同一口径
@@ -111,24 +112,7 @@ func _ready() -> void:
 
 ## 递归收集 base 下的所有子目录(含子孙), 返回完整 res:// 路径(带尾部 /)
 func _list_dirs(base: String) -> Array[String]:
-	var out: Array[String] = []
-	var stack: Array[String] = [base]
-	while stack.size() > 0:
-		var dir: String = stack.pop_back()
-		var d := DirAccess.open(dir)
-		if d == null:
-			continue
-		d.list_dir_begin()
-		var f := d.get_next()
-		while f != "":
-			if d.current_is_dir() and not f.begins_with("."):
-				var sub := dir.path_join(f)
-				out.append(sub + "/")
-				stack.append(sub + "/")
-			f = d.get_next()
-		d.list_dir_end()
-	out.sort()
-	return out
+	return FileTool.list_dirs(base)
 
 
 ## 刷新左侧目录树: 按 DEFS_BASE 下的目录层级构建 Tree(父目录可折叠, 选中加载整个子树)
@@ -232,13 +216,7 @@ func _on_filesystem_changed() -> void:
 func _load_dir(path: String) -> void:
 	if path == "":
 		return
-	var all_tres := _collect_tres_recursive(path)
-	var loaded: Array[Resource] = []
-	for p in all_tres:
-		if ResourceLoader.exists(p):
-			var res: Resource = load(p)
-			if res != null and _is_def(res):
-				loaded.append(res)
+	var loaded := SaveTool.load_defs(path, _is_def, PackedStringArray([".tres", ".res"]))
 	rows = loaded
 	_build_columns()
 	_sort_rows()
@@ -260,26 +238,6 @@ func _clear_grid_cells() -> void:
 	_recycle_all_rows()
 	first_row = 0
 	last_row = 0
-
-
-func _collect_tres_recursive(path: String) -> PackedStringArray:
-	var out := PackedStringArray()
-	var stack: Array[String] = [path]
-	while stack.size() > 0:
-		var dir: String = stack.pop_back()
-		var d := DirAccess.open(dir)
-		if d == null:
-			continue
-		d.list_dir_begin()
-		var f := d.get_next()
-		while f != "":
-			if d.current_is_dir() and not f.begins_with("."):
-				stack.append(dir.path_join(f) + "/")
-			elif f.ends_with(".tres") or f.ends_with(".res"):
-				out.append(dir.path_join(f))
-			f = d.get_next()
-		d.list_dir_end()
-	return out
 
 
 func _is_def(res: Resource) -> bool:
