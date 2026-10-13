@@ -39,7 +39,7 @@ static func code_arg(desc: String = "") -> Dictionary:
 	return str_arg(desc if not desc.is_empty() else _CODE_ARG_DEFAULT)
 
 
-## eval_code / game_eval 的 timeout_ms 共用定义。
+## eval_code 的 timeout_ms 共用定义。
 ##
 ## 这两个工具此前**各写一份字面量完全相同**的文案, 且分处两个文件(编辑器侧 _add_tool 与
 ## runtime 侧 _register_game_play_tool) —— 同一句话说两遍的漂移风险正是本文件存在的理由,
@@ -87,13 +87,10 @@ static func simulate_key() -> Dictionary:
 	}, "required": ["key"]}
 
 
-## 游标类工具(get_logs / get_game_logs / get_game_errors)的 schema。
+## 游标类工具(get_logs)的 schema。
 ##
-## 三者共用一个工厂, 因为各写各的会漂移出**误导性**差异, 而不只是不好看: max 究竟是
-## 合并前还是合并后的条数, 写错会让 AI 按错误预期截断(实现顺序见 _call_collect_logs:
-## contains 过滤 → merge 合并 → max 截断, 故是合并后)。三者如今共用同一个实现
-## (_call_collect_logs), 这层一致性由结构保证, 不依赖描述对齐 —— 此前 get_logs 会把 args
-## 原样转发给 get_game_logs, 同一参数两处解释, 那种耦合正是要消除的。
+## max 是**合并后**的条数: 实现顺序见 _call_collect_logs(contains 过滤 → merge 合并 → max 截断),
+## 写错会让 AI 按错误预期截断。kind / process 等独有参数由注册点经 extra 补入, 本工厂只负责游标参数。
 ##
 ## default_max 是**描述片段**而非整数: get_logs 的默认值随 kind 变化(log=200,
 ## warning/error=100), 写死一个数会让 AI 以为任何 kind 都适用。
@@ -178,5 +175,5 @@ static func auto_verify() -> Dictionary:
 		"retries": {"type": "integer", "description": "失败后的重试次数(总执行=1+retries)。每轮独立重启场景, 用于排除 flaky/时序性失败。默认 0"},
 		"retry_backoff_ms": {"type": "integer", "description": "重试间隔毫秒, 默认 500"},
 		"prev_snapshot": {"type": "object", "description": "可选: 上次的 scene_deps 快照(由本工具返回), 传入后检测本次执行前脚本/资源/配置是否变化, 结果含 deps_changed(兼容 code_changed)。供 verify_fix 复用。"},
-		"operations": {"type": "array", "description": "操作序列(模拟玩家行为+延迟+断言)。每步格式: {'action': wait/click/drag/key/eval/poll/screenshot, ...}. wait 带 ms; click 带 x/y; drag 带 from_x/from_y/to_x/to_y; key 带 key; eval 带 code(GDScript, 可return); poll 带 code+timeout_ms(轮询直到返回 true); screenshot 可带 capture_type。操作间自动串行执行。"},
+		"operations": {"type": "array", "description": "操作序列(模拟玩家行为+延迟+断言)。每步格式: {'action': wait/click/drag/key/eval/poll/screenshot, ...}. wait 带 ms; click 带 x/y; drag 带 from_x/from_y/to_x/to_y; key 带 key; eval 带 code(GDScript, 可return); poll 带 code+timeout_ms(轮询直到返回 true); screenshot 抓真实截图。操作间自动串行执行。"},
 	}}

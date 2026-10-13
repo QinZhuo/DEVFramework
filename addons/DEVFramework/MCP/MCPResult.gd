@@ -22,7 +22,7 @@ const CAT_GAME_BREAKED := "game_breaked"  # 游戏被调试器暂停(脚本错�
 const CAT_STALE_CODE := "stale_code"      # 代码已改动而本进程跑的是旧版: 需重启对应进程
 const CAT_INTERNAL := "internal"          # 服务器内部错误: 不应重试同参数
 ##
-## game_breaked 单列而不并入 transient: 后者只需"等等再试", 而它要求先 get_game_errors 定位、
+## game_breaked 单列而不并入 transient: 后者只需"等等再试", 而它要求先 get_logs(process=game,kind=error) 定位、
 ## game_control(action=continue) 解除暂停。合并会让 AI 用"等待"应对一个必须人工介入的状态。
 
 
@@ -97,6 +97,18 @@ static func ok_with_meta(text: String, meta: Dictionary) -> Dictionary:
 	return make(text, false, {"structuredContent": safe_meta})
 
 
+## 工具返回"资源链接"(规范 content 类型 resource_link): 让大段文档走 resources 通道, 而不是
+## 把它整段塞进工具结果。text 是给**资源感知之外**客户端的一句说明(至少要能据此知道去哪取);
+## 资源感知客户端可据 uri 直接拉正文。content 里并列一个 text 项 + 一个 resource_link 项。
+static func resource_link(uri: String, name: String, mime_type: String, text: String, description: String = "") -> Dictionary:
+	var link := {"type": "resource_link", "uri": uri, "name": name, "mimeType": mime_type}
+	if not description.is_empty():
+		link["description"] = description
+	var out := make(text, false)
+	out["content"] = [{"type": "text", "text": text}, link]
+	return out
+
+
 ## 语义化错误封装: retryable 由类别固化, 调用方只负责给出恢复动作。
 ## 这几个是新增代码的推荐入口(它把"该不该重试"这个判断从 50+ 个调用点收敛到一处)。
 
@@ -121,7 +133,7 @@ static func err_game_stopped(text: String, recovery: String) -> Dictionary:
 ## 而客户端映射里没有它 —— 恢复路径在最需要它的时刻(游戏出错)才发现是断的。
 static func err_game_breaked(text: String, recovery: String = "") -> Dictionary:
 	return err(text, CAT_GAME_BREAKED, true,
-		recovery if not recovery.is_empty() else "get_game_errors查错后game_control(action=continue); 或game_control(action=stop)修复重启")
+		recovery if not recovery.is_empty() else "get_logs(process=game,kind=error)查错后game_control(action=continue); 或game_control(action=stop)修复重启")
 
 
 static func err_stale_code(text: String, recovery: String) -> Dictionary:

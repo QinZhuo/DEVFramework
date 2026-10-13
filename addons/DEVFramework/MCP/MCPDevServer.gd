@@ -6,7 +6,7 @@
 ##   - 游戏进程: 不开启任何端口, 注册 EngineDebugger 消息捕获器("dev_mcp"),
 ##     通过编辑器↔游戏的调试线(EngineDebugger wire)接收并原生执行运行时工具:
 ##     take_screenshot(view文本化/game真实截图) / simulate_click / simulate_drag /
-##     simulate_key / game_eval / 游戏日志等。因为在游戏进程内, Input.parse_input_event 等引擎 API 直接生效。
+##     simulate_key / eval_code(process=game) / get_logs(process=game) 等。因为在游戏进程内, Input.parse_input_event 等引擎 API 直接生效。
 ## 编辑器↔游戏通信走 Godot 自带调试线(编辑器以调试模式启动游戏时自动建立), 零额外端口。
 ## 桥接由 MCPDebuggerPlugin(EditorDebuggerPlugin)负责, 生命周期由 plugin.gd 控制。
 class_name MCPDevServer extends Node
@@ -51,12 +51,11 @@ const MCPFormat := preload("res://addons/DEVFramework/MCP/MCPFormat.gd")
 ## 下面这份表是**实测**的各域导出(不是设计意图), 新增域时按它补一行:
 ##   MCPValidateTools / MCPResourceTools / MCPSceneTools / MCPFileTools / MCPCodeIndex
 ##       register
-##   MCPLogTools        register + bind_logger(logger)
-##                      —— get_game_logs / get_game_errors 复用日志捕获器, 游戏进程侧漏注入时
-##                         它们显式返回"日志捕获器未就绪"(这条是显式的, 不会静默)
-##   MCPDevTools        register + set_eval_ctx_provider(provider)
-##                      —— eval_code(运行时可用的唯一开发辅助工具)的新鲜度闸门要用 _mode 与
-##                         游戏启动时刻。漏注入**不报错**, 守卫静默全放行且运行期错误捕获不到。
+##   MCPLogTools        bind_logger(logger)(不注册工具; get_logs/clear_logs 已由主文件注册)
+##                      —— 复用日志捕获器, 两个进程各绑一次; 漏绑时显式返回"日志捕获器未就绪"
+##   MCPDevTools        set_eval_ctx_provider(provider)(不注册工具; eval_code 已由主文件注册)
+##                      —— eval_code 的新鲜度闸门要用 _mode 与游戏启动时刻。漏注入**不报错**,
+##                         守卫静默全放行且运行期错误捕获不到。
 ##                         **导出安全**: restart_editor / script_status 已拆到 MCPDevToolsEditor
 ##   MCPDevToolsEditor  register(仅编辑器侧)
 ##                      —— restart_editor(EditorInterface) / script_status(MCPScriptSync), 含
@@ -121,11 +120,17 @@ const SETTING_LOG_TOOL_RESULTS := "dev_framework/mcp/log_tool_results"
 ## ------- 运行时服务器(导出包/独立运行)配置 -------
 ## 勾选 runtime_enabled 后, **导出包/独立运行的进程**(非编辑器构建)会复用
 ## dev_framework/mcp/port 同一个端口开服务器。工具**自动注册**: 凡能在运行时编译运行的框架
-## 工具域(日志/文件/校验/测试/代码索引)与运行时宿主工具(截图/UI 交互/游戏日志/用例)全部注册,
-## **唯独不含 eval**(game_eval/auto_verify 依赖编辑器类, 且发布包开放 eval 等于分发 RCE)。
+## 工具域(文件/校验/测试/代码索引)与运行时宿主工具(截图/UI 交互/日志/用例/eval)全部注册;
+## eval_code 在运行时=本进程执行(其 process 只能是 game), auto_verify 依赖编辑器类故不注册。
 ## 为何复用端口: 编辑器进程与 F5 游戏进程是两个进程, 无法同时绑同一 127.0.0.1:port, 故运行时
 ## 服务器**只在非编辑器构建里起**(F5 时由编辑器那台服务器负责, 游戏进程仅走调试线桥接)。
 const SETTING_RUNTIME_ENABLED := "dev_framework/mcp/runtime_enabled"
+
+## ------- 项目侧 provider(项目自定义 MCP 工具域) -------
+## 项目设置列出若干 .gd 路径, 每个脚本须提供 `static func register(add_tool: Callable) -> void`,
+## 语义与框架域文件一致(框架只认机制, 项目提供内容)。工具注册为**游戏操作工具**:
+## 编辑器进程经调试线转发到游戏进程执行, 运行时(导出包/独立运行/F5 游戏进程)就地执行。
+const SETTING_PROVIDERS := "dev_framework/mcp/providers"
 
 ## 统一输出上限默认值(字符)。超限则**截断**返回并附续读提示, 而非整条拒绝。
 ##
@@ -214,6 +219,12 @@ const LIST_TTL_MS := 600000
 const SERVER_NAME := "godot-dev-mcp"
 const SERVER_VERSION := "0.3.0"
 
+## 服务器级"使用说明"(initialize / server:discover 结果的 instructions 字段)。这是给模型的
+## **全局**提示(Host 常把它注入 system prompt; Claude Code 默认截断 2048 字符), 故只放跨工具的
+## 约定与边界, **不抄工具描述**(工具描述在 tools/list 里另发)。项目 provider 的
+## `static func instructions() -> String` 会追加在后面。
+const BASE_INSTRUCTIONS := "Godot 开发调试 MCP 服务器(编辑器/游戏双模式): 改场景节点前先 get_scene_tree/get_node_info; 不确定 Godot 原生 API 先 classdb_query; get_logs / clear_logs / eval_code 用**必填** process 参数选进程(editor|game; 游戏进程工具需游戏在跑、导出运行时=本进程); simulate_*/take_screenshot(game) 作用于游戏进程(编辑器里调用经调试线转发)。"
+
 ## 模式
 const MODE_EDITOR := "editor"
 const MODE_RUNTIME := "runtime"
@@ -257,7 +268,7 @@ var _next_req_id := 1
 var _game_breaked := false
 ## 断点暂停时仍可安全执行的工具(只读缓冲, 不依赖游戏主循环):
 ## 游戏被暂停时 EngineDebugger 调试线程仍活着, 这类工具仅读本地缓冲即返回, 不会挂起。
-const _BREAK_SAFE_TOOLS := ["get_game_errors", "get_game_logs"]
+const _BREAK_SAFE_TOOLS := ["get_logs", "clear_logs"]
 
 ## 逐条 JSON-RPC 请求日志的开关(现场可 set, 不必重启编辑器)。
 static var _log_rpc := false
@@ -274,6 +285,10 @@ var _verify_sessions: Dictionary = {}
 var _tool_audit_handlers := {}
 
 var _tool_audit_issues: Array[String] = []
+
+## 项目 provider 追加的服务器说明(见 _register_providers 的 instructions 收集), 拼进
+## initialize/server:discover 的 instructions(在 BASE_INSTRUCTIONS 之后)。
+var _provider_instructions: Array[String] = []
 
 
 ## ------- 生命周期(autoload) -------
@@ -298,10 +313,11 @@ func _ready() -> void:
 	_logger = MCPLogger.new()
 	OS.add_logger(_logger)
 	_mode = MODE_RUNTIME
-	# (1) 开发期桥接: "由编辑器启动的游戏进程"注册调试线工具(不占端口)。含 game_eval/auto_verify
+	# (1) 开发期桥接: "由编辑器启动的游戏进程"注册调试线工具(不占端口)。含 eval_code(process=game)/auto_verify
 	#     —— 该进程用的是编辑器二进制, MCPDevTools 可解析。
 	if _is_editor_build():
 		_register_game_play_tools(true)
+		_register_providers()
 		# 防御: 若本单例被实例化多次/热重载等导致 capture 已注册, 跳过而非崩溃
 		if not EngineDebugger.has_capture(DEBUGGER_PREFIX):
 			EngineDebugger.register_message_capture(DEBUGGER_PREFIX, _on_debugger_message)
@@ -339,9 +355,9 @@ func _call_runtime_tool_async(req_id: int, tool_name: String, args: Dictionary) 
 	var result: Dictionary
 	## 长任务(游戏用例)运行期间: 需要主循环的工具会被用例拖慢, 多数会干等到超时才报错。
 	## 这里立即返回 busy, 让调用方先读进度 —— 读缓冲类工具与用例自身仍放行。
-	if _game_tests_running and tool_name != "run_game_tests" and not _BREAK_SAFE_TOOLS.has(tool_name):
-		result = _err("游戏用例正在运行, 工具 %s 需要主循环, 现在调用既会拖慢用例也大概率超时。\n请先反复调用 run_game_tests 读进度直到 running=false, 或用 game_control(action=stop) 终止用例。" % tool_name,
-			"busy", true, "run_game_tests读进度至running=false后再调用; 或game_control(action=stop)终止用例")
+	if _game_tests_running and tool_name != "run_tests" and not _BREAK_SAFE_TOOLS.has(tool_name):
+		result = _err("游戏用例正在运行, 工具 %s 需要主循环, 现在调用既会拖慢用例也大概率超时。\n请先反复调用 run_tests(process=game) 读进度直到 running=false, 或用 game_control(action=stop) 终止用例。" % tool_name,
+			"busy", true, "run_tests(process=game)读进度至running=false后再调用; 或game_control(action=stop)终止用例")
 	elif _tool_handlers.has(tool_name):
 		result = await _tool_handlers[tool_name].call(args)
 	else:
@@ -401,7 +417,7 @@ func _on_session_stopped(session_id: int) -> void:
 func _on_session_breaked(_session_id: int, can_debug: bool) -> void:
 	_game_breaked = true
 	LogTool.log("MCP", "游戏已进入断点暂停(调试循环=%s)。运行时工具会立即返回明确错误, 可用 game_control(action=continue) 让游戏继续。" % str(can_debug))
-	var msg := "游戏被断点暂停(脚本错误/断点)。get_game_errors/get_game_logs仍可用, 先查错误; 再game_control(action=continue)继续; 要修脚本则game_control(action=stop)后改代码重跑。"
+	var msg := "游戏被断点暂停(脚本错误/断点)。get_logs(process=game) 仍可用, 先查错误; 再game_control(action=continue)继续; 要修脚本则game_control(action=stop)后改代码重跑。"
 	for req_id in _pending:
 		if _pending[req_id] == null:
 			_pending[req_id] = _err_game_breaked(msg)
@@ -561,8 +577,8 @@ func is_running() -> bool:
 
 ## ------- 运行时服务器(导出包/独立运行) -------
 ## 非编辑器进程勾选 runtime_enabled 后开的一个端口: 与编辑器服务器共用同一套协议实现与
-## 同一套工具注册机制, 工具由 _register_runtime_domains 自动注册(共享域含 eval_code, 游戏操作
-## 工具不含 game_eval/auto_verify)。
+## 同一套工具注册机制, 工具由 _register_runtime_domains 自动注册(共享域 + 游戏操作工具; eval_code
+## 在运行时=本进程执行, auto_verify 依赖编辑器类故不注册)。
 func _start_runtime_server() -> void:
 	# 复用编辑器同一端口设置: 非编辑器构建里该端口空闲(编辑器进程不在), 不另设端口。
 	_port = int(ProjectSettings.get_setting(SETTING_PORT, 8931))
@@ -612,16 +628,23 @@ var _mod_cache := {}
 func _mod(name: String) -> Variant:
 	if _mod_cache.has(name):
 		return _mod_cache[name]
-	var path := "%s/%s.gd" % [MCP_DIR, name]
+	var gd: Variant = _script_from_disk("%s/%s.gd" % [MCP_DIR, name])
+	_mod_cache[name] = gd
+	return gd
+
+
+## 按当前磁盘源码重编译一个脚本(绕过 ResourceLoader 缓存)。域文件与项目 provider 共用: 于是
+## "改脚本 → refresh_tools"对两者同样生效, 无需重启编辑器。读不到源码(导出包二进制脚本)则
+## 回退 ResourceLoader 缓存版本 —— 宁可旧, 不可坏。
+func _script_from_disk(path: String) -> Variant:
 	var src := FileAccess.get_file_as_string(path)
 	if src.is_empty():
 		return ResourceLoader.load(path)
 	var gd := GDScript.new()
 	gd.source_code = src
 	if gd.reload() != OK:
-		push_error("[MCP] 域脚本 %s 重编译失败, 回退缓存版本" % name)
+		push_error("[MCP] 脚本 %s 重编译失败, 回退缓存版本" % path)
 		gd = ResourceLoader.load(path)
-	_mod_cache[name] = gd
 	return gd
 
 
@@ -632,18 +655,23 @@ func _mod(name: String) -> Variant:
 ## 先猜该用哪个 —— 这正是"接口不统一"的具体代价。各工厂的设计依据见 MCPToolSchema 内的注释。
 
 
-## 通用游戏操作工具注册: editor 侧 handler 经调试线转发, runtime 侧就地执行
-func _register_game_play_tool(name: String, desc: String, schema: Dictionary, runtime_handler: Callable, editor_handler: Callable) -> void:
-	# 登记"入参自检该切哪一份"。两个 handler 里必有一个是纯转发 lambda, 而转发器不读任何入参键:
-	# 自检切它会因切不出函数体而**静默跳过**(见 MCPToolAudit.audit_handler_params), 于是这批工具
-	# 永久退出检查范围且无任何迹象。故把那份具体实现登记下来, 由自检去切它。
-	for h in [runtime_handler, editor_handler]:
+## 通用游戏操作工具注册: editor 侧 handler 经调试线转发, runtime 侧就地执行。
+## editor_handler 缺省时**自动按名生成转发 lambda**(大多数游戏操作工具就是纯转发)—— 既省样板,
+## 也消除"忘了写转发"这类静默 bug。只有需要自定义编辑器行为(take_screenshot 多模式 / eval_code
+## 分流 / auto_verify)时才显式传 editor_handler。
+func _register_game_play_tool(name: String, desc: String, schema: Dictionary, runtime_handler: Callable, editor_handler := Callable()) -> void:
+	var ehandler: Callable = editor_handler
+	if not ehandler.is_valid():
+		ehandler = func(args: Dictionary) -> Dictionary: return await _call_runtime_proxy(name, args)
+	# 登记"入参自检该切哪一份"。转发 lambda 不读任何入参键, 切它会因切不出函数体而**静默跳过**
+	# (见 MCPToolAudit.audit_handler_params), 故把那份具体实现(runtime_handler)登记下来。
+	for h in [runtime_handler, ehandler]:
 		var m := String(h.get_method())
 		if m != "<anonymous lambda>":
 			_tool_audit_handlers[name] = h
 			break
 	if _mode == MODE_EDITOR:
-		_add_tool(name, desc, schema, editor_handler)
+		_add_tool(name, desc, schema, ehandler)
 	else:
 		_add_tool(name, desc, schema, runtime_handler)
 
@@ -665,6 +693,7 @@ func _register_editor_tools() -> void:
 	_register_shared_domains()
 	_register_editor_only_domains()
 	_register_game_play_tools(true)
+	_register_providers()
 	_audit_tools()
 
 
@@ -681,18 +710,12 @@ func _register_editor_tools() -> void:
 ## 注册"编辑器与运行时都可用"的域。走 _mod: 编辑器侧热重载, 运行时侧经 FileAccess/
 ## ResourceLoader 取 pck 内版本 —— 两条路径同一份代码。
 func _register_shared_domains() -> void:
-	var log_tools: Variant = _mod("MCPLogTools")
-	log_tools.bind_logger(_logger)
-	log_tools.register(_add_tool)
+	# MCPLogTools / MCPDevTools / MCPTestTools 不再在此注册工具: get_logs / clear_logs / eval_code /
+	# run_tests 已收进 _register_game_play_tools(带必填 process, 编辑器侧转发 / 运行时就地)。
+	# 它们的底层实现由本文件按需调用。
 	_mod("MCPValidateTools").register(_add_tool)
 	_mod("MCPFileTools").register(_add_tool)
-	_mod("MCPTestTools").register(_add_tool)
 	_mod("MCPCodeIndex").register(_add_tool)
-	# eval_code 的上下文(mode / 游戏启动时刻 / 日志捕获器)是实例状态, 域文件拿不到, 经 provider
-	# 注入。漏注入不报错, 守卫会静默全放行且运行期错误捕获不到 —— 症状是"eval 的问题查不出来"。
-	var dev_tools: Variant = _mod("MCPDevTools")
-	dev_tools.set_eval_ctx_provider(_eval_ctx_provider)
-	dev_tools.register(_add_tool)
 
 
 ## 注册**编辑器专属**的域与工具(依赖 EditorInterface / 编辑器会话), 不进导出包解析图。
@@ -720,6 +743,44 @@ func _session_facts_provider() -> Dictionary:
 	}
 
 
+## 注册项目侧 provider(见 SETTING_PROVIDERS): 加载脚本, 调其 `static register(add_tool)`
+## (工具) 与 `static resources() -> Array`(静态文档资源, 内嵌内容)。两者都可选。
+##
+## 【以宿主进程就地注册, 不转发】provider 工具运行在**承载服务器的进程**里: 编辑器进程 /
+## F5 游戏进程 / 导出运行时。理由: provider 是项目侧"自足"工具(如 voxel_help 纯文档), 编辑器里
+## 没有运行的游戏时也必须可用; 需要操作"正在运行的游戏"的项目工具应改用脚本 + eval_code(process=game),
+## 而不是靠 MCP 转发。故须在**编辑器、F5 游戏进程、导出/独立运行三个分支都调**。
+##
+## 用 _script_from_disk 而非 load: provider 与域文件一样要能在"改脚本 → refresh_tools"后生效,
+## 无需重启编辑器(load 会命中 ResourceLoader 旧缓存)。
+func _register_providers() -> void:
+	# 资源注册表与服务器说明都随每轮工具注册一起重建(与 _reset_tools 同节奏), 避免残留。
+	var docs: Variant = _mod("MCPResourceDocs")
+	docs.clear()
+	_provider_instructions = []
+	var paths: Variant = ProjectSettings.get_setting(SETTING_PROVIDERS, PackedStringArray())
+	if not (paths is Array or paths is PackedStringArray):
+		return
+	for p in paths:
+		var path := str(p).strip_edges()
+		if path.is_empty():
+			continue
+		var script: Variant = _script_from_disk(path)
+		if script == null or not (script is GDScript):
+			push_warning("[MCP] provider 脚本无效: %s" % path)
+			continue
+		if script.has_method("register"):
+			script.register(_add_tool)
+		if script.has_method("resources"):
+			docs.register(script.resources())
+		if script.has_method("instructions"):
+			var line := str(script.instructions()).strip_edges()
+			if not line.is_empty():
+				_provider_instructions.append(line)
+		if not script.has_method("register") and not script.has_method("resources") and not script.has_method("instructions"):
+			push_warning("[MCP] provider 脚本既无 static register(add_tool) / resources() / instructions(): %s" % path)
+
+
 ## ======= 契约自检 =======
 ##
 ## 为什么必须有: 全部工具(主文件 + 各域文件)都是手写注册, 而协议层的失败模式**全部是静默的**
@@ -741,7 +802,11 @@ func _audit_tools() -> void:
 	# 迹象。理由详见 MCPToolAudit 的扫描范围说明。
 	# registry_is_full: 只有编辑器进程注册全量工具。游戏进程只注册运行时那部分, 在那里做
 	# "名单里的工具名是否都已注册"的反向校验会把分模式注册误报成名单未同步(实测刷 33 条)。
-	_tool_audit_issues = _mod("MCPToolAudit").audit_tools(_tool_defs, _tool_handlers, get_script().resource_path, _tool_audit_handlers, _mode == MODE_EDITOR)
+	# extra_scripts: 项目侧 provider 脚本在 MCP 目录之外, 须并入源码扫描, 否则其 handler 的
+	# 函数体切不出来, 入参一致性自检会对那批工具报"检查缺失"。
+	var provider_paths: Variant = ProjectSettings.get_setting(SETTING_PROVIDERS, PackedStringArray())
+	var extra: Array = Array(provider_paths) if (provider_paths is Array or provider_paths is PackedStringArray) else []
+	_tool_audit_issues = _mod("MCPToolAudit").audit_tools(_tool_defs, _tool_handlers, get_script().resource_path, _tool_audit_handlers, _mode == MODE_EDITOR, extra)
 	# 自检通过是常态, 静默即可; 只在发现问题时报警, 否则每次启动都要宣告一遍"没问题"。
 	if not _tool_audit_issues.is_empty():
 		LogTool.log("MCP", "工具契约自检发现 %d 个问题:\n  - %s" % [_tool_audit_issues.size(), "\n  - ".join(_tool_audit_issues)])
@@ -1076,6 +1141,7 @@ func _handle_jsonrpc(req: Dictionary, proto: String = PROTOCOL_VERSION) -> Dicti
 					"protocolVersion": agreed,
 					"capabilities": _server_capabilities(),
 					"serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
+					"instructions": _server_instructions(),
 				},
 			}
 		"notifications/initialized":
@@ -1086,12 +1152,14 @@ func _handle_jsonrpc(req: Dictionary, proto: String = PROTOCOL_VERSION) -> Dicti
 		# 注: 规范的 DiscoverResult 完整字段未公开, 这里是按已公开的
 		# Result/ServerCapabilities/Implementation 三个接口推导的最小形状;
 		# 多报无害(客户端按 schema 取自己认识的), 少报才会被拒。
+		# instructions 自 2026-07-28 起从 initialize 迁到 server/discover, 故两处都发。
 		"server/discover":
 			return {"jsonrpc": "2.0", "id": req_id, "result": _decorate_result({
 				"protocolVersions": SUPPORTED_PROTOCOL_VERSIONS,
 				"protocolVersion": proto,
 				"capabilities": _server_capabilities(),
 				"serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
+				"instructions": _server_instructions(),
 			}, proto)}
 		"tools/list":
 			# ttlMs/cacheScope 让客户端缓存这份 38K 的清单而不是每次重拉 —— 它在进程生命周期内
@@ -1110,7 +1178,7 @@ func _handle_jsonrpc(req: Dictionary, proto: String = PROTOCOL_VERSION) -> Dicti
 			# 入参日志与成功结果日志同开关(dev_framework/mcp/log_tool_results): 它们是同一个问题的
 			# 两半 —— 一次调用打两行回声, 且都被本进程 MCPLogger 抄进 get_logs 返回给 AI。排查时打开。
 			if ProjectSettings.get_setting(SETTING_LOG_TOOL_RESULTS, false):
-				# 参数截断: eval_code/game_eval 传的是代码正文(上限 8192 字符), 整段打进日志会撑爆日志。
+				# 参数截断: eval_code 传的是代码正文(上限 8192 字符), 整段打进日志会撑爆日志。
 				var arg_log := str(arguments)
 				if arg_log.length() > 300:
 					arg_log = arg_log.left(300) + ("…(已截断, 共 %d 字符)" % arg_log.length())
@@ -1132,32 +1200,28 @@ func _handle_jsonrpc(req: Dictionary, proto: String = PROTOCOL_VERSION) -> Dicti
 			if result.is_empty():
 				return _jsonrpc_error(req_id, ERR_INTERNAL, "Internal error: 工具执行未返回结果")
 			# 记录返回信息到 MCP 日志, 便于诊断"返回异常/空"等问题。仅打印非原始数据
-			# (get_logs / get_errors / get_game_logs / get_game_errors / 文件读写等巨量内容工具截断显示)。
+			# (get_logs / 文件读写等巨量内容工具截断显示)。
 			# 必须在剥离 text/is_error **之前**记 —— 日志摘要读的就是这两个字段。
 			_log_tool_result(tool_name, result)
 			# 出协议边界: 剥掉仅供进程内使用的顶层 text / is_error。二者与 content[0].text
 			# 逐字节重复, 不剥等于每次调用把同一份正文传两遍(实测占大结果 45%)。详见 MCPResult.for_protocol。
 			return {"jsonrpc": "2.0", "id": req_id, "result": MCPResult.for_protocol(result)}
-		# resources: 静态文档入口。短连接架构发不出推送, 故 subscribe / listChanged 均为 false。
+		# resources: 静态文档入口(项目侧 provider 声明、**内嵌内容**)。短连接架构发不出推送,
+		# 故 subscribe / listChanged 均为 false。注册表是导出安全的 MCPResourceDocs,
+		# **编辑器与运行时两个进程都可用**(不再仅编辑器)。
 		# 注意 resources/read 的成功与失败**都**放在 result 里(失败时带 isError + content),
 		# 而不是走 JSON-RPC error: 规范两种都允许, 而这里选 result 是因为"uri 不对"属于
 		# 换掉 uri 就能自纠错的问题, 与 tools/call 的处理方式保持一致。
-		# **只在编辑器构建提供**: MCPResourceTools 含编辑器引用, 导出包不可 _mod 它。
 		"resources/list":
-			if not _is_editor_build():
-				return {"jsonrpc": "2.0", "id": req_id, "result": _decorate_result({"resources": []}, proto, true)}
 			return {"jsonrpc": "2.0", "id": req_id, "result": _decorate_result(
-				{"resources": _mod("MCPResourceTools").list_resources()}, proto, true)}
+				{"resources": _mod("MCPResourceDocs").list_all()}, proto, true)}
 		"resources/read":
-			if not _is_editor_build():
-				return {"jsonrpc": "2.0", "id": req_id, "result": _decorate_result(
-					MCPResult.for_protocol(_err_validation("运行时模式不提供静态资源", "仅在编辑器模式可用")), proto, true)}
 			var rparams: Variant = req.get("params", {})
 			var rdict: Dictionary = rparams if rparams is Dictionary else {}
 			# 成功与失败都在 result 里(失败时是 _err_validation, 自带 content+isError),
 			# 故两条路径都要过 for_protocol: 失败那条同样带 text/is_error。
 			return {"jsonrpc": "2.0", "id": req_id,
-				"result": _decorate_result(MCPResult.for_protocol(_mod("MCPResourceTools").read_resource(str(rdict.get("uri", "")))), proto, true)}
+				"result": _decorate_result(MCPResult.for_protocol(_mod("MCPResourceDocs").read(str(rdict.get("uri", "")))), proto, true)}
 		"ping":
 			return {"jsonrpc": "2.0", "id": req_id, "result": {}}
 		# 声明支持 4 个级别却什么都不做, 比不声明更糟: 模型会据此以为 debug/info 日志已被
@@ -1229,6 +1293,15 @@ func _server_capabilities() -> Dictionary:
 		# _meta 的 logLevel 逐请求开启; 这里保留 setLevel 只为兼容旧客户端。
 		"logging": {"supportedLevels": ["debug", "info", "warning", "error"]},
 	}
+
+
+## 服务器级 instructions(BASE + 项目 provider 追加)。initialize / server:discover 都发它。
+func _server_instructions() -> String:
+	var parts: Array[String] = []
+	if not BASE_INSTRUCTIONS.is_empty():
+		parts.append(BASE_INSTRUCTIONS)
+	parts.append_array(_provider_instructions)
+	return "\n".join(parts)
 
 
 ## 按协商到的协议版本给 result 补新版必需字段。
@@ -1430,16 +1503,58 @@ func _err(text: String, category: String, retryable: bool, recovery: String) -> 
 ## "同一个参数两种读法"长期共存, 每处裸转都是一个潜在的静默反转。
 
 
-## get_game_logs 的进程侧实现: 只读本进程 print 日志。与 _call_get_errors 一样直接调
-## MCPLogTools._call_collect_logs, 不经 get_logs 的 handler —— 后者曾按 source 转发, 而 args
-## 原样带走 source, 于是"编辑器 get_logs(source=game) -> 游戏 get_game_logs -> 再次命中
-## source=game -> 又转发"形成自我转发, 而游戏进程 debugger_plugin 恒为 null, 于是恒定报
-## "游戏未运行"(游戏明明在跑)。
-## source 参数现已整体删除, 该类自我转发不再可能发生; 独立出来另有一利: 本函数只读 schema
-## 声明过的参数, 入参契约自检自然通过, 不靠白名单绕过。
-func _call_get_game_logs(args: Dictionary) -> Dictionary:
-	# 不要写 await: 底层件不是协程(内部无 await), await 只会换来 redundant-await 警告。
-	return MCPLogTools._call_collect_logs(args, false)
+## ------- get_logs / clear_logs: 统一的进程路由(process 必填) -------
+## 两个 handler 分别在"服务器所在进程"与"编辑器进程"注册(见 _register_game_play_tools):
+##   · *_local  : 服务器就在(游戏)进程内 → 只能 process=game, 本进程即游戏;
+##   · *_routed : 服务器在编辑器进程 → editor 读本进程缓冲, game 经调试线转发。
+## **不做 source=auto 那种静默切换**(历史故障: 查编辑器错误却拿到游戏的)。process 必填,
+## 缺省即报错, 杜绝"默认读错进程"。
+
+func _call_get_logs_local(args: Dictionary) -> Dictionary:
+	var process := _require_process(args)
+	if process != "game":
+		return _fail("导出运行时没有独立的编辑器进程; get_logs 的 process 只能是 'game'")
+	return MCPLogTools._call_get_logs(args)
+
+
+func _call_get_logs_routed(args: Dictionary) -> Dictionary:
+	var process := _require_process(args)
+	if process == "game":
+		return await _call_runtime_proxy("get_logs", args)
+	return MCPLogTools._call_get_logs(args)
+
+
+func _call_clear_logs_local(args: Dictionary) -> Dictionary:
+	var process := _require_process(args)
+	if process != "game":
+		return _fail("导出运行时没有独立的编辑器进程; clear_logs 的 process 只能是 'game'")
+	return MCPLogTools._call_clear_errors(args)
+
+
+func _call_clear_logs_routed(args: Dictionary) -> Dictionary:
+	var process := _require_process(args)
+	if process == "game":
+		return await _call_runtime_proxy("clear_logs", args)
+	return MCPLogTools._call_clear_errors(args)
+
+
+## 读取并校验必填的 process 参数(editor|game); 非法返回 ""。
+func _require_process(args: Dictionary) -> String:
+	return VariantTool.get_string(args, "process", "").strip_edges()
+
+
+## run_tests 的 runtime 侧(服务器位于游戏进程内): process 只能是 game(游戏用例就地跑)。
+func _call_run_tests_local(args: Dictionary) -> Dictionary:
+	if _require_process(args) != "game":
+		return _fail("导出运行时没有独立的编辑器进程; run_tests 的 process 只能是 'game'")
+	return await _runtime_run_game_tests(args)
+
+
+## run_tests 的 editor 侧: process=editor 在编辑器进程同步跑; process=game 转发到游戏进程。
+func _call_run_tests_routed(args: Dictionary) -> Dictionary:
+	if _require_process(args) == "game":
+		return await _call_runtime_proxy("run_tests", args)
+	return await _mod("MCPTestTools")._handle_run_tests(args)
 
 
 ## 游戏运行控制: start(支持 uid:// 场景, 已在运行时自动停止旧实例后重启)/stop/continue
@@ -1465,10 +1580,6 @@ func _call_game_control(args: Dictionary) -> Dictionary:
 	return _fail("未知 action: %s (可选 start/stop/continue)" % VariantTool.get_string(args, "action"))
 
 
-func _call_get_errors(args: Dictionary) -> Dictionary:
-	return MCPLogTools._call_collect_logs(args, true)
-
-
 ## 编辑器模式且游戏调试线活跃(编辑器进程指向游戏进程的数据/操作要走代理)
 func _has_game_session() -> bool:
 	return _mode == MODE_EDITOR and debugger_plugin != null and debugger_plugin.has_active_session()
@@ -1486,9 +1597,9 @@ func _mark_script_baseline(reason: String) -> void:
 
 
 func _call_take_screenshot(args: Dictionary) -> Dictionary:
-	# text(文本化截图) 与 game(真实截图) 都分析游戏运行画面: 编辑器模式经调试线转发到游戏进程
-	var capture_type: String = VariantTool.get_string(args, "capture_type", "text")
-	if capture_type == "text" or capture_type == "game":
+	# game(真实截图) 分析游戏运行画面: 编辑器模式经调试线转发到游戏进程, 运行时就地。
+	var capture_type: String = VariantTool.get_string(args, "capture_type", "game")
+	if capture_type == "game":
 		if _mode == MODE_EDITOR:
 			return await _call_runtime_proxy("take_screenshot", args)
 		# 运行时模式: 直接处理
@@ -1763,7 +1874,7 @@ func _run_auto_verify_once(scene: String, args: Dictionary) -> Dictionary:
 	if not await _wait_game_ready(2.0):
 		await _call_stop_game({})
 		return _fail("游戏启动后调试线未就绪, auto_verify 中止。已停止游戏。")
-	var ok_clear := await _call_runtime_proxy("clear_game_errors", {})
+	var ok_clear := await _call_runtime_proxy("clear_logs", {"process": "game", "scope": "errors"})
 	if ok_clear.get("is_error", false):
 		await _call_stop_game({})
 		return _fail("清空游戏错误缓冲失败: %s" % str(ok_clear.get("text", "")))
@@ -1799,57 +1910,54 @@ func _wait_game_ready(timeout_sec: float = 15.0) -> bool:
 ## ======= 运行时工具(游戏进程内原生执行) =======
 
 ## 非编辑器(导出包/独立运行)进程的工具注册: 共享域 + 游戏操作宿主工具。
-## 复用 _register_shared_domains(含 eval_code)保证与编辑器**同一份共享域清单**; 游戏操作工具传
-## include_eval=false, 故不含 game_eval/auto_verify(依赖编辑器类)。仅勾选 runtime_enabled 时调用。
+## 复用 _register_shared_domains 保证与编辑器**同一份共享域清单**; 游戏操作工具传
+## include_auto_verify=false, 故不注册 auto_verify(依赖编辑器类; eval_code 在运行时=本进程)。仅勾选 runtime_enabled 时调用。
 func _register_runtime_domains() -> void:
 	_reset_tools()
 	_register_shared_domains()
 	_register_game_play_tools(false)
+	_register_providers()
 	_audit_tools()
 
 
-## 注册"游戏操作宿主工具"(截图 / UI 交互 / 游戏日志 / 游戏用例)。三个调用场景:
-##   · 编辑器进程: _register_editor_tools 追加在编辑工具之后(include_eval=true);
-##   · 开发期游戏进程(F5): _ready 里注册(include_eval=true, 供调试线 game_eval 用);
-##   · 导出/独立运行: _register_runtime_domains 里注册(include_eval=false)。
-## include_eval=false 时**不注册 game_eval / auto_verify** —— 它们依赖 MCPDevTools(含编辑器类),
-## 导出包不能加载, 且发布包开放 eval 等于分发 RCE。
-func _register_game_play_tools(include_eval: bool = true) -> void:
+## 注册"游戏操作宿主工具"(截图 / UI 交互 / 日志 / 用例 / eval)。三个调用场景:
+##   · 编辑器进程: _register_editor_tools 追加在编辑工具之后(include_auto_verify=true);
+##   · 开发期游戏进程(F5): _ready 里注册(include_auto_verify=true, 供调试线 eval_code 用);
+##   · 导出/独立运行: _register_runtime_domains 里注册(include_auto_verify=false)。
+## 该参数只控 **auto_verify** 是否注册(false=发布包不注册它, 因为它会驱动完整游戏进程);
+## eval_code / get_logs / clear_logs / run_tests 始终注册 —— 它们各有 process 参数, 复用同一份实现。
+func _register_game_play_tools(include_auto_verify: bool = true) -> void:
 	# 仅首次进入时清空(editor 进程已由 _register_editor_tools 清空并注册了编辑/项目工具,
 	# 这里只能追加 runtime 工具, 不能 reset 否则会清掉前面分组的注册)。
 	if _tool_handlers.is_empty():
 		_reset_tools()
-	# 绑定日志捕获器: get_game_logs / get_game_errors / clear_game_* 复用 MCPLogTools 的底层件。
+	# 绑定日志捕获器: get_logs / clear_logs 复用 MCPLogTools 的底层件(server 侧用 preload 实例,
+	# 故必须绑这个对象而非 _mod 出的那份)。
 	MCPLogTools.bind_logger(_logger)
-	if include_eval:
-		# eval ctx provider: game_eval / auto_verify / 轮询探针都经 MCPDevTools.eval_code, 新鲜度闸门
-		# 要用 _mode 与游戏启动时刻、日志捕获器。本分支只在编辑器构建里走到, 故 _mod 安全。
-		_mod("MCPDevTools").set_eval_ctx_provider(_eval_ctx_provider)
+	# eval ctx provider: eval_code(process=game) / auto_verify / 轮询探针都经 MCPDevTools.eval_code,
+	# 新鲜度闸门要用 _mode 与游戏启动时刻、日志捕获器。**始终注入**(eval_code 始终注册, 导出运行时亦然)。
+	_mod("MCPDevTools").set_eval_ctx_provider(_eval_ctx_provider)
 	# 排在 simulate_click 之前注册: 使用顺序就是"先查后点", 工具表按此顺序排能让 AI
 	# 先看到定位手段再看到执行手段。
 	_register_game_play_tool("get_interactables",
 		"列出当前画面里可交互的东西 —— **2D 控件(按钮/输入框/滑动条/标签)与 3D 物体(主菜单按钮/卡牌/媒体按钮都是 3D)** —— 每条带一个短引用 ref(如 e3)。**先查后点**: 拿到 ref 后用 simulate_click(ref=e3) 直接点击, 无需自己换算坐标。2D 元素给两套矩形(viewport_rect 视口坐标 / window_rect 窗口坐标); space=3d 的元素刻意不给矩形(3D 投影点会随相机漂移), 点击由工具在物体自身上激活。用 space=3d 可单独取 3D 子集(本项目实测可见 75 个, 常比 UI 还多, 混在默认清单里容易被 max_nodes 截掉)。filter=text 只取带文字的(读血量/分数/提示语), class_filter=Button 按类型筛(对 3D 元素也可按脚本名筛, 如 GameButtonView3D), text_contains 按文案筛。ref 由服务端解析成**实时**位置, 界面在查询后有动画或位移也不会点偏; 若报未知 ref 说明界面已变, 重新查一次即可。【只读】不改任何游戏状态。",
 		MCPUITools.schema(),
-		MCPUITools._handle_get_interactables,
-		func(args): return await _call_runtime_proxy("get_interactables", args))
+		MCPUITools._handle_get_interactables)
 
 	_register_game_play_tool("simulate_click",
 		"在游戏窗口模拟鼠标左键点击(按下+释放)。**推荐先用 get_interactables 拿到元素 ref, 再用 ref=e3 点击** —— 由服务端解析成实时位置, 不必自己换算坐标。ref 指向 3D 物体(space=3d)时改为在该物体自身上激活一次点击、**不注入鼠标事件**(相机可动, 投影坐标必点偏)。也可直接传 x/y(默认窗口坐标, 传 space=viewport 则按视口坐标换算)。【副作用】注入的是**真实输入事件**, 会打进用户此刻正在玩的那个游戏窗口并走完整业务链路 —— 重复调用会重复扣血/重复触发, 故不可自动重试; 游戏未在运行时调用会失败。",
 		MCPToolSchema.simulate_click(),
-		_call_simulate_click,
-		func(args): return await _call_runtime_proxy("simulate_click", args))
+		_call_simulate_click)
 
 	_register_game_play_tool("simulate_drag",
 		"在游戏窗口模拟拖拽(按下→移动→释放), 测试拖拽交互。【副作用】注入的是**真实输入事件**, 会打进用户此刻正在玩的那个游戏窗口并走完整业务链路, 重复调用会重复触发(如重复拾取/重复移动), 故不可自动重试; 游戏未在运行时调用会失败。",
 		MCPToolSchema.simulate_drag(),
-		_call_simulate_drag,
-		func(args): return await _call_runtime_proxy("simulate_drag", args))
+		_call_simulate_drag)
 
 	_register_game_play_tool("simulate_key",
 		"在游戏窗口模拟键盘按键(按下/释放), 测试键盘交互。【副作用】注入的是**真实输入事件**, 会打进用户此刻正在玩的那个游戏窗口并走完整业务链路, 重复调用会重复触发(重复跳两次/重复扣血), 故不可自动重试; 游戏未在运行时调用会失败。",
 		MCPToolSchema.simulate_key(),
-		_call_simulate_key,
-		func(args): return await _call_runtime_proxy("simulate_key", args))
+		_call_simulate_key)
 
 	# take_screenshot 的 name/desc/schema 由 MCPScreenshotTools.spec() 单副本提供, 这里不再各写
 	# 一份 —— 两处各写必然漂移, 而 desc 漂移不会编译报错, 只在客户端表现为"参数说明对不上"。
@@ -1862,122 +1970,76 @@ func _register_game_play_tools(include_eval: bool = true) -> void:
 		_runtime_take_screenshot,
 		_call_take_screenshot)
 
-	if include_eval:
-		_register_game_play_tool("game_eval",
-			"在游戏进程执行GDScript代码, 可访问游戏场景树(get_tree()/get_node()/get_viewport()等), 读运行状态/改变量/触发逻辑。【副作用】执行的是**任意 GDScript 代码**并会先热重载游戏脚本: 可改运行状态(血量/场景/存档)或停掉游戏, 故不可自动重试; 纯查询类需求优先用 take_screenshot(capture_type='text') 或 get_game_logs。可return返回值。支持await: 代码含await时等待协程完成后回传最终结果(超时协程继续后台执行, timeout_ms 上限见参数)。get_node相对路径基于eval实例, 访问场景节点用绝对路径/root/场景名/子路径或get_tree().current_scene.get_node(...)。【新鲜度闸门】引擎不热重载游戏进程, 所以改过 .gd 后执行只会得到旧代码的无效结果。本工具会先自动热重载, 再按两类原因拒绝执行(error_category=stale_code): ①该脚本在游戏里已有既存实例(引擎不允许热替换实例类型)——消息会给出具体脚本与节点路径; ②该脚本是全局类(class_name)——实测全局类引用不随脚本缓存刷新, 且游戏进程无 EditorInterface 无法刷全局类表。因此改过 .gd 后仍需 game_control(action=start) 重启再验证。",
-			{"type": "object", "properties": {"code": MCPToolSchema.code_arg(), "timeout_ms": MCPToolSchema.code_timeout_arg(), "auto_resume": {"type": "boolean", "description": "可选: 游戏处于断点暂停时先自动 game_control(action=continue) 再执行(默认 false —— 默认不自动跳过, 以免掩盖真错误; 确认只是瞬态暂停时可传 true)"}}},
-			_mod("MCPDevTools")._call_eval_code,
-			func(args): return await _call_game_eval_proxy(args))
+	# eval_code: 统一入口, process 必填(editor|game)。编辑器进程: editor=本进程, game=转发;
+	# 运行时(导出/F5 游戏进程): 服务器就在游戏进程内, 只能 game。**始终注册**: 导出包本就含
+	# 运行时可跑的 eval_code(与旧共享域一致), game 分支即其本进程实现。
+	var eval_schema := {
+		"type": "object",
+		"properties": {
+			"process": {"type": "string", "enum": ["editor", "game"], "description": "在哪个进程执行: editor=编辑器进程; game=游戏进程(需游戏运行; 导出运行时=本进程)。必填。"},
+			"code": MCPToolSchema.code_arg(),
+			"timeout_ms": MCPToolSchema.code_timeout_arg(),
+			"auto_resume": {"type": "boolean", "description": "仅 process=game 有意义: 游戏断点暂停时先 game_control(action=continue) 再执行(默认 false)。"},
+		},
+		"required": ["process"],
+	}
+	_register_game_play_tool("eval_code",
+		"执行一段 GDScript(方法体内容, 缩进由服务器处理)。process 必填: editor=在编辑器进程执行(可读写编辑态, 新鲜度闸门 + 热重载); game=在游戏进程执行(可读运行状态/改变量/触发逻辑, 需游戏运行; 导出运行时=本进程)。【副作用】执行任意代码, 不可自动重试; 纯查询优先用专用只读工具(如 get_interactables / get_scene_tree / get_logs)。可 return 返回值; 支持 await(timeout_ms 默认 8000/上限 15000)。get_node 相对路径基于 eval 实例, 访问游戏节点用 /root/... 或 get_tree().current_scene.get_node(...)。【新鲜度闸门(process=game)】引擎不热重载游戏进程: 改过 .gd 后执行只会得到旧代码, 工具会先自动热重载, 再对(①已有既存实例的脚本 ②全局类)拒绝并给出 error_category=stale_code; 此时需 game_control(action=start) 重启再验。",
+		eval_schema,
+		_call_eval_code_local,
+		_call_eval_code_routed)
 
-	_register_game_play_tool("run_game_tests",
-		"在**游戏进程**里跑需要游戏进程的用例(Scripts/Test/ 下声明 needs_game_process() 返回 true 的用例; 依赖 MonitorGame/场景树/真实时间轴)。发射即返回+读进度: 首次调用启动, 之后反复调用读同一份报告直到 running=false(不要带 filter 中途重启)。与编辑器侧的 run_tests 互补: run_tests 会把这些用例列为 skipped, 两类合起来才是全量。需游戏已运行(game_control start)。",
-		{"type": "object", "properties": {
+	var tests_schema := {
+		"type": "object",
+		"properties": {
+			"process": {"type": "string", "enum": ["editor", "game"], "description": "在哪个进程跑: editor=编辑器进程(同步返回统计; 只跑进程无关用例); game=游戏进程(发射+轮询进度; 跑 needs_game_process() 用例; 需游戏运行; 导出运行时=本进程)。必填。"},
 			"filter": {"type": "string", "description": "可选: 用例文件路径子串过滤(仅启动时生效)"},
-			"wait_ms": {"type": "integer", "description": "本次最多等待毫秒(默认 8000, 上限 15000), 超时返回当前进度"}
-		}},
-		_runtime_run_game_tests,
-		func(args): return await _call_runtime_proxy("run_game_tests", args))
+			"wait_ms": {"type": "integer", "description": "仅 process=game: 本次最多等待毫秒(默认 8000, 上限 15000), 超时返回当前进度"},
+		},
+		"required": ["process"],
+	}
+	_register_game_play_tool("run_tests",
+		"运行项目单元测试(Scripts/Test/ 目录, extends TestCase, test_ 开头方法自动发现; 支持协程用例)。process 必填: editor=编辑器进程(同步返回通过/失败统计与明细, 只跑进程无关用例); game=游戏进程(跑 needs_game_process() 用例; 发射即返回+读进度: 首次启动, 之后反复调用读同一份报告直到 running=false, 不要带 filter 中途重启; 需游戏运行)。两类合起来才是全量。",
+		tests_schema,
+		_call_run_tests_local,
+		_call_run_tests_routed)
 
-	# 以下 4 个是**游戏进程侧**的日志/清理入口。游戏进程内不注册 get_logs/clear_logs,
-	# 它们是那里唯一的通道, 故不可合并掉; 但也**不该**在编辑器侧跟 get_logs/clear_logs 合并
-	# —— 那正是 source=auto 静默串缓冲的由来。现在两侧各自按名字自洽: 带 game_ 的读游戏
-	# 缓冲, 不带的读本进程; 跨进程只由下面这个 lambda 转发, 各 handler 内部一律不自行代理。
-	_register_game_play_tool("get_game_logs",
-		"【游戏进程】获取游戏进程的日志(print/printerr)。编辑器进程自己的日志用 get_logs —— 两者读的是不同缓冲, 不会互相串。返回next游标, 增量用其作since避免重复。连续重复的同内容日志自动合并为一条(repeat 计数)以节省token。",
-		MCPToolSchema.logs("200", "日志"),
-		_call_get_game_logs,
-		func(args): return await _call_runtime_proxy("get_game_logs", args))
+	# 日志读/清: 统一入口, process 必填(editor|game)。编辑器进程: editor=本进程缓冲, game=转发;
+	# 运行时: 服务器就在游戏进程内, 只能 game。⇒ 取代原先的 get_logs/get_game_logs/get_game_errors
+	# 与 clear_logs/clear_game_logs/clear_game_errors 六个工具。**必填 process 是刻意的**: 不做
+	# source=auto 那种"静默按运行状态切缓冲"(历史故障: 查编辑器错误却拿到游戏的, 且无从察觉)。
+	var logs_schema := MCPToolSchema.logs("200(log)/100(warning|error)", "条目", {
+		"process": {"type": "string", "enum": ["editor", "game"], "description": "读哪个进程的缓冲: editor=编辑器进程; game=游戏进程(需游戏运行; 导出运行时=本进程)。必填。"},
+		"kind": {"type": "string", "enum": ["log", "warning", "error"], "description": "获取类别, 默认 log"},
+	})
+	logs_schema["required"] = ["process"]
+	_register_game_play_tool("get_logs",
+		"获取日志/错误/警告(获取而非打印), process 必填: editor=编辑器进程缓冲, game=游戏进程缓冲(需游戏运行; 导出运行时=本进程; 游戏断点暂停时仍可安全读)。kind=log 取 print; warning 取 push_warning; error 取脚本错误(script_error/shader_error/stderr, 含栈追踪)。返回 next 游标作 since 增量拉取, 连续重复自动合并(repeat 计数)省 token。",
+		logs_schema,
+		_call_get_logs_local,
+		_call_get_logs_routed)
 
-	_register_game_play_tool("get_game_errors",
-		"【游戏进程】获取游戏进程捕获的错误(脚本错误/assert/push_error), 含文件/行号/类型/栈追踪。编辑器进程自己的错误用 get_logs(kind=error)。游戏被断点暂停时本工具与 get_game_logs 仍可安全调用。返回next游标, 增量用其作since。连续重复的同位置错误自动合并为一条(repeat 计数)以节省token。",
-		MCPToolSchema.logs("100", "错误"),
-		_call_get_errors,
-		func(args): return await _call_runtime_proxy("get_game_errors", args))
+	var clear_schema := {
+		"type": "object",
+		"properties": {
+			"process": {"type": "string", "enum": ["editor", "game"], "description": "清哪个进程的缓冲: editor=编辑器进程; game=游戏进程(需游戏运行; 导出运行时=本进程)。必填。"},
+			"scope": {"type": "string", "enum": ["all", "logs", "errors"], "description": "清理范围, 默认 all"},
+		},
+		"required": ["process"],
+	}
+	_register_game_play_tool("clear_logs",
+		"清空指定进程的日志/错误缓冲(调试复位)。process 必填: editor/game。scope=all 全清; logs 只清 print 日志; errors 只清错误与警告。",
+		clear_schema,
+		_call_clear_logs_local,
+		_call_clear_logs_routed)
 
-	_register_game_play_tool("clear_game_errors",
-		"【游戏进程】清空游戏进程的错误缓冲。编辑器进程自己的缓冲用 clear_logs。",
-		{"type": "object", "properties": {"scope": {"type": "string", "enum": ["all", "logs", "errors"], "description": "清理范围, 默认 all"}}},
-		MCPLogTools._call_clear_errors,
-		func(args): return await _call_runtime_proxy("clear_game_errors", args))
-
-	_register_game_play_tool("clear_game_logs",
-		"【游戏进程】清空游戏进程的日志缓冲。编辑器进程自己的缓冲用 clear_logs。",
-		{"type": "object", "properties": {"scope": {"type": "string", "enum": ["all", "logs", "errors"], "description": "清理范围, 默认 all"}}},
-		MCPLogTools._call_clear_errors,
-		func(args): return await _call_runtime_proxy("clear_game_logs", args))
-
-	if include_eval:
+	if include_auto_verify:
 		_register_game_play_tool("auto_verify",
 			"自动验证闭环: 启动场景后按 operations 序列模拟玩家行为, 每步后增量查错。【副作用: 会接管用户正在玩的游戏】若已有游戏在运行, 本工具会**先将其停止**再启动本工具指定的场景, 结束后再停掉游戏 —— 用户手头的游戏进程会被中断且不会自动恢复。执行前先用 get_editor_activity 确认没有正在进行的调试。操作各字段格式见 operations 参数(不在此复述); 其中 poll 的探测期 eval 出错**不计入**失败判定。retries>0 时曾失败但最终通过会标 was_flaky=true(警惕被时序掩盖的潜在bug), 返回retry_history。返回verdict=pass/fail+逐步明细+first_error_step。注意: duration 是单次总时长上限, 操作总耗时(含wait/poll)不能超过它; duration建议<=15s(代理超时20s)。",
 			MCPToolSchema.auto_verify(),
 			_runtime_auto_verify,
 			func(args): return await _call_auto_verify(args))
 
-
-
-## 递归收集可见节点信息(运行时模式, 游戏进程内坐标天然正确)
-func _collect_visible_nodes(node: Node, viewport: Viewport, result: Array, max_nodes: int, depth: int, max_depth: int) -> void:
-	if result.size() >= max_nodes:
-		return
-	if depth > max_depth:
-		return
-	if node is CanvasItem and not (node as CanvasItem).visible:
-		return
-	if node.name != "" and not str(node.name).begins_with("@"):
-		var screen_pos := Vector2.ZERO
-		var screen_size := Vector2.ZERO
-		var z_index := 0
-		if node is CanvasItem:
-			var canvas_item := node as CanvasItem
-			if node is Control:
-				var control := node as Control
-				var global_rect := control.get_global_rect()
-				screen_pos = global_rect.position
-				screen_size = global_rect.size
-			elif node is Node2D:
-				var node2d := node as Node2D
-				screen_pos = canvas_item.get_global_transform_with_canvas() * Vector2.ZERO
-				if node is Sprite2D:
-					var sprite := node as Sprite2D
-					if sprite.texture:
-						screen_size = Vector2(sprite.texture.get_width(), sprite.texture.get_height())
-				elif node is Polygon2D:
-					var polygon := node as Polygon2D
-					if polygon.polygon.size() > 0:
-						var rect := Rect2(polygon.polygon[0], Vector2.ZERO)
-						for p in polygon.polygon:
-							rect = rect.expand(p)
-						screen_size = rect.size
-			z_index = canvas_item.z_index if canvas_item is Node2D else 0
-		var class_name_str := node.get_class()
-		var script_class_str: String = ""
-		var nscript: Script = node.get_script()
-		if nscript != null:
-			script_class_str = nscript.get_global_name()
-		var info := {
-			"name": str(node.name),
-			"class": class_name_str,
-			"script_class": script_class_str,
-			"screen_position": {"x": int(screen_pos.x), "y": int(screen_pos.y)},
-			"screen_size": {"x": int(screen_size.x), "y": int(screen_size.y)},
-			"z_index": z_index,
-			"visible": true
-		}
-		if node is Button:
-			info["text"] = (node as Button).text
-			info["disabled"] = (node as Button).disabled
-		elif node is Label:
-			info["text"] = (node as Label).text
-		elif node is Sprite2D:
-			var sprite := node as Sprite2D
-			if sprite.texture:
-				info["texture_size"] = {"x": sprite.texture.get_width(), "y": sprite.texture.get_height()}
-		elif node is Polygon2D:
-				var polygon := node as Polygon2D
-				info["polygon_count"] = polygon.polygon.size()
-		result.append(info)
-	for child in node.get_children():
-		_collect_visible_nodes(child, viewport, result, max_nodes, depth + 1, max_depth)
 
 
 ## 运行时: 模拟鼠标左键点击(游戏进程内 Input.parse_input_event 直接生效)
@@ -2163,7 +2225,7 @@ func _call_simulate_key(args: Dictionary) -> Dictionary:
 
 ## ======= 运行时: 游戏进程用例(依赖 MonitorGame / 场景树 / 真实时间轴) =======
 
-## 游戏用例会话状态: `run_game_tests` 首次调用启动, 后续调用读进度 ——
+## 游戏用例会话状态: run_tests(process=game) 首次调用启动, 后续调用读进度 ——
 ## 一个完整的游戏用例(真实战斗 + 真实回放)远超工具单次超时, 不能靠一次调用等完。
 var _game_tests_running := false
 var _game_tests_report: Dictionary = {}
@@ -2191,7 +2253,7 @@ func _runtime_run_game_tests(args: Dictionary) -> Dictionary:
 	if started:
 		out.started = true
 	if _game_tests_running:
-		out.hint = "用例仍在运行: 再次调用 run_game_tests 读进度即可(带 filter 会等本轮结束后重启)"
+		out.hint = "用例仍在运行: 再次调用 run_tests(process=game) 读进度即可(带 filter 会等本轮结束后重启)"
 	return _ok_json(out)
 
 
@@ -2201,20 +2263,8 @@ func _run_game_tests_async(filter: String) -> void:
 	_game_tests_running = false
 
 
-## 运行时: 捕获游戏视口截图(文件名自动生成)
+## 运行时: 捕获游戏视口真实截图(文件名自动生成)
 func _runtime_take_screenshot(args: Dictionary) -> Dictionary:
-	var capture_type: String = VariantTool.get_string(args, "capture_type", "text")
-	# 纯文本化截图模式(text): 不保存图片, 直接返回可见节点布局快照。
-	# 适合点击游玩模拟与无法识别图像的 AI, 大幅节省 token。默认模式。
-	if capture_type == "text":
-		var text_max_nodes := VariantTool.get_int(args, "text_max_nodes", 50)
-		var text_data := _build_game_view_snapshot(text_max_nodes)
-		return _ok_json({
-			"capture_type": "text",
-			"is_text_view": true,
-			"text": text_data,
-			"hint": "文本化截图(text, 默认): 用于点击/拖拽游玩模拟与无图像输入的AI, 省token。大部分场景用此模式即可; 仅需查看具体画面表现时才用 capture_type='game' 真实截图。",
-		})
 	var filename := ScreenshotTool.make_filename("mcp")
 	var dir_path := "user://mcp_screenshots"
 	var viewport := get_viewport()
@@ -2243,33 +2293,7 @@ func _runtime_take_screenshot(args: Dictionary) -> Dictionary:
 		"capture_type": "game",
 		"color_mode": str(shot.get("color_mode", "")),
 	}
-	# 整合文本化截图快照(text): 截图同时返回画面可见节点布局,
-	# 供 AI 在无图像输入时也能理解画面。可用 include_text=false 关闭, text_max_nodes 控制节点数。
-	if VariantTool.get_bool(args, "include_text", true):
-		var text_max_nodes := VariantTool.get_int(args, "text_max_nodes", 50)
-		result["text"] = _build_game_view_snapshot(text_max_nodes)
 	return _ok_json(result)
-
-
-## 收集游戏画面文本化视图(可见节点布局快照, 即"文本化的截图")
-func _build_game_view_snapshot(max_nodes: int) -> Dictionary:
-	var tree := get_tree()
-	if tree == null:
-		return {}
-	var viewport := get_viewport()
-	if viewport == null:
-		return {}
-	var viewport_size := viewport.get_visible_rect().size
-	var nodes_info: Array = []
-	# 从场景树根的所有子节点遍历(current_scene + autoload + 其他根),
-	# autoload 下的 UI(如 HUD) 是 root 直属子节点, 仅遍历 current_scene 会漏掉它们
-	for child in tree.root.get_children():
-		_collect_visible_nodes(child, viewport, nodes_info, max_nodes, 0, 10)
-	return {
-		"viewport_size": {"x": int(viewport_size.x), "y": int(viewport_size.y)},
-		"node_count": nodes_info.size(),
-		"nodes": nodes_info,
-	}
 
 
 ## ======= 自动验证闭环(auto_verify) =======
@@ -2282,7 +2306,7 @@ func _build_game_view_snapshot(max_nodes: int) -> Dictionary:
 ##   key   {key, pressed?} 模拟按键
 ##   eval  {code}          执行 GDScript(可 return, 结果记入 step)
 ##   poll  {code, timeout_ms, interval_ms} 轮询直到 code 返回 true 或超时
-##   screenshot {capture_type?} 截图(结果记入 step)
+##   screenshot            真实截图(结果记入 step)
 func _runtime_auto_verify(args: Dictionary) -> Dictionary:
 	var operations: Array = VariantTool.get_array(args, "operations")
 	if operations.is_empty():
@@ -2449,13 +2473,13 @@ func _call_runtime_proxy(tool_name: String, args: Dictionary) -> Dictionary:
 	if debugger_plugin == null or not debugger_plugin.has_active_session():
 		return _err_game_stopped("游戏未运行。请先使用 game_control(action=start) 启动游戏", "调用 game_control(action=start) 启动游戏, 等待调试线就绪后重试")
 	if _game_breaked and not _BREAK_SAFE_TOOLS.has(tool_name):
-		# 断点暂停: 依赖主循环的工具必然挂起; get_game_errors/get_game_logs仍可用; 自动回查错误缓冲拼进响应。
+		# 断点暂停: 依赖主循环的工具必然挂起; get_logs/clear_logs(process=game) 仍可用; 自动回查错误缓冲拼进响应。
 		var diagnose := await _fetch_recent_game_error(tool_name)
 		if diagnose != "":
 			return _err_game_breaked("游戏被断点暂停, 工具 %s 需要主循环无法执行。\n已自动读取错误:\n%s\n\n修正脚本后 game_control(action=continue) 继续, 或 game_control(action=stop) 重启。" %
 				[tool_name, diagnose])
-		return _err_game_breaked("游戏被断点暂停, 工具 %s 需要主循环无法执行。\n错误缓冲无内容(可能是手动断点)。get_game_errors复核后 game_control(action=continue), 或 game_control(action=stop) 重启。" %
-			tool_name, "get_game_errors复核后game_control(action=continue); 或game_control(action=stop)修复重启")
+		return _err_game_breaked("游戏被断点暂停, 工具 %s 需要主循环无法执行。\n错误缓冲无内容(可能是手动断点)。get_logs(process=game,kind=error)复核后 game_control(action=continue), 或 game_control(action=stop) 重启。" %
+			tool_name, "get_logs(process=game,kind=error)复核后game_control(action=continue); 或game_control(action=stop)修复重启")
 	if not _game_ready:
 		return _err_transient("游戏调试线尚未就绪", "等待游戏启动完成(可稍后重试, 或 game_control(action=start) 重启)")
 	var req_id := _next_req_id
@@ -2486,16 +2510,16 @@ func _call_runtime_proxy(tool_name: String, args: Dictionary) -> Dictionary:
 			[tool_name, diagnose],
 			"修正上方脚本错误后重试; 仍超时则 game_control(action=stop) 后 game_control(action=start) 重启")
 	return _err("游戏进程响应超时(20s), 工具: %s。错误缓冲无脚本错误, 可能是死循环/卡死或无响应。" % tool_name,
-		MCPResult.CAT_TRANSIENT, true, "查game_eval是否死循环; 必要时 game_control(action=stop) 后 game_control(action=start) 重启")
+		MCPResult.CAT_TRANSIENT, true, "查 eval_code(process=game) 是否死循环; 必要时 game_control(action=stop) 后 game_control(action=start) 重启")
 
 
 ## 超时诊断: 回查游戏错误缓冲, 返回最近一条脚本错误描述(无则返回 "")
 func _fetch_recent_game_error(tool_name: String) -> String:
-	# 用内部 req_id 再发一次 get_game_errors(短超时), 避免二次长期挂起
+	# 用内部 req_id 再发一次 get_logs(process=game, kind=error)(短超时), 避免二次长期挂起
 	var req_id := _next_req_id
 	_next_req_id += 1
 	_pending[req_id] = null
-	if not debugger_plugin.send_call(req_id, "get_game_errors", {}):
+	if not debugger_plugin.send_call(req_id, "get_logs", {"process": "game", "kind": "error"}):
 		return ""
 	var deadline := Time.get_ticks_msec() + 5000
 	while Time.get_ticks_msec() < deadline:
@@ -2552,7 +2576,21 @@ func _normalize_wire_result(result: Dictionary, _tool_name: String) -> Dictionar
 	return _wrap(text, is_err, extra, content_text)
 
 
-## 编辑器侧 game_eval 转发: 先本地预编译 + 静态检查, 通过后才发到游戏进程。
+## eval_code 的 runtime 侧(服务器位于游戏进程内): process 只能是 game。
+func _call_eval_code_local(args: Dictionary) -> Dictionary:
+	if _require_process(args) != "game":
+		return _fail("导出运行时没有独立的编辑器进程; eval_code 的 process 只能是 'game'")
+	return _mod("MCPDevTools")._call_eval_code(args)
+
+
+## eval_code 的 editor 侧: process=editor 在编辑器进程执行; process=game 经预检 + 调试线转发。
+func _call_eval_code_routed(args: Dictionary) -> Dictionary:
+	if _require_process(args) == "game":
+		return await _call_game_eval_proxy(args)
+	return _mod("MCPDevTools")._call_eval_code(args)
+
+
+## 编辑器侧 eval_code(process=game) 的转发: 先本地预编译 + 静态检查, 通过后才发到游戏进程。
 ## 语法错误/被禁止的代码在编辑器内拦截, 避免污染游戏进程(运行时解析错误可能中断游戏)。
 ##
 ## 新鲜度**不在这里**判定: 编辑器只知道"哪些文件变了", 不知道"游戏里是否已存在
@@ -2562,12 +2600,12 @@ func _normalize_wire_result(result: Dictionary, _tool_name: String) -> Dictionar
 func _call_game_eval_proxy(args: Dictionary) -> Dictionary:
 	var precheck: String = _mod("MCPDevTools").precheck_eval_code(VariantTool.get_string(args, "code"))
 	if precheck != "":
-		return _err_validation("game_eval 被编辑器侧预检拦截: %s" % precheck, "修正代码后重新调用 game_eval(语法错误无法通过重试解决, 需修改代码)")
+		return _err_validation("eval_code(process=game) 被编辑器侧预检拦截: %s" % precheck, "修正代码后重新调用 eval_code(语法错误无法通过重试解决, 需修改代码)")
 	## auto_resume: 调用方明确要求时先解除断点暂停再执行(默认不开, 避免掩盖真错误)
 	if VariantTool.get_bool(args, "auto_resume") and _game_breaked:
 		var resumed := await _call_debug_continue({})
 		if bool(resumed.get("is_error", false)):
 			return resumed
-	return await _call_runtime_proxy("game_eval", args)
+	return await _call_runtime_proxy("eval_code", args)
 
 
