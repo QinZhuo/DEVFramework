@@ -1,0 +1,89 @@
+[gd_scene load_steps=4 format=3]
+
+[ext_resource type="Script" path="res://Scripts/Lightmap/LightmapDemo.gd" id="1_demo"]
+[ext_resource type="Script" path="res://addons/DEVFramework/View/Render/Lightmap/AssetLightmapStage.gd" id="2_stage"]
+
+[sub_resource type="Environment" id="Env"]
+background_mode = 1
+background_color = Color(0.07, 0.08, 0.11, 1)
+ambient_light_source = 2
+ambient_light_color = Color(0.35, 0.38, 0.45, 1)
+ambient_light_energy = 0.6
+
+[node name="LightmapDemo" type="Node3D"]
+script = ExtResource("1_demo")
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+environment = SubResource("Env")
+
+[node name="Sun" type="DirectionalLight3D" parent="."]
+position = Vector3(0, 6, 0)
+rotation_degrees = Vector3(-50, -35, 0)
+light_energy = 0.5
+
+[node name="Camera3D" type="Camera3D" parent="."]
+position = Vector3(0, 3.2, 7)
+rotation_degrees = Vector3(-20, 0, 0)
+
+[node name="Grid" type="Node3D" parent="."]
+unique_name_in_owner = true
+
+[node name="Stage" type="Node3D" parent="."]
+script = ExtResource("2_stage")
+dirs = Array[String](["res://Scenes/Lightmap/Meshes"])
+
+[node name="LightmapGI" type="LightmapGI" parent="Stage"]
+
+[node name="BakeLight" type="OmniLight3D" parent="Stage"]
+position = Vector3(25, 9, 12)
+light_color = Color(1, 0.82, 0.6, 1)
+light_energy = 4.0
+omni_range = 90.0
+
+[node name="UI" type="CanvasLayer" parent="."]
+
+[node name="Margin" type="MarginContainer" parent="UI"]
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+theme_override_constants/margin_left = 16
+theme_override_constants/margin_top = 16
+theme_override_constants/margin_right = 16
+theme_override_constants/margin_bottom = 16
+
+[node name="VBox" type="VBoxContainer" parent="UI/Margin"]
+layout_mode = 2
+size_flags_vertical = 0
+theme_override_constants/separation = 8
+
+[node name="Buttons" type="HBoxContainer" parent="UI/Margin/VBox"]
+layout_mode = 2
+size_flags_horizontal = 0
+theme_override_constants/separation = 8
+
+[node name="StrengthOff" type="Button" parent="UI/Margin/VBox/Buttons"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "关光"
+
+[node name="StrengthHalf" type="Button" parent="UI/Margin/VBox/Buttons"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "亮度 0.2"
+
+[node name="StrengthFull" type="Button" parent="UI/Margin/VBox/Buttons"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "亮度 1.0"
+
+[node name="Toggle" type="Button" parent="UI/Margin/VBox/Buttons"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "全局开关"
+
+[node name="State" type="Label" parent="UI/Margin/VBox"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "未接管光照库"

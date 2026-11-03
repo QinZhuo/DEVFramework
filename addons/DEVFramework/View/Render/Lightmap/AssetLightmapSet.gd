@@ -8,12 +8,16 @@
 class_name AssetLightmapSet extends Resource
 
 ## 当前生效的光照库：加载方 set 一次，任何地方都能靠 mesh 自己补光。
-## 换库时顺手回收上一套光照名下的材质副本，缓存才不会一路堆到进程结束
+## 换库时回收上一套光照名下的材质副本，并让已在树上的实例按新库重挂
+## （否则先入树的实例会一直停在旧库 / 「无烘焙数据」状态）
 static var current: AssetLightmapSet:
 	set(value):
-		if current != null and current != value:
+		if current == value:
+			return
+		if current != null:
 			current._release()
 		current = value
+		AssetLightmapBinder.refresh_all()
 
 ## 烘焙数据本体，图集纹理由它提供
 @export var data: LightmapGIData
@@ -24,12 +28,24 @@ static var current: AssetLightmapSet:
 ## 图集只取一次，不必每次采样都问一遍烘焙数据
 var _atlas: TextureLayered
 
+## 编辑器兜底扫描根目录（项目设置，默认 res://Scenes）
+const SCAN_DIR_SETTING := "dev_framework/lightmap/scan_dir"
+
 ## 编辑器兜底只扫一次目录
 static var _fallback_done := false
 
 ## 场景路径 → 整合文件路径：<场景目录>/<场景名>_lightmap_set.res
 static func path_of(scene_path: String) -> String:
 	return "" if scene_path.is_empty() else scene_path.get_basename() + "_lightmap_set.res"
+
+## 按场景路径接管光照：产物存在就加载生效，不存在返回 null 且**不动** current。
+## 场景加载入口调一次即可（池复用的实例进来时会按新库重挂）
+static func attach(scene_path: String) -> AssetLightmapSet:
+	var path := path_of(scene_path)
+	if path.is_empty() or not ResourceLoader.exists(path):
+		return null
+	current = load(path) as AssetLightmapSet
+	return current
 
 ## 整张图集，全场景共用。取不到就说明烘焙数据缺失
 func atlas() -> TextureLayered:
@@ -42,11 +58,14 @@ func atlas() -> TextureLayered:
 func region(key: String) -> AssetLightmapRegion:
 	return regions.get(key) as AssetLightmapRegion
 
-## 按网格资源反查：键就是文件名，调用方不必知道自己的键
+## 按网格资源反查：键就是文件名，调用方不必知道自己的键。
+## 运行时拼出来的网格没有路径，退回 resource_name（与 [AssetLightmapStage.key_of] 同一套键规则）
 func region_of(mesh: Mesh) -> AssetLightmapRegion:
-	if mesh == null or mesh.resource_path.is_empty():
+	if mesh == null:
 		return null
-	return region(mesh.resource_path.get_file().get_basename())
+	if not mesh.resource_path.is_empty():
+		return region(mesh.resource_path.get_file().get_basename())
+	return region(mesh.resource_name) if not mesh.resource_name.is_empty() else null
 
 ## 给实例挂光：任何拿到 MeshInstance3D 的地方都能调，重复调无副作用。
 ## 没有光照数据时顺手把之前挂的摘掉，免得实例跨场景复用时顶着旧光
@@ -64,13 +83,17 @@ static func bind_to(mi: MeshInstance3D) -> bool:
 		current = _editor_fallback()
 	return current != null and current.bind(mi)
 
-## 编辑器里没有 [Game] 来设 current：扫一份烘焙产物直接用，调光时能立刻看到效果。
+## 让编辑器兜底重新扫一遍：烘焙舞台导出新产物后调用，否则本次编辑会一直用旧结论
+static func invalidate() -> void:
+	_fallback_done = false
+
+## 编辑器里没有项目侧加载入口来设 current：扫一份烘焙产物直接用，调光时能立刻看到效果。
 ## 只在编辑器、且第一次需要时扫一次
 static func _editor_fallback() -> AssetLightmapSet:
 	if _fallback_done or not Engine.is_editor_hint():
 		return null
 	_fallback_done = true
-	for path in _all_produced("res://Scenes"):
+	for path in _all_produced(str(ProjectSettings.get_setting(SCAN_DIR_SETTING, "res://Scenes"))):
 		var res := load(path) as AssetLightmapSet
 		if res != null:
 			return res

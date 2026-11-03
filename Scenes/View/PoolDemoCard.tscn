@@ -1,0 +1,15 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://Scripts/View/PoolDemoCard.gd" id="1_card"]
+
+[node name="PoolDemoCard" type="PanelContainer"]
+custom_minimum_size = Vector2(96, 72)
+offset_right = 96.0
+offset_bottom = 72.0
+script = ExtResource("1_card")
+
+[node name="Label" type="Label" parent="."]
+layout_mode = 2
+text = "0"
+horizontal_alignment = 1
+vertical_alignment = 1

@@ -180,6 +180,17 @@ static func resolve_pool(pool_key: String, view_scene: PackedScene) -> Pool:
 static func ensure_pool(host) -> void:
 	if host.pool == null:
 		host.pool = resolve_pool(host.pool_key, host.view_scene)
+	_tune_pool(host)
+
+## 应用宿主声明的池容量（[code]pool_size[/code]）：空闲上限 + 首次使用前预热。
+## 只在池完全空时预建 —— 跑起来之后再补空闲实例，会和下一次归还在 max_idle 上撞车白白销毁
+static func _tune_pool(host) -> void:
+	var size: int = host.pool_size if "pool_size" in host else 0
+	if host.pool == null or size <= 0:
+		return
+	host.pool.max_idle = size
+	if host.pool.idle_count() == 0 and host.pool.in_use_count() == 0:
+		host.pool.prewarm(size)
 
 ## 创建并配置一个数据项的视图实例。
 ## 有池先借，池空或没有池才现场实例化（不会返回 null）。
@@ -195,7 +206,11 @@ static func create_view(view_scene: PackedScene, pool: Pool, item, index: int = 
 			LogTool.error("数组视图", "view_scene 未赋值!")
 			return null
 		view = view_scene.instantiate()
-	if item is Node and not item.get_parent():
+	## Node 型数据项挂在视图下：必须从旧父节点（上一个拿它的池化视图）迁过来，
+	## 只判"有没有父节点"会把已经挂错的项留在池里的旧视图上
+	if item is Node and item.get_parent() != view:
+		if item.get_parent() != null:
+			item.get_parent().remove_child(item)
 		view.add_child(item)
 	set_data(view, item)
 	view.name = get_item_name(item, index)

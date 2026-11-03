@@ -80,6 +80,8 @@ func export_all() -> void:
 		LogTool.warn("烘焙", "保存失败:", path)
 		return
 	LogTool.log("烘焙", "光照", set.regions.size(), "类 →", path)
+	## 新产物立刻可用：否则编辑器兜底还拿着上一次的扫描结论
+	AssetLightmapSet.invalidate()
 	EditorInterface.get_resource_filesystem().scan()
 
 ## 两个方向都要报：数据里有资源没有（副本删了但烘焙快照还在），
@@ -143,12 +145,16 @@ func bake() -> bool:
 	if gi == null:
 		LogTool.warn("烘焙", "找不到 LightmapGI")
 		return false
+	if DisplayServer.get_name() == "headless":
+		LogTool.warn("烘焙", "headless 下没有检查器按钮，无法触发烘焙")
+		return false
 	EditorInterface.edit_node(gi)
 	## 检查器要下一帧才把按钮造出来
 	for i in 8:
 		await get_tree().process_frame
 	var btn := _bake_button(EditorInterface.get_base_control())
 	if btn == null:
+		LogTool.warn("烘焙", "检查器里找不到 Bake Lightmaps 按钮，请手动烘焙后再次导出")
 		return false
 	btn.pressed.emit()
 	## 烘完每个副本在 user_data 里占一组，中途尺寸对不上。
@@ -157,10 +163,12 @@ func bake() -> bool:
 	for i in 18000:
 		await get_tree().create_timer(0.05).timeout
 		if not is_instance_valid(gi):
+			LogTool.warn("烘焙", "烘焙过程中 LightmapGI 被销毁")
 			return false
 		var raw: Array = gi.light_data.get("user_data") if gi.light_data else []
 		if raw.size() / 4 == expect:
 			return true
+	LogTool.warn("烘焙", "等待烘焙超时（%d 份副本未全部产出），请确认烘焙是否仍在进行" % expect)
 	return false
 
 ## 按钮由编辑器插件自己造，没有可查询的入口，只能按文本认
