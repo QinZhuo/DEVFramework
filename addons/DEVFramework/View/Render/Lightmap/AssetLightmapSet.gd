@@ -58,14 +58,16 @@ func atlas() -> TextureLayered:
 func region(key: String) -> AssetLightmapRegion:
 	return regions.get(key) as AssetLightmapRegion
 
-## 按网格资源反查：键就是文件名，调用方不必知道自己的键。
-## 运行时拼出来的网格没有路径，退回 resource_name（与 [AssetLightmapStage.key_of] 同一套键规则）
+## 资源 → 光照键：键就是文件名，烘焙侧与运行侧都走这一份规则。
+## 运行时拼出来的网格没有路径，退回 resource_name
+static func key_of(res: Resource) -> String:
+	if res == null:
+		return ""
+	return res.resource_path.get_file().get_basename() if not res.resource_path.is_empty() else res.resource_name
+
+## 按网格资源反查：调用方不必知道自己的键
 func region_of(mesh: Mesh) -> AssetLightmapRegion:
-	if mesh == null:
-		return null
-	if not mesh.resource_path.is_empty():
-		return region(mesh.resource_path.get_file().get_basename())
-	return region(mesh.resource_name) if not mesh.resource_name.is_empty() else null
+	return region(key_of(mesh))
 
 ## 给实例挂光：任何拿到 MeshInstance3D 的地方都能调，重复调无副作用。
 ## 没有光照数据时顺手把之前挂的摘掉，免得实例跨场景复用时顶着旧光
@@ -77,11 +79,15 @@ func bind(mi: MeshInstance3D) -> bool:
 		return false
 	return AssetLightmapBinder.apply(mi, light, texture)
 
-## 走 [member current] 的便捷版：实例创建完补一次，不必持有库
+## 走 [member current] 的便捷版：实例创建完补一次，不必持有库。
+## 没有库时照样擦干净——池化实例可能是带着别的场景的光过来的
 static func bind_to(mi: MeshInstance3D) -> bool:
 	if current == null:
 		current = _editor_fallback()
-	return current != null and current.bind(mi)
+	if current == null:
+		AssetLightmapBinder.clear(mi)
+		return false
+	return current.bind(mi)
 
 ## 让编辑器兜底重新扫一遍：烘焙舞台导出新产物后调用，否则本次编辑会一直用旧结论
 static func invalidate() -> void:
@@ -105,7 +111,8 @@ func _release() -> void:
 	for light in regions.values():
 		AssetLightmapBinder.release(light as AssetLightmapRegion)
 
-static func _all_produced(dir_path: String, out: Array[String] = []) -> Array[String]:
+static func _all_produced(dir_path: String) -> Array[String]:
+	var out: Array[String] = []
 	var dir := DirAccess.open(dir_path)
 	if dir == null:
 		return out
@@ -114,5 +121,5 @@ static func _all_produced(dir_path: String, out: Array[String] = []) -> Array[St
 			out.append(dir_path.path_join(file))
 	for sub in dir.get_directories():
 		if not sub.begins_with("."):
-			_all_produced(dir_path.path_join(sub), out)
+			out.append_array(_all_produced(dir_path.path_join(sub)))
 	return out

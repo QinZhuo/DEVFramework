@@ -78,7 +78,8 @@ func test_key_of_copy_path() -> void:
 func test_resource_key_and_region_area() -> void:
 	var mesh := _mesh([true])
 	mesh.resource_name = "NamedMesh"
-	assert_eq(AssetLightmapStage.key_of(mesh), "NamedMesh", "无路径时退回资源名")
+	assert_eq(AssetLightmapSet.key_of(mesh), "NamedMesh", "无路径时退回资源名")
+	assert_eq(AssetLightmapSet.key_of(null), "", "空资源没有键")
 
 	var region := _region()
 	assert_true(region.has_area(), "有面积")

@@ -28,11 +28,6 @@ const META := &"bake_copy"
 
 @export_tool_button("烘焙并导出") var export_button: Callable = export_all
 
-## 键 = 资源文件名（不是路径）。节点名、光贴图、区域表都靠它对齐
-static func key_of(res: Resource) -> String:
-	var path := res.resource_path
-	return path.get_file().get_basename() if path else res.resource_name
-
 ## 键 → 资源。目录内容在导出时才读，不和场景重复维护。
 ## 只收烘得动的：LightmapGI 对没有 UV2 的网格不写任何光照数据，
 ## 摆上去只会白占一份副本节点，还挤掉图集位置
@@ -50,9 +45,13 @@ func _collect() -> Dictionary:
 			_take(out, ResourceLoader.load(dir_path.path_join(file)))
 	return out
 
+## 节点名、光贴图、区域表都靠同一个键对齐（键规则见 [method AssetLightmapSet.key_of]）
 static func _take(out: Dictionary, res: Resource) -> void:
-	if res is ArrayMesh and AssetLightmapBinder.can_bake(res):
-		out[key_of(res)] = res
+	if not (res is ArrayMesh) or not AssetLightmapBinder.can_bake(res):
+		return
+	var key := AssetLightmapSet.key_of(res)
+	if not key.is_empty():
+		out[key] = res
 
 ## 导出。副本同步是导出的前置步骤，所以不单独给按钮：
 ## 忘了同步就烘焙，等于拿旧几何体烘出来的光照去配新资源，而且不会有任何提示
@@ -63,16 +62,17 @@ func export_all() -> void:
 	if scene_path.is_empty():
 		LogTool.warn("烘焙", "场景未保存，导出路径无法推导")
 		return
-	if not sync():
+	## 一次扫描供同步 / 导出 / 核对共用：导出中途目录内容不会变
+	var all := _collect()
+	if not sync(all):
 		LogTool.log("烘焙", "副本已变动，开始烘焙…")
 		if not await bake():
 			LogTool.warn("烘焙", "烘焙未完成，请点 LightmapGI 的 Bake Lightmaps 后再次导出")
 			return
 
-	var set := _export_set()
+	var set := _export_set(all)
 	if set == null:
 		return
-	var all := _collect()
 	_report(set, all)
 
 	var path := AssetLightmapSet.path_of(scene_path)
@@ -84,15 +84,9 @@ func export_all() -> void:
 	AssetLightmapSet.invalidate()
 	EditorInterface.get_resource_filesystem().scan()
 
-## 两个方向都要报：数据里有资源没有（副本删了但烘焙快照还在），
-## 资源有数据没有（副本被遮挡、UV2 缺失，烘完静默丢失）
+## 资源有数据没有（副本被遮挡、UV2 缺失，烘完会静默丢失）。
+## 反方向由 [method _export_set] 自己报：它录入时就会跳过已不存在的资源
 static func _report(set: AssetLightmapSet, all: Dictionary) -> void:
-	var unknown := []
-	for key in set.regions:
-		if not all.has(key):
-			unknown.append(key)
-	if not unknown.is_empty():
-		LogTool.warn("烘焙", "这些光照没有对应资源（副本节点名必须等于资源文件名）:", unknown)
 	var missing := []
 	for key in all:
 		if not set.regions.has(key):
@@ -101,8 +95,10 @@ static func _report(set: AssetLightmapSet, all: Dictionary) -> void:
 		LogTool.warn("烘焙", "这些资源没烘出光照（检查 UV2，或副本被遮挡）:", missing)
 
 ## 同步副本：补缺、清多余、按顺序摆位。返回 false 表示几何体变过，光贴图已过期
-func sync() -> bool:
-	var all := _collect()
+## [param all] 可选的「键 → 资源」表；不传就自己扫一遍（导出路径会传进来，省一次目录扫描）
+func sync(all := {}) -> bool:
+	if all.is_empty():
+		all = _collect()
 	var fresh := true
 	## 已有的副本保持原顺序：光照是按位置烘的，不能因为列表顺序变了就整体搬家
 	var placed := 0
@@ -208,13 +204,12 @@ func _scene_path() -> String:
 	return root.scene_file_path if root else ""
 
 ## 把烘焙结果读成位置表。user_data 每 4 项一组：副本路径、图集矩形、页号、实例序号
-func _export_set() -> AssetLightmapSet:
+func _export_set(all: Dictionary) -> AssetLightmapSet:
 	var gi := _lightmap()
 	if gi == null or gi.light_data == null:
 		LogTool.warn("烘焙", "找不到 LightmapGI 或其 light_data")
 		return null
 	var raw: Array = gi.light_data.get("user_data")
-	var all := _collect()
 	var set := AssetLightmapSet.new()
 	set.data = gi.light_data
 	var dead := 0

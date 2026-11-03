@@ -13,9 +13,6 @@ var idle_parent: Node
 ## 空闲上限（0 = 不限）。超出上限的归还直接销毁，避免池无限膨胀
 var max_idle: int = 0
 
-## 是否调用实例的 on_pool_get() / on_pool_return()：视图靠它起停动画
-var lifecycle_hooks: bool = true
-
 ## 池空导致的现场创建数（= 没有命中复用）
 var created_count: int = 0
 
@@ -46,7 +43,7 @@ func pool_get() -> Node:
 		return null
 	_in_use[item.get_instance_id()] = weakref(item)
 	_set_visible(item, true)
-	if lifecycle_hooks and item.has_method(&"on_pool_get"):
+	if item.has_method(&"on_pool_get"):
 		item.call(&"on_pool_get")
 	return item
 
@@ -74,12 +71,6 @@ func prewarm(count: int) -> void:
 			return
 		created_count += 1
 		_push_idle(item)
-
-func is_in_use(item: Node) -> bool:
-	if not is_instance_valid(item):
-		return false
-	var ref: WeakRef = _in_use.get(item.get_instance_id())
-	return ref != null and ref.get_ref() != null
 
 func in_use_count() -> int:
 	return _in_use.size()
@@ -116,7 +107,7 @@ func _pop_idle() -> Node:
 
 func _push_idle(item: Node) -> void:
 	## 钩子与隐藏必须在摘除前：视图要靠父节点/全局变换收尾（Trail3D 清轨迹要读变换）
-	if lifecycle_hooks and item.has_method(&"on_pool_return"):
+	if item.has_method(&"on_pool_return"):
 		item.call(&"on_pool_return")
 	_set_visible(item, false)
 	_reparent(item, idle_parent)

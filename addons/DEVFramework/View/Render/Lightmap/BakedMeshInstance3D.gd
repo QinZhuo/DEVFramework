@@ -36,7 +36,7 @@ func apply_lightmap() -> void:
 	elif AssetLightmapSet.bind_to(self):
 		lightmap_state = "已挂载"
 	else:
-		AssetLightmapBinder.clear(self)
+		## 没有库 / 没有这份网格的数据：bind_to 内部已擦干净，这里只更新状态
 		lightmap_state = "无烘焙数据"
 
 static func set_all_visible(value: bool) -> void:

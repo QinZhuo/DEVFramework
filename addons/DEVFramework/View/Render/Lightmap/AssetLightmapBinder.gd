@@ -151,6 +151,7 @@ static func refresh_all() -> void:
 			mi.call(&"apply_lightmap")
 
 ## 摘掉挂上去的光，还原成基材质本身。
+## 调用方不必先判断"有没有挂过"：没有就什么都不做（幂等）
 ## 实例池与场景是分开的：同一份 CardBox 可能先在商店里带光、再被别的场景借走，
 ## 那边没有烘焙图，得把它擦干净，否则会顶着上一个场景的光出现
 static func clear(mi: MeshInstance3D) -> void:

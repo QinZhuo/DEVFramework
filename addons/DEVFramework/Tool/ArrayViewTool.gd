@@ -176,15 +176,12 @@ static func resolve_pool(pool_key: String, view_scene: PackedScene) -> Pool:
 		return null
 	return PoolService.ensure(pool_key, view_scene.instantiate)
 
-## 惰性解析并写回宿主的 pool：data 可能早于 _ready 赋值，池不能等 _ready 才就绪
+## 惰性解析并写回宿主的 pool（data 可能早于 _ready 赋值），并应用宿主声明的池容量
+## [code]pool_size[/code] = 空闲上限 + 预热数量；只在池完全空时预建 ——
+## 跑起来之后再补空闲实例，会和下一次归还在 max_idle 上撞车白白销毁
 static func ensure_pool(host) -> void:
 	if host.pool == null:
 		host.pool = resolve_pool(host.pool_key, host.view_scene)
-	_tune_pool(host)
-
-## 应用宿主声明的池容量（[code]pool_size[/code]）：空闲上限 + 首次使用前预热。
-## 只在池完全空时预建 —— 跑起来之后再补空闲实例，会和下一次归还在 max_idle 上撞车白白销毁
-static func _tune_pool(host) -> void:
 	var size: int = host.pool_size if "pool_size" in host else 0
 	if host.pool == null or size <= 0:
 		return

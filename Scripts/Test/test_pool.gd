@@ -86,7 +86,7 @@ func test_foreign_instance_is_ignored() -> void:
 	var pool := _new_pool()
 	var stranger := _make_view() as Node
 	pool.pool_return(stranger)
-	assert_false(pool.is_in_use(stranger), "非本池取出的实例不算借出")
+	assert_eq(pool.in_use_count(), 0, "非本池取出的实例不算借出")
 	assert_eq(pool.idle_count(), 0, "非本池实例不入池")
 	assert_true(is_instance_valid(stranger), "非本池实例池不负责销毁")
 
@@ -97,13 +97,6 @@ func test_hooks_only_use_return_name() -> void:
 	pool.pool_return(v)
 	assert_eq(v.hooks, [&"get", &"return"], "只应调用 on_pool_get / on_pool_return（on_pool_push 已废弃）")
 
-
-func test_hooks_can_be_disabled() -> void:
-	var pool := _new_pool()
-	pool.lifecycle_hooks = false
-	var v := pool.pool_get() as _FakeView
-	pool.pool_return(v)
-	assert_true(v.hooks.is_empty(), "关掉 lifecycle_hooks 后不应回调")
 
 
 func test_max_idle_discards_overflow() -> void:
