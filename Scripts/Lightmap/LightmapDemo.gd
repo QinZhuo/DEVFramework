@@ -4,10 +4,11 @@ extends Node3D
 ## 资产光照贴图展厅：同一份烘焙光，展示不同材质对它的反应
 ## （哑光 / 金属 / 粗糙金属 / 自发光），以及"烘焙光 开 ↔ 关"的对比。
 ##
+## 本场景只负责**展示**，烘焙在 `Scenes/Lightmap/LightmapBake.tscn`（工具场景，运行时不用）。
 ## 用法：
 ##   1. 打开本场景即自动生成示例资源（带 UV2 + 材质，写进 Meshes/）；
-##   2. 选中 Stage 点「烘焙并导出」（Quality 已设 Low，几秒钟一轮，方便反复调）；
-##   3. 运行本场景：光照库按场景路径自动接管，用 UI 对比开/关与亮度。
+##   2. 打开 LightmapBake.tscn，点舞台的「烘焙并导出」；
+##   3. 回到本场景运行：光照库按烘焙场景的路径接管，用 UI 对比开/关与亮度。
 ##
 ## 没烘过也能跑：展品只是没有叠加光，Output 会打印实际挂载数量。
 
@@ -35,9 +36,10 @@ const LAYOUT := {
 }
 
 @export_tool_button("重新生成示例资源") var regenerate: Callable = rebuild_assets
+## 烘焙场景：产物跟着它走（`<烘焙场景>_lightmap_set.res`），所以这里要指到工具场景
+@export_file("*.tscn") var bake_scene: String = "res://Scenes/Lightmap/LightmapBake.tscn"
 
 @onready var _grid: Node3D = %Grid
-@onready var _stage: Node3D = %Stage
 
 
 func _ready() -> void:
@@ -47,20 +49,18 @@ func _ready() -> void:
 		_report("编辑器预览")
 		return
 
-	## 舞台只用来烘焙：副本与烘焙灯在运行时不该出现（它们摆在本场景之外）
-	_stage.visible = false
 	%StrengthOff.pressed.connect(_set_strength.bind(0.0))
 	%StrengthLow.pressed.connect(_set_strength.bind(0.2))
-	%StrengthFull.pressed.connect(_set_strength.bind(1.0))
+	%StrengthFull.pressed.connect(_set_strength.bind(0.6))
 	%Toggle.pressed.connect(_toggle_light)
 
-	var lib := AssetLightmapSet.attach(scene_file_path)
+	var lib := AssetLightmapSet.attach(bake_scene)
 	if lib == null:
-		%State.text = "没有烘焙产物 —— 在编辑器里选中 Stage 点「烘焙并导出」后重跑"
+		%State.text = "没有烘焙产物 —— 打开 %s 点「烘焙并导出」后重跑" % bake_scene.get_file()
 	else:
-		## 默认拉到 1.0，开/关的差别才够直观（框架默认值 0.2 是给正式项目用的保守值）
-		BakedMeshInstance3D.set_strength(1.0)
-		%State.text = "烘焙光已接管：%d 类资源" % lib.regions.size()
+		## 0.35：实测峰值 0.79、无裁切；1.0 会把 1/4 的像素顶成纯白，材质差别全被压平
+		BakedMeshInstance3D.set_strength(0.35)
+		%State.text = "烘焙光已接管：%d 类资源（亮度 0.35）" % lib.regions.size()
 	_report("运行")
 
 
@@ -70,7 +70,9 @@ func generate_assets() -> void:
 		DirAccess.make_dir_recursive_absolute(MESH_DIR)
 	for key in ASSETS:
 		var path := MESH_DIR.path_join(key + ".tres")
-		if ResourceLoader.exists(path):
+		## 用 FileAccess 而不是 ResourceLoader.exists：后者读编辑器缓存，
+		## 刚删掉的资产仍会被判成"存在"，于是重建时被跳过、留下空目录
+		if FileAccess.file_exists(path):
 			continue
 		var mesh := _build_mesh(ASSETS[key])
 		mesh.resource_name = key
@@ -89,29 +91,55 @@ func rebuild_assets() -> void:
 	_build_grid()
 
 
+## 手搓盒子：BoxMesh 的 UV 是"展开贴图"布局，一个面在 UV 上只有一条零面积的线，
+## 拿来当 UV2 时 LightmapGI 铺不出岛，烘完就是黑洞 + 斜条纹。
+## 这里直接给出 6 个面（每面 4 顶点、自带独立 UV2 格、法线朝外），不依赖引擎网格的内部排布。
+## 面内两个方向满足 u × v = 法线；索引 (0,2,1)(1,2,3) 是 Godot 的顺时针正面
+const CELL := 0.32
+const INNER := 0.29
+
 func _build_mesh(cfg: Dictionary) -> ArrayMesh:
-	var box := BoxMesh.new()
-	box.size = cfg["size"]
-	var arrays := box.surface_get_arrays(0)
-	arrays[Mesh.ARRAY_TEX_UV2] = _face_uv2(arrays[Mesh.ARRAY_TEX_UV])
+	var half: Vector3 = cfg["size"] * 0.5
+	var faces := [
+		[Vector3(0, 0, 1), Vector3(1, 0, 0), Vector3(0, 1, 0)],
+		[Vector3(0, 0, -1), Vector3(-1, 0, 0), Vector3(0, 1, 0)],
+		[Vector3(1, 0, 0), Vector3(0, 0, -1), Vector3(0, 1, 0)],
+		[Vector3(-1, 0, 0), Vector3(0, 0, 1), Vector3(0, 1, 0)],
+		[Vector3(0, 1, 0), Vector3(1, 0, 0), Vector3(0, 0, -1)],
+		[Vector3(0, -1, 0), Vector3(1, 0, 0), Vector3(0, 0, 1)],
+	]
+	var verts := PackedVector3Array()
+	var normals := PackedVector3Array()
+	var uvs := PackedVector2Array()
+	var uv2 := PackedVector2Array()
+	var indices := PackedInt32Array()
+	for f in faces.size():
+		var n: Vector3 = faces[f][0]
+		var u: Vector3 = faces[f][1]
+		var v: Vector3 = faces[f][2]
+		var base := verts.size()
+		var cell := Vector2(f % 3, f / 3) * CELL + Vector2(0.01, 0.01)
+		for corner: Vector2 in [Vector2(-1, -1), Vector2(1, -1), Vector2(-1, 1), Vector2(1, 1)]:
+			verts.append(Vector3(n.x * half.x, n.y * half.y, n.z * half.z)
+				+ Vector3(u.x * half.x, u.y * half.y, u.z * half.z) * corner.x
+				+ Vector3(v.x * half.x, v.y * half.y, v.z * half.z) * corner.y)
+			normals.append(n)
+			var uv := (corner + Vector2.ONE) * 0.5
+			uvs.append(uv)
+			uv2.append(uv * INNER + cell)
+		indices.append_array([base, base + 2, base + 1, base + 1, base + 2, base + 3])
+
+	var arrays := []
+	arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = verts
+	arrays[Mesh.ARRAY_NORMAL] = normals
+	arrays[Mesh.ARRAY_TEX_UV] = uvs
+	arrays[Mesh.ARRAY_TEX_UV2] = uv2
+	arrays[Mesh.ARRAY_INDEX] = indices
 	var mesh := ArrayMesh.new()
 	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
 	mesh.surface_set_material(0, _material(cfg))
 	return mesh
-
-
-## 盒体 UV 每个面都是 0..1 的**重叠**岛，直接当 UV2 会 6 面共采样同一片光照。
-## 按面拆到 3×2 的小格里，每面各占一块（顶点按面连续 4 个一组）
-func _face_uv2(uv: PackedVector2Array) -> PackedVector2Array:
-	const CELL := 0.32
-	const INNER := 0.29
-	var out := PackedVector2Array()
-	out.resize(uv.size())
-	for i in uv.size():
-		var face := i / 4
-		var origin := Vector2(face % 3, face / 3) * CELL + Vector2(0.01, 0.01)
-		out[i] = uv[i] * INNER + origin
-	return out
 
 
 func _material(cfg: Dictionary) -> StandardMaterial3D:
@@ -133,7 +161,7 @@ func _build_grid() -> void:
 		child.queue_free()
 	for key in LAYOUT:
 		var path := MESH_DIR.path_join(key + ".tres")
-		if not ResourceLoader.exists(path):
+		if not FileAccess.file_exists(path):
 			continue
 		var mesh: ArrayMesh = load(path)
 		var spots: Array = LAYOUT[key]

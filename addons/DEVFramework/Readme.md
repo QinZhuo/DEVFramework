@@ -595,14 +595,19 @@ view.pool_size = 8             # 首次使用前预建 8 个空闲实例，同�
 
 用法：
 
-1. 搭烘焙场景：`AssetLightmapStage` 下放 `LightmapGI` + 灯光，舞台填 `dirs`（整目录）或 `meshes`（点名）。
-   网格要带 **UV2** 且**有材质**（没材质就没有 `next_pass` 可挂，运行时会告警"挂不上烘焙光"）；
+1. 建一个**专用烘焙场景**（工具场景，运行时不用）：`AssetLightmapStage` 当根节点，下面放 `LightmapGI` + 灯，
+   舞台填 `dirs`（整目录）或 `meshes`（点名）。网格要带 **UV2** 且**有材质**
+   （没材质就没有 `next_pass` 可挂，运行时会告警"挂不上烘焙光"）；
 2. 点舞台的「烘焙并导出」：几何变动才自动重烘；**只改了灯 / 环境 / 自发光**时点「强制重烘并导出」。
    导出会自动保存场景（`LightmapGI.light_data` 引用和烘焙副本都要进场景文件）；
-3. 运行时接管：
+3. **使用场景另建**（展示/关卡场景里不要放舞台和 `LightmapGI`），加载时接管产物：
 
 ```gdscript
-AssetLightmapSet.attach("res://Scenes/Game/Game.tscn")   # 有产物就生效，没有返回 null 且不改 current
+# 产物跟着烘焙场景走：<烘焙场景>_lightmap_set.res
+AssetLightmapSet.attach("res://Scenes/Lightmap/LightmapBake.tscn")
+# 或直接给产物路径
+AssetLightmapSet.attach_path("res://Scenes/Lightmap/LightmapBake_lightmap_set.res")
+
 BakedMeshInstance3D.set_all_visible(false)               # 全局关光，对着原材质看差别
 BakedMeshInstance3D.set_strength(0.2)                    # 全局亮度，不必重烘
 ```

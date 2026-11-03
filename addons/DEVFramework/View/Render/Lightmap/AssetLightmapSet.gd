@@ -38,14 +38,17 @@ static var _fallback_done := false
 static func path_of(scene_path: String) -> String:
 	return "" if scene_path.is_empty() else scene_path.get_basename() + "_lightmap_set.res"
 
-## 按场景路径接管光照：产物存在就加载生效，不存在返回 null 且**不动** current。
-## 场景加载入口调一次即可（池复用的实例进来时会按新库重挂）
-static func attach(scene_path: String) -> AssetLightmapSet:
-	var path := path_of(scene_path)
+## 按产物路径接管：烘焙场景与使用场景分开时用它。
+## 产物存在就加载生效，不存在返回 null 且**不动** current
+static func attach_path(path: String) -> AssetLightmapSet:
 	if path.is_empty() or not ResourceLoader.exists(path):
 		return null
 	current = load(path) as AssetLightmapSet
 	return current
+
+## 按场景路径接管：产物跟着**烘焙场景**走（使用场景通常传烘焙场景的路径）
+static func attach(scene_path: String) -> AssetLightmapSet:
+	return attach_path(path_of(scene_path))
 
 ## 整张图集，全场景共用。取不到就说明烘焙数据缺失
 func atlas() -> TextureLayered:

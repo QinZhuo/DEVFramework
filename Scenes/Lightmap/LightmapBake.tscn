@@ -1,0 +1,84 @@
+[gd_scene format=3 uid="uid://8ehjsmeahdgp"]
+
+[ext_resource type="Script" uid="uid://bsoojnp78rfnk" path="res://addons/DEVFramework/View/Render/Lightmap/AssetLightmapStage.gd" id="1_stage"]
+[ext_resource type="LightmapGIData" uid="uid://dps4nks3pyupq" path="res://Scenes/Lightmap/LightmapBake.lmbake" id="2_022th"]
+[ext_resource type="ArrayMesh" uid="uid://dhu7ug6qxfkh4" path="res://Scenes/Lightmap/Meshes/CubeMatte.tres" id="3_e7tas"]
+[ext_resource type="ArrayMesh" uid="uid://gybsy18mi3y4" path="res://Scenes/Lightmap/Meshes/CubeMetal.tres" id="4_p5lv2"]
+[ext_resource type="ArrayMesh" uid="uid://dfc045yyqi7wc" path="res://Scenes/Lightmap/Meshes/CubeRoughMetal.tres" id="5_jfcpx"]
+[ext_resource type="ArrayMesh" uid="uid://b0htdhohwiw5x" path="res://Scenes/Lightmap/Meshes/CubeWhite.tres" id="6_6wo30"]
+[ext_resource type="ArrayMesh" uid="uid://6ubmghptkjyi" path="res://Scenes/Lightmap/Meshes/Glow.tres" id="7_mqia2"]
+[ext_resource type="ArrayMesh" uid="uid://bpfiewt6pjojg" path="res://Scenes/Lightmap/Meshes/Pedestal.tres" id="8_kq868"]
+
+[sub_resource type="Environment" id="Env"]
+background_mode = 1
+background_color = Color(0.05, 0.055, 0.07, 1)
+ambient_light_source = 2
+ambient_light_color = Color(0.42, 0.46, 0.55, 1)
+ambient_light_energy = 0.35
+
+[node name="LightmapBake" type="Node3D" unique_id=943618255]
+script = ExtResource("1_stage")
+dirs = Array[String](["res://Scenes/Lightmap/Meshes"])
+
+[node name="CubeMatte" type="MeshInstance3D" parent="." unique_id=1820644287]
+mesh = ExtResource("3_e7tas")
+metadata/bake_copy = true
+
+[node name="CubeMetal" type="MeshInstance3D" parent="." unique_id=24089553]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 10, 0, 0)
+mesh = ExtResource("4_p5lv2")
+metadata/bake_copy = true
+
+[node name="CubeRoughMetal" type="MeshInstance3D" parent="." unique_id=2062191032]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 20, 0, 0)
+mesh = ExtResource("5_jfcpx")
+metadata/bake_copy = true
+
+[node name="CubeWhite" type="MeshInstance3D" parent="." unique_id=546327563]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 30, 0, 0)
+mesh = ExtResource("6_6wo30")
+metadata/bake_copy = true
+
+[node name="Glow" type="MeshInstance3D" parent="." unique_id=880375573]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 40, 0, 0)
+mesh = ExtResource("7_mqia2")
+metadata/bake_copy = true
+
+[node name="Pedestal" type="MeshInstance3D" parent="." unique_id=706264465]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 50, 0, 0)
+mesh = ExtResource("8_kq868")
+metadata/bake_copy = true
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="." unique_id=633516730]
+environment = SubResource("Env")
+
+[node name="Camera3D" type="Camera3D" parent="." unique_id=756106976]
+transform = Transform3D(1, 0, 0, 0, 0.9612617, 0.27563736, 0, -0.27563736, 0.9612617, 25, 16, 44)
+
+[node name="LightmapGI" type="LightmapGI" parent="." unique_id=440545494]
+quality = 3
+bounces = 2
+directional = true
+texel_scale = 4.0
+light_data = ExtResource("2_022th")
+
+[node name="KeyLight" type="OmniLight3D" parent="." unique_id=1333813371]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 8, 5, 6)
+light_color = Color(1, 0.72, 0.45, 1)
+light_energy = 55.0
+light_bake_mode = 1
+omni_range = 22.0
+
+[node name="FillLight" type="OmniLight3D" parent="." unique_id=748391805]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 26, 3.5, -6)
+light_color = Color(0.45, 0.68, 1, 1)
+light_energy = 40.0
+light_bake_mode = 1
+omni_range = 22.0
+
+[node name="RimLight" type="OmniLight3D" parent="." unique_id=99272637]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 44, 5, 6)
+light_color = Color(1, 0.62, 0.5, 1)
+light_energy = 45.0
+light_bake_mode = 1
+omni_range = 22.0

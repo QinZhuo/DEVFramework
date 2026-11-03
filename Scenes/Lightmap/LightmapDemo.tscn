@@ -1,14 +1,6 @@
-[gd_scene format=3 uid="uid://dnctyaa3nn6hb"]
+[gd_scene load_steps=4 format=3]
 
-[ext_resource type="Script" uid="uid://cktxij4456jxb" path="res://Scripts/Lightmap/LightmapDemo.gd" id="1_demo"]
-[ext_resource type="Script" uid="uid://bsoojnp78rfnk" path="res://addons/DEVFramework/View/Render/Lightmap/AssetLightmapStage.gd" id="2_stage"]
-[ext_resource type="LightmapGIData" uid="uid://bunmoas4qrkrm" path="res://Scenes/Lightmap/LightmapDemo.lmbake" id="3_iynou"]
-[ext_resource type="ArrayMesh" uid="uid://dyqw8jpgml105" path="res://Scenes/Lightmap/Meshes/CubeMatte.tres" id="4_6k7dk"]
-[ext_resource type="ArrayMesh" uid="uid://dsi1vy0li72ke" path="res://Scenes/Lightmap/Meshes/CubeMetal.tres" id="5_jjy22"]
-[ext_resource type="ArrayMesh" uid="uid://d83i1vtka4fv" path="res://Scenes/Lightmap/Meshes/CubeRoughMetal.tres" id="6_lyvsp"]
-[ext_resource type="ArrayMesh" uid="uid://12m881mlthpy" path="res://Scenes/Lightmap/Meshes/CubeWhite.tres" id="7_5ehdy"]
-[ext_resource type="ArrayMesh" uid="uid://cp3sshi6gjmym" path="res://Scenes/Lightmap/Meshes/Glow.tres" id="8_vulhb"]
-[ext_resource type="ArrayMesh" uid="uid://vo8kt7ipq6uq" path="res://Scenes/Lightmap/Meshes/Pedestal.tres" id="9_fndlo"]
+[ext_resource type="Script" path="res://Scripts/Lightmap/LightmapDemo.gd" id="1_demo"]
 
 [sub_resource type="Environment" id="Env"]
 background_mode = 1
@@ -17,100 +9,39 @@ ambient_light_source = 2
 ambient_light_color = Color(0.34, 0.38, 0.46, 1)
 ambient_light_energy = 0.12
 
+[sub_resource type="PlaneMesh" id="FloorMesh"]
+size = Vector2(26, 18)
+
 [sub_resource type="StandardMaterial3D" id="FloorMat"]
 albedo_color = Color(0.11, 0.12, 0.15, 1)
 roughness = 0.9
 
-[sub_resource type="PlaneMesh" id="FloorMesh"]
-size = Vector2(26, 18)
-
-[node name="LightmapDemo" type="Node3D" unique_id=865979461]
+[node name="LightmapDemo" type="Node3D"]
 script = ExtResource("1_demo")
 
-[node name="WorldEnvironment" type="WorldEnvironment" parent="." unique_id=66047375]
+[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
 environment = SubResource("Env")
 
-[node name="Sun" type="DirectionalLight3D" parent="." unique_id=1234988222]
-transform = Transform3D(0.7880108, 0.48514786, -0.37903908, 0, 0.6156615, 0.7880107, 0.6156615, -0.62096095, 0.4851479, 0, 6, 0)
+[node name="Sun" type="DirectionalLight3D" parent="."]
+position = Vector3(0, 6, 0)
+rotation_degrees = Vector3(-52, -38, 0)
 light_energy = 0.18
 shadow_enabled = true
 
-[node name="Camera3D" type="Camera3D" parent="." unique_id=1395963240]
-transform = Transform3D(1, 0, 0, 0, 0.9781476, 0.2079117, 0, -0.2079117, 0.9781476, 0, 2.3, 7.6)
+[node name="Camera3D" type="Camera3D" parent="."]
+position = Vector3(0, 2.3, 7.6)
+rotation_degrees = Vector3(-12, 0, 0)
 
-[node name="Floor" type="MeshInstance3D" parent="." unique_id=1553196644]
-material_override = SubResource("FloorMat")
+[node name="Floor" type="MeshInstance3D" parent="."]
 mesh = SubResource("FloorMesh")
+material_override = SubResource("FloorMat")
 
-[node name="Grid" type="Node3D" parent="." unique_id=1142676145]
+[node name="Grid" type="Node3D" parent="."]
 unique_name_in_owner = true
 
-[node name="Stage" type="Node3D" parent="." unique_id=420731244]
-unique_name_in_owner = true
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, -16)
-script = ExtResource("2_stage")
-dirs = Array[String](["res://Scenes/Lightmap/Meshes"])
+[node name="UI" type="CanvasLayer" parent="."]
 
-[node name="LightmapGI" type="LightmapGI" parent="Stage" unique_id=866713354]
-quality = 0
-bounces = 2
-directional = true
-environment_mode = 0
-light_data = ExtResource("3_iynou")
-
-[node name="KeyLight" type="OmniLight3D" parent="Stage" unique_id=1002548616]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 8, 5, 6)
-light_color = Color(1, 0.72, 0.45, 1)
-light_energy = 55.0
-light_bake_mode = 1
-omni_range = 22.0
-
-[node name="FillLight" type="OmniLight3D" parent="Stage" unique_id=1676037788]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 26, 3.5, -6)
-light_color = Color(0.45, 0.68, 1, 1)
-light_energy = 40.0
-light_bake_mode = 1
-omni_range = 22.0
-
-[node name="RimLight" type="OmniLight3D" parent="Stage" unique_id=1495554886]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 44, 5, 6)
-light_color = Color(1, 0.62, 0.5, 1)
-light_energy = 45.0
-light_bake_mode = 1
-omni_range = 22.0
-
-[node name="CubeMatte" type="MeshInstance3D" parent="Stage" unique_id=1661643983]
-mesh = ExtResource("4_6k7dk")
-metadata/bake_copy = true
-
-[node name="CubeMetal" type="MeshInstance3D" parent="Stage" unique_id=432455833]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 10, 0, 0)
-mesh = ExtResource("5_jjy22")
-metadata/bake_copy = true
-
-[node name="CubeRoughMetal" type="MeshInstance3D" parent="Stage" unique_id=49220024]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 20, 0, 0)
-mesh = ExtResource("6_lyvsp")
-metadata/bake_copy = true
-
-[node name="CubeWhite" type="MeshInstance3D" parent="Stage" unique_id=941434804]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 30, 0, 0)
-mesh = ExtResource("7_5ehdy")
-metadata/bake_copy = true
-
-[node name="Glow" type="MeshInstance3D" parent="Stage" unique_id=194378704]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 40, 0, 0)
-mesh = ExtResource("8_vulhb")
-metadata/bake_copy = true
-
-[node name="Pedestal" type="MeshInstance3D" parent="Stage" unique_id=62970885]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 50, 0, 0)
-mesh = ExtResource("9_fndlo")
-metadata/bake_copy = true
-
-[node name="UI" type="CanvasLayer" parent="." unique_id=1018675213]
-
-[node name="Margin" type="MarginContainer" parent="UI" unique_id=1078383296]
+[node name="Margin" type="MarginContainer" parent="UI"]
 anchors_preset = 15
 anchor_right = 1.0
 anchor_bottom = 1.0
@@ -121,37 +52,37 @@ theme_override_constants/margin_top = 16
 theme_override_constants/margin_right = 16
 theme_override_constants/margin_bottom = 16
 
-[node name="VBox" type="VBoxContainer" parent="UI/Margin" unique_id=1921915446]
+[node name="VBox" type="VBoxContainer" parent="UI/Margin"]
 layout_mode = 2
 size_flags_vertical = 0
 theme_override_constants/separation = 8
 
-[node name="Buttons" type="HBoxContainer" parent="UI/Margin/VBox" unique_id=1240677892]
+[node name="Buttons" type="HBoxContainer" parent="UI/Margin/VBox"]
 layout_mode = 2
 size_flags_horizontal = 0
 theme_override_constants/separation = 8
 
-[node name="StrengthOff" type="Button" parent="UI/Margin/VBox/Buttons" unique_id=550958063]
+[node name="StrengthOff" type="Button" parent="UI/Margin/VBox/Buttons"]
 unique_name_in_owner = true
 layout_mode = 2
 text = "亮度 0"
 
-[node name="StrengthLow" type="Button" parent="UI/Margin/VBox/Buttons" unique_id=288098758]
+[node name="StrengthLow" type="Button" parent="UI/Margin/VBox/Buttons"]
 unique_name_in_owner = true
 layout_mode = 2
 text = "亮度 0.2"
 
-[node name="StrengthFull" type="Button" parent="UI/Margin/VBox/Buttons" unique_id=445198477]
+[node name="StrengthFull" type="Button" parent="UI/Margin/VBox/Buttons"]
 unique_name_in_owner = true
 layout_mode = 2
-text = "亮度 1.0"
+text = "亮度 0.6"
 
-[node name="Toggle" type="Button" parent="UI/Margin/VBox/Buttons" unique_id=993148519]
+[node name="Toggle" type="Button" parent="UI/Margin/VBox/Buttons"]
 unique_name_in_owner = true
 layout_mode = 2
 text = "烘焙光 开/关"
 
-[node name="State" type="Label" parent="UI/Margin/VBox" unique_id=1214975506]
+[node name="State" type="Label" parent="UI/Margin/VBox"]
 unique_name_in_owner = true
 layout_mode = 2
 text = "未接管光照库"

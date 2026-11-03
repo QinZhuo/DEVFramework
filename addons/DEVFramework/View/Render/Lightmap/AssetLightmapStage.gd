@@ -95,8 +95,11 @@ func export_all(force := false) -> void:
 		return
 	LogTool.log("烘焙", "光照", set.regions.size(), "类 →", path)
 	## 场景必须一起存：LightmapGI 的 light_data 引用只在场景里，不存的话下次打开就没有烘焙数据，
-	## 既看不到效果，也没法在旧结果上增量重烘
-	EditorInterface.save_scene()
+	## 既看不到效果，也没法在旧结果上增量重烘。
+	## ⚠️ 用 save_scene_as 显式给路径：save_scene() 在"当前场景"解析不到保存目标时
+	## （例如场景是程序化 reload 进来的）会弹「保存到」对话框，脚本化烘焙不该打断用户。
+	## 注意它没有返回值（void），别写成 `if ... != OK`（会直接编译失败）
+	EditorInterface.save_scene_as(scene_path)
 	## 新产物立刻可用：否则编辑器兜底还拿着上一次的扫描结论
 	AssetLightmapSet.invalidate()
 	EditorInterface.get_resource_filesystem().scan()
@@ -181,30 +184,38 @@ func bake() -> bool:
 	if DisplayServer.get_name() == "headless":
 		LogTool.warn("烘焙", "headless 下没有检查器按钮，无法触发烘焙")
 		return false
+	var expect := _copies().size()
+	if expect <= 0:
+		LogTool.warn("烘焙", "舞台里没有副本，没有东西可烘")
+		return false
 	EditorInterface.edit_node(gi)
-	## 检查器要下一帧才把按钮造出来
-	for i in 8:
+	for i in 12:
 		await get_tree().process_frame
 	var btn := _bake_button(EditorInterface.get_base_control())
 	if btn == null:
 		LogTool.warn("烘焙", "检查器里找不到 Bake Lightmaps 按钮，请手动烘焙后再次导出")
 		return false
-	var expect := _copies().size()
-	if expect <= 0:
-		LogTool.warn("烘焙", "舞台里没有副本，没有东西可烘")
-		return false
+
+	## 完成判据：副本数到位 **且** `.lmbake` 被重写。
+	## ⚠️ 两个坑都别踩：
+	##   ① 只看"副本数"——上一次烘焙的数据早就是这个数，按下瞬间就满足，导出的是旧数据
+	##      （regions 的 uv/页号与新图集对不上 ⇒ 模型上出现斜条纹）；
+	##   ② 先把 light_data 置空再按——编辑器会以为还没有烘焙文件，弹「选择光照贴图烘焙文件」
+	var data_path := gi.light_data.resource_path if gi.light_data != null else ""
+	var before_mtime := FileAccess.get_modified_time(data_path) if not data_path.is_empty() else 0
 	btn.pressed.emit()
-	## 烘完每个副本在 user_data 里占一组，中途尺寸对不上。
-	## 全量烘焙可能跑十几分钟，轮询只是兜底，别卡太紧
 	for i in 18000:
 		await get_tree().create_timer(0.05).timeout
 		if not is_instance_valid(gi):
 			LogTool.warn("烘焙", "烘焙过程中 LightmapGI 被销毁")
 			return false
-		var raw: Array = gi.light_data.get("user_data") if gi.light_data else []
-		if raw.size() / 4 == expect:
+		if gi.light_data == null or gi.light_data.get_user_count() != expect or i < 30:
+			continue
+		## 以 .lmbake 落盘时间为准：副本数在按下瞬间就满足，实例 id 也会被编辑器提前换掉，
+		## 只有"文件被重写"才说明这一次真的烘完了
+		if data_path.is_empty() or FileAccess.get_modified_time(data_path) > before_mtime:
 			return true
-	LogTool.warn("烘焙", "等待烘焙超时（%d 份副本未全部产出），请确认烘焙是否仍在进行" % expect)
+	LogTool.warn("烘焙", "等待烘焙超时（%d 份副本未全部产出或数据未更新），请确认烘焙是否仍在进行" % expect)
 	return false
 
 ## 按钮由编辑器插件自己造，没有可查询的入口，只能按文本认
