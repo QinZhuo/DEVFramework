@@ -595,8 +595,10 @@ view.pool_size = 8             # 首次使用前预建 8 个空闲实例，同�
 
 用法：
 
-1. 搭烘焙场景：`AssetLightmapStage` 下放 `LightmapGI` + 灯光，舞台填 `dirs`（整目录）或 `meshes`（点名）；
-2. 点舞台的「烘焙并导出」，产物落在场景同目录；
+1. 搭烘焙场景：`AssetLightmapStage` 下放 `LightmapGI` + 灯光，舞台填 `dirs`（整目录）或 `meshes`（点名）。
+   网格要带 **UV2** 且**有材质**（没材质就没有 `next_pass` 可挂，运行时会告警"挂不上烘焙光"）；
+2. 点舞台的「烘焙并导出」：几何变动才自动重烘；**只改了灯 / 环境 / 自发光**时点「强制重烘并导出」。
+   导出会自动保存场景（`LightmapGI.light_data` 引用和烘焙副本都要进场景文件）；
 3. 运行时接管：
 
 ```gdscript
@@ -607,6 +609,9 @@ BakedMeshInstance3D.set_strength(0.2)                    # 全局亮度，不必
 
 要点：
 
+- **烘焙的灯必须是 Static**：Godot 4.4 起 `Light3D.light_bake_mode` 默认 `Dynamic`，不进 lightmap，
+  烘出来 l0 全黑（舞台会在导出时检查并告警）。实时补光用的灯保持 Dynamic 即可，别让它重复进烘焙。
+- `LightmapGI.directional` 必须开：SH 叠加层要读 l1 方向项，没有就是一片没有方向、没有高光的平光（舞台会自动开）。
 - 换库（给 `current` 赋值）会自动重挂**所有在树上的**实例，与场景加载顺序无关。
 - 键 = 网格文件名；无路径的运行时网格退回 `resource_name`。**不同目录的同名模型会撞车**。
 - 逐面判定：只有缺 UV2 的面被跳过，不拖累同一模型上其它面。

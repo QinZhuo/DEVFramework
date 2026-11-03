@@ -1,19 +1,21 @@
-[gd_resource type="Resource" load_steps=6 format=3]
+[gd_resource type="Resource" script_class="TutorialStepDef" format=3 uid="uid://c8bulktlvlds6"]
 
-[ext_resource type="Script" path="res://addons/DEVFramework/Task/Def/TutorialStepDef.gd" id="1_step"]
-[ext_resource type="Script" path="res://addons/DEVFramework/Task/Def/TutorialTargetDef.gd" id="2_target"]
-[ext_resource type="Script" path="res://addons/DEVFramework/Def/NodeSignalDef.gd" id="3_sig"]
-
-[sub_resource type="Resource" id="Resource_target"]
-script = ExtResource("2_target")
-node_path = NodePath("UI/StartButton")
+[ext_resource type="Script" uid="uid://djqgtqpyuuecc" path="res://addons/DEVFramework/Task/Def/TutorialStepDef.gd" id="1_step"]
+[ext_resource type="Script" uid="uid://ecvlbe1pssoo" path="res://addons/DEVFramework/Def/SignalDef.gd" id="2_3d0pr"]
+[ext_resource type="Script" uid="uid://bnk4gycnoo48j" path="res://addons/DEVFramework/Task/Def/TutorialTargetDef.gd" id="2_target"]
+[ext_resource type="Script" uid="uid://bskdrnpw1mrbs" path="res://addons/DEVFramework/Def/NodeSignalDef.gd" id="3_sig"]
 
 [sub_resource type="Resource" id="Resource_sig"]
 script = ExtResource("3_sig")
 node_path = NodePath("UI/StartButton")
 signal_name = &"pressed"
 
+[sub_resource type="Resource" id="Resource_target"]
+script = ExtResource("2_target")
+node_path = NodePath("UI/StartButton")
+
 [resource]
+resource_name = "Step_Welcome"
 script = ExtResource("1_step")
-signals = Array[SignalDef]([SubResource("Resource_sig")])
 target = SubResource("Resource_target")
+signals = Array[ExtResource("2_3d0pr")]([SubResource("Resource_sig")])

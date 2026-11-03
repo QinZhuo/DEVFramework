@@ -1,0 +1,21 @@
+[gd_resource type="ArrayMesh" format=4 uid="uid://dsi1vy0li72ke"]
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_yxmnd"]
+albedo_color = Color(0.96, 0.96, 0.96, 1)
+metallic = 1.0
+roughness = 0.08
+
+[resource]
+resource_name = "CubeMetal"
+_surfaces = [{
+"aabb": AABB(-0.5, -0.5, -0.5, 1, 1, 1),
+"attribute_data": PackedByteArray("AAAAAAAAAAAK1yM8CtcjPKuqKj8AAAAAnTZQPgrXIzyrqqo+AAAAAA102j0K1yM8AACAPwAAAACZmZk+CtcjPAAAAAAAAAA/wvWoPlK4Hj6rqio/AAAAPyz5BT9SuB4+q6qqPgAAAD8NdNo+UrgePgAAgD8AAAA/UrgeP1K4Hj6rqqo+AAAAAIwlPz8K1yM8AAAAAAAAAD9mZiY/UrgePquqKj8AAAAAseRXPwrXIzyrqqo+AAAAP4wlPz9SuB4+q6qqPgAAAD8NdNo9MjPzPgAAAAAAAIA/CtcjPFK4Hj+rqio/AAAAP502UD4yM/M+q6qqPgAAgD8NdNo9UrgeP6uqqj4AAAA/DXTaPjIz8z6rqio/AAAAPyz5BT8yM/M+q6oqPwAAAD8s+QU/MjPzPgAAgD8AAAA/UrgePzIz8z6rqqo+AACAP4wlPz9SuB4/q6oqPwAAgD+x5Fc/UrgeP6uqKj8AAIA/seRXP1K4Hj8AAIA/AACAP9ajcD9SuB4/"),
+"format": 34359742519,
+"index_count": 36,
+"index_data": PackedByteArray("AAACAAQAAgAGAAQAAQADAAUAAwAHAAUACAAKAAwACgAOAAwACQALAA0ACwAPAA0AEAASABQAEgAWABQAEQATABUAEwAXABUA"),
+"material": SubResource("StandardMaterial3D_yxmnd"),
+"primitive": 3,
+"uv_scale": Vector4(0, 0, 0, 0),
+"vertex_count": 24,
+"vertex_data": PackedByteArray("AAAAvwAAAD8AAAA/AAAAPwAAAD8AAAC/AAAAPwAAAD8AAAA/AAAAvwAAAD8AAAC/AAAAvwAAAL8AAAA/AAAAPwAAAL8AAAC/AAAAPwAAAL8AAAA/AAAAvwAAAL8AAAC/AAAAPwAAAD8AAAA/AAAAvwAAAD8AAAC/AAAAPwAAAD8AAAC/AAAAvwAAAD8AAAA/AAAAPwAAAL8AAAA/AAAAvwAAAL8AAAC/AAAAPwAAAL8AAAC/AAAAvwAAAL8AAAA/AAAAPwAAAD8AAAA/AAAAvwAAAL8AAAA/AAAAvwAAAD8AAAA/AAAAPwAAAL8AAAA/AAAAPwAAAD8AAAC/AAAAvwAAAL8AAAC/AAAAvwAAAD8AAAC/AAAAPwAAAL8AAAC//3//f////7//////AAD/v/9//3////+//////wAA/7//f/9/////v/////8AAP+//3//f////7//////AAD/v///AID/////AAAAgP9//7///wCA/////wAAAID/f/+///8AgP////8AAACA/3//v///AID/////AAAAgP9//78AgP//AAD/vwCAAAD///+/AID//wAA/78AgAAA////vwCA//8AAP+/AIAAAP///78AgP//AAD/vwCAAAD///+/")
+}]

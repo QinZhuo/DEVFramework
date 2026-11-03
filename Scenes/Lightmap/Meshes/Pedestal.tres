@@ -1,0 +1,20 @@
+[gd_resource type="ArrayMesh" format=4 uid="uid://vo8kt7ipq6uq"]
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_3grtx"]
+albedo_color = Color(0.3, 0.31, 0.35, 1)
+roughness = 0.85
+
+[resource]
+resource_name = "Pedestal"
+_surfaces = [{
+"aabb": AABB(-0.8, -0.175, -0.8, 1.6, 0.35, 1.6),
+"attribute_data": PackedByteArray("AAAAAAAAAAAK1yM8CtcjPKuqKj8AAAAAnTZQPgrXIzyrqqo+AAAAAA102j0K1yM8AACAPwAAAACZmZk+CtcjPAAAAAAAAAA/wvWoPlK4Hj6rqio/AAAAPyz5BT9SuB4+q6qqPgAAAD8NdNo+UrgePgAAgD8AAAA/UrgeP1K4Hj6rqqo+AAAAAIwlPz8K1yM8AAAAAAAAAD9mZiY/UrgePquqKj8AAAAAseRXPwrXIzyrqqo+AAAAP4wlPz9SuB4+q6qqPgAAAD8NdNo9MjPzPgAAAAAAAIA/CtcjPFK4Hj+rqio/AAAAP502UD4yM/M+q6qqPgAAgD8NdNo9UrgeP6uqqj4AAAA/DXTaPjIz8z6rqio/AAAAPyz5BT8yM/M+q6oqPwAAAD8s+QU/MjPzPgAAgD8AAAA/UrgePzIz8z6rqqo+AACAP4wlPz9SuB4/q6oqPwAAgD+x5Fc/UrgeP6uqKj8AAIA/seRXP1K4Hj8AAIA/AACAP9ajcD9SuB4/"),
+"format": 34359742519,
+"index_count": 36,
+"index_data": PackedByteArray("AAACAAQAAgAGAAQAAQADAAUAAwAHAAUACAAKAAwACgAOAAwACQALAA0ACwAPAA0AEAASABQAEgAWABQAEQATABUAEwAXABUA"),
+"material": SubResource("StandardMaterial3D_3grtx"),
+"primitive": 3,
+"uv_scale": Vector4(0, 0, 0, 0),
+"vertex_count": 24,
+"vertex_data": PackedByteArray("zcxMvzMzMz7NzEw/zcxMPzMzMz7NzEy/zcxMPzMzMz7NzEw/zcxMvzMzMz7NzEy/zcxMvzMzM77NzEw/zcxMPzMzM77NzEy/zcxMPzMzM77NzEw/zcxMvzMzM77NzEy/zcxMPzMzMz7NzEw/zcxMvzMzMz7NzEy/zcxMPzMzMz7NzEy/zcxMvzMzMz7NzEw/zcxMPzMzM77NzEw/zcxMvzMzM77NzEy/zcxMPzMzM77NzEy/zcxMvzMzM77NzEw/zcxMPzMzMz7NzEw/zcxMvzMzM77NzEw/zcxMvzMzMz7NzEw/zcxMPzMzM77NzEw/zcxMPzMzMz7NzEy/zcxMvzMzM77NzEy/zcxMvzMzMz7NzEy/zcxMPzMzM77NzEy//3//f////7//////AAD/v/9//3////+//////wAA/7//f/9/////v/////8AAP+//3//f////7//////AAD/v///AID/////AAAAgP9//7///wCA/////wAAAID/f/+///8AgP////8AAACA/3//v///AID/////AAAAgP9//78AgP//AAD/vwCAAAD///+/AID//wAA/78AgAAA////vwCA//8AAP+/AIAAAP///78AgP//AAD/vwCAAAD///+/")
+}]

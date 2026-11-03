@@ -32,6 +32,9 @@ static var _live: Dictionary = {}
 ## 逐面可叠加结论按 mesh 资源缓存：每次借出都遍历所有 surface 的顶点数组太浪费
 static var _bakeable: Dictionary = {}
 
+## 缺材质的告警只打一次，别在借还热路径里刷屏
+static var _warned_no_material := false
+
 ## 挂光。重复调用只更新参数，不会叠出第二层。
 ## 逐面判定：缺 UV2 的面只是跳过，不拖累同一模型上有 UV2 的面
 static func apply(mi: MeshInstance3D, light: AssetLightmapRegion, atlas: TextureLayered) -> bool:
@@ -53,16 +56,26 @@ static func apply(mi: MeshInstance3D, light: AssetLightmapRegion, atlas: Texture
 		if not flags[i]:
 			continue
 		var base := _base(mi, i)
-		if base == null or not _opaque(base):
+		if base == null:
+			## 没有材质就没有 next_pass 可挂：这是"烘了却看不见"的经典原因，静默跳过太坑
+			_warn_missing_material(mi)
+			continue
+		if not _opaque(base):
 			continue
 		mi.set_surface_override_material(i, _shared(base, light, atlas))
 		ok = true
 	return ok
 
-## 取这个 surface 实际生效的材质
+## 取这个 surface 实际生效的材质（没有材质返回 null：没有材质就没有 next_pass 可挂）
 static func _base(mi: MeshInstance3D, i: int) -> Material:
 	var m := mi.get_surface_override_material(i)
 	return m if m != null else mi.mesh.surface_get_material(i)
+
+static func _warn_missing_material(mi: MeshInstance3D) -> void:
+	if _warned_no_material:
+		return
+	_warned_no_material = true
+	LogTool.warn("光照", "%s 的面没有材质，挂不上烘焙光（给网格或其 surface 指定材质）" % mi.name)
 
 ## 透明面（玻璃罩）叠加加色会把背后的画面糊成一片白雾，跳过
 static func _opaque(mat: Material) -> bool:

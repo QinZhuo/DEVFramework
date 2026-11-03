@@ -1,13 +1,18 @@
-[gd_resource type="ArrayMesh" format=4 uid="uid://lj5hlk4d220e"]
+[gd_resource type="ArrayMesh" format=4 uid="uid://dyqw8jpgml105"]
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_fn6km"]
+albedo_color = Color(0.2, 0.58, 0.54, 1)
+roughness = 0.95
 
 [resource]
-resource_name = "Box_0"
+resource_name = "CubeMatte"
 _surfaces = [{
 "aabb": AABB(-0.5, -0.5, -0.5, 1, 1, 1),
-"attribute_data": PackedByteArray("AAAAAAAAAAAAAAAAAAAAAKuqKj8AAAAAq6oqPwAAAACrqqo+AAAAAKuqqj4AAAAAAACAPwAAAAAAAIA/AAAAAAAAAAAAAAA/AAAAAAAAAD+rqio/AAAAP6uqKj8AAAA/q6qqPgAAAD+rqqo+AAAAPwAAgD8AAAA/AACAPwAAAD+rqqo+AAAAAKuqqj4AAAAAAAAAAAAAAD8AAAAAAAAAP6uqKj8AAAAAq6oqPwAAAACrqqo+AAAAP6uqqj4AAAA/q6qqPgAAAD+rqqo+AAAAPwAAAAAAAIA/AAAAAAAAgD+rqio/AAAAP6uqKj8AAAA/q6qqPgAAgD+rqqo+AACAP6uqqj4AAAA/q6qqPgAAAD+rqio/AAAAP6uqKj8AAAA/q6oqPwAAAD+rqio/AAAAPwAAgD8AAAA/AACAPwAAAD+rqqo+AACAP6uqqj4AAIA/q6oqPwAAgD+rqio/AACAP6uqKj8AAIA/q6oqPwAAgD8AAIA/AACAPwAAgD8AAIA/"),
+"attribute_data": PackedByteArray("AAAAAAAAAAAK1yM8CtcjPKuqKj8AAAAAnTZQPgrXIzyrqqo+AAAAAA102j0K1yM8AACAPwAAAACZmZk+CtcjPAAAAAAAAAA/wvWoPlK4Hj6rqio/AAAAPyz5BT9SuB4+q6qqPgAAAD8NdNo+UrgePgAAgD8AAAA/UrgeP1K4Hj6rqqo+AAAAAIwlPz8K1yM8AAAAAAAAAD9mZiY/UrgePquqKj8AAAAAseRXPwrXIzyrqqo+AAAAP4wlPz9SuB4+q6qqPgAAAD8NdNo9MjPzPgAAAAAAAIA/CtcjPFK4Hj+rqio/AAAAP502UD4yM/M+q6qqPgAAgD8NdNo9UrgeP6uqqj4AAAA/DXTaPjIz8z6rqio/AAAAPyz5BT8yM/M+q6oqPwAAAD8s+QU/MjPzPgAAgD8AAAA/UrgePzIz8z6rqqo+AACAP4wlPz9SuB4/q6oqPwAAgD+x5Fc/UrgeP6uqKj8AAIA/seRXP1K4Hj8AAIA/AACAP9ajcD9SuB4/"),
 "format": 34359742519,
 "index_count": 36,
 "index_data": PackedByteArray("AAACAAQAAgAGAAQAAQADAAUAAwAHAAUACAAKAAwACgAOAAwACQALAA0ACwAPAA0AEAASABQAEgAWABQAEQATABUAEwAXABUA"),
+"material": SubResource("StandardMaterial3D_fn6km"),
 "primitive": 3,
 "uv_scale": Vector4(0, 0, 0, 0),
 "vertex_count": 24,
