@@ -49,6 +49,14 @@ func _enter_tree() -> void:
 	_register("dev_framework/mcp/runtime_enabled", TYPE_BOOL, false)
 	# 项目侧 provider: 列出项目自定义 MCP 工具域的 .gd 路径(每个提供 static register(add_tool))。
 	_register("dev_framework/mcp/providers", TYPE_PACKED_STRING_ARRAY, PackedStringArray())
+	# 多实例中枢: 同时打开多个装了本框架的编辑器时, 只有一个能占住 hub_port 并成为"中枢",
+	# 其余实例自动退让到系统分配的临时端口并登记到中枢 —— 于是客户端只需要**一个** URL、
+	# 一份配置, 就能通过工具的 instance 参数操作任意一个编辑器。
+	# 关掉则回到旧行为: 抢不到 mcp/port 的实例直接不启动服务器(多个编辑器时只有第一个有 MCP)。
+	_register("dev_framework/mcp/hub", TYPE_BOOL, true)
+	# 中枢端口:**必须对所有项目都是同一个数值**, 否则"一个端点"不成立。故默认值与项目无关,
+	# 且不跟随 mcp/port(那个是项目级设置, 每个 project.godot 各存一份)。
+	_register("dev_framework/mcp/hub_port", TYPE_INT, MCPDevServer.DEFAULT_HUB_PORT)
 	# 先开启 MCP 调试服务器, 避免后续初始化(工具菜单/DefTable)出错时阻断调试链路
 	_set_mcp_enabled(true)
 	# 导出过滤: 未勾选 runtime_enabled 时, 正式包剔除 DevMCP autoload(零 MCP 入口);

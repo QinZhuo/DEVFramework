@@ -648,8 +648,14 @@ AI 助手 ──MCP Streamable HTTP──▶ http://127.0.0.1:8931/mcp  (Godot �
 | 设置项 | 默认值 | 说明 |
 |---|---|---|
 | `dev_framework/mcp/enabled` | `true` | MCP 服务器总开关 |
-| `dev_framework/mcp/port` | `8931` | 监听端口（仅本机 `127.0.0.1`）|
+| `dev_framework/mcp/port` | `8931` | 监听端口（仅本机 `127.0.0.1`）。**多实例中枢关闭时**才生效 |
+| `dev_framework/mcp/hub` | `true` | 多实例中枢：同时打开多个装了本框架的编辑器时，只有一个占住 `hub_port` 当"中枢"，其余实例退让到系统分配的临时端口并登记到它 —— 客户端只需**一个 URL、一份配置**就能操作任意一个编辑器 |
+| `dev_framework/mcp/hub_port` | `8931` | **机器级**中枢端口。它是唯一一个"所有项目必须一致"的端口；本项目在 `project.godot` 里显式设为 `8932`（与已有的客户端配置一致）|
 | `dev_framework/mcp/log_tool_results` | `false` | 是否把**每次工具调用**（入参 + 返回摘要）打进 Godot 输出面板。默认关闭：日志捕获器挂在引擎 `print` 通道上，MCP 自己的回声会被 `get_logs` 原样返回给 AI，白占上下文并淹没项目日志。工具**报错**始终以 error 级别输出，不受此开关影响 |
+
+> **多个编辑器同时打开**：不再需要为每个项目配一个端口。第一次遇到多个实例时，AI 调
+> `list_instances` 看到清单、用 `use_instance` 选一个（或给单次调用带 `instance` 参数）即可。
+> 详见 [MCP/MultiInstance.md](MCP/MultiInstance.md)。
 
 ### 3. AI 助手连接配置
 
@@ -756,12 +762,15 @@ claude mcp list        # 查看已配置
 | `find_resource_users` | **双向依赖查询**：`users`=谁引用该资源（反向），`deps`=该资源依赖谁（正向，带类型标签）。目标为带全局类名的脚本时额外扫描类名在其它 .gd 中的词边界使用点（kind=class_ref，覆盖 @onready/类型注解/静态调用等无路径引用场景）。改/删资源前查完整影响面 |
 | `run_tests` | 运行**指定**的单元测试（`Scripts/Test/`，extends TestCase）：`script` 必填，两种用法——① 脚本路径子串（`all`=全量但不推荐）；② **直接传内联 GDScript 源码**（含换行或 `extends ` 开头即视为源码，`extends TestCase` + `test_` 方法，不落盘，临时验证用）。`process=editor` 同步跑完返回（进程无关用例）；`process=game` 跑 `needs_game_process()` 用例，**调用阻塞到本轮跑完才返回**（无中途进度查询）。**测试整体硬超时 10 分钟**：到点判失败并停止等待。结果含每个用例 `elapsed_ms` 与超声明上限的 `SLOW` 提示 |
 | `refresh_tools` | 手动重建 MCP 工具注册表：改框架脚本后调用，客户端重拉 tools/list 即生效（免重启） |
+| `list_instances` | 列出本机所有装了本框架的 Godot 编辑器实例（`instance_id` / 端口 / 项目路径 / `age_ms` / `is_self` / `is_hub`）。**同时打开多个项目时先调它** |
+| `use_instance` | 设置默认目标实例（之后所有工具调用转发到它）；传空字符串恢复为「本实例」。`instance` 可填 uid（唯一，同项目多开时用它）/ 唯一前缀 / 端口号 |
 
 > **提示**：修改插件代码（`MCPDevServer.gd` 等）后，新工具需**重启编辑器**才会注册（脚本热重载不会重建工具注册表）。可调用 `restart_editor` 工具一键重启（保存后重启），或改完后调 `refresh_tools` 重建注册表。
 
 ### 5. 典型 AI 调试流程
 
 1. 打开项目并启用 `DEV Framework` 插件，连接 http://127.0.0.1:8931/mcp。
+   - 同时开了多个项目时**不需要**加配置：连的还是这一个地址，用 `list_instances` + `use_instance` 切换目标（见 [MCP/MultiInstance.md](MCP/MultiInstance.md)）。
 2. AI `list_dir` / `validate` 排查脚本与资源问题。
 3. AI `get_scene_tree` / `get_node_info` 理解当前编辑场景的节点与属性。
 4. AI 用 `set_node_property` / `call_node_method` 快速验证逻辑，`get_logs`(kind=error) 定位报错。
@@ -783,6 +792,7 @@ claude mcp list        # 查看已配置
 - 写脚本时使用显式类型标注（`func foo(x: int) -> void`）、`@onready` 获取节点引用、`@export` 暴露可调参数，与 `Scenes/AI/GoapDemo.gd` 等示例风格一致。
 
 **MCP 工具使用规范**
+- **同时打开了多个项目时**：先 `list_instances` 看清单，用 `use_instance` 选一个（或在单次调用里带 `instance` 参数）。省略两者时操作落在**当前连着的那个进程**上——这与旧行为一致，但在多开时就是"改错项目"的最大来源。
 - 改任何场景节点前，先用 `get_scene_tree` / `get_node_info` 看清结构与当前属性，再动手。
 - **不确定 Godot 原生 API 的用法时，先用 `classdb_query` 查询**（方法/属性/信号签名），再写代码，避免臆造 API。
 - `set_node_property` 与 `add_node` 已接入 UndoRedo，AI 的修改用户可按 **Ctrl+Z 撤销**——请放心使用，但也不要反复试探性乱改，尽量一次改对。

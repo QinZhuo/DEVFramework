@@ -191,6 +191,15 @@ static func _apply_session_facts(info: Dictionary) -> void:
 	info["bridge_ready"] = facts.get("bridge_ready")
 	# session_active 与 game_running 同源(见 set_session_facts_provider 注释), 不由外部注入。
 	info["session_active"] = facts.get("game_running")
+	# 多实例身份: 只在宿主注入了才出现(旧宿主/运行时进程没有这几个键), 缺省不写 null ——
+	# "没有这个键"和"值是未知"对调用方是两种含义, 而这里只有前者成立。
+	#
+	# mcp_port 用宿主给的**实际监听端口**覆盖 basic 段的同名字段: 多实例开启后成员的端口是
+	# 系统分配的临时端口, 与 dev_framework/mcp/port 的设置值不同, 报设置值等于报错(见
+	# _mcp_port 的注释 —— 它只在"没走多实例"时才是对的)。
+	for key in ["instance_id", "instance_role", "mcp_port", "instance_note"]:
+		if facts.has(key):
+			info[key] = facts.get(key)
 	if not facts.is_empty():
 		return
 	# 漏调: 下面两条是"可见性"的全部依据, 缺任一条本域就退化成静默失效。

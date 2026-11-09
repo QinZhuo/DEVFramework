@@ -139,6 +139,32 @@ const SETTING_RUNTIME_ENABLED := "dev_framework/mcp/runtime_enabled"
 ## 编辑器进程经调试线转发到游戏进程执行, 运行时(导出包/独立运行/F5 游戏进程)就地执行。
 const SETTING_PROVIDERS := "dev_framework/mcp/providers"
 
+## ------- 多实例中枢(hub) -------
+## 开启后: **机器级**固定端口只有一个实例能绑上, 它就是这个"中枢"; 其余实例改绑系统分配的
+## 临时端口并登记到中枢, 由中枢(或任何已知注册表的实例)按 `instance` 参数把调用转发过去。
+## 于是**一个端口 + 一份客户端配置**就能同时操作本机所有装了本框架的编辑器。
+## 关掉后回到旧行为: 抢不到 mcp/port 的实例直接不启动服务器。
+##
+## 为什么单开一个 hub_port 而不是复用 mcp/port: mcp/port 是**项目级**设置(每个 project.godot
+## 各存一份, 不同项目可能是 8931/8932/...), 而"一个端点"要求所有项目算出**同一个数**。
+## hub_port 的默认值对所有项目相同, 项目级不覆盖即天然一致 —— 这正是"一份客户端配置"
+## 成立的前提。mcp/port 保留给 hub 关闭时的旧行为。
+const SETTING_HUB := "dev_framework/mcp/hub"
+const SETTING_HUB_PORT := "dev_framework/mcp/hub_port"
+## 中枢端口默认值 = 本插件**历来**的 mcp/port 默认值(8931)。
+##
+## 刻意选这个数而不是另起一个新端口: 存量项目的客户端配置里多半写着 8931, 升级后 hub_port
+## 落到同一个值, 客户端**零改动**。本项目自己在 project.godot 里显式设的是 8932(与它原有的
+## .mcp.json 一致), 那是项目级覆盖, 不影响这个默认值的意义。
+const DEFAULT_HUB_PORT := 8931
+
+## 实例身份与中枢布局都由 MCPInstanceHub 负责(本文件只做接线)。这里只留脚本名,
+## 走 _mod 动态编译(与其它域脚本同一条热重载链路)。
+const HUB_SCRIPT := "MCPInstanceHub"
+## 实例管理工具名。它们**不**注入 `instance` 参数(见 _hub_tools_for_list): 它们本身就在
+## 操作"实例"这个维度, 再加一个 instance 会让调用方以为能跨实例调 list_instances。
+const HUB_TOOLS := ["list_instances", "use_instance"]
+
 ## 统一输出上限默认值(字符)。超限则**截断**返回并附续读提示, 而非整条拒绝。
 ##
 ## 取值 24000 的推导(两级约束, 取更严的那个):
@@ -294,6 +320,22 @@ var _tool_audit_issues: Array[String] = []
 ## initialize/server:discover 的 instructions(在 BASE_INSTRUCTIONS 之后)。
 var _provider_instructions: Array[String] = []
 
+## ------- 多实例中枢状态(仅编辑器进程; 见 MCPInstanceHub 与 MCP/MultiInstance.md) -------
+## `_hub` 是 MCPInstanceHub.gd 的实例(Variant 而非具体类型: 它走 _mod 动态编译,
+## 写类型注解会让本文件在解析期依赖那个脚本, 与其它域脚本的处理方式不一致)。
+var _hub: Variant = null
+var _hub_enabled := false
+var _hub_port := DEFAULT_HUB_PORT
+## 上一次心跳的时刻(ms)。心跳在 _process 里按周期触发, 见 _hub_tick。
+var _hub_last_beat := 0
+## 心跳防重入: 一次心跳里可能连续 await 多个 HTTP 往返, 而 _process 每帧都会调 _hub_tick。
+## 不加这个闸, 中枢一卡就会堆出一串并行登记(每个都是一个新 HTTPClient)。
+var _hub_beating := false
+## 上一次 `instance` 解析失败时给调用方看的说明(注入进 tools/list 的每个工具 schema)。
+## 写成 const 而不是每次现拼: 这段文案会随 tools/list 发**每一个**工具, 现拼等于每轮多几十次
+## 字符串拼接; 而它又不随状态变化(实例清单在错误信息里现取, 不在这里)。
+const _INSTANCE_ARG_DESC := "可选: 目标编辑器实例。省略则用 use_instance 设置的默认目标(未设置时=本实例)。可填实例 id(如 MyGame@a1b2c3d4)、唯一前缀、或端口号; 不确定时先调 list_instances。"
+
 
 ## ------- 生命周期(autoload) -------
 func _ready() -> void:
@@ -325,8 +367,12 @@ func _ready() -> void:
 		# 防御: 若本单例被实例化多次/热重载等导致 capture 已注册, 跳过而非崩溃
 		if not EngineDebugger.has_capture(DEBUGGER_PREFIX):
 			EngineDebugger.register_message_capture(DEBUGGER_PREFIX, _on_debugger_message)
-		# 通知编辑器侧桥接已就绪(仅在调试线激活时有意义, 未连接时 send_message 无害)
-		EngineDebugger.send_message(DEBUGGER_PREFIX + ":ready", [])
+		# 通知编辑器侧桥接已就绪(仅在调试线激活时有意义)。
+		# 必须判 is_active: 没有调试器时 send_message 会打一条
+		# "ERROR: Can't send message. No active debugger" —— 那在 headless 跑测试(--script)时
+		# 每次都会出现, 会混进 get_logs(kind=error) 里被当成真错误读。
+		if EngineDebugger.is_active():
+			EngineDebugger.send_message(DEBUGGER_PREFIX + ":ready", [])
 	# (2) 导出包/独立运行: 注册共享域 + 游戏操作工具(不含 eval), 勾选时复用同一端口开服。
 	#     未勾选则不开端口 —— 无入口、零暴露(runtime_enabled 默认 false)。
 	elif bool(ProjectSettings.get_setting(SETTING_RUNTIME_ENABLED, false)):
@@ -447,7 +493,135 @@ func start_editor() -> void:
 		_logger = MCPLogger.new()
 		OS.add_logger(_logger)
 	_register_editor_tools()
-	start()
+	# 多实例中枢开着时走"抢 hub 端口 / 退让到临时端口"这条路径, 否则沿用旧的单端口行为。
+	# 判据在这一处收敛: 下面的 start() 是"关掉 hub 时的旧路径", 两条互斥, 不共用绑定逻辑。
+	_hub_enabled = bool(ProjectSettings.get_setting(SETTING_HUB, true))
+	if _hub_enabled:
+		_start_hub_mode()
+	else:
+		start()
+
+
+## ------- 多实例中枢: 启动与绑定 -------
+##
+## 绑定顺序(整段就是"一个端口服务所有实例"的核心):
+##   1. 先建身份(项目名 + 绝对路径哈希), 与端口无关 —— 身份必须先于端口确定,
+##      因为登记到中枢时两者都要发, 而端口可能因为退让而变。
+##   2. 尝试绑**机器级** hub_port。绑上 = 本实例就是中枢, 对外地址与其他项目的默认配置一致。
+##   3. 绑不上 = 已有中枢。此时退让到 listen(0)(系统分配临时端口), 再向中枢登记。
+##      临时端口而非"hub_port+1": +1 会与别的软件/另一个实例撞, 而 listen(0) 由内核保证唯一。
+##
+## **为什么不用 pid 文件/注册表文件来选中枢**: 文件要靠轮询 + 陈旧清理 + 原子写,
+## 而"能不能绑上端口"本身就是一次原子的、内核保证的互斥判定。少一个状态源就少一类
+## 崩溃残留问题(见 MultiInstance.md 的方案对比)。
+func _start_hub_mode() -> void:
+	if _hub == null:
+		_hub = _mod(HUB_SCRIPT).new()
+	_hub_enabled = true
+	_hub_port = clampi(int(ProjectSettings.get_setting(SETTING_HUB_PORT, DEFAULT_HUB_PORT)), 1024, 65535)
+	_hub.auth_token = str(ProjectSettings.get_setting(SETTING_TOKEN, ""))
+	# 身份: 项目名取 project.godot 的 application/config/name, 路径必须 globalize 成绝对路径
+	# (传 "res://" 会让所有项目算出同一个哈希, 于是默认目标会随机落到别的项目上)。
+	var project_name := str(ProjectSettings.get_setting("application/config/name", "project"))
+	var project_path := ProjectSettings.globalize_path("res://")
+	# 显式标类型: `_hub` 是 Variant(动态编译出来的脚本实例), 从它身上取到的返回值静态推断不出类型,
+	# 用 `:=` 会直接编不过("Cannot infer the type of ..."). 这类调用一律显式标注。
+	var instance_id: String = str(_hub.make_instance_id(project_name, project_path))
+	var uid := "%s#%d" % [instance_id, OS.get_process_id()]
+	_hub.set_self(uid, instance_id, project_name, project_path)
+
+	# (2) 抢中枢端口
+	var err := _start(_hub_port)
+	if err == OK:
+		_hub.set_hub_mode(true)
+		_hub.set_self_port(listening_port())
+		_owner = self
+		LogTool.log("MCP", "MCP 中枢已就绪(%s): http://127.0.0.1:%d/mcp —— 本实例是中枢, 其余实例会登记到这里" % [instance_id, _hub_port])
+		return
+	# (3) 退让: 系统分配临时端口, 再登记到中枢
+	err = _start(0)
+	if err != OK:
+		printerr("MCPDevServer: 无法监听任何端口(中枢端口 %d 被占且临时端口也失败, 错误码 %d)。AI 助手将无法连接本实例。" % [_hub_port, err])
+		return
+	_hub.set_hub_mode(false)
+	_hub.set_self_port(listening_port())
+	_owner = self
+	LogTool.log("MCP", "MCP 多实例: 端口 %d 已被中枢占用, 本实例退让到临时端口 %d, 即将登记到中枢" % [_hub_port, listening_port()])
+	# 首次登记立刻做一次(不等下一个心跳周期), 否则刚打开的项目会在最多 4 秒内不出现在中枢的清单里。
+	_hub_last_beat = 0
+
+
+## 中枢心跳(_process 里按周期调用)。
+##
+## 两种角色的行为不同, 但共用同一个节拍:
+##   · 中枢: 什么都不用发, 只更新自己的 last_seen(成员会主动来登记)。
+##   · 成员: 向中枢登记(登记即续约); 连续失败达到阈值时**尝试接管** —— 抢绑 hub_port。
+##     抢到就升格为中枢, 抢不到说明有别的实例先接管了, 下个周期正常登记即可。
+##
+## 失败阈值取 3(= 约 12 秒): 中枢正常处理一次登记是毫秒级, 连续 3 次失败只可能是它真的没了
+## (或它自己正卡在长任务里 —— 那种情况下抢端口会失败, 我们下个周期继续尝试, 不会误伤)。
+func _hub_tick() -> void:
+	if _hub == null:
+		return
+	var now := Time.get_ticks_msec()
+	_hub.touch_self()
+	if now - _hub_last_beat < _hub.heartbeat_ms():
+		return
+	if _hub_beating:
+		return
+	_hub_last_beat = now
+	if bool(_hub.hub_mode):
+		return
+	_hub_beating = true
+	var resp: Dictionary = await _hub.register_to(_hub_port, _hub.register_payload())
+	_hub_beating = false
+	if bool(resp.get("ok", false)):
+		if not _hub.registered:
+			LogTool.log("MCP", "MCP 多实例: 已登记到中枢 %s" % str(resp.get("hub", {}).get("instance_id", "?")))
+		_hub.registered = true
+		_hub.fail_streak = 0
+		_hub.hub_instance_id = str(resp.get("hub", {}).get("instance_id", ""))
+		# 中枢回包带全机器实例表: 同步过来, 这样成员进程里的 list_instances 也能看到全部,
+		# 而不是只看到自己(那样"选错实例"的错误提示等于没给候选)。
+		if resp.get("instances") is Array:
+			_hub.sync_from_snapshot(resp.get("instances"))
+		return
+	_hub.registered = false
+	_hub.fail_streak += 1
+	if _hub.fail_streak < 3:
+		return
+	# 中枢可能已退出: 尝试接管。注意这里**不重置** fail_streak —— 抢不到就继续等,
+	# 重置会让"明确已死的中枢"每 3 拍才被尝试一次, 接管反而变慢。
+	if _take_over_hub():
+		return
+	if _hub.fail_streak == 3:
+		LogTool.log("MCP", "MCP 多实例: 中枢端口 %d 无响应, 但接管失败(说明有别的实例已成为新中枢或端口被别的程序占用), 继续按成员运行" % _hub_port)
+
+
+## 接管中枢: 关掉临时端口的监听, 改绑 hub_port。
+## 成功返回 true。
+##
+## 关键细节: **必须先释放自己的临时端口再绑 hub_port 吗?** 不需要 —— 两个端口不同,
+## 可以同时监听。但这里选择"先停旧、后绑新"失败再回滚, 是因为同时持有两个监听端口会让
+## 注册表里出现"同一个 uid 两个端口", 成员之间难以分辨哪个是该转发的。切换是毫秒级的,
+## 期间丢掉的请求本来也是发给旧端口的(它已经不理我们了)。
+func _take_over_hub() -> bool:
+	# 显式标类型: _hub 是 Variant(动态编译的脚本实例), `:=` 从它取到的值无法静态推断类型。
+	var old_port: int = int(_hub.own_port)
+	_stop_listening()
+	var err := _start(_hub_port)
+	if err != OK:
+		# 回滚: 恢复临时端口, 否则本实例连成员都不是了(彻底从注册表消失, 且不自愈)。
+		if _start(old_port) != OK:
+			printerr("MCPDevServer: 接管中枢失败且无法恢复临时端口 %d, 本实例 MCP 已停止" % old_port)
+		return false
+	_hub.set_hub_mode(true)
+	_hub.set_self_port(listening_port())
+	_hub.registered = true
+	_hub.fail_streak = 0
+	_owner = self
+	LogTool.log("MCP", "MCP 多实例: 原中枢已退出, 本实例接管为中枢: http://127.0.0.1:%d/mcp" % _hub_port)
+	return true
 
 
 ## 当前真正持有监听端口的实例(进程内至多一个)。
@@ -471,6 +645,9 @@ static var _last_autostart := 0
 func _process(_delta: float) -> void:
 	if _http:
 		_http.poll()
+		# 心跳必须**每帧都可能跑**, 不能挂在 "if _http" 之外的那个 return 之后:
+		# 旧实现 poll 完就 return, 而多实例登记是独立于服务器是否存活的周期任务。
+		_hub_tick()
 		return
 	# 自愈只在"这个实例本来就该监听"时发生: 热重载把 _http 清成 null 后端口已被释放,
 	# 而用户和插件都没主动停过, 该自动重开, 否则每次改框架脚本都得重启编辑器才能继续用 MCP。
@@ -482,6 +659,11 @@ func _process(_delta: float) -> void:
 		return
 	_last_autostart = now
 	LogTool.log("MCP", "检测到 MCP 服务器已停止(通常是脚本热重载清掉了状态), 正在自动重新启动…")
+	# 热重载会把实例成员清空, 包括 _hub: 重建它并恢复身份, 否则重启后会以空身份登记
+	# (uid 为空 → 中枢的 upsert 直接拒收, 表现为"这个实例在中枢清单里消失")。
+	_hub = null
+	_hub_last_beat = 0
+	_hub_beating = false
 	start_editor()
 
 
@@ -543,7 +725,16 @@ func _call_refresh_tools(_args: Dictionary) -> Dictionary:
 
 ## 关闭服务器并移除 Logger(退出时由引擎自动调用)
 func _exit_tree() -> void:
+	# stop() 里已经做过一次注销(见那里的注释), 这里不再重复 —— 重复发一次无害但没必要。
 	stop()
+	# 注销调试线捕获。判 has_capture 是必要的: 本 autoload 在**非编辑器构建**里也可能存在
+	# (导出包/独立运行), 那里从不注册捕获器, 无条件注销会打一条
+	# "ERROR: Capture not registered: 'dev_mcp'"。
+	#
+	# 注意这条 ERROR 在 headless 跑测试(--script)时**仍会出现一次**: 引擎 shutdown 阶段会按
+	# 它自己的登记簿再注销一遍, 那时 map 里已经没有 'dev_mcp' 了。那是引擎侧行为, 与本次调用
+	# 无关, 也消不掉 —— 唯一的"解法"是不注销, 但那会让插件停用再启用后的旧捕获器指向已释放
+	# 的实例(更糟)。故保留。
 	if EngineDebugger.is_active() and EngineDebugger.has_capture(DEBUGGER_PREFIX):
 		EngineDebugger.unregister_message_capture(DEBUGGER_PREFIX)
 	if _logger:
@@ -551,11 +742,33 @@ func _exit_tree() -> void:
 		_logger = null
 
 
+## 退出时通知中枢把自己摘掉(best-effort, 不等待响应)。
+##
+## 刻意用裸 StreamPeerTCP 手写一个 HTTP 请求, 而不是复用 _hub.post_json:
+## 后者内部有 `await tree.process_frame`, 而 _exit_tree 阶段主循环已不再推进 —— await 会永远
+## 挂住, 让"退出"这件事卡死。这里只需要"把请求字节丢出去即可", 不关心响应, 一次
+## put_data 就够。失败也无所谓, 中枢的 MEMBER_TTL_MS 会兜住(最多多挂 20 秒)。
+func _hub_notify_exit() -> void:
+	if _hub == null or bool(_hub.hub_mode) or not _hub.registered:
+		return
+	var body := JSON.stringify({"uid": _hub.own_uid})
+	var head := "POST %s HTTP/1.1\r\nHost: 127.0.0.1:%d\r\nContent-Type: application/json\r\n" % [_hub.unregister_path(), _hub_port]
+	if not _hub.auth_token.is_empty():
+		head += "Authorization: Bearer %s\r\n" % _hub.auth_token
+	head += "Content-Length: %d\r\nConnection: close\r\n\r\n" % body.to_utf8_buffer().size()
+	var peer := StreamPeerTCP.new()
+	if peer.connect_to_host("127.0.0.1", _hub_port) != OK:
+		return
+	peer.poll()
+	peer.put_data((head + body).to_utf8_buffer())
+	peer.disconnect_from_host()
+
+
 ## ------- 服务器启停 -------
 func start() -> void:
 	if not _enabled or _http:
 		return
-	var err := _start()
+	var err := _start(_port)
 	if err != OK:
 		printerr("MCPDevServer: 监听端口 %d 失败 (错误码 %d)。已自动跳过, AI 助手将无法连接。" % [_port, err])
 		return
@@ -567,16 +780,31 @@ func start() -> void:
 
 
 func stop() -> void:
+	# 停用插件也走这里: 先向中枢注销, 否则中枢会对着本实例转发到超时(最多等满 TTL)。
+	_hub_notify_exit()
 	if _owner == self:
 		_owner = null
+	_stop_listening()
+
+
+## 只停监听(不动 _owner/不注销 logger), 供接管切换与自愈共用。
+func _stop_listening() -> void:
 	if _http:
-		_http.request_received.disconnect(_on_request)
+		if _http.request_received.is_connected(_on_request):
+			_http.request_received.disconnect(_on_request)
 		_http.stop()
 		_http = null
 
 
 func is_running() -> bool:
 	return _http != null and _http.is_listening()
+
+
+## 当前实际监听端口(中枢=固定端口 / 成员=系统分配的临时端口)。未监听时返回 0。
+## get_project_info 等工具报的就是这个值 —— 中枢上收到成员转发的请求时, 那里报的必须是
+## **成员自己的**端口, 否则诊断"它到底在哪个端口"时会指向中枢。
+func listening_port() -> int:
+	return _http.get_port() if _http else 0
 
 
 ## ------- 运行时服务器(导出包/独立运行) -------
@@ -586,17 +814,19 @@ func is_running() -> bool:
 func _start_runtime_server() -> void:
 	# 复用编辑器同一端口设置: 非编辑器构建里该端口空闲(编辑器进程不在), 不另设端口。
 	_port = int(ProjectSettings.get_setting(SETTING_PORT, 8931))
-	var err := _start()
+	var err := _start(_port)
 	if err != OK:
 		push_error("[MCP] 运行时服务器监听 127.0.0.1:%d 失败(错误码 %d)" % [_port, err])
 		return
 	print("[MCP] 运行时服务器已启动: http://127.0.0.1:%d/ (%d 个工具)" % [_port, _tool_defs.size()])
 
 
-## 监听并接管请求(与编辑器 start() 的区别: 不认领 _owner/不做日志, 供运行时端口复用)。
-func _start() -> Error:
+## 监听并接管请求。port 传 0 = 让系统分配一个空闲端口(多实例退让路径用,
+## 由内核保证唯一, 比 "hub_port+1" 这类自己算的备用端口可靠得多)。
+func _start(port: int = -1) -> Error:
+	var want := _port if port < 0 else port
 	_http = MCPTcpHttpServer.new()
-	var err := _http.listen(_port, "127.0.0.1")
+	var err := _http.listen(want, "127.0.0.1")
 	if err != OK:
 		_http = null
 		return err
@@ -731,6 +961,7 @@ func _register_editor_only_domains() -> void:
 	_mod("MCPResourceTools").register(_add_tool)
 	_register_run_tools()
 	_register_refresh_tool()
+	_register_instance_tools()
 
 
 ## eval 运行上下文(见 _register_shared_domains)。方法引用即 Callable, 避免三处各写一份 lambda。
@@ -740,11 +971,20 @@ func _eval_ctx_provider() -> Dictionary:
 
 ## 会话事实(get_project_info / get_editor_activity 用), 现取现用(理由见 _register_project_tools)。
 func _session_facts_provider() -> Dictionary:
-	return {
+	var facts := {
 		"mcp_running": is_running(),
 		"game_running": _has_game_session(),
 		"bridge_ready": _has_game_session() and _game_ready,
 	}
+	# 多实例身份随会话事实一起报: get_project_info 是 AI 判断"我现在操作的是哪个项目"的第一入口,
+	# 多开时它必须能看出差别 —— 否则两个项目的 basic 段除了 project_name 完全一样。
+	if _hub != null:
+		facts["instance_id"] = _hub.own_instance_id
+		facts["instance_role"] = "hub" if bool(_hub.hub_mode) else "member"
+		facts["mcp_port"] = listening_port()
+		if not bool(_hub.hub_mode):
+			facts["instance_note"] = "本实例不是中枢: 端口 %d 是系统分配的临时端口, 客户端应连中枢的固定端口 %d/mcp" % [listening_port(), _hub_port]
+	return facts
 
 
 ## 注册项目侧 provider(见 SETTING_PROVIDERS): 加载脚本, 调其 `static register(add_tool)`
@@ -859,6 +1099,25 @@ func _register_refresh_tool() -> void:
 		_call_refresh_tools)
 
 
+## -- 多实例中枢: 实例管理工具 --
+## 这两个工具只在中枢/成员都可用(它们服务的就是"选哪个编辑器"这件事), 故放在编辑器域。
+##
+## 为什么只有两个工具而不是给每个工具加实例维度: 工具表本身是**中枢的**全量工具, 调用时用
+## `instance` 参数路由(见 _call_via_instance)。实例管理只多这两个入口, 调用方模型不必学新范式。
+func _register_instance_tools() -> void:
+	_add_tool("list_instances",
+		"列出本机当前所有装了本框架的 Godot 编辑器实例(含本进程)。每项: instance_id(如 MyGame@a1b2c3d4)、name、project_path、port、age_ms(心跳多久前, 越小越新)、is_self、is_hub。age_ms 明显大于 4000 说明该实例可能已关闭(会被自动剔除)。**同时打开多个项目时先调它**, 再用 use_instance 选默认目标, 或用工具的 instance 参数单次指定。",
+		MCPToolSchema.no_arg(),
+		_call_list_instances)
+
+	_add_tool("use_instance",
+		"设置**默认目标编辑器实例**。设置后, 之后所有工具调用(未显式传 instance 参数时)都转发到该实例的编辑器进程执行。instance 可填 instance_id(如 MyGame@a1b2c3d4)、唯一前缀(hash 或项目名前缀)、端口号; 传空字符串 = 恢复为「本实例」。**同时打开多个项目时, 先调 list_instances 拿 id, 再调本工具选一个**, 否则所有操作都落在本实例上(会改错项目)。",
+		{"type": "object", "properties": {
+			"instance": {"type": "string", "description": "目标实例: instance_id / 唯一前缀 / 端口号; 空字符串=恢复本实例。可用值见 list_instances。"},
+		}},
+		_call_use_instance)
+
+
 ## ======= MCP 协议处理 =======
 
 func _on_request(method: String, path: String, query: String, headers: Dictionary, body: PackedByteArray, stream) -> void:
@@ -867,6 +1126,11 @@ func _on_request(method: String, path: String, query: String, headers: Dictionar
 		return
 	if method == "OPTIONS":
 		_http.send_response(stream, 204, _cors_headers(headers), "")
+		return
+	# 实例间内部端点(/hub/*): 不走 MCP 协议, 也不参与版本协商。
+	# 只由中枢应答 —— 成员收到这类请求说明调用方把中枢端口记错了, 回 404 让问题可见。
+	if path.begins_with("/hub/"):
+		_serve_hub_path(method, path, headers, body, stream)
 		return
 	if method == "GET":
 		_serve_sse(stream, headers)
@@ -1153,8 +1417,13 @@ func _handle_jsonrpc(req: Dictionary, proto: String = PROTOCOL_VERSION) -> Dicti
 		"tools/list":
 			# ttlMs/cacheScope 让客户端缓存这份 38K 的清单而不是每次重拉 —— 它在进程生命周期内
 			# 是静态的, 变了也只有 refresh_tools 会变(而那之后客户端本来就会重新拉)。
+			#
+			# 中枢/成员都给每个工具注入可选的 `instance` 参数: 一份工具表就能指向本机任意编辑器。
+			# 注入发生在**出口**而不是 _tool_defs 里: 成员自己执行工具时不需要这个参数, 而
+			# schema_fingerprint 与契约自检针对的是"真实注册表", 掺进出口专用的字段会让指纹
+			# 随多实例开关抖动, 失去"改动是否生效"的判据作用。
 			return {"jsonrpc": "2.0", "id": req_id, "result": _decorate_result(
-				{"tools": _tool_defs}, proto, true)}
+				{"tools": _hub_tools_for_list()}, proto, true)}
 		"tools/call":
 			var params: Variant = req.get("params", {})
 			var params_dict: Dictionary = params if params is Dictionary else {}
@@ -1174,6 +1443,23 @@ func _handle_jsonrpc(req: Dictionary, proto: String = PROTOCOL_VERSION) -> Dicti
 				LogTool.log("MCP", "工具调用(%s): %s, 参数: %s" % [_mode, tool_name, arg_log])
 			if not _tool_handlers.has(tool_name):
 				return _jsonrpc_error(req_id, ERR_INVALID_PARAMS, "Unknown tool: %s" % tool_name)
+			# 多实例路由: 目标不是本实例时, 把整条 JSON-RPC 请求**原样转发**到目标实例的 MCP 端点,
+			# 由那边做入参校验/执行/整形, 这里只把响应透传给客户端。
+			#
+			# 为什么整条转发而不是"参数去掉 instance 后重新发起 tools/call": 整条转发意味着目标端
+			# 走的是完全相同的协议路径(版本协商/入参校验/输出上限/日志), 不需要在中枢这边再实现一遍
+			# 也不会漏掉任何一步; 而"重新发起"必然是一份并行实现, 迟早与主路径漂移。
+			var route := _resolve_route(tool_name, arguments)
+			if not str(route.get("error", "")).is_empty():
+				return {"jsonrpc": "2.0", "id": req_id, "result": MCPResult.for_protocol(
+					_err_validation(str(route.get("error")), str(route.get("recovery", ""))))}
+			if int(route.get("port", 0)) > 0:
+				return await _forward_call(req, req_id, tool_name, route, proto)
+			# 本实例执行: 摘掉只在路由层有意义的 instance 参数, 不让它进 handler 与日志。
+			# **例外是实例管理工具自己**: use_instance 的 instance 参数就是它要设置的目标,
+			# 摘掉的话它永远只会收到空串("恢复为本实例"), 而调用方完全看不出为什么。
+			if not HUB_TOOLS.has(tool_name):
+				arguments.erase("instance")
 			# 入参校验: 拦在 handler **之前**。handler 内部的 VariantTool 是为"健壮"而非"诚实"
 			# 设计的(转换失败回落缺省值), 那在协议边界上会把参数错误伪装成合法结果 ——
 			# 详见 MCPArgCheck 类注释里 max_depth:"5" 那个例子。
@@ -1235,6 +1521,201 @@ func _handle_jsonrpc(req: Dictionary, proto: String = PROTOCOL_VERSION) -> Dicti
 
 func _jsonrpc_error(req_id: Variant, code: int, message: String) -> Dictionary:
 	return {"jsonrpc": "2.0", "id": req_id, "error": {"code": code, "message": message}}
+
+
+## ======= 多实例: tools/list 整形与路由 =======
+
+## tools/list 的出口整形: 每个工具多一个可选 `instance` 参数(实例管理工具自己除外)。
+## 只在编辑器进程注入 —— 导出运行时的 mcp 服务器是"本进程唯一", 多实例路由对它没有意义,
+## 多一个用不上的参数只是让工具表变长、并诱导模型传一个永远被忽略的值。
+func _hub_tools_for_list() -> Array:
+	if not Engine.is_editor_hint() or _hub == null:
+		return _tool_defs
+	return _hub.inject_instance_arg(_tool_defs, _INSTANCE_ARG_DESC, HUB_TOOLS)
+
+
+## 解析本条 tools/call 该由谁执行。
+## 返回 {"port": int} —— port=0 表示就地执行; port>0 表示转发到该端口。
+## 返回 {"error": str, "recovery": str} —— 路由失败(实例不存在/有歧义), 已带可读提示。
+##
+## 优先级: 调用参数 instance > use_instance 设的默认目标 > 就地执行。
+## **不做"唯一的其他实例自动选中"**: 那在"开了两个项目、只想改当前这个"时会静默改错项目;
+## 而报错并要求显式选择只多一次调用。MCP for Unity 也明确拒绝自动猜测实例。
+func _resolve_route(tool_name: String, args: Dictionary) -> Dictionary:
+	if _hub == null or not Engine.is_editor_hint():
+		return {"port": 0}
+	# 实例管理工具本身不路由(它们必须在**收到请求的这个进程**上执行, 否则 list_instances 会
+	# 转发到别的实例再回来, 语义变成"问别人本机有哪些实例")。
+	if HUB_TOOLS.has(tool_name):
+		return {"port": 0}
+	var raw := VariantTool.get_string(args, "instance", "").strip_edges()
+	if not raw.is_empty():
+		# 显式标类型: _hub 是 Variant, 从其方法返回值 `:=` 推断不出类型。
+		var hit: Dictionary = _hub.resolve(raw)
+		if hit.is_empty():
+			# 区分"不存在"与"有歧义": 两者的恢复动作完全不同, 而报同一句话会让调用方
+			# 反复试同一个值(它明明在 list_instances 里看得见 —— 因为是同项目多开)。
+			if _hub.count_matches(raw) > 1:
+				return {
+					"error": "实例标识 '%s' 有歧义: 同时存在多个匹配(通常是同一个项目被打开了多次, 它们共享 instance_id)。\n%s" % [raw, _hub.describe()],
+					"recovery": "改用 uid(带 #进程号 的那个, 在 list_instances 的 uid 字段里)或直接传端口号来精确指定; 不要用 instance_id —— 同项目多开时它不唯一。",
+				}
+			return {
+				"error": "找不到实例 '%s'。当前可用实例:\n%s" % [raw, _hub.describe()],
+				"recovery": "先调 list_instances 查看可用实例(uid / 唯一前缀 / 端口号), 再把 instance 换成清单里的值; 或省略 instance 用默认目标。",
+			}
+		return _route_of(hit, "instance=%s" % raw)
+	# 默认目标存的是 **uid**(唯一); 用 instance_id 做键会让"选中 A 窗口"在同项目的 B 窗口也生效。
+	var active: String = str(_hub.active_instance)
+	var def: Dictionary = _hub.find_by_uid(active)
+	if def.is_empty():
+		# 默认目标记录的实例已经消失(被关掉/重启换了 uid): 就地执行并**清掉这个悬空默认值**,
+		# 否则之后每次调用都会继续指向一个不存在的实例, 表现为"改代码没反应"。
+		if not active.is_empty():
+			LogTool.log("MCP", "默认目标实例 %s 已不在注册表, 恢复为「本实例」" % active)
+			_hub.set_active("")
+		return {"port": 0}
+	return _route_of(def, "默认目标 %s" % str(def.get("instance_id", active)))
+
+
+## 把注册表条目翻译成路由结果。指向自己时返回 port=0(就地执行)。
+## target 一律回填 **uid**: 转发失败时的诊断要落到具体进程, 而 instance_id 同项目多开时会撞。
+func _route_of(entry: Dictionary, via: String) -> Dictionary:
+	if bool(entry.get("is_self", false)):
+		return {"port": 0}
+	var port := int(entry.get("port", 0))
+	if port <= 0:
+		return {
+			"error": "实例 %s 的端口未知(它刚启动还没登记完?)。\n%s" % [str(entry.get("instance_id", "?")), _hub.describe()],
+			"recovery": "几秒后重试; 若持续如此, 检查该实例的 MCP 是否启用(dev_framework/mcp/enabled)。",
+		}
+	return {"port": port, "target": str(entry.get("instance_id", "")), "uid": str(entry.get("uid", "")), "via": via}
+
+
+## 转发一条 tools/call 到目标实例, 返回**已经可以回给客户端的** JSON-RPC 响应。
+##
+## 三件事必须在这里做对:
+##   1. 去掉 arguments 里的 instance —— 目标实例不认识它(它的 schema 里没有), 虽然入参校验
+##      不报"未声明的键", 但 handler 也读不到它, 留着只会混进日志与结构化回显。
+##   2. 超时上限: 目标实例上的工具可能包含 eval_code/run_tests 这类长任务, 用 HTTP 默认短超时
+##      会把它们全部变成"实例无响应"。统一按 游戏调用上限 + 余量 走, 与调试线代理同一口径。
+##   3. 目标不可达时给出**明确**错误(含实例 id 与原始恢复指引), 而不是把空字典当响应返回 ——
+##      后者在客户端看来是"服务器返回了空", 完全看不出是路由层的问题。
+func _forward_call(req: Dictionary, req_id: Variant, tool_name: String, route: Dictionary, proto: String) -> Dictionary:
+	var fwd: Dictionary = req.duplicate(true)
+	var fparams: Variant = fwd.get("params", null)
+	if fparams is Dictionary:
+		var fargs: Variant = (fparams as Dictionary).get("arguments", null)
+		if fargs is Dictionary:
+			(fargs as Dictionary).erase("instance")
+	# id 必须原样带过去: 目标实例会按它回包, 而客户端只认自己发的那个 id。中枢直接透传它的响应,
+	# 因此两边的 id 天然一致; 万一目标把 id 改了, 下面还会强制改回来(见末尾)。
+	var timeout_ms := _game_call_timeout_ms() + _PROXY_RESPONSE_MARGIN_MS
+	var resp: Dictionary = await _hub.forward(int(route["port"]), fwd, timeout_ms, proto)
+	if resp.is_empty() or resp.has("__http_status"):
+		# 先探一下中枢注册表里它还活着吗: 心跳刚过期(实例已退出)与"TCP 层拒绝"是两种不同诊断。
+		# 查 uid 而不是 instance_id: 后者同项目多开时会命中另一个进程, 于是"它明明在表里"——
+		# 而真正该报的是"那个进程没了"。
+		var still: Dictionary = _hub.find_by_uid(str(route.get("uid", "")))
+		var tail := "该实例已不在注册表中(可能刚被关闭)。" if still.is_empty() else "该实例仍在注册表中, 但端口 %d 不接受连接(可能正在启动/卡住/防火墙拦截)。" % int(route["port"])
+		return {"jsonrpc": "2.0", "id": req_id, "result": MCPResult.for_protocol(_err_transient(
+			"转发到实例 %s 失败(%s)。\n%s\n当前可用实例:\n%s" % [str(route.get("target", "?")), route.get("via", ""), tail, _hub.describe()],
+			"用 list_instances 确认实例清单后重试; 若该实例已关闭, 用 use_instance 换成活着的那个(或传空串恢复为「本实例」)。"))}
+	if resp.has("error"):
+		return resp
+	resp["id"] = req_id
+	return resp
+
+
+## ======= 多实例: /hub/* 内部端点 =======
+
+## 实例间内部端点。只有中枢应答; 成员收到时回 404 并说明原因(便于诊断"客户端配错了端口")。
+##
+## 鉴权与 MCP 端点共用 dev_framework/mcp/token: 这些端点的写入能力是"往注册表里塞一个端口",
+## 本机任何进程塞一个好端口就能把后续的工具调用导向自己 —— 在有 token 的部署里必须同样受管。
+## 没配 token 时的风险边界与 MCP 端点本身一致(仅监听 127.0.0.1, 且 Origin 检查仍在)。
+func _serve_hub_path(method: String, path: String, headers: Dictionary, body: PackedByteArray, stream) -> void:
+	var token: String = ProjectSettings.get_setting(SETTING_TOKEN, "")
+	if not token.is_empty():
+		if str(headers.get("authorization", "")) != "Bearer " + token:
+			_http.send_response(stream, 401, _cors_headers(headers), "{\"ok\":false,\"error\":\"Unauthorized\"}")
+			return
+	if _hub == null or not bool(_hub.hub_mode):
+		_http.send_response(stream, 404, _cors_headers(headers),
+			"{\"ok\":false,\"error\":\"本实例不是中枢(hub_mode=false); /hub/* 端点只在中枢上可用。若你在配置里写死了端口, 请改成中枢所在实例。\"}")
+		return
+	var rpc_body := {}
+	if not body.is_empty():
+		var parsed: Variant = JSON.parse_string(body.get_string_from_utf8())
+		if parsed is Dictionary:
+			rpc_body = parsed
+	var res: Dictionary = _hub.handle(method, path, rpc_body)
+	_http.send_response(stream, int(res.get("status", 500)), _cors_headers(headers), JSON.stringify(res.get("body", {})))
+
+
+## ======= 多实例: 实例管理工具实现 =======
+
+## list_instances: 本机实例清单(含本进程)。中枢会给全量; 成员给"本进程 + 中枢同步来的"。
+func _call_list_instances(_args: Dictionary) -> Dictionary:
+	if _hub == null:
+		return _fail("多实例功能未启用(dev_framework/mcp/hub=false)。同一时间只应有一个编辑器在用 MCP; 同时打开多个编辑器时请开启它。")
+	# 成员侧顺手拉一次最新快照: 否则打开本工具时看到的是上一次心跳(最多 4 秒前)的清单,
+	# 而"我刚开了另一个项目, 怎么列表里还没有"是这里最容易让人困惑的时刻。
+	if not bool(_hub.hub_mode):
+		var resp: Dictionary = await _hub.post_json(_hub_port, _hub.instances_path(), {}, 2000)
+		if bool(resp.get("ok", false)) and resp.get("instances") is Array:
+			_hub.sync_from_snapshot(resp.get("instances"))
+	_hub.touch_self()
+	var instances: Array = _hub.snapshot()
+	var self_entry := {}
+	for item in instances:
+		if bool(item.get("is_self", false)):
+			self_entry = item
+	var data := {
+		"role": "hub" if bool(_hub.hub_mode) else "member",
+		"hub_port": _hub_port,
+		"active_instance": _hub.active_instance,
+		"instance_count": instances.size(),
+		"instances": instances,
+		"hint": "用 use_instance 设默认目标, 或在任意工具调用里传 instance 参数单次指定。省略两者时操作落在「本实例」。",
+	}
+	if self_entry.is_empty():
+		data["warning"] = "注册表里没有本实例条目; 若持续出现请重启编辑器(热重载可能清掉了身份)。"
+	return _ok_json(data)
+
+
+## use_instance: 设置默认目标实例。传空 = 恢复本实例。
+func _call_use_instance(args: Dictionary) -> Dictionary:
+	if _hub == null:
+		return _fail("多实例功能未启用(dev_framework/mcp/hub=false)。")
+	var raw := VariantTool.get_string(args, "instance", "").strip_edges()
+	if raw.is_empty():
+		_hub.set_active("")
+		return _ok_json({
+			"active_instance": "",
+			"active_uid": "",
+			"message": "已恢复为「本实例」: 之后的工具调用都在本进程执行。",
+		})
+	# 显式标类型: _hub 是 Variant, 从其方法返回值用 `:=` 推断不出类型(见 _start_hub_mode)。
+	var hit: Dictionary = _hub.resolve(raw)
+	if hit.is_empty():
+		if _hub.count_matches(raw) > 1:
+			return _err_validation(
+				"实例标识 '%s' 有歧义: 有多个匹配(通常是同一项目被打开了多次, 它们共享 instance_id)。\n%s" % [raw, _hub.describe()],
+				"改用 uid(带 #进程号 的那个)或端口号, 它们必然唯一; 候选清单见 list_instances 的 uid 字段。")
+		return _err_validation(
+			"找不到实例 '%s'。当前可用实例:\n%s" % [raw, _hub.describe()],
+			"先调 list_instances 拿准确的 uid / 端口, 再重试; 或传空字符串恢复为「本实例」。")
+	# 绑定键用 **uid**(唯一), 不用 instance_id(同项目多开会撞)。
+	var uid := str(hit.get("uid", ""))
+	_hub.set_active(uid)
+	return _ok_json({
+		"active_instance": str(hit.get("instance_id", "")),
+		"active_uid": uid,
+		"is_self": bool(hit.get("is_self", false)),
+		"port": int(hit.get("port", 0)),
+		"message": ("已选中实例 %s" % str(hit.get("instance_id", ""))) + ("(就是本进程)" if bool(hit.get("is_self", false)) else " —— 之后的工具调用会转发到它") + "。",
+	})
 
 
 ## HTTP 层直接回 JSON-RPC 错误的**唯一出口**。
@@ -1824,7 +2305,7 @@ func _register_game_play_tools() -> void:
 		MCPUITools._handle_get_interactables)
 
 	_register_game_play_tool("simulate_click",
-		"在游戏窗口模拟鼠标左键点击(按下+释放)。**推荐先用 get_interactables 拿到元素 ref, 再用 ref=e3 点击** —— 由服务端解析成实时位置, 不必自己换算坐标。ref 指向 3D 物体(space=3d)时改为在该物体自身上激活一次点击、**不注入鼠标事件**(相机可动, 投影坐标必点偏)。也可直接传 x/y(默认窗口坐标, 传 space=viewport 则按视口坐标换算)。【副作用】注入的是**真实输入事件**, 会打进用户此刻正在玩的那个游戏窗口并走完整业务链路 —— 重复调用会重复扣血/重复触发, 故不可自动重试; 游戏未在运行时调用会失败。",
+		"在游戏窗口模拟鼠标左键点击(按下+释放)。**推荐先用 get_interactables 拿到元素 ref, 再用 ref=e3 点击** —— 由服务端解析成实时位置, 不必自己换算坐标。ref 指向 3D 物体(space=3d)时改为在该物体自身上激活一次点击、**不注入鼠标事件**(相机可动, 投影坐标必点偏)。ref 指向子视口元素(space=subviewport, 贴在 3D 显示器/平板模型上的 UI)时事件直接 push_input 进那个子视口 —— 那块 UI 不在窗口 GUI 层, 只用 x/y 走主窗口**永远点不到**; 此时别怀疑输入被吞, 拿 ref 点即可(x/y 无法指定子视口)。也可直接传 x/y(默认窗口坐标, 传 space=viewport 则按视口坐标换算)。【副作用】注入的是**真实输入事件**, 会打进用户此刻正在玩的那个游戏窗口并走完整业务链路 —— 重复调用会重复扣血/重复触发, 故不可自动重试; 游戏未在运行时调用会失败。",
 		MCPToolSchema.simulate_click(),
 		_call_simulate_click)
 
@@ -1942,7 +2423,7 @@ func _call_simulate_click(args: Dictionary) -> Dictionary:
 			return _fail("需提供 ref(get_interactables 返回的元素引用), 或 x + y; 可加 space 声明 x/y 属于 window(默认) 还是 viewport")
 		space = VariantTool.get_string(args, "space", "window").strip_edges().to_lower()
 		if space != "window" and space != "viewport":
-			return _fail("space 只能是 window 或 viewport, 收到: %s" % space)
+			return _fail("space 只能是 window 或 viewport, 收到: %s; 子视口里的 UI(space=subviewport)请改用 ref 点击" % space)
 		pos = Vector2(VariantTool.get_int(args, "x"), VariantTool.get_int(args, "y"))
 		if space == "viewport":
 			pos *= MCPUITools.window_scale()
