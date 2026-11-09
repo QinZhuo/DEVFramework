@@ -37,6 +37,8 @@ func _enter_tree() -> void:
 	# 编辑器兜底扫描烘焙产物的根目录（*_lightmap_set.res）
 	_register("dev_framework/lightmap/scan_dir", TYPE_STRING, "res://Scenes")
 	_register("dev_framework/mcp/enabled", TYPE_BOOL, true)
+	# 旧的项目级端口。**多实例中枢默认开启时它不被使用**(中枢走 mcp/hub_port);
+	# 只有把 dev_framework/mcp/hub 关掉、回到"一进程一端口"的旧行为时才生效。
 	_register("dev_framework/mcp/port", TYPE_INT, 8931)
 	_register("dev_framework/mcp/token", TYPE_STRING, "")
 	_register("dev_framework/mcp/max_output_chars", TYPE_INT, MCPDevServer.DEFAULT_MAX_OUTPUT_CHARS)
@@ -54,8 +56,9 @@ func _enter_tree() -> void:
 	# 一份配置, 就能通过工具的 instance 参数操作任意一个编辑器。
 	# 关掉则回到旧行为: 抢不到 mcp/port 的实例直接不启动服务器(多个编辑器时只有第一个有 MCP)。
 	_register("dev_framework/mcp/hub", TYPE_BOOL, true)
-	# 中枢端口:**必须对所有项目都是同一个数值**, 否则"一个端点"不成立。故默认值与项目无关,
-	# 且不跟随 mcp/port(那个是项目级设置, 每个 project.godot 各存一份)。
+	# 中枢端口:**全机器唯一的通用端口**, 所有项目一律不写、统一走这个默认值。
+	# 只有当它被别的程序占死需要排障时才临时写一行覆盖(写了的项目会自己拉一个独立中枢,
+	# 于是又回到"两个端点互相看不见" —— 所以例外只该是临时的)。
 	_register("dev_framework/mcp/hub_port", TYPE_INT, MCPDevServer.DEFAULT_HUB_PORT)
 	# 先开启 MCP 调试服务器, 避免后续初始化(工具菜单/DefTable)出错时阻断调试链路
 	_set_mcp_enabled(true)

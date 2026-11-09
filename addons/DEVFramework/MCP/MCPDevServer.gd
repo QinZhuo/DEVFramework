@@ -2,7 +2,10 @@
 ## MCP 开发服务器(autoload 单例, 编辑器/游戏双角色)
 ## 以 autoload 形式注册, 在编辑器和游戏进程中都会加载(见 project.godot [autoload]):
 ##   - 编辑器进程(Engine.is_editor_hint): 由 plugin.gd 持有节点并 start_editor(),
-##     在 8932 端口提供编辑器工具(场景树/节点/项目设置/截图等)以及游戏运行时工具。
+##     在**机器级通用端口 9988**(dev_framework/mcp/hub_port 的默认值)提供编辑器工具
+##     (场景树/节点/项目设置/截图等)以及游戏运行时工具。多个编辑器同时打开时, 只有第一个
+##     能绑上该端口并成为"中枢", 其余退让到临时端口并登记到它 —— 客户端始终只连 9988
+##     (见 MCP/MultiInstance.md)。
 ##   - 游戏进程: 不开启任何端口, 注册 EngineDebugger 消息捕获器("dev_mcp"),
 ##     通过编辑器↔游戏的调试线(EngineDebugger wire)接收并原生执行运行时工具:
 ##     take_screenshot(view文本化/game真实截图) / simulate_click / simulate_drag /
@@ -146,17 +149,22 @@ const SETTING_PROVIDERS := "dev_framework/mcp/providers"
 ## 关掉后回到旧行为: 抢不到 mcp/port 的实例直接不启动服务器。
 ##
 ## 为什么单开一个 hub_port 而不是复用 mcp/port: mcp/port 是**项目级**设置(每个 project.godot
-## 各存一份, 不同项目可能是 8931/8932/...), 而"一个端点"要求所有项目算出**同一个数**。
+## 各存一份, 不同项目可能是 8931/8932/9991...), 而"一个端点"要求所有项目算出**同一个数**。
 ## hub_port 的默认值对所有项目相同, 项目级不覆盖即天然一致 —— 这正是"一份客户端配置"
 ## 成立的前提。mcp/port 保留给 hub 关闭时的旧行为。
 const SETTING_HUB := "dev_framework/mcp/hub"
 const SETTING_HUB_PORT := "dev_framework/mcp/hub_port"
-## 中枢端口默认值 = 本插件**历来**的 mcp/port 默认值(8931)。
+## 中枢端口默认值 —— **全机器唯一的通用端口**。项目一律不写 mcp/hub_port, 全部走这个默认值,
+## 于是每个项目算出的中枢端口天然一致, 客户端只需配一条 URL。
 ##
-## 刻意选这个数而不是另起一个新端口: 存量项目的客户端配置里多半写着 8931, 升级后 hub_port
-## 落到同一个值, 客户端**零改动**。本项目自己在 project.godot 里显式设的是 8932(与它原有的
-## .mcp.json 一致), 那是项目级覆盖, 不影响这个默认值的意义。
-const DEFAULT_HUB_PORT := 8931
+## 为什么是 9988 而不是沿用 8931: 8931 是 mcp/port 的历史默认值, 机器上可能已有旧客户端/旧项目
+## 把它当"项目端口"用; 而要表达"这是一个新东西(机器级中枢端口)", 用一个从未用过的新号更清楚,
+## 也避免与那些把 mcp/port 留在 8931 的存量项目在语义上混淆。
+##
+## 【这是一次**破坏性**变更】改这个值, 所有客户端的 MCP 配置 URL 必须同步改。故它只在
+## project.godot 里**显式**写 mcp/hub_port 时才被覆盖(见 _resolve_hub_port), 而不是让
+## 每个项目各自留着一个旧端口 —— 那会让"统一"名存实亡。
+const DEFAULT_HUB_PORT := 9988
 
 ## 实例身份与中枢布局都由 MCPInstanceHub 负责(本文件只做接线)。这里只留脚本名,
 ## 走 _mod 动态编译(与其它域脚本同一条热重载链路)。
@@ -331,6 +339,9 @@ var _hub_last_beat := 0
 ## 心跳防重入: 一次心跳里可能连续 await 多个 HTTP 往返, 而 _process 每帧都会调 _hub_tick。
 ## 不加这个闸, 中枢一卡就会堆出一串并行登记(每个都是一个新 HTTPClient)。
 var _hub_beating := false
+## "中枢端口被非本框架程序占用"的告警只打一次。它每次心跳都会重新判定成立, 不节流就会
+## 每 4 秒刷一条, 而且这条很长 —— 会把自己的上下文淹没掉。
+var _hub_port_foreign_warned := false
 ## 上一次 `instance` 解析失败时给调用方看的说明(注入进 tools/list 的每个工具 schema)。
 ## 写成 const 而不是每次现拼: 这段文案会随 tools/list 发**每一个**工具, 现拼等于每轮多几十次
 ## 字符串拼接; 而它又不随状态变化(实例清单在错误信息里现取, 不在这里)。
@@ -514,11 +525,60 @@ func start_editor() -> void:
 ## **为什么不用 pid 文件/注册表文件来选中枢**: 文件要靠轮询 + 陈旧清理 + 原子写,
 ## 而"能不能绑上端口"本身就是一次原子的、内核保证的互斥判定。少一个状态源就少一类
 ## 崩溃残留问题(见 MultiInstance.md 的方案对比)。
+
+
+## 解析本进程该用的中枢端口。两档:
+##
+##   1. project.godot 里**显式**写了 `mcp/hub_port` → 用它(仅留给排障: 9988 真被占死时临时换口);
+##   2. 没写 → 用 DEFAULT_HUB_PORT(9988)。
+##
+## ## 为什么**不再**回落到 mcp/port(曾经有过这一档, 已明确删掉)
+##
+## 那一档是"存量项目升级后端口不变"的兼容措施, 但它与"统一端口"这个目标**直接冲突**:
+## 只要机器上有一个项目把 mcp/port 改成了 9991, 它就会自己拉出一个独立中枢, 于是又回到
+## "两个端点互相看不见"的状态 —— 实测过(8932 与 9991 各自 role=hub、各自 count=1)。
+## 统一端口的价值全在"机器内所有实例都算同一个数", 留着一档例外就等于留着分裂。
+##
+## 代价是**一次性的破坏性变更**: 所有客户端 MCP 配置里的 URL 必须同步改成 9988。
+## 这是刻意的取舍 —— 变更清楚、一次性改完, 好过留一个"看起来统一、实际会分裂"的隐患。
+func _resolve_hub_port() -> int:
+	if _project_overrides_setting(SETTING_HUB_PORT):
+		return int(ProjectSettings.get_setting(SETTING_HUB_PORT, DEFAULT_HUB_PORT))
+	return DEFAULT_HUB_PORT
+
+
+## project.godot 里是否**显式**写了某个设置项(而不是靠插件注册的默认值)。
+##
+## 为什么不用 ProjectSettings.has_setting: 插件在 _enter_tree 里 add_property_info +
+## set_initial_value 之后, has_setting 对**每个**注册项都返回 true, 分不出"项目改过"与
+## "只是注册了默认值"。而这两者的处理必须不同(见 _resolve_hub_port)。
+##
+## 直接读 project.godot 文本是本引擎版本下唯一可靠的判据: 显式设置必定以 "key=value" 的形式
+## 落在 [section] 段里, 而 set_initial_value 只进内存默认值, 不写文件。只在启动时读一次,
+## 成本可忽略; 读不到文件时保守地当"没写过"(回落默认值)。
+func _project_overrides_setting(setting_key: String) -> bool:
+	# 设置名形如 "dev_framework/mcp/hub_port", 文件里写作 "[dev_framework]" 段下的
+	# "mcp/hub_port=..."。取最后两段拼出文件里的键名。
+	var parts := setting_key.split("/")
+	if parts.size() < 2:
+		return false
+	var file_key := "%s/%s" % [parts[parts.size() - 2], parts[parts.size() - 1]]
+	var src := FileAccess.get_file_as_string("res://project.godot")
+	if src.is_empty():
+		return false
+	for line in src.split("\n"):
+		var t := line.strip_edges()
+		# 必须连等号一起比: "mcp/port=" 是 "mcp/hub_port=" 的子串, 只比前缀会把前者误判成后者。
+		if t.begins_with(file_key + "="):
+			return true
+	return false
+
+
 func _start_hub_mode() -> void:
 	if _hub == null:
 		_hub = _mod(HUB_SCRIPT).new()
 	_hub_enabled = true
-	_hub_port = clampi(int(ProjectSettings.get_setting(SETTING_HUB_PORT, DEFAULT_HUB_PORT)), 1024, 65535)
+	_hub_port = clampi(_resolve_hub_port(), 1024, 65535)
 	_hub.auth_token = str(ProjectSettings.get_setting(SETTING_TOKEN, ""))
 	# 身份: 项目名取 project.godot 的 application/config/name, 路径必须 globalize 成绝对路径
 	# (传 "res://" 会让所有项目算出同一个哈希, 于是默认目标会随机落到别的项目上)。
@@ -546,7 +606,10 @@ func _start_hub_mode() -> void:
 	_hub.set_hub_mode(false)
 	_hub.set_self_port(listening_port())
 	_owner = self
-	LogTool.log("MCP", "MCP 多实例: 端口 %d 已被中枢占用, 本实例退让到临时端口 %d, 即将登记到中枢" % [_hub_port, listening_port()])
+	# 措辞刻意是"被占用"而不是"被中枢占用": 此刻还不知道占用者是谁(可能是另一个编辑器,
+	# 也可能是**完全无关的程序**)。猜错会让现场排查走向错误方向 —— 真实判定要等心跳几拍后
+	# 拿不到 /hub/* 的应答才能下(见 _hub_tick 的端口冲突告警)。
+	LogTool.log("MCP", "MCP 多实例: 中枢端口 %d 已被占用, 本实例退让到临时端口 %d, 即将尝试登记到中枢" % [_hub_port, listening_port()])
 	# 首次登记立刻做一次(不等下一个心跳周期), 否则刚打开的项目会在最多 4 秒内不出现在中枢的清单里。
 	_hub_last_beat = 0
 
@@ -594,8 +657,21 @@ func _hub_tick() -> void:
 	# 重置会让"明确已死的中枢"每 3 拍才被尝试一次, 接管反而变慢。
 	if _take_over_hub():
 		return
-	if _hub.fail_streak == 3:
-		LogTool.log("MCP", "MCP 多实例: 中枢端口 %d 无响应, 但接管失败(说明有别的实例已成为新中枢或端口被别的程序占用), 继续按成员运行" % _hub_port)
+	if _hub.fail_streak < 3:
+		return
+	# 走到这里 = 既连不上中枢、又抢不到中枢端口。分两种情形, 报错必须分开写:
+	#   · 从未见过中枢, 且端口抢不到 —— **端口被别的程序占着**(不是本框架的实例)。
+	#     这是统一端口方案唯一的单点故障: 客户端配的是 hub_port, 而它上面坐着一个外人,
+	#     于是**全机器的编辑器都会退让到临时端口, 谁也无法被客户端找到**。
+	#     不把这件事喊出来, 现场只会看到"AI 连上了但没有工具响应"或者干脆连不上,
+	#     日志里那句"继续按成员运行"还会误导人去查成员。
+	#   · 见过中枢(记录过它的 id) —— 那就是中枢卡住或正在重启, 等着就行, 不用报错。
+	if _hub.hub_instance_id.is_empty() and not _hub_port_foreign_warned:
+		_hub_port_foreign_warned = true
+		LogTool.log("MCP", "MCP 多实例【端口冲突】: 中枢端口 %d 已被**非本框架**的程序占用(能连上但不应答 /hub/*, 且抢不到)。本实例已退让到临时端口 %d —— 但客户端配置写的是 %d, 因此**现在连不上本实例的 MCP**。\n处理方式: ① 找出占用 %d 的程序并关掉, 或 ② 把本机所有项目的 dev_framework/mcp/hub_port 一起改成别的空闲端口, 并同步改客户端 MCP 配置里的 URL。" % [
+			_hub_port, listening_port(), _hub_port, _hub_port])
+	elif _hub.fail_streak == 3:
+		LogTool.log("MCP", "MCP 多实例: 中枢 %s 暂时无响应, 接管失败(可能它正忙或另一个实例已先接管), 继续按成员运行并在下个周期重试" % _hub.hub_instance_id)
 
 
 ## 接管中枢: 关掉临时端口的监听, 改绑 hub_port。

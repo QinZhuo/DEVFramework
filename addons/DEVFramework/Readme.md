@@ -632,7 +632,7 @@ DEV Framework 内置一个 **MCP（Model Context Protocol）调试服务器**，
 ### 7.1 原理与架构
 
 ```
-AI 助手 ──MCP Streamable HTTP──▶ http://127.0.0.1:8931/mcp  (Godot 编辑器内嵌)
+AI 助手 ──MCP Streamable HTTP──▶ http://127.0.0.1:9988/mcp  (Godot 编辑器内嵌)
 ```
 
 - Godot 编辑器内部用 `TCPServer` 实现了一个轻量 HTTP 服务器（`MCPTcpHttpServer`）。
@@ -650,7 +650,7 @@ AI 助手 ──MCP Streamable HTTP──▶ http://127.0.0.1:8931/mcp  (Godot �
 | `dev_framework/mcp/enabled` | `true` | MCP 服务器总开关 |
 | `dev_framework/mcp/port` | `8931` | 监听端口（仅本机 `127.0.0.1`）。**多实例中枢关闭时**才生效 |
 | `dev_framework/mcp/hub` | `true` | 多实例中枢：同时打开多个装了本框架的编辑器时，只有一个占住 `hub_port` 当"中枢"，其余实例退让到系统分配的临时端口并登记到它 —— 客户端只需**一个 URL、一份配置**就能操作任意一个编辑器 |
-| `dev_framework/mcp/hub_port` | `8931` | **机器级**中枢端口。它是唯一一个"所有项目必须一致"的端口；本项目在 `project.godot` 里显式设为 `8932`（与已有的客户端配置一致）|
+| `dev_framework/mcp/hub_port` | **`9988`** | **机器级通用端口**，所有项目一律**不写**、全部走默认值（写了就等于给自己开例外，会拉出独立中枢）。客户端只连这一个端口；多个编辑器同时打开时靠 `instance` 参数切换（细则见 [MCP/MultiInstance.md](MCP/MultiInstance.md)）|
 | `dev_framework/mcp/log_tool_results` | `false` | 是否把**每次工具调用**（入参 + 返回摘要）打进 Godot 输出面板。默认关闭：日志捕获器挂在引擎 `print` 通道上，MCP 自己的回声会被 `get_logs` 原样返回给 AI，白占上下文并淹没项目日志。工具**报错**始终以 error 级别输出，不受此开关影响 |
 
 > **多个编辑器同时打开**：不再需要为每个项目配一个端口。第一次遇到多个实例时，AI 调
@@ -659,7 +659,7 @@ AI 助手 ──MCP Streamable HTTP──▶ http://127.0.0.1:8931/mcp  (Godot �
 
 ### 3. AI 助手连接配置
 
-DEV Framework 的 MCP 使用 **Streamable HTTP** 传输，端点为 `http://127.0.0.1:8931/mcp`（仅本机，需先启用插件）。下面按**配置文件格式**分组给出各工具接入方式。
+DEV Framework 的 MCP 使用 **Streamable HTTP** 传输，端点为 `http://127.0.0.1:9988/mcp`（仅本机，需先启用插件）。下面按**配置文件格式**分组给出各工具接入方式。
 
 #### A. opencode / Claude Code 等 CLI 工具
 
@@ -671,7 +671,7 @@ DEV Framework 的 MCP 使用 **Streamable HTTP** 传输，端点为 `http://127.
   "mcp": {
     "devframework-godot-mcp": {
       "type": "remote",
-      "url": "http://127.0.0.1:8931/mcp",
+      "url": "http://127.0.0.1:9988/mcp",
       "enabled": true
     }
   }
@@ -681,7 +681,7 @@ DEV Framework 的 MCP 使用 **Streamable HTTP** 传输，端点为 `http://127.
 **Claude Code**（命令行，无需手写 JSON）：
 
 ```bash
-claude mcp add --transport http devframework-godot-mcp http://127.0.0.1:8931/mcp
+claude mcp add --transport http devframework-godot-mcp http://127.0.0.1:9988/mcp
 claude mcp list        # 查看已配置
 ```
 
@@ -693,7 +693,7 @@ claude mcp list        # 查看已配置
 {
   "mcpServers": {
     "devframework-godot-mcp": {
-      "url": "http://127.0.0.1:8931/mcp"
+      "url": "http://127.0.0.1:9988/mcp"
     }
   }
 }
@@ -714,10 +714,10 @@ claude mcp list        # 查看已配置
 
 | 工具 | 操作路径 | 填写内容 |
 |---|---|---|
-| **Cursor** | Settings → MCP → Add | 类型选 remote/HTTP，URL 填 `http://127.0.0.1:8931/mcp` |
-| **通义灵码** | 个人设置 → MCP 服务 → `+` → 手动添加 | 类型选 SSE/HTTP，服务地址填 `http://127.0.0.1:8931/mcp` |
-| **豆包 MarsCode** | 设置 → MCP → 添加 | 类型选 HTTP，URL 填 `http://127.0.0.1:8931/mcp` |
-| **腾讯云 AI 代码助手** | 设置 → MCP → 添加 | URL 填 `http://127.0.0.1:8931/mcp` |
+| **Cursor** | Settings → MCP → Add | 类型选 remote/HTTP，URL 填 `http://127.0.0.1:9988/mcp` |
+| **通义灵码** | 个人设置 → MCP 服务 → `+` → 手动添加 | 类型选 SSE/HTTP，服务地址填 `http://127.0.0.1:9988/mcp` |
+| **豆包 MarsCode** | 设置 → MCP → 添加 | 类型选 HTTP，URL 填 `http://127.0.0.1:9988/mcp` |
+| **腾讯云 AI 代码助手** | 设置 → MCP → 添加 | URL 填 `http://127.0.0.1:9988/mcp` |
 
 > 若工具界面没有"远程/HTTP"类型选项，可改用 `mcpServers` JSON 方式（见 B 组）。
 >
@@ -769,7 +769,7 @@ claude mcp list        # 查看已配置
 
 ### 5. 典型 AI 调试流程
 
-1. 打开项目并启用 `DEV Framework` 插件，连接 http://127.0.0.1:8931/mcp。
+1. 打开项目并启用 `DEV Framework` 插件，连接 http://127.0.0.1:9988/mcp。
    - 同时开了多个项目时**不需要**加配置：连的还是这一个地址，用 `list_instances` + `use_instance` 切换目标（见 [MCP/MultiInstance.md](MCP/MultiInstance.md)）。
 2. AI `list_dir` / `validate` 排查脚本与资源问题。
 3. AI `get_scene_tree` / `get_node_info` 理解当前编辑场景的节点与属性。

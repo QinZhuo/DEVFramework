@@ -230,11 +230,16 @@ static func _mode() -> String:
 	return "editor"
 
 
-## MCP 监听端口。等于直接重算而非读主服务器的 _port(那个成员变量的初值就是它, 且只在 runtime
-## 分支被重新赋值)。设置键字符串在此**重复**一次(唯一定义处是 MCPDevServer.SETTING_PORT):
-## 引用它就得反向依赖主服务器, 而反向依赖会让整个分层的单向性失效。
+## MCP 中枢端口(默认值即机器级通用端口 9988)。
+##
+## 多实例开启后, **这个值不一定是本进程实际监听的端口**: 成员退让到系统分配的临时端口。
+## 故 basic 段的 mcp_port 会由宿主注入的 `mcp_port`(实际监听端口)覆盖它 —— 这一份只是
+## "宿主没注入时"的兜底(旧宿主/单元测试直接调本域时)。
+##
+## 设置键与默认值在此**重复**一次(唯一定义处是 MCPDevServer.SETTING_HUB_PORT /
+## DEFAULT_HUB_PORT): 引用它就得反向依赖主服务器, 而反向依赖会让整个分层的单向性失效。
 static func _mcp_port() -> int:
-	return int(ProjectSettings.get_setting("dev_framework/mcp/port", 8931))
+	return int(ProjectSettings.get_setting("dev_framework/mcp/hub_port", 9988))
 
 
 ## ======= 唯一的状态缝: 为什么这几个字段不自取、也不推导 =======
