@@ -19,7 +19,7 @@ extends RefCounted
 ##     其余成员下个心跳周期自动登记到它。
 ##
 ## 为什么不聚合工具名(instance__tool): 那是工具数 × 实例数, 上下文直接爆掉; 而且改成转发后
-## 每个工具的 schema/语义都不用动。详见 MCP/MultiInstance.md 的方案对比。
+## 每个工具的 schema/语义都不用动。详见 Readme §7.3 的方案对比。
 ## 为什么不引入外部 hub 进程: 中枢本身就是一个编辑器实例, 天然拥有完整工具实现, 零外部依赖
 ## (不需要 node/python/额外二进制)。代价是中枢随那个编辑器退出, 由接管逻辑补偿。
 ##
@@ -511,7 +511,7 @@ func post_json(port: int, path: String, payload: Dictionary, timeout_ms := 3000,
 	if connect_err != OK:
 		return {}
 	var headers := PackedStringArray(["Content-Type: application/json"])
-	# 鉴权: 各实例若配了 dev_framework/mcp/token, 必须**是同一个值**(见 MultiInstance.md)。
+	# 鉴权: 各实例若配了 dev_framework/mcp/token, 必须**是同一个值**(见 Readme §7.3)。
 	if not auth_token.is_empty():
 		headers.append("Authorization: Bearer " + auth_token)
 	headers.append_array(extra_headers)

@@ -5,7 +5,7 @@
 ##     在**机器级通用端口 9988**(dev_framework/mcp/hub_port 的默认值)提供编辑器工具
 ##     (场景树/节点/项目设置/截图等)以及游戏运行时工具。多个编辑器同时打开时, 只有第一个
 ##     能绑上该端口并成为"中枢", 其余退让到临时端口并登记到它 —— 客户端始终只连 9988
-##     (见 MCP/MultiInstance.md)。
+##     (见 addons/DEVFramework/Readme.md §7.3)。
 ##   - 游戏进程: 不开启任何端口, 注册 EngineDebugger 消息捕获器("dev_mcp"),
 ##     通过编辑器↔游戏的调试线(EngineDebugger wire)接收并原生执行运行时工具:
 ##     take_screenshot(view文本化/game真实截图) / simulate_click / simulate_drag /
@@ -328,7 +328,7 @@ var _tool_audit_issues: Array[String] = []
 ## initialize/server:discover 的 instructions(在 BASE_INSTRUCTIONS 之后)。
 var _provider_instructions: Array[String] = []
 
-## ------- 多实例中枢状态(仅编辑器进程; 见 MCPInstanceHub 与 MCP/MultiInstance.md) -------
+## ------- 多实例中枢状态(仅编辑器进程; 见 MCPInstanceHub 与 Readme §7.3) -------
 ## `_hub` 是 MCPInstanceHub.gd 的实例(Variant 而非具体类型: 它走 _mod 动态编译,
 ## 写类型注解会让本文件在解析期依赖那个脚本, 与其它域脚本的处理方式不一致)。
 var _hub: Variant = null
@@ -524,7 +524,7 @@ func start_editor() -> void:
 ##
 ## **为什么不用 pid 文件/注册表文件来选中枢**: 文件要靠轮询 + 陈旧清理 + 原子写,
 ## 而"能不能绑上端口"本身就是一次原子的、内核保证的互斥判定。少一个状态源就少一类
-## 崩溃残留问题(见 MultiInstance.md 的方案对比)。
+## 崩溃残留问题(见 Readme §7.3 的方案对比)。
 
 
 ## 解析本进程该用的中枢端口。两档:
@@ -887,8 +887,22 @@ func listening_port() -> int:
 ## 非编辑器进程勾选 runtime_enabled 后开的一个端口: 与编辑器服务器共用同一套协议实现与
 ## 同一套工具注册机制, 工具由 _register_runtime_domains 自动注册(共享域 + 游戏操作工具; eval_code
 ## 在运行时=本进程执行)。
+##
+## ## 为什么这里**刻意不用** hub_port / 多实例机制
+##
+## 三个理由, 都不是"图省事":
+##   1. **语义不同**。hub 端口代表"本机**开发环境**的入口", 9988 天然属于编辑器那一侧;
+##      导出包代表"一个正在运行的产品", 它和编辑器同时存在是常态, 两者抢同一个端口
+##      就会互相把对方挤成"成员", 于是编辑器那台中枢可能变成运行中游戏的成员 —— 那时
+##      AI 的 eval_code 就会打到游戏进程里, 而不是编辑器里。这是最坏的一种串味。
+##   2. **没有可路由的东西**。导出包进程里只有它自己一组工具, 注册表里也只有自己一个实例,
+##      转发永远落空; 而 tools/list 注入 `instance` 参数只会诱导模型传一个被忽略的值。
+##   3. **导出包不该依赖开发期的编排逻辑**。多实例的接管/心跳是为"多个编辑器抢一个入口"设计的
+##      交互式场景; 产品进程里跑心跳会持续产生本机 HTTP 往返, 没有任何收益。
+##
+## 故运行时沿用自己的项目级端口(dev_framework/mcp/port), 与编辑器中枢互不干扰。
 func _start_runtime_server() -> void:
-	# 复用编辑器同一端口设置: 非编辑器构建里该端口空闲(编辑器进程不在), 不另设端口。
+	# 运行时用**项目级**端口: 它表达"这个产品监听在哪", 与"本机开发入口"是两件事。
 	_port = int(ProjectSettings.get_setting(SETTING_PORT, 8931))
 	var err := _start(_port)
 	if err != OK:
@@ -1600,12 +1614,21 @@ func _jsonrpc_error(req_id: Variant, code: int, message: String) -> Dictionary:
 
 
 ## ======= 多实例: tools/list 整形与路由 =======
+##
+## 这三处(本节 + _hub_tools_for_list / _resolve_route / _serve_hub_path)的**唯一**前置条件是
+## `_hub == null`, 而不是 `Engine.is_editor_hint()`。这条判据同时正确地覆盖了四种进程形态:
+##   · 编辑器进程        → _hub 非 null, 多实例全功能可用;
+##   · F5 游戏进程       → _hub 为 null(走调试线分支, 不开端口), 不注入、不路由;
+##   · 导出包/独立运行   → _hub 为 null(见 _start_runtime_server), 同上;
+##   · headless 跑测试   → 视是否有编辑器 hint 而定, 但 _hub 为 null 时一律就地执行。
+## 用 `_hub` 而不是判 hint, 是因为"能不能路由"的事实由"有没有注册表"决定; 判 hint 会让
+## 判据与实际能力分离, 将来若给运行时也开多实例就得同时改三处。
 
 ## tools/list 的出口整形: 每个工具多一个可选 `instance` 参数(实例管理工具自己除外)。
-## 只在编辑器进程注入 —— 导出运行时的 mcp 服务器是"本进程唯一", 多实例路由对它没有意义,
-## 多一个用不上的参数只是让工具表变长、并诱导模型传一个永远被忽略的值。
+## 只在有中枢注册表的进程注入 —— 没有注册表时转发必然落空, 多一个用不上的参数只是让工具表
+## 变长、并诱导模型传一个永远被忽略的值。
 func _hub_tools_for_list() -> Array:
-	if not Engine.is_editor_hint() or _hub == null:
+	if _hub == null:
 		return _tool_defs
 	return _hub.inject_instance_arg(_tool_defs, _INSTANCE_ARG_DESC, HUB_TOOLS)
 
@@ -1618,7 +1641,7 @@ func _hub_tools_for_list() -> Array:
 ## **不做"唯一的其他实例自动选中"**: 那在"开了两个项目、只想改当前这个"时会静默改错项目;
 ## 而报错并要求显式选择只多一次调用。MCP for Unity 也明确拒绝自动猜测实例。
 func _resolve_route(tool_name: String, args: Dictionary) -> Dictionary:
-	if _hub == null or not Engine.is_editor_hint():
+	if _hub == null:
 		return {"port": 0}
 	# 实例管理工具本身不路由(它们必须在**收到请求的这个进程**上执行, 否则 list_instances 会
 	# 转发到别的实例再回来, 语义变成"问别人本机有哪些实例")。
