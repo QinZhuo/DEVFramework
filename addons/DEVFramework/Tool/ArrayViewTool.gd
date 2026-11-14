@@ -344,3 +344,12 @@ static func slot_preview_setup(host) -> void:
 	for i in slots.size():
 		set_slot_view(host, i, null)
 	host._update_slot_visibility()
+
+## 整排间距的缩放系数：整排总长（间距 × (count-1)）超过 max_length 时压到该长度。
+## max_length <= 0 = 不限制；单项 / 零间距时恒为 1（无法也无必要压缩）。
+## 由 [OffsetArrayView2D] / [OffsetArrayView3D] 共用：两者只差 Vector 类型，判定规则只此一份。
+static func layout_scale(step_length: float, count: int, max_length: float) -> float:
+	if max_length <= 0.0 or count < 2 or step_length <= 0.0:
+		return 1.0
+	var total := step_length * (count - 1)
+	return max_length / total if total > max_length else 1.0

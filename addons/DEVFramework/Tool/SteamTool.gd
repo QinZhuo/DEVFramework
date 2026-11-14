@@ -22,6 +22,12 @@ static func get_steam() -> Object:
 	return loop.root.get_node_or_null(NodePath(SINGLETON_NAME)) if loop != null else null
 
 
+## 是否为 Steam 平台包（插件存在即可，不要求客户端在跑）。
+## 用于区分"Steam 包但当前离线"与"其他平台包"（后者不会带 godotsteam 插件）
+static func has_platform() -> bool:
+	return get_steam() != null
+
+
 ## Steam 是否可用：插件已加载且 Steam 客户端在运行
 ## [param log_tag] 非空时输出具体离线原因日志（供初始化流程诊断），判定本身不受影响
 static func is_available(log_tag: String = "") -> bool:
@@ -84,10 +90,25 @@ static func get_steam_id() -> String:
 	return "" if sid == null else str(sid)
 
 
+## persona name 缓存：榜单一次要查上百个名字，跨 GDExtension 调用约 0.17ms/次。
+## 只缓存非空结果 —— Steam 好友列表还没拉到时返回空串，缓存了会永久显示 ID。
+static var _name_cache: Dictionary = {}
+
+
+## 单个玩家的名字失效：persona_state_change 在好友上下线时会频繁触发，只清对应条目
+static func invalidate_player_name(steam_id: int) -> void:
+	_name_cache.erase(steam_id)
+
+
 ## 指定 SteamID 的玩家显示名；不可用时返回空串
 static func get_player_name(steam_id: int) -> String:
+	if _name_cache.has(steam_id):
+		return _name_cache[steam_id]
 	var name: Variant = call_steam(&"getFriendPersonaName", [steam_id], null)
-	return "" if name == null else str(name)
+	var result := "" if name == null else str(name)
+	if not result.is_empty():
+		_name_cache[steam_id] = result
+	return result
 
 
 ## Steam Cloud 配额查询；Steam 不可用 / 无该方法时返回空字典。

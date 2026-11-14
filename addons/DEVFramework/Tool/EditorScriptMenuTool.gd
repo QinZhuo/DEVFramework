@@ -4,14 +4,17 @@ extends RefCounted
 
 ## 在 项目→工具 下添加子菜单, 自动注册所有 Tool 目录下 extends EditorScript 的编辑器工具。
 ## 由 EditorPlugin 调用 register()/unregister()。菜单显示名经独立翻译模块 EditorTranslationTool
-## 按编辑器语言取词(以脚本文件名为 ID, 数据在框架自带翻译目录), 未命中回退 class_name / 文件名。
+## 按编辑器语言取词(以脚本文件名为 ID), 未命中回退 class_name / 文件名。
+## 翻译数据按工具归属分目录读取: 框架自带工具读框架翻译目录, 项目工具读项目翻译目录, 框架本体不含项目词条。
 ## 监听编辑器语言设置变化并自动重建子菜单, 语言切换即时生效, 无需重载插件。
-## 子菜单标题的翻译 key(在 FRAMEWORK_TRANSLATION_DIR 的 csv 中取词, 展示为当前编辑器语言的标题)
 const SUBMENU_NAME := "EditorScript"
 const SCAN_ROOT := "res://"
+const FRAMEWORK_ROOT := "res://addons/DEVFramework/"
 
 ## 框架自带的编辑器工具多语翻译目录(csv 数据由 EditorTranslationTool 通用接口读取)
 const FRAMEWORK_TRANSLATION_DIR := "res://addons/DEVFramework/Translation"
+## 项目工具多语翻译目录: 复用框架约定的项目翻译目录
+const PROJECT_TRANSLATION_DIR := TranslationTool.TRANSLATION_DIR
 
 const META_MENU := "_editor_script_menu"
 const META_TOOLS := "_editor_script_tools"
@@ -88,10 +91,10 @@ static func _menu_title() -> String:
 	return t if t != "" else SUBMENU_NAME
 
 
-## 菜单显示名: 以脚本文件名(ID)经独立翻译模块取词; 未命中回退 class_name / 文件名
+## 菜单显示名: 以脚本文件名(ID)在工具归属的翻译目录取词; 未命中回退 class_name / 文件名
 static func _menu_label(path: String) -> String:
 	var name := path.get_file().trim_suffix(".gd")
-	var text := EditorTranslationTool.editor_text(FRAMEWORK_TRANSLATION_DIR, name)
+	var text := EditorTranslationTool.editor_text(_translation_dir(path), name)
 	if text != "":
 		return text
 	var script := load(path) as Script
@@ -100,6 +103,11 @@ static func _menu_label(path: String) -> String:
 		if gname != "":
 			return gname
 	return name
+
+
+## 工具归属的翻译目录: 框架工具走框架翻译, 其余(项目 Tool 目录)走项目翻译
+static func _translation_dir(path: String) -> String:
+	return FRAMEWORK_TRANSLATION_DIR if path.begins_with(FRAMEWORK_ROOT) else PROJECT_TRANSLATION_DIR
 
 
 ## 递归遍历目录树, 仅当 is_tool_root 为真时收集其中的 EditorScript 脚本;

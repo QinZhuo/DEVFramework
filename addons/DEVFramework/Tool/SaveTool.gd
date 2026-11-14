@@ -8,7 +8,8 @@ enum Mode {
 	BYTES, ## 原样字节：内容由调用方自带编码（如 .qvox）；写入不做变换、路径不改名
 }
 
-const MAX_BACKUPS := 3  ## 保留的滚动备份数
+## 唯一一份备份的后缀：写入前把当前主档转存为它（只保留上一份成功内容，够回滚一步）
+const BACKUP_SUFFIX := ".bak"
 
 ## 保存状态：{ 路径: null | [data, mode] }
 ## - 路径存在 = 正在保存中
@@ -178,28 +179,27 @@ static func gzip_decode(raw: PackedByteArray) -> Variant:
 # 文件 I/O
 # ============================================================
 
-## 保存数据。JSON: 纯文本。GZIP: gzip_encode。BYTES: 原样落盘（均为原子写入 + 滚动备份）
-static func save_data(path: String, data, mode: Mode = Mode.JSON) -> Error:
+## 保存数据。JSON: 纯文本。GZIP: gzip_encode。BYTES: 原样落盘（均为原子写入 + 单份备份）
+## [param keep_backup] 为 false 时不生成备份——构建产物（烘焙出的内置数据等）坏了重新生成即可，
+## 留着备份只会占体积并被打进导出包
+static func save_data(path: String, data, mode: Mode = Mode.JSON, keep_backup := true) -> Error:
 	var _t := LogTool.timer("存档", str("保存 ", path))
 	var actual_path := _actual_path(path, mode)
 	FileTool.ensure_dir(actual_path)
 
 	var err: Error
 	if mode == Mode.JSON:
-		err = _atomic_write(actual_path, JSON.stringify(data).to_utf8_buffer())
+		err = _atomic_write(actual_path, JSON.stringify(data).to_utf8_buffer(), keep_backup)
 	elif mode == Mode.BYTES:
-		err = _atomic_write(actual_path, data if data is PackedByteArray else PackedByteArray())
+		err = _atomic_write(actual_path, data if data is PackedByteArray else PackedByteArray(), keep_backup)
 	else:
-		err = _atomic_write(actual_path, gzip_encode(data))
+		err = _atomic_write(actual_path, gzip_encode(data), keep_backup)
 
 	_t.stop()
-	# 调试副本只对"人能读"的 JSON 有意义：BYTES 是调用方自带的二进制格式，再抄一份纯属浪费。
-	if err == OK and mode != Mode.BYTES and OS.has_feature("editor") and path.begins_with("user://"):
-		_save_debug_copy(path, data)
 	return err
 
 
-## 加载数据（主档 → .bak 三级回退）。
+## 加载数据（主档 → 唯一备份回退）。
 ##
 ## `decode` 只在 JSON/GZIP 之外需要：这两种模式自带"解码失败 = 这份内容不能用"的判据，而
 ## BYTES 是调用方自带的编码，框架无从判断"字节读出来了、但内容已经坏了"。传一个
@@ -254,10 +254,6 @@ static func save_async(path: String, data, mode: Mode = Mode.JSON) -> Error:
 		bytes = enc
 	var err := _write_file(path, bytes, mode)
 	_t.stop()
-	# 调试副本仅对"人能读"的 JSON 有意义(与 save_data 一致): GZIP 是压缩二进制、BYTES 是调用方自带格式
-	if err == OK and mode == Mode.GZIP and OS.has_feature("editor") and path.begins_with("user://"):
-		_save_debug_copy(path, data)
-
 	return await _flush_pending(path, err)
 
 ## 等待保存链的超时（毫秒）。正常一次保存 300ms 内完成，超出说明保存链异常收尾（写盘/编码失败没清状态）。
@@ -299,22 +295,20 @@ static func load_async(path: String, mode: Mode = Mode.JSON) -> Variant:
 	return result
 
 
-## 尝试从最近备份恢复：依次尝试 .1.bak .2.bak ...，首次成功即写回主档
+## 尝试从唯一备份恢复：成功即写回主档
 static func _try_restore_from_bak(actual_path: String, mode: Mode, original_path: String = "", decode: Callable = Callable()) -> Variant:
-	for i in range(1, MAX_BACKUPS + 1):
-		var bak_path := _backup_path(actual_path, i)
-		if not FileAccess.file_exists(bak_path):
-			continue
-		var bak_display = "%s.bak (%s)" % [original_path, bak_path] if not original_path.is_empty() else bak_path
-		LogTool.warn("存档", "主档损坏，尝试备份恢复(%d): %s" % [i, bak_display])
-		var result: Variant = _read_file(bak_path, mode, original_path, decode)
-		if result != null:
-			DirAccess.copy_absolute(bak_path, actual_path)
-			LogTool.log("存档", "备份恢复成功 (第%d次备份)" % i)
-			return result
-
+	var bak_path := actual_path + BACKUP_SUFFIX
 	var display_path = "%s (实际路径: %s)" % [original_path, actual_path] if not original_path.is_empty() else actual_path
-	LogTool.error("存档", "主档和全部备份均损坏，将使用默认档案: %s" % display_path)
+	if not FileAccess.file_exists(bak_path):
+		LogTool.error("存档", "主档损坏且无备份，将使用默认档案: %s" % display_path)
+		return null
+	LogTool.warn("存档", "主档损坏，尝试备份恢复: %s.bak" % display_path)
+	var result: Variant = _read_file(bak_path, mode, original_path, decode)
+	if result != null:
+		DirAccess.copy_absolute(bak_path, actual_path)
+		LogTool.log("存档", "备份恢复成功: %s" % display_path)
+		return result
+	LogTool.error("存档", "主档和备份均损坏，将使用默认档案: %s" % display_path)
 	return null
 
 
@@ -389,35 +383,20 @@ static func _read_file_async(actual_path: String, original_path: String = "") ->
 static func _write_file(path: String, bytes: PackedByteArray, mode: Mode) -> Error:
 	return _atomic_write(_actual_path(path, mode), bytes)
 
-## 原子写入：先滚动备份（主档 → .1.bak → .2.bak → ...），再由 FileTool 统一原子落盘
-static func _atomic_write(actual_path: String, bytes: PackedByteArray) -> Error:
+## 原子写入：先把当前主档转存为唯一备份，再由 FileTool 统一原子落盘
+static func _atomic_write(actual_path: String, bytes: PackedByteArray, keep_backup := true) -> Error:
 	FileTool.ensure_dir(actual_path)
-	if FileAccess.file_exists(actual_path):
-		_rotate_backups(actual_path)
+	if keep_backup and FileAccess.file_exists(actual_path):
+		_rotate_backup(actual_path)
 	return FileTool.atomic_write_bytes(actual_path, bytes)
 
 
-## 滚动备份：.N.bak → .(N+1).bak，主档 → .1.bak，超出 MAX_BACKUPS 则删除
-static func _rotate_backups(actual_path: String) -> void:
-	# 从最旧开始删除
-	var last_path := _backup_path(actual_path, MAX_BACKUPS)
-	if FileAccess.file_exists(last_path):
-		DirAccess.remove_absolute(last_path)
-	# 从后往前滚动
-	for i in range(MAX_BACKUPS - 1, 0, -1):
-		var old_path := _backup_path(actual_path, i)
-		if FileAccess.file_exists(old_path):
-			DirAccess.rename_absolute(old_path, _backup_path(actual_path, i + 1))
-	# 主档 → .1.bak
-	DirAccess.rename_absolute(actual_path, _backup_path(actual_path, 1))
-
-
-static func _backup_path(actual_path: String, index: int) -> String:
-	return actual_path + ".%d.bak" % index
-
-## 编辑器调试副本
-static func _save_debug_copy(path: String, data) -> void:
-	FileTool.write_text(path + ".debug.json", JSON.stringify(data))
+## 备份轮转：主档 → .bak（只保留上一份成功内容；旧备份直接丢弃）
+static func _rotate_backup(actual_path: String) -> void:
+	var bak_path := actual_path + BACKUP_SUFFIX
+	if FileAccess.file_exists(bak_path):
+		DirAccess.remove_absolute(bak_path)
+	DirAccess.rename_absolute(actual_path, bak_path)
 
 
 ## 检查文件是否存在
@@ -425,7 +404,7 @@ static func file_exists(path: String, mode: Mode = Mode.JSON) -> bool:
 	return FileAccess.file_exists(_actual_path(path, mode))
 
 
-## 删除存档（含滚动备份和调试副本）
+## 删除存档（含唯一备份）
 static func delete_data(path: String, mode: Mode = Mode.JSON) -> Error:
 	var actual_path := _actual_path(path, mode)
 	if not FileAccess.file_exists(actual_path):
@@ -434,16 +413,9 @@ static func delete_data(path: String, mode: Mode = Mode.JSON) -> Error:
 	if err != OK:
 		LogTool.error("存档", "删除文件失败:", path, "错误:", err)
 		return err
-	# 删除所有滚动备份
-	for i in range(1, MAX_BACKUPS + 1):
-		var bak_path := _backup_path(actual_path, i)
-		if FileAccess.file_exists(bak_path):
-			DirAccess.remove_absolute(bak_path)
-	# 删除编辑器调试副本
-	if OS.has_feature("editor") and path.begins_with("user://"):
-		var debug_path := path + ".debug.json"
-		if FileAccess.file_exists(debug_path):
-			DirAccess.remove_absolute(debug_path)
+	var bak_path := actual_path + BACKUP_SUFFIX
+	if FileAccess.file_exists(bak_path):
+		DirAccess.remove_absolute(bak_path)
 	return OK
 
 

@@ -13,6 +13,12 @@ class_name OffsetArrayView3D extends SlotArrayView3D
 		centered = value
 		update_layout()
 
+## 整排最大长度（0 = 不限制）：可见槽位多到整排超过它时，等比压缩间距使整排刚好等于这个长度
+@export var max_length: float = 0.0:
+	set(value):
+		max_length = value
+		update_layout()
+
 func _ready():
 	super ()
 	update_layout()
@@ -44,11 +50,12 @@ func update_layout():
 	var count := visible_slots.size()
 	if count == 0:
 		return
-	var total := offset * (count - 1)
+	var step := offset * ArrayViewTool.layout_scale(offset.length(), count, max_length)
+	var total := step * (count - 1)
 	var start_pos := Vector3.ZERO
 	if centered:
 		start_pos = -total / 2.0
 	for i in count:
 		var slot := visible_slots[i]
-		slot.position = start_pos + offset * i
+		slot.position = start_pos + step * i
 

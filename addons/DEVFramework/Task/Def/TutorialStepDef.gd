@@ -11,9 +11,25 @@ class_name TutorialStepDef extends SignalTaskDef
 ## 无 target 即纯提示不遮挡, 并自动"点任意处继续"。
 @export var target: TutorialTargetDef
 
+## 有 target 时也允许"点击框内继续"(框选说明类步骤用: 只框住目标让玩家认识它, 不等待交互信号)。
+## 未开启时保持默认语义: 有 target 的步骤只能靠目标交互/信号完成。
+@export var click_to_complete_with_target := false
 
-## 无额外字段: 提示文字复用 TaskDef 统一 desc 翻译(tr(名称_desc), 见 Assets/Translation/task.csv)
-## 内容支持 BBCode(如 [color=#ffd140]高亮[/color])
+## 静默步骤: 不显示提示气泡、不遮挡输入, 只等信号推进。
+## 用于"战斗进行中"这类不需要提示、也不能拦住操作的等待阶段(玩家可以自由查看卡牌等)。
+@export var silent := false
+
+## 是否拦截目标之外的输入(默认拦截)。
+## 关闭后: 仍框住目标做视觉引导, 但玩家可以自由点击任意位置。
+## 用于"目标只是操作的第一步"的步骤(如使用主动装备: 点装备 → 菜单 → 还需点游戏机选符号),
+## 否则挖孔会把后续必须点的区域一起挡住, 形成点了没反应、无法继续的死锁。
+@export var block_input := true
+
+
+## 提示文字复用 TaskDef 统一 desc 翻译(tr(名称_desc), 见 Assets/Translation/task.csv)
+## 内容支持 BBCode(如 [color=#ffd140]高亮[/color]); 静默步骤不给文案(空文本 = 隐藏气泡)
+func get_desc(data) -> String:
+	return "" if silent else super(data)
 
 
 ## 解析目标节点(相对教程托管 host; 未配置或节点缺失 → null)。
@@ -32,10 +48,14 @@ func has_signals() -> bool:
 ## 完成语义归口: "有 target 靠交互/信号、无 target 有信号等信号、无 target 无信号点击继续"
 ## 三态由此判定, 教程驱动(点击完成)与表现层(是否画全屏暗区)共用, 不各自推导。
 func click_to_complete(host: Node) -> bool:
+	if click_to_complete_with_target:
+		return true
 	return resolve_target(host) == null and not has_signals()
 
 
 ## 同上, 但接收"是否已有可解析目标"的现成判定 —— 供已 resolve 过目标的调用方使用,
 ## 避免重复解析(表现层 show_step 已解析 target, 无需再走一次 resolve)。
 func click_to_complete_for(has_target: bool) -> bool:
+	if click_to_complete_with_target:
+		return true
 	return not has_target and not has_signals()

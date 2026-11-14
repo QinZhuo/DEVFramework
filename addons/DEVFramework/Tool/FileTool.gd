@@ -130,6 +130,31 @@ static func read_text(path: String) -> String:
 	return s
 
 
+## 增量读取"只追加"文本文件的新增完整行（tail -f 语义），配合 [method LogTool.set_mirror_path] 做跨进程日志转发。
+## [param offset] 上次读到的字节偏移（首次传 0），由调用方持有，本函数无状态。
+## 返回 {lines: PackedStringArray, offset: int}：只给出以换行结尾的完整行（半行留到下次），
+## 文件被截断/重建（size 变小）时自动从头读。
+static func read_new_lines(path: String, offset: int, max_chunk := 1 << 16) -> Dictionary:
+	var result := {"lines": PackedStringArray(), "offset": offset}
+	var f := FileAccess.open(path, FileAccess.READ)
+	if f == null:
+		return result
+	var size := f.get_length()
+	if size < offset:
+		offset = 0
+	if size > offset:
+		f.seek(offset)
+		# 单次上限：首次 tail 很大的历史日志时不必整份读进内存
+		var buf := f.get_buffer(mini(size - offset, max_chunk))
+		# 在字节层找最后一个换行：多字节字符按字符数换算长度会错位
+		var last_nl := buf.rfind(10)
+		if last_nl >= 0:
+			result.offset = offset + last_nl + 1
+			result.lines = buf.slice(0, last_nl).get_string_from_utf8().split("\n")
+	f.close()
+	return result
+
+
 ## 原子写入文本(UTF-8)。
 static func atomic_write_text(path: String, text: String) -> Error:
 	return atomic_write_bytes(path, text.to_utf8_buffer())

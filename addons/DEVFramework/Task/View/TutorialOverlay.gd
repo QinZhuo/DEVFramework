@@ -159,8 +159,10 @@ func show_step(step: Task, host: Node) -> void:
 	# 遮罩策略: 有 target(挖孔) 或"点击任意处继续"的纯提示(click_to_complete)都画暗区并强制点击,
 	# 使全屏文本提示与指定操作步骤一样: 除文本气泡高亮外其余位置调暗, 玩家只能点击继续。
 	# 仅"等待信号"的纯提示步骤(click_to_complete=false)保持不遮罩, 以便玩家操作界面触发信号。
+	# block_input=false 的步骤(目标只是第一步操作)只画框与箭头, 不拦输入。
+	var block := (has_target or click_to_complete) and (step_def.block_input if step_def else true)
 	focus(target, target_def,
-			has_target or click_to_complete,
+			block,
 			click_to_complete,
 			step.get_current_desc() if step else "")
 
@@ -493,10 +495,12 @@ func _pointer_position(event: InputEvent) -> Vector2:
 	return Vector2.INF
 
 
-## 判断该步骤是否放行全屏点击(仅用于"无目标"的纯提示步骤点击完成兜底)。
-## 存在目标(_target 有效)时一律视为"有目标区域"，绝不放行全屏 —— 目标外必须拦截。
+## 判断该步骤是否放行全屏点击(点击任意处继续)。
+## 只要步骤"点击完成"(纯提示, 或 click_to_complete_with_target 的框选说明), 就整屏放行 ——
+## 玩家点气泡、点框外都算继续; 否则点了毫无反应, 极易被当成卡死。
+## 需要目标交互的步骤(不等点击完成)不放行, 目标外一律拦截。
 func _allow_fullscreen_click() -> bool:
-	return _click_to_complete and (_target == null or not is_instance_valid(_target))
+	return _click_to_complete
 
 
 ## 挖孔为空(_hole.size==ZERO)时是否仍需拦截全部指针交互 / 绘制全屏暗区。
@@ -571,8 +575,14 @@ func _advance_hole(_delta: float) -> bool:
 
 func _apply_rects() -> void:
 	var v := get_viewport_rect().size
+	# 拖拽中必须放行: 3D 拖拽(手牌排序/拖去出售)要把目标拖出挖孔, 而孔外的暗区 Control 是
+	# MOUSE_FILTER_STOP —— 它会把拖动途中的鼠标移动事件吃掉(GUI 命中 STOP 即 set_input_as_handled),
+	# 事件进不到 DragView3D._unhandled_input ⇒ 卡牌停在孔边不动, 表现为"拖一下就卡住拖不动"。
+	# 按下那一刻由 allow_outside_drag/_hover_hits_draggable 放行, 但拖动**过程中**的事件同样要放行,
+	# 故拖拽期间暗区/感应区一律 IGNORE; 拖拽态纳入缓存键, 起拖/落手各重排一次布局。
+	var dragging := _is_dragging_3d()
 	# 布局未变化则跳过: 每帧重设子控件 size/position 会反复触发 Control 重排
-	var key := [_active, _block, _click_to_complete, _hole, v, _target]
+	var key := [_active, _block, _click_to_complete, _hole, v, _target, dragging]
 	if key == _rects_key:
 		return
 	_rects_key = key
@@ -585,9 +595,11 @@ func _apply_rects() -> void:
 		_sensor.visible = false
 		return
 	# 拦截策略: 阻断时暗区 STOP(拦截暗区点击, 孔内穿透); 不阻断时暗区 IGNORE(仅视觉不拦输入)
-	var dim_filter := Control.MOUSE_FILTER_STOP if _block else Control.MOUSE_FILTER_IGNORE
-	_sensor.mouse_filter = Control.MOUSE_FILTER_STOP if _block and _click_to_complete else Control.MOUSE_FILTER_IGNORE
-	_sensor.visible = _block and _click_to_complete
+	# 拖拽中(dragging)一律 IGNORE: 否则鼠标移到孔外时暗区吃掉移动事件, 拖拽卡在孔边
+	var dim_filter := Control.MOUSE_FILTER_STOP if _block and not dragging else Control.MOUSE_FILTER_IGNORE
+	_sensor.mouse_filter = Control.MOUSE_FILTER_STOP \
+			if _block and _click_to_complete and not dragging else Control.MOUSE_FILTER_IGNORE
+	_sensor.visible = _block and _click_to_complete and not dragging
 	if _hole.size == Vector2.ZERO:
 		# 不挖孔: 单块全屏板(阻断时拦截全屏, 不阻断时仅视觉由 _draw 画暗区)
 		# 目标为有效节点但暂不可见(如战斗结算面板弹出、商店未开)时拦截板不拦截输入(IGNORE),
@@ -595,7 +607,7 @@ func _apply_rects() -> void:
 		_dim_top.position = Vector2.ZERO
 		_dim_top.size = v
 		_dim_top.mouse_filter = Control.MOUSE_FILTER_STOP \
-				if (_block and _block_when_hole_empty()) else Control.MOUSE_FILTER_IGNORE
+				if (_block and not dragging and _block_when_hole_empty()) else Control.MOUSE_FILTER_IGNORE
 		for r: Control in [_dim_bottom, _dim_left, _dim_right]:
 			r.mouse_filter = Control.MOUSE_FILTER_IGNORE
 			r.size = Vector2.ZERO

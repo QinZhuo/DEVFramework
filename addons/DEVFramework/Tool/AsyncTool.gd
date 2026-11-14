@@ -161,9 +161,6 @@ static func await_signals(sigs: Array, cancel_check: Callable = func(): return f
 	return false
 
 
-## 全局回调延迟（秒），MonitorGame 启动时设为 0.1
-static var await_emit_delay: float = 0.0
-
 ## 将数组分帧处理，每帧处理一批后 yield，避免批量操作集中在一帧导致掉帧。
 ## [br]  [param items] 要处理的数组
 ## [br]  [param per_frame_count] 每帧处理多少元素
@@ -208,23 +205,20 @@ static func await_with_timeout(action: Callable, timeout_ms: int = -1, log_name:
 ## await_with_timeout 的统一默认等待时间（毫秒），>0 时启用超时检测
 static var await_with_timeout_default_ms: int = 5000
 
-## 手动触发 Signal 所有回调并 await
+## 手动触发 Signal 所有回调并 await。
+## 连接之间**不插停顿**：节奏属于效果自己的事（见 SymbolComponent.INTERVAL_TIME、Card 的重复触发间隔等），
+## 框架替业务决定"每条隔多久"只会一刀切，而且把等待堆进无法中断的公共路径。
 static func await_emit(s: Signal, ...args) -> void:
 	var conns := s.get_connections()
 	if conns.is_empty():
 		return
 	var timer := LogTool.timer("信号", str("同步信号 ", s.get_object().get_class(), ".", s.get_name()))
-	for i in conns.size():
-		var c = conns[i]
+	for c in conns:
 		var cb: Callable = c.callable
 		var flags: int = c.flags
 		await cb.callv(args)
 		if flags & CONNECT_ONE_SHOT:
 			s.disconnect(cb)
-		if await_emit_delay > 0.0 and i < conns.size() - 1:
-			## 按物理 tick 对齐（第 3 参 process_in_physics=true）：这里是符号/卡牌触发链的热路径，
-			## 在渲染帧上计时会让每个连接的 0.1s 休息随帧率漂移 ⇒ 回放中的触发时刻/距离判定全部抖动
-			await Engine.get_main_loop().create_timer(await_emit_delay, true, true).timeout
 	timer.stop()
 
 ## 是否为**协程句柄** —— 含 `await` 的函数在让出控制权前返回的 `GDScriptFunctionState`。
