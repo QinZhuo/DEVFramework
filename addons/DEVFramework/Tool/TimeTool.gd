@@ -61,6 +61,17 @@ static func set_rate_scale(scale: float) -> void:
 	_apply(_mv.value / 100.0)
 
 
+## 复位到 1x 并清空修饰器（切场景 / 回标题）：暂停、慢放、动态倍速一并清掉。
+static func reset() -> void:
+	_mv = null
+	_paused = false
+	_rate_scale = 1.0
+	Engine.time_scale = 1.0
+	Engine.physics_ticks_per_second = base_ticks()
+	Engine.max_physics_steps_per_frame = int(
+			ProjectSettings.get_setting("physics/common/max_physics_steps_per_frame", MIN_STEPS_PER_FRAME))
+
+
 # ── 基础速度（用户设置） ──
 
 static func set_base_speed(speed: float) -> void:

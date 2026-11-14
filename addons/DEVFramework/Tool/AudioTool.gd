@@ -98,6 +98,14 @@ static func stop_music(fade := 0.0) -> void:
 	_fade_out_music(_music.volume_db if is_instance_valid(_music) else 0.0, fade)
 
 
+## 停掉音乐与全部总线通道、清空待播队列（切场景 / 回标题）。常驻容器保留。
+static func reset() -> void:
+	stop_music(0.0)
+	stop_all()
+	_pending.clear()
+	_pending_music = {}
+
+
 # ============================================================
 # 总线音量
 # ============================================================

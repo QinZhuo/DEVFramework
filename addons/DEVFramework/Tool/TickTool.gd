@@ -72,3 +72,11 @@ static func defer(lane: int, action: Callable) -> void:
 static func clear() -> void:
 	_queue = []
 	_seq = 0
+
+
+## 清队列并回到"未接线"状态（切场景）：新场景忘了接线仍然会告警
+static func reset() -> void:
+	clear()
+	_driven = false
+	_warned = false
+	_backlog_warned = false

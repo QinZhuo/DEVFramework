@@ -206,6 +206,13 @@ static func close_all() -> void:
 	if is_instance_valid(_current_tooltip):
 		_current_tooltip.close()
 
+## 清空栈与 ToolTip 登记（切场景 / 回标题时调用）。
+## 只清框架的静态状态，**不触发面板动画、不同步面板自身的 is_open** ——
+## 只在对局整体结束、面板即将被释放时用；对局中途调用会让面板状态与栈脱节。
+static func reset() -> void:
+	_stack.clear()
+	_current_tooltip = null
+
 # ============================================================
 # 查询
 # ============================================================

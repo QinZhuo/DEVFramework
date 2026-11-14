@@ -35,6 +35,11 @@ static func begin_drag(node: Node3D) -> void:
 static func end_drag() -> void:
 	dragging = null
 
+## 清掉悬停/拖拽登记（切场景）：避免持有已释放节点
+static func reset() -> void:
+	over = null
+	dragging = null
+
 ## 是否有视图正在拖拽（陈旧登记顺手清掉，避免被回收的视图锁死全部悬停）
 static func is_dragging() -> bool:
 	if not is_instance_valid(dragging):

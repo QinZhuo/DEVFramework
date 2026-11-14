@@ -28,6 +28,15 @@ static var _binding := -1
 static var _shown := false
 static var _dirty := false
 
+## 清空提示栈与延迟队列（切场景 / 回标题）。渲染目标已失效时同样安全。
+static func reset() -> void:
+	_unbind()
+	_stack.clear()
+	_delayed.clear()
+	_hiding.clear()
+	_shown = false
+	_dirty = false
+
 ## 在宿主 _ready 里绑定一次；label 需已入树。传 null 解除绑定
 static func attach(target: RichTextLabel, target_tween: TweenAnimation = null) -> void:
 	_unbind()
