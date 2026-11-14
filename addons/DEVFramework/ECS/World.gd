@@ -126,6 +126,6 @@ func _setup_world(_world: ECSWorld) -> void:
 func set_render_enabled(on: bool) -> void:
 	if ecs == null:
 		return
-	for s in ecs._systems:
+	for s in ecs.get_systems():
 		if s is ECSSyncSystem:
 			s.render_enabled = on

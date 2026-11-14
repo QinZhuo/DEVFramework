@@ -1755,6 +1755,12 @@ func spawn_from_def(def: ECSPrefabDef, count: int = 1, overrides: Dictionary = {
 # ============================================================
 
 ## 暂停或恢复世界(暂停 = 不执行任何系统, 用于多世界对比)。
+## ⚠️ 会覆盖各系统自己的 enabled: 恢复时一律置 true, 原本手动关掉的系统会被一起打开。
 func set_paused(paused: bool) -> void:
 	for s in _systems:
 		s.enabled = not paused
+
+
+## 已注册系统(副本, 供宿主只读遍历; 不要在遍历中注册/移除系统)。
+func get_systems() -> Array[ECSSystem]:
+	return _systems.duplicate()

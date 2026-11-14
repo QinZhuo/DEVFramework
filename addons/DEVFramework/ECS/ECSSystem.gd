@@ -3,8 +3,8 @@ extends RefCounted
 
 ## ECS 系统运行时基类 —— 逻辑、配置与运行态都在实例上，不依赖 Def 数据管线。
 ##
-## 系统是**代码创建**的运行时对象：子类在 World._setup_world() 里 new 出来并 register_system()，
-## 参数直接赋值（HealSystem.new().setup(5.0)）。不提供 Inspector 配置，也就不需要配置资源层。
+## 系统是**代码创建**的运行时对象：子类在 World._setup_world() 里 new 出来、给字段赋值后
+## register_system()。不提供 Inspector 配置，也就不需要配置资源层。
 
 ## 优先级（大者先跑，同优先级按注册顺序）；register_system() 不传参时取它
 var priority: int = 0

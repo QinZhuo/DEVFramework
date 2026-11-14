@@ -28,15 +28,6 @@ func _setup_world(world: ECSWorld) -> void:
 	world.register_system(sync)
 
 
-## 渲染开关: 控制场景内 ECSSyncSystem 的 render_enabled(渲染开/关对比用)。
-func set_render_enabled(on: bool) -> void:
-	if ecs == null:
-		return
-	for s in ecs._systems:
-		if s is ECSSyncSystem:
-			s.render_enabled = on
-
-
 ## 生成球实体(ECS 数据) + 显示节点(NodeLink 关联)。
 func _spawn_balls() -> void:
 	var rng := RandomNumberGenerator.new()
