@@ -1,6 +1,6 @@
 # 分层约定（框架 = 机制 / 项目 = 内容）
 
-> 新增任何代码前先过第二节清单。历史决策见第八节。
+> 新增任何代码前先过第二节清单。改动理由写进提交信息，不写进本文件。
 
 ## 一、核心原则
 
@@ -66,11 +66,3 @@ grep -rE "\b(damage|card|fight|buff|health|gold|shop)\b" addons/DEVFramework --i
 | 3 | 关键存档数据不用内嵌子资源 | 无法被 DLC 覆盖，子资源改名/重排即失效 |
 
 新增内容一律用新路径（覆盖只用于替换，不用于扩展）。
-
-## 八、决策记录
-
-- **2026-11** ECS 系统改为纯运行时（`RefCounted`，`World._setup_world` 里代码创建并注册），不继承 Def、无配置资源层；`register_system()` 不传优先级时取 `system.priority`。
-- **2026-10** PCG 拆为独立插件项目（`d:\Work\GodotProject\PCG`）；程序化音频合成整体移除。
-- **2026-08** Buff/Attribute 下沉项目层（框架只留 `Modifier`/`ModifierValue` 数学）。
-- **2026-08** VirtualCamera 并入框架 `Camera/` 功能轴（机位竞争 + 混合数学 + 行为资源）。
-- **2026-08** Task/Audio 归位功能轴，确立目录双轨制。
