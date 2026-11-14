@@ -1,0 +1,7 @@
+[gd_resource type="Resource" script_class="TutorialStepDef" format=3]
+
+[ext_resource type="Script" uid="uid://djqgtqpyuuecc" path="res://addons/DEVFramework/Task/Def/TutorialStepDef.gd" id="1_step"]
+
+[resource]
+resource_name = "Step_Tip"
+script = ExtResource("1_step")

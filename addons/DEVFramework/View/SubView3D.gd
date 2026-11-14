@@ -4,10 +4,7 @@ class_name SubView3D extends MeshInstance3D
 @export var viewport: SubViewport:
 	set(value):
 		viewport = value
-		if viewport and Engine.is_editor_hint():
-			var view := get_surface_override_material(0).emission_texture as ViewportTexture
-			if not view.viewport_path:
-				view.viewport_path = viewport.get_path()
+		_apply_viewport_texture()
 
 @export var area: Area3D
 
@@ -21,18 +18,31 @@ func _init() -> void:
 	if not get_surface_override_material(0):
 		var mat := StandardMaterial3D.new()
 		mat.albedo_color = Color.BLACK
-		mat.albedo_texture = ViewportTexture.new()
-		mat.emission_texture = mat.albedo_texture
-		mat.emission_intensity = 0.5
-		mat.emission_enabled = true
 		mat.resource_local_to_scene = true
 		set_surface_override_material(0, mat)
 
 func _ready() -> void:
+	_apply_viewport_texture()
 	if area:
 		PointerTool.bind(area, _on_mouse_entered, _on_mouse_exited)
 		area.input_event.connect(_on_input_event)
 		area.input_ray_pickable = is_visible_in_tree()
+
+## 贴图取自 viewport: 运行时直接用实例贴图, 编辑器里用带路径的 ViewportTexture 才能存盘
+func _apply_viewport_texture() -> void:
+	var mat := get_surface_override_material(0) as StandardMaterial3D
+	if mat == null or viewport == null:
+		return
+	var tex: Texture2D = viewport.get_texture()
+	if Engine.is_editor_hint():
+		if not viewport.is_inside_tree():
+			return
+		var vp_tex := ViewportTexture.new()
+		vp_tex.viewport_path = viewport.get_path()
+		tex = vp_tex
+	mat.albedo_texture = tex
+	mat.emission_texture = tex
+	mat.emission_enabled = true
 
 func _notification(what: int) -> void:
 	# 隐藏的面板不参与鼠标拾取：否则看不见的面板会抢走点击，把事件按自己的 UV 转发给视口

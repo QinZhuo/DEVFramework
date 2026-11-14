@@ -17,5 +17,5 @@ node_path = NodePath("UI/StartButton")
 [resource]
 resource_name = "Step_Welcome"
 script = ExtResource("1_step")
-target = SubResource("Resource_target")
+targets = Array[ExtResource("2_target")]([SubResource("Resource_target")])
 signals = Array[ExtResource("2_3d0pr")]([SubResource("Resource_sig")])

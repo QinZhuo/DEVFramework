@@ -1,0 +1,30 @@
+[gd_resource type="Resource" script_class="TutorialStepDef" format=3]
+
+[ext_resource type="Script" uid="uid://djqgtqpyuuecc" path="res://addons/DEVFramework/Task/Def/TutorialStepDef.gd" id="1_step"]
+[ext_resource type="Script" uid="uid://ecvlbe1pssoo" path="res://addons/DEVFramework/Def/SignalDef.gd" id="2_sig"]
+[ext_resource type="Script" uid="uid://bnk4gycnoo48j" path="res://addons/DEVFramework/Task/Def/TutorialTargetDef.gd" id="3_target"]
+[ext_resource type="Script" uid="uid://bskdrnpw1mrbs" path="res://addons/DEVFramework/Def/NodeSignalDef.gd" id="4_node_sig"]
+
+[sub_resource type="Resource" id="Resource_target_a"]
+script = ExtResource("3_target")
+node_path = NodePath("UI/StartButton")
+
+[sub_resource type="Resource" id="Resource_target_b"]
+script = ExtResource("3_target")
+node_path = NodePath("UI/MovingButton")
+
+[sub_resource type="Resource" id="Resource_sig_a"]
+script = ExtResource("4_node_sig")
+node_path = NodePath("UI/StartButton")
+signal_name = &"pressed"
+
+[sub_resource type="Resource" id="Resource_sig_b"]
+script = ExtResource("4_node_sig")
+node_path = NodePath("UI/MovingButton")
+signal_name = &"pressed"
+
+[resource]
+resource_name = "Step_Multi"
+script = ExtResource("1_step")
+targets = Array[ExtResource("3_target")]([SubResource("Resource_target_a"), SubResource("Resource_target_b")])
+signals = Array[ExtResource("2_sig")]([SubResource("Resource_sig_a"), SubResource("Resource_sig_b")])

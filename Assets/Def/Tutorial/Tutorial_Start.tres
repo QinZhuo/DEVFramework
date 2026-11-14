@@ -1,10 +1,15 @@
-[gd_resource type="Resource" load_steps=4 format=3]
+[gd_resource type="Resource" load_steps=9 format=3]
 
 [ext_resource type="Script" path="res://addons/DEVFramework/Task/Def/GroupTaskDef.gd" id="1_flow"]
 [ext_resource type="Resource" path="res://Assets/Def/Tutorial/Step_Welcome.tres" id="2_s1"]
 [ext_resource type="Resource" path="res://Assets/Def/Tutorial/Step_ClickBall.tres" id="3_s2"]
+[ext_resource type="Resource" path="res://Assets/Def/Tutorial/Step_MovingButton.tres" id="4_s3"]
+[ext_resource type="Resource" path="res://Assets/Def/Tutorial/Step_Screen2D.tres" id="5_s4"]
+[ext_resource type="Resource" path="res://Assets/Def/Tutorial/Step_Screen3D.tres" id="6_s5"]
+[ext_resource type="Resource" path="res://Assets/Def/Tutorial/Step_Multi.tres" id="7_s6"]
+[ext_resource type="Resource" path="res://Assets/Def/Tutorial/Step_Tip.tres" id="8_s7"]
 
 [resource]
 script = ExtResource("1_flow")
-tasks = Array[TaskDef]([ExtResource("2_s1"), ExtResource("3_s2")])
+tasks = Array[TaskDef]([ExtResource("2_s1"), ExtResource("3_s2"), ExtResource("4_s3"), ExtResource("5_s4"), ExtResource("6_s5"), ExtResource("7_s6"), ExtResource("8_s7")])
 mode = 0

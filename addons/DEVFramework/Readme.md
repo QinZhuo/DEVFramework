@@ -47,7 +47,7 @@ func apply(ctx) -> void:
 | 文本 | `TranslationTool` / `CSVDataAccess` / `TipTool` |
 | 生命周期 | `NodeTreeTool`（按约定调 `game_init` / `game_ready` / `save_data` / `load_data`） |
 | 音频 | `AudioTool`（常驻复音通道、3D 定位）、`AudioMixerTool`（效果预设 + 总线）、`AudioBakeTool`（录音 + WAV） |
-| UI | `UITool`（6 层栈）、`UIPanelTool`（2D/3D 共用状态机）、`ArrayViewTool` |
+| UI | `UITool`（6 层栈）、`UIPanelTool`（2D/3D 共用状态机）、`FocusMaskTool`（焦点遮罩）、`ArrayViewTool` |
 | 其它 | `CameraTool` / `ChangelogTool` / `DisplayTool` / `FileTool` / `PointerTool` / `PrewarmTool` / `ScreenshotTool` |
 
 项目设置项（插件注册时写入）：`dev_framework/log/*`（开关、时间戳、忽略标签）、`save_tool/encrypt_salt`、`lightmap/scan_dir`、`mcp/*`（见下文 MCP 一节）。
@@ -57,6 +57,7 @@ func apply(ctx) -> void:
 - `UIPanel` / `UIPanel3D`：`open` / `close` / `toggle` / `popup` / `await_closed`，信号 `on_open` / `on_opened` / `on_close` / `on_closed`，可覆写 `_back()` / `_focus_enter()` / `_focus_exit()`。
 - `UITool` 六层：`BACKGROUND` / `HUD` / `PANEL` / `DIALOG`（同层互斥）/ `TOOLTIP`（单实例）/ `TOP`；`back()` 只处理 DIALOG 与 PANEL。
 - 数组视图：`ArrayView`（流式）、`SlotArrayView2D/3D`（固定槽）、`OffsetArrayView2D/3D`（按 offset 排列）。填 `pool_key` + `pool_size` 走对象池（`Pool` / `PoolService`），归还时自己清 `data`、断信号。
+- 焦点遮罩：`FocusMask`（全场变暗，只有目标保持原样可交互；3D 目标单独重渲染到暗区之上，2D 目标提升绘制顺序），入口 `FocusMaskTool`（全局唯一，自动挂最高层 CanvasLayer）。
 - 渲染：`OutlineEffect`、`GLSLShaderEffect`、`Trail3D`、`BakedMeshInstance3D`（资源级光照贴图）、`SubView3D`、`ShaderProgressBar`。
 
 **约定：UI 一律用 `.tscn` 搭，不代码生成。**
