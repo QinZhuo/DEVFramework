@@ -45,18 +45,17 @@ var drag_checker: Callable
 ## 纯提示气泡的顶部下限(屏幕 Y, -1 = 不限): 气泡会落在该线以下, 避免压住指定控件
 var tip_top_limit := -1.0
 
-## 发光颜色(3D 用 alpha 轮廓, 2D 用控件矩形)
+## 发光颜色
 @export var glow_color := Color(1.0, 0.86, 0.55, 1.0)
+## 发光强度
+@export var glow_energy := 0.9
 ## 3D: 发光向外扩散的半径(像素)
 @export var glow_radius := 44.0
-## 3D: 发光强度
-@export var glow_energy := 0.9
 ## 3D: 物体内部的自发光抬亮
-@export var inner_boost := 0.06
-## 2D: 发光向外扩散的距离(像素), 与 glow_radius 是同一套观感
+@export var inner_boost := 0.05
+## 2D: 发光向外扩散的最大距离(像素); 实际按目标尺寸等比缩放
 @export var glow_width := 34.0
-## 2D 光晕细分层数(越多越平滑)
-const LAYER_COUNT := 24
+
 
 var _targets: Array[Node] = []
 var _paddings := PackedFloat32Array()
@@ -73,12 +72,14 @@ var _z_backup := {}
 var _dims: Array[Control] = []
 ## 可交互区域(屏幕坐标)
 var _hit_rects: Array[Rect2] = []
-## 需要矩形描边的区域(没有轮廓贴图的 2D 目标)
+## 需要 2D 发光(矩形轮廓)的区域: 没有轮廓贴图的 2D 控件 / 提升出来的贴图面
 var _plain_rects: Array[Rect2] = []
-## 已经有轮廓发光(3D 重渲染)的目标 → 不再画矩形光晕
+## 走轮廓发光的 3D 目标(它们有真实 alpha, 不再画矩形光)
 var _lit := {}
 ## canvas → 是否用轮廓发光(整块贴图面提亮时关掉, 免得整块面板发光)
 var _glow_canvases := {}
+## 2D 光圈的细分层数(越多越平滑)
+const LAYER_COUNT := 24
 var _screen_size := Vector2.ZERO
 var _active := false
 var tip_panel: Panel
@@ -145,7 +146,6 @@ func focus(items: Array, opts: Dictionary = {}, host: Node = null) -> void:
 	visible = true
 	_apply_presentation()
 	_update_geometry()
-	queue_redraw()
 	set_tip(str(opts.get("tip", "")))
 	_grab_target_focus()
 
@@ -222,17 +222,21 @@ func _apply_presentation() -> void:
 	for canvas in _lights:
 		var entry: Dictionary = _lights[canvas]
 		_apply_glow_params(entry.glow_mat)
-		# 只有"物体本身"发光; 提升出来的整块贴图面(子视口目标)只提亮不发光
+		# 只有"物体本身"走轮廓发光; 提升出来的整块贴图面只提亮, 光画在目标矩形上
 		entry.rect.material = entry.glow_mat if _glow_canvases.get(canvas, false) else null
 
 
-## 柔光参数(低分辨率模糊那一层)
+## 轮廓发光参数(3D 重渲染结果的后处理)
 func _apply_glow_params(mat: ShaderMaterial) -> void:
 	if mat == null:
 		return
 	mat.set_shader_parameter("glow_color", glow_color)
+	mat.set_shader_parameter("glow_radius", glow_radius)
 	mat.set_shader_parameter("glow_energy", glow_energy)
-	mat.set_shader_parameter("blur_pixels", maxf(glow_radius / 12.0, 1.0))
+	mat.set_shader_parameter("inner_boost", inner_boost)
+
+
+
 
 
 ## 目标 → 真正点亮的节点(子视口里的目标升级为它的 SubView3D 面板)
@@ -335,11 +339,10 @@ func _light_3d() -> void:
 		if promoted is Node3D and _is_renderable(promoted):
 			by_canvas.get_or_add(get_viewport(), []).append(promoted)
 			if node is Node3D and promoted == node:
-				_lit[node] = true  # 真·3D 物体: 用顶点轮廓发光
+				_lit[node] = true  # 真·3D 物体: 用它的真实轮廓发光
 				_glow_canvases[get_viewport()] = _glow_canvases.get(get_viewport(), true)
 			else:
-				# 子视口目标: 只把整块贴图面提亮, 不整块发光; 光晕画在目标自己的矩形上
-				_glow_canvases[get_viewport()] = false
+				_glow_canvases[get_viewport()] = false  # 整块贴图面: 只提亮, 不整块发光
 		# 不透明子视口: 里面也要压暗背景, 只留目标(透明子视口没别的可见内容, 不用管)
 		if node is Node3D and node.get_viewport() is SubViewport \
 				and not node.get_viewport().transparent_bg:
@@ -475,7 +478,6 @@ func _release_presentation() -> void:
 			entry.view.queue_free()
 		if is_instance_valid(entry.rect):
 			entry.rect.visible = false
-			entry.rect.queue_free()
 			entry.rect.queue_free()
 	_lights.clear()
 	_promoted.clear()
@@ -686,13 +688,13 @@ func _update_geometry() -> void:
 				continue
 			hit_rects.append(rect)
 			if not _lit.has(node):
-				plain_rects.append(rect)  # 没有轮廓贴图的 2D 目标: 用矩形描边
+				plain_rects.append(rect)  # 走轮廓发光的目标不再叠矩形光
 	if hit_rects == _hit_rects and plain_rects == _plain_rects and view == _screen_size:
 		return
 	_hit_rects = hit_rects
 	_plain_rects = plain_rects
 	_screen_size = view
-	queue_redraw()  # 目标移动时描边/光晕跟着走
+	queue_redraw()  # 目标移动时 2D 光跟着走
 	_place_tip()
 
 
@@ -703,18 +705,17 @@ func _update_geometry() -> void:
 func _draw() -> void:
 	if not _active or _plain_rects.is_empty() or glow_color.a <= 0.0:
 		return
-	# 和 3D 同一套观感: 从边界向外平滑衰减的柔光; 只在矩形外侧落笔, 不糊本体
-	var spread := maxf(glow_width, 2.0)
-	var stroke := spread / float(LAYER_COUNT) + 1.0
-	for i in LAYER_COUNT:
-		var t := float(i) / float(LAYER_COUNT)
-		var alpha := glow_color.a * glow_energy * pow(1.0 - t, 2.5) * 0.16
-		if alpha <= 0.003:
-			continue
-		var ring := Color(glow_color, alpha)
-		var grow := 1.0 + spread * t
-		for rect in _plain_rects:
-			draw_rect(rect.grow(grow), ring, false, stroke)
+	# 只在矩形外侧叠细密同心圈: 内侧不落笔 ⇒ 本体不会被糊上光, 且没有可见的硬边
+	for rect in _plain_rects:
+		# 扩散距离随目标尺寸缩放: 大按钮和小方块看起来才是同一个强度
+		var spread := clampf(minf(rect.size.x, rect.size.y) * 0.45, 6.0, maxf(glow_width, 6.0))
+		var stroke := spread / float(LAYER_COUNT) + 1.0
+		for i in LAYER_COUNT:
+			var t := float(i) / float(LAYER_COUNT)
+			var alpha := glow_color.a * glow_energy * pow(1.0 - t, 2.5) * 0.16
+			if alpha <= 0.003:
+				continue
+			draw_rect(rect.grow(1.0 + spread * t), Color(glow_color, alpha), false, stroke)
 
 
 # ------------------------------------------------------------
