@@ -76,10 +76,15 @@ const MCPEditorEnv := preload("res://addons/DEVFramework/MCP/MCPEditorEnv.gd")
 ## 输出给 AI 的核心属性白名单(过滤编辑器内部数百项属性, 控制上下文开销)
 const CORE_PROP_NAMES := ["name", "position", "scale", "rotation", "rotation_degrees", "visible", "modulate", "process_mode", "z_index", "text", "color"]
 
-## 默认展开深度 3(而非 8): 本项目场景根下挂着大量 SubViewport 内的 UI 子树, 深度 8 会把
-## 它们连同道具栏/升级面板等整片拉平 —— 实测单次返回 60453 字符, 而其中绝大部分对"理解场景结构"
-## 无用。3 层足够看清"有哪些节点、挂在哪", 需要更深时按节点路径单独展开。
-const DEFAULT_SCENE_TREE_DEPTH := 3
+## 默认展开深度; 场景 UI 层级深的项目可在 dev_framework/mcp/scene_tree_depth 调小,
+## 避免一次拉平整片子树(需要更深时按节点路径单独展开)。
+const SETTING_SCENE_TREE_DEPTH := "dev_framework/mcp/scene_tree_depth"
+const DEFAULT_SCENE_TREE_DEPTH := 8
+
+
+## 场景树默认展开深度(项目设置可覆盖)
+static func scene_tree_depth() -> int:
+	return int(ProjectSettings.get_setting(SETTING_SCENE_TREE_DEPTH, DEFAULT_SCENE_TREE_DEPTH))
 
 
 ## ======= 域注册入口 =======
@@ -95,7 +100,7 @@ static func register(add_tool: Callable) -> void:
 	## -- 场景树 / 节点 --
 	add_tool.call("get_scene_tree",
 		"获取当前编辑场景的节点树结构(路径/名称/类型)。理解场景结构用。返回 node_count(本次列出行数)/pruned_nodes(因深度上限未展开的节点数), 后者>0 表示还有子树没给, 需深挖请用 get_node_info(path)。",
-		{"type": "object", "properties": {"max_depth": {"type": "integer", "description": "最大展开深度, 默认 3"}, "include_properties": {"type": "boolean", "description": "是否附带每个节点的关键属性, 默认 false"}}},
+		{"type": "object", "properties": {"max_depth": {"type": "integer", "description": "最大展开深度, 默认取项目设置 dev_framework/mcp/scene_tree_depth"}, "include_properties": {"type": "boolean", "description": "是否附带每个节点的关键属性, 默认 false"}}},
 		_handle_get_scene_tree)
 
 	## 【必填参数一律声明 required】本文件里必填项的兜底曾分三档, 档位之间体验差别很大:
@@ -157,7 +162,7 @@ static func register(add_tool: Callable) -> void:
 ## ======= 实现 =======
 
 static func _handle_get_scene_tree(args: Dictionary) -> Dictionary:
-	var max_depth: int = VariantTool.get_int(args, "max_depth", DEFAULT_SCENE_TREE_DEPTH)
+	var max_depth: int = VariantTool.get_int(args, "max_depth", scene_tree_depth())
 	var include_props := VariantTool.get_bool(args, "include_properties")
 	var root := MCPEditorEnv.edited_root()
 	if root == null:

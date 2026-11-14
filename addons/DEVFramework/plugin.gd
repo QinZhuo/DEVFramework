@@ -42,6 +42,10 @@ func _enter_tree() -> void:
 	_register("dev_framework/mcp/port", TYPE_INT, 8931)
 	_register("dev_framework/mcp/token", TYPE_STRING, "")
 	_register("dev_framework/mcp/max_output_chars", TYPE_INT, MCPDevServer.DEFAULT_MAX_OUTPUT_CHARS)
+	# get_scene_tree 默认展开深度(UI 层级深的项目可调小, 避免一次拉平整片子树)
+	_register("dev_framework/mcp/scene_tree_depth", TYPE_INT, 8)
+	# 调试分支名(英文逗号分隔多个; 命中即视为 debug 环境, 空=正式分支)
+	_register("dev_framework/debug/branch_names", TYPE_STRING, "")
 	_register("dev_framework/mcp/log_tool_results", TYPE_BOOL, false)
 	# 游戏调用单次等待上限: 编辑器等游戏经调试线回包, 以及 run_tests(process=game) 的单次阻塞
 	# 共用它。默认 600s(10 分钟, 与测试硬超时对齐); 过小会截到安全下限, 过大也会截到上限。

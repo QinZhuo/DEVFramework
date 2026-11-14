@@ -1,273 +1,275 @@
 @tool
-## 通用音频管理工具 — 播放 / 总线 / 保存 / 查询 / 效果链 / 效果录音
-## 职责边界: 只做通用音频管理(播放任意 AudioStream / 总线效果 / WAV 保存 / 流信息查询)。
-##   程序化音频合成已从本仓移除, 本工具不再承担生成职责。
+## 运行时音频入口 —— 播放(2D/3D 同接口) + 背景音乐交叉淡化 + 总线音量/静音。
+## 实现: 每条总线一条常驻复音通道(AudioStreamPolyphonic), 播放不新建节点, 超出复音上限由引擎裁掉最旧一路。
+## 分工: 效果预设与总线布局见 AudioMixerTool(编辑器/启动期), 资产烘焙见 AudioBakeTool。
 ## 使用:
-##   AudioTool.play_stream(stream)            # 播放任意音频流
-##   AudioTool.setup_audio_buses()            # 标准总线布局
-##   AudioTool.save_wav(stream, path)         # 导出 WAV
+##   AudioTool.play(stream, {bus = "SFX", volume_db = -6.0})
+##   AudioTool.play(stream, {target = node3d, unit_size = 10.0})   # 3D 定位
+##   AudioTool.play_music(stream, {fade = 0.5})
 class_name AudioTool
 
-## 标准总线布局资源保存路径(供项目设置引用)
-const LAYOUT_PATH := "res://Assets/Audio/AudioBusLayout.tres"
-const LAYOUT_SETTING := "audio/buses/default_bus_layout"
+## 每条通道的同时发声上限(远超实际密度, 极端叠加时多出的新声音被引擎丢弃)
+const POLYPHONY := 64
+## 待播队列上限(树迟迟未就绪时丢弃最旧请求, 避免无界增长)
+const PENDING_LIMIT := 64
+## 常驻容器节点名(挂在 SceneTree.root 下, 跨场景存活)
+const ROOT_NAME := "_Audio"
+## 3D 通道节点名(挂在目标 Node3D 下, 随目标销毁)
+const TARGET_CHANNEL := "_audio_channel_3d"
+## 音乐交叉淡化的电平跨度(dB): 新曲从 -跨度 淡入, 旧曲淡出到 -跨度
+const MUSIC_FADE_DB := 40.0
 
-## 支持的效果预设名(供 create_fx / fxs_from_names / 标准总线布局使用)
-static var fx_names := [
-	"reverb", "reverb_hall", "delay", "distortion",
-	"limiter", "compressor", "eq_lowpass", "eq_highpass", "eq_bandpass", "spectrum",
-]
+## bus -> 复音通道(AudioStreamPlayer)
+static var _channels: Dictionary = {}
+static var _root: Node
+static var _music: AudioStreamPlayer
+## 场景树未就绪时的待播请求(音效队列 + 最近一次音乐请求)
+static var _pending: Array[Dictionary] = []
+static var _pending_music: Dictionary = {}
+static var _flush_connected := false
 
-## ============ 播放(通用) ============
 
-## 播放已有音频流(自动释放); bus 为空用 Master, fx 非空时自动建 "FX_<bus>" 效果总线
-static func play_stream(stream: AudioStream, volume_db := 0.0, bus := "Master", fx: Array[AudioEffect] = []) -> AudioStreamPlayer:
-	var player := AudioStreamPlayer.new()
-	player.stream = stream
-	player.volume_db = volume_db
-	player.bus = resolve_bus(bus, fx)
-	var root := Engine.get_main_loop() as SceneTree
-	if root and root.root:
-		root.root.add_child(player)
-		player.play()
-		player.finished.connect(player.queue_free)
+# ============================================================
+# 播放
+# ============================================================
+
+## 播放音频流。返回是否已受理(树未就绪时会排队, 就绪后补播, 同样算受理)。
+## [param opts] 可选键:
+##   bus(String) / volume_db(float) / pitch(float) / jitter(音高随机 ±音分, 高频音效防机械感)
+##   target(Node3D, 挂在其上做定位播放; 无效时回退 2D 通道) / unit_size / attenuation_model(3D 衰减)
+static func play(stream: AudioStream, opts := {}) -> bool:
+	if stream == null:
+		return false
+	if not _tree_ready():
+		if _pending.size() >= PENDING_LIMIT:
+			_pending.remove_at(0)
+		_pending.append({"stream": stream, "opts": opts.duplicate()})
+		_connect_flush()
+		return true
+	return _play_now(stream, opts)
+
+
+## 停止播放: bus 为空=清空所有 2D 通道; 3D 通道随目标节点销毁, 不在此列
+static func stop_all(bus := "") -> void:
+	for key: String in _channels.keys():
+		if bus.is_empty() or key == bus:
+			var player: AudioStreamPlayer = _channels[key]
+			if is_instance_valid(player):
+				player.stop()
+
+
+# ============================================================
+# 背景音乐
+# ============================================================
+
+## 播放背景音乐(单通道, 与旧曲交叉淡化; 同一 stream 重复调用忽略)。stream 为空=停止。
+## [param opts] 可选键: bus(默认 Music) / volume_db / fade(默认 0.5s, 0=硬切)
+static func play_music(stream: AudioStream, opts := {}) -> void:
+	var db := VariantTool.get_float(opts, "volume_db", 0.0)
+	var fade := VariantTool.get_float(opts, "fade", 0.5)
+	if stream == null:
+		stop_music(fade)
+		return
+	if is_instance_valid(_music) and _music.stream == stream:
+		return
+	if not _tree_ready():
+		_pending_music = {"stream": stream, "opts": opts.duplicate()}
+		_connect_flush()
+		return
+	_fade_out_music(db, fade)
+	var root := _channel_root()
+	if root == null:
+		return
+	_music = AudioStreamPlayer.new()
+	_music.name = "music"
+	_music.stream = stream
+	_music.bus = VariantTool.get_string(opts, "bus", "Music")
+	_music.process_mode = Node.PROCESS_MODE_ALWAYS
+	root.add_child(_music)
+	_music.volume_db = db - MUSIC_FADE_DB if fade > 0.0 else db
+	_music.play()
+	if fade > 0.0:
+		var tw := _music.create_tween()
+		tw.tween_property(_music, "volume_db", db, fade)
+
+
+## 停止背景音乐(fade>0 时淡出后释放; 正在淡出的旧曲不受影响)
+static func stop_music(fade := 0.0) -> void:
+	_fade_out_music(_music.volume_db if is_instance_valid(_music) else 0.0, fade)
+
+
+# ============================================================
+# 总线音量
+# ============================================================
+
+## 设置总线音量(dB); 总线不存在时忽略
+static func set_bus_volume(bus: String, db: float) -> void:
+	var idx := AudioServer.get_bus_index(bus)
+	if idx >= 0:
+		AudioServer.set_bus_volume_db(idx, db)
+
+
+## 读取总线音量(dB); 总线不存在返回 0
+static func get_bus_volume(bus: String) -> float:
+	var idx := AudioServer.get_bus_index(bus)
+	return AudioServer.get_bus_volume_db(idx) if idx >= 0 else 0.0
+
+
+## 静音/取消静音总线; 总线不存在时忽略
+static func set_bus_mute(bus: String, muted: bool) -> void:
+	var idx := AudioServer.get_bus_index(bus)
+	if idx >= 0:
+		AudioServer.set_bus_mute(idx, muted)
+
+
+# ============================================================
+# 内部: 通道与播放
+# ============================================================
+
+static func _play_now(stream: AudioStream, opts: Dictionary) -> bool:
+	var pitch := VariantTool.get_float(opts, "pitch", 1.0)
+	var jitter := VariantTool.get_float(opts, "jitter", 0.0)
+	if jitter > 0.0:
+		pitch *= 1.0 + randf_range(-jitter, jitter) / 1200.0
+	var player := _player_for(opts)
+	if player == null:
+		return false
+	var playback := _playback(player)
+	if playback == null:
+		return false
+	return playback.play_stream(stream, 0.0, VariantTool.get_float(opts, "volume_db", 0.0), pitch, 0, "") >= 0
+
+
+## 取播放节点: 有有效 3D 目标用挂在目标下的定位通道, 否则用该总线的 2D 通道
+static func _player_for(opts: Dictionary) -> Node:
+	var target: Variant = opts.get("target")
+	var bus := VariantTool.get_string(opts, "bus", "Master")
+	if target is Node3D and is_instance_valid(target) and (target as Node3D).is_inside_tree():
+		return _target_channel(target as Node3D, bus, opts)
+	return _channel(bus)
+
+
+static func _target_channel(target: Node3D, bus: String, opts: Dictionary) -> AudioStreamPlayer3D:
+	var player := target.get_node_or_null(TARGET_CHANNEL) as AudioStreamPlayer3D
+	if player == null:
+		player = AudioStreamPlayer3D.new()
+		player.name = TARGET_CHANNEL
+		player.stream = _polyphonic()
+		player.process_mode = Node.PROCESS_MODE_ALWAYS
+		target.add_child(player)
+	player.bus = bus
+	player.unit_size = VariantTool.get_float(opts, "unit_size", player.unit_size)
+	player.attenuation_model = VariantTool.get_int(opts, "attenuation_model", player.attenuation_model)
 	return player
 
-## ============ 效果录音(通用) ============
 
-## 把音频经效果链(内置 AudioEffect)真实播放一遍并用内置 AudioEffectRecord 录音,
-## 返回带效果的音频流。纯内置方案: 效果链与播放时完全一致, 录音截取效果总线输出。
-## 注意: 需要可用音频设备(mixer 实时处理); 耗时为音频实时时长 + 0.8s 效果尾音
-static func render_with_fx(stream: AudioStreamWAV, fx_chain: Array[AudioEffect]) -> AudioStreamWAV:
-	if stream == null or fx_chain.is_empty():
-		return stream
-	var bus_name := "FX_RecordTemp_" + str(Time.get_ticks_msec())
-	var idx := AudioServer.bus_count
-	AudioServer.add_bus()
-	AudioServer.set_bus_name(idx, bus_name)
-	for fx_effect in fx_chain:
-		if fx_effect:
-			AudioServer.add_bus_effect(idx, fx_effect)
-	var rec := AudioEffectRecord.new()
-	AudioServer.add_bus_effect(idx, rec)
-	rec.set_recording_active(true)
-	var player := AudioStreamPlayer.new()
-	player.stream = stream
-	player.bus = bus_name
+static func _channel(bus: String) -> AudioStreamPlayer:
+	var player: AudioStreamPlayer = _channels.get(bus)
+	if is_instance_valid(player) and player.is_inside_tree():
+		return player
+	var root := _channel_root()
+	if root == null:
+		return null
+	player = AudioStreamPlayer.new()
+	player.name = "channel_" + bus
+	player.stream = _polyphonic()
+	player.bus = bus
+	player.process_mode = Node.PROCESS_MODE_ALWAYS
+	root.add_child(player)
+	_channels[bus] = player
+	return player
+
+
+## 常驻容器: 跨场景存活, 且不受暂停影响(暂停时 UI/结算音效照常)
+static func _channel_root() -> Node:
+	if is_instance_valid(_root) and _root.is_inside_tree():
+		return _root
 	var tree := Engine.get_main_loop() as SceneTree
-	if tree:
-		tree.root.add_child(player)
-	player.play()
-	# 记录"原始时长 + 效果尾音"(混响/延迟会延伸尾音); 不依赖 finished, 兼容 loop 定义
-	var need := stream.get_length() + 0.8
-	var elapsed := 0.0
-	while elapsed < need:
-		await tree.create_timer(0.05).timeout
-		elapsed += 0.05
-	player.stop()
-	if player.get_parent():
-		player.queue_free()
-	rec.set_recording_active(false)
-	var recorded: AudioStreamWAV = rec.get_recording()
-	AudioServer.remove_bus(idx)
-	return recorded
+	if tree == null or tree.root == null or not tree.root.is_node_ready():
+		return null
+	_root = Node.new()
+	_root.name = ROOT_NAME
+	_root.process_mode = Node.PROCESS_MODE_ALWAYS
+	tree.root.add_child(_root)
+	return _root
 
-## ============ 保存(通用) ============
 
-## 保存为 WAV 文件。
-## 注意: 4.7.1 内置 AudioStreamWAV.save_to_wav 会把 16bit 立体声写成 mono 头(数据仍交错),
-## 导致 Godot 重新导入后声道/时长错乱, 故这里手写标准 44 字节 PCM 头(立体声/16bit)
-static func save_wav(stream: AudioStreamWAV, path: String) -> Error:
-	if stream == null or stream.data.is_empty():
-		return ERR_INVALID_DATA
-	var f := FileAccess.open(path, FileAccess.WRITE)
-	if f == null:
-		return FileAccess.get_open_error()
-	var data := stream.data
-	f.store_buffer("RIFF".to_ascii_buffer())
-	f.store_32(36 + data.size())
-	f.store_buffer("WAVEfmt ".to_ascii_buffer())
-	f.store_32(16)          # fmt 块长度
-	f.store_16(1)           # PCM 编码
-	f.store_16(2)           # 声道数: 立体声
-	f.store_32(stream.mix_rate)
-	f.store_32(stream.mix_rate * 4)  # byte_rate = rate * channels * 2
-	f.store_16(4)           # block_align = channels * 2
-	f.store_16(16)          # 位深
-	f.store_buffer("data".to_ascii_buffer())
-	f.store_32(data.size())
-	f.store_buffer(data)
-	f.close()
-	return OK
+static func _polyphonic() -> AudioStreamPolyphonic:
+	var stream := AudioStreamPolyphonic.new()
+	stream.set_polyphony(POLYPHONY)
+	return stream
 
-## 保存为 Godot 音频资源(.tres/.res)，供编辑器直接拖入 AudioStreamPlayer
-static func save_resource(stream: AudioStream, path: String) -> Error:
-	if stream == null:
-		return ERR_INVALID_DATA
-	return ResourceSaver.save(stream, path)
 
-## ============ 流信息(通用) ============
-
-## 查询音频流信息(时长/采样率/声道/循环)
-## 注意: 16bit 数据可直算帧数; 从磁盘导入的 wav 可能是 QOA 压缩(FORMAT_QOA), 无帧数信息
-static func get_stream_info(stream: AudioStreamWAV) -> Dictionary:
-	if stream == null or stream.data.is_empty():
-		return {}
-	var info := {
-		"mix_rate": stream.mix_rate,
-		"channels": 2 if stream.stereo else 1,
-		"stereo": stream.stereo,
-		"format": stream.format,
-		"loop": stream.loop_mode != AudioStreamWAV.LOOP_DISABLED,
-		"loop_begin": stream.loop_begin,
-		"loop_end": stream.loop_end,
-	}
-	if stream.format == AudioStreamWAV.FORMAT_16_BITS:
-		var bytes_per_frame := 2 if not stream.stereo else 4
-		var frame_count := stream.data.size() / bytes_per_frame
-		info["frames"] = frame_count
-		info["seconds"] = float(frame_count) / stream.mix_rate
-	return info
-
-## ============ 总线管理(整合 Godot AudioServer + AudioEffect) ============
-
-## 按名称创建"标准预设"的 Godot 内置效果(AudioEffect), 未知名称返回 null
-## 通用参数以本项目 Godot 4.7.1(steam) 实际 API 为准; 需要微调时请直接构造效果并改属性
-static func create_fx(name: String) -> AudioEffect:
-	match name:
-		"reverb":
-			var fx := AudioEffectReverb.new()
-			fx.room_size = 0.55
-			fx.damping = 0.35
-			fx.dry = 0.85
-			fx.wet = 0.3
-			fx.spread = 0.6
-			return fx
-		"reverb_hall":
-			var fx := AudioEffectReverb.new()
-			fx.predelay_msec = 20.0
-			fx.room_size = 0.95
-			fx.damping = 0.45
-			fx.dry = 0.6
-			fx.wet = 0.5
-			fx.spread = 0.9
-			return fx
-		"delay":
-			var fx := AudioEffectDelay.new()
-			fx.dry = 1.0
-			fx.tap1_active = true
-			fx.tap1_delay_ms = 250.0
-			fx.tap1_level_db = -10.0
-			fx.tap1_pan = -0.3
-			fx.feedback_active = true
-			fx.feedback_delay_ms = 250.0
-			fx.feedback_level_db = -8.0
-			fx.feedback_lowpass = 4500.0
-			return fx
-		"distortion":
-			var fx := AudioEffectDistortion.new()
-			fx.mode = AudioEffectDistortion.Mode.MODE_CLIP
-			fx.pre_gain = 6.0
-			fx.drive = 0.35
-			fx.post_gain = -4.0
-			return fx
-		"limiter":
-			var fx := AudioEffectLimiter.new()
-			fx.threshold_db = -3.0
-			fx.ceiling_db = -1.0
-			return fx
-		"compressor":
-			var fx := AudioEffectCompressor.new()
-			fx.threshold = -18.0
-			fx.ratio = 3.0
-			fx.gain = 4.0
-			fx.attack_us = 5000
-			fx.release_ms = 120.0
-			return fx
-		"eq_lowpass":
-			var fx := AudioEffectLowPassFilter.new()
-			fx.cutoff_hz = 4500.0
-			fx.resonance = 0.6
-			return fx
-		"eq_highpass":
-			var fx := AudioEffectHighPassFilter.new()
-			fx.cutoff_hz = 160.0
-			fx.resonance = 0.5
-			return fx
-		"eq_bandpass":
-			var fx := AudioEffectBandPassFilter.new()
-			fx.cutoff_hz = 2200.0
-			fx.resonance = 1.0
-			return fx
-		"spectrum":
-			return AudioEffectSpectrumAnalyzer.new()
-	return null
-
-## 把一组字符串效果名批量转成 AudioEffect 数组(供标准总线布局等 preset 配置使用)
-static func fxs_from_names(names: Array) -> Array[AudioEffect]:
-	var out: Array[AudioEffect] = []
-	for n in names:
-		var fx := create_fx(n)
-		if fx:
-			out.append(fx)
-	return out
-
-## 确保总线存在(幂等), 并按要求挂载效果链(原生 AudioEffect 资源数组); 返回总线索引
-static func ensure_bus(name: String, fx: Array[AudioEffect] = []) -> int:
-	var idx := AudioServer.get_bus_index(name)
-	if idx != -1:
-		return idx
-	idx = AudioServer.bus_count
-	AudioServer.add_bus()
-	AudioServer.set_bus_name(idx, name)
-	for effect in fx:
-		if effect:
-			AudioServer.add_bus_effect(idx, effect)
+## 复音播放实例: 通道空闲时(无声音)会停止播放, 需先 play 再取
+static func _playback(player: Node) -> AudioStreamPlaybackPolyphonic:
+	if not _is_playing(player):
+		if player is AudioStreamPlayer:
+			(player as AudioStreamPlayer).play()
 		else:
-			LogTool.warn("音频", "未能构建效果, 已跳过: ", effect)
-	LogTool.log("音频", "已创建总线: ", name, " 效果数=", fx.size())
-	return idx
+			(player as AudioStreamPlayer3D).play()
+	return player.get_stream_playback() as AudioStreamPlaybackPolyphonic
 
-## 根据需要计算实际播放总线名: 带效果链时自动建 "FX_<bus>" 效果总线
-static func resolve_bus(bus: String, fx: Array[AudioEffect]) -> String:
-	var name := bus if not bus.is_empty() else "Master"
-	if not fx.is_empty():
-		name = "FX_" + name
-	ensure_bus(name, fx)
-	return name
 
-## 一键生成标准总线布局(Master 限幅 / SFX 轻混响+限幅 / BGM 大厅混响+压缩 / UI):
-## 1) 立即应用到 AudioServer; 2) 保存为 AudioBusLayout.tres; 3) 写入项目设置
-static func setup_audio_buses(apply := true) -> Dictionary:
-	var layout := {
-		"Master": ["limiter"],
-		"SFX": ["reverb", "limiter"],
-		"BGM": ["reverb_hall", "compressor"],
-		"UI": [],
-	}
-	if apply:
-		# 清空现有总线(保留 0 号 Master)再重建标准布局
-		AudioServer.set_bus_count(1)
-		while AudioServer.get_bus_effect_count(0) > 0:
-			AudioServer.remove_bus_effect(0, 0)
-	for name in layout.keys():
-		if name != "Master":
-			ensure_bus(name, fxs_from_names(layout[name]))
-		else:
-			for fname in layout[name]:
-				var effect := create_fx(fname)
-				if effect:
-					AudioServer.add_bus_effect(0, effect)
-	DirAccess.make_dir_recursive_absolute("res://Assets/Audio")
-	var bus_layout := AudioServer.generate_bus_layout()
-	var err := ResourceSaver.save(bus_layout, LAYOUT_PATH)
-	if err != OK:
-		LogTool.error("音频", "保存总线布局失败: ", err)
-		return {"ok": false, "error": err}
-	ProjectSettings.set_setting(LAYOUT_SETTING, LAYOUT_PATH)
-	ProjectSettings.save()
-	var buses := {}
-	for name in layout.keys():
-		buses[name] = AudioServer.get_bus_index(name)
-	LogTool.log("音频", "标准总线布局已就绪: ", buses)
-	return {"ok": true, "buses": buses, "layout_path": LAYOUT_PATH}
+static func _is_playing(player: Node) -> bool:
+	if player is AudioStreamPlayer:
+		return (player as AudioStreamPlayer).playing
+	if player is AudioStreamPlayer3D:
+		return (player as AudioStreamPlayer3D).playing
+	return false
+
+
+static func _fade_out_music(base_db: float, fade: float) -> void:
+	if not is_instance_valid(_music):
+		return
+	var old := _music
+	_music = null
+	# 淡出中的旧曲先改名, 让新曲继续用 "music"(否则新节点会因重名被引擎自动命名)
+	old.name = "music_out"
+	if fade <= 0.0:
+		old.stop()
+		old.queue_free()
+		return
+	var tw := old.create_tween()
+	tw.tween_property(old, "volume_db", base_db - MUSIC_FADE_DB, fade)
+	tw.tween_callback(func() -> void:
+		old.stop()
+		old.queue_free()
+	)
+
+
+# ============================================================
+# 内部: 树就绪与待播队列
+# ============================================================
+
+## SceneTree.root 已就绪(可安全 add_child 通道)
+static func _tree_ready() -> bool:
+	var tree := Engine.get_main_loop() as SceneTree
+	return tree != null and tree.root != null and tree.root.is_node_ready()
+
+
+static func _connect_flush() -> void:
+	if _flush_connected:
+		return
+	var tree := Engine.get_main_loop() as SceneTree
+	if tree == null or tree.root == null:
+		return
+	_flush_connected = true
+	if tree.root.is_node_ready():
+		_flush.call_deferred()
+	else:
+		tree.root.ready.connect(_flush, CONNECT_ONE_SHOT)
+
+
+static func _flush() -> void:
+	_flush_connected = false
+	if not _tree_ready():
+		_connect_flush()
+		return
+	var pending := _pending.duplicate()
+	_pending.clear()
+	for req: Dictionary in pending:
+		_play_now(req.stream, req.opts)
+	if not _pending_music.is_empty():
+		var music := _pending_music
+		_pending_music = {}
+		play_music(music.stream, music.opts)

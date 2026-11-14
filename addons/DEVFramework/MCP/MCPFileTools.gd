@@ -23,7 +23,7 @@ extends RefCounted
 ##
 ## ## 写路径守卫是安全边界, 不是校验糖
 ##
-## 拒绝 '..' 父级跳转、拒绝 .godot/.import/Assets/imported/project.godot 等引擎管理目录、
+## 拒绝 '..' 父级跳转、拒绝 .godot/.import/project.godot 等引擎管理目录、
 ## 拒绝 res:// 与 user:// 之外的路径 —— 这三条各自都有具体的误伤场景(写到项目外、覆盖导入
 ## 索引、用裸覆盖改 project.godot 绕过类型转换), 任何一条被"顺手放宽"都会立刻变成
 ## 删错东西/工程损坏, 且**不报错**。改本文件时不要把它们当冗余检查清理掉。
@@ -156,7 +156,7 @@ const _WRITE_PATH_PREFIXES := ["res://", "user://"]
 ## 受保护路径前缀: 这些目录由引擎/导入器管理, 人工写入要么被覆盖要么会破坏索引。
 ## project.godot 同理 —— 改它应当走 project_setting(有类型转换与注册表处理), 而非裸覆盖。
 const _PROTECTED_PREFIXES := [
-	"res://.godot/", "res://.import/", "res://Assets/imported/",
+	"res://.godot/", "res://.import/",
 	"res://project.godot",
 ]
 

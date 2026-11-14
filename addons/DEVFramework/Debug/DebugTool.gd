@@ -3,7 +3,7 @@
 ##
 ## 整合项目里原先散落的"测试环境"判断，统一为 Debug 概念：
 ## [br]- Debug 模式 = 编辑器内运行（编辑器 / 从编辑器启动）或 当前运行在配置的调试分支上
-## [br]- 调试分支名在项目设置 debug/debug_branch_name 配置（英文逗号分隔多个分支名）
+## [br]- 调试分支名在项目设置 dev_framework/debug/branch_names 配置（英文逗号分隔多个分支名）
 ## [br]- 框架内模块（如更新日志的 debug_only 条目）默认经由本工具判定，无需各自实现
 ##
 ## 两处可注入的扩展点（默认行为开箱即用，通常无需注册）：
@@ -21,10 +21,8 @@
 ## [/codeblock]
 class_name DebugTool extends RefCounted
 
-## 调试分支名的项目设置键（支持英文逗号分隔多个分支名）
-const SETTING_DEBUG_BRANCH := "debug/debug_branch_name"
-## 未配置项目设置时使用的默认调试分支名
-const DEFAULT_DEBUG_BRANCH := "qa_test"
+## 调试分支名的项目设置键（支持英文逗号分隔多个分支名，未配置则视为正式分支）
+const SETTING_DEBUG_BRANCH := "dev_framework/debug/branch_names"
 
 ## 外部注入的 Debug 模式判定（优先级最高；用于特殊平台 / 自定义开关）
 static var _custom_checker: Callable = Callable()
@@ -65,7 +63,7 @@ static func is_debug_branch() -> bool:
 
 ## 项目设置中配置的调试分支名（小写去空格去重；多个用英文逗号分隔）
 static func debug_branch_names() -> PackedStringArray:
-	var raw: String = ProjectSettings.get_setting(SETTING_DEBUG_BRANCH, DEFAULT_DEBUG_BRANCH)
+	var raw: String = ProjectSettings.get_setting(SETTING_DEBUG_BRANCH, "")
 	var names := PackedStringArray()
 	for part in raw.split(",", false):
 		var name_part := part.strip_edges().to_lower()

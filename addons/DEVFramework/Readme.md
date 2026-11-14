@@ -405,34 +405,40 @@ var data = await ActorTool.save_data(root)
 await ActorTool.load_data(root, data)
 ```
 
-### 5.8 通用音频管理（AudioTool）
+### 5.8 音频（AudioTool / AudioMixerTool / AudioBakeTool）
 
 > 程序化音频合成（Def 驱动的逐采样合成、C++ `AudioSynthEngine` 内核、风格/编曲模板与示例音效库）
-> 已于 2026-10 从本仓移除。AudioTool 现在只做**通用音频管理**：播放任意 `AudioStream`、总线效果、
-> WAV 保存、流查询、效果录音。
+> 已于 2026-10 从本仓移除。职责按“运行时 / 配置 / 烘焙”三块拆分，**都只包 Godot 内置能力**。
 
 ```gdscript
-AudioTool.play_stream(stream, -6.0, "SFX")          # 播放任意音频流(播放结束自动释放)
-AudioTool.get_stream_info(stream)                   # 查询时长/采样率/声道/循环
-AudioTool.save_wav(stream, "res://out/sfx.wav")      # 导出标准立体声 WAV
-AudioTool.save_resource(stream, "res://out/sfx.tres")# 存为 Godot 音频资源(可直接拖入播放器)
-AudioTool.setup_audio_buses()                       # 一键生成 Master/SFX/BGM/UI 标准总线布局
-```
+# 运行时(AudioTool): 播放不新建节点, 每总线一条常驻复音通道(AudioStreamPolyphonic, 上限 POLYPHONY=24)
+AudioTool.play(stream, {bus = "SFX", volume_db = -6.0})        # 2D
+AudioTool.play(stream, {target = node3d, unit_size = 10.0})     # 3D 定位(挂在目标节点下, 随目标销毁)
+AudioTool.play(stream, {jitter = 50.0})                         # 音高随机 ±音分(高频音效防机械感)
+AudioTool.play_music(stream, {bus = "Music", fade = 0.5})       # 交叉淡化; stop_music(fade)
+AudioTool.set_bus_volume("SFX", -6.0) / set_bus_mute("Music", true)
 
-**音频处理全部交给 Godot 内置能力，框架不做任何逐采样合成**：
+# 配置(AudioMixerTool): 效果预设 + 总线布局, 落盘路径跟随 audio/buses/default_bus_layout
+var layout := AudioMixerTool.build_layout({"Master": ["limiter"], "SFX": ["reverb"], "UI": []})
+AudioMixerTool.apply_layout(layout)
+AudioMixerTool.save_layout(layout)
+
+# 烘焙(AudioBakeTool, 仅编辑器): 效果链录音 + 标准 WAV
+AudioBakeTool.bake_with_fx(stream, [AudioMixerTool.fx("reverb")])
+AudioBakeTool.save_wav(stream, "res://out/sfx.wav")
+```
 
 | 能力 | 实现 | 说明 |
 |---|---|---|
-| 播放 / 循环 | **Godot 内置 `AudioStreamPlayer`** | `play_stream()` 播放结束自动释放；循环用 `AudioStreamWAV.loop_mode` |
-| 混响 / 延迟 / 失真 / 限幅 / 压缩 / EQ | **Godot 内置 `AudioEffect`** | 播放时路由到带效果的总线；`create_fx(name)` 取标准预设、`fxs_from_names([...])` 批量构建 |
-| 总线布局 | **Godot 内置 `AudioServer` / `AudioBusLayout`** | `setup_audio_buses()` 生成布局并写入项目设置；`ensure_bus()` 幂等建任意效果总线 |
-| 效果录音 | 内置 `AudioEffectRecord` | `render_with_fx(stream, fx)` 真实播放 + 录音固化效果链（需可用音频设备） |
-| WAV 写盘 | 自写 44 字节标准 PCM 头 | 见下方说明 |
+| 播放 / 复音 | **`AudioStreamPolyphonic` + 常驻 `AudioStreamPlayer`** | 每条总线一条通道, 每次播放零节点分配; 超出上限由引擎裁掉最旧一路 |
+| 3D 定位 | **`AudioStreamPlayer3D`** | 通道挂在目标节点下; `unit_size` / `attenuation_model` 由调用方透传 |
+| 混响 / 延迟 / 失真 / 限幅 / 压缩 / EQ | **`AudioEffect`** | `AudioMixerTool.fx(name, params)` 取预设并可按属性覆盖 |
+| 总线布局 | **`AudioServer` / `AudioBusLayout`** | `build_layout`(纯构建) → `apply_layout` / `save_layout`; 保存路径取项目设置 |
+| 背景音乐 | 单通道 + Tween | 交叉淡化跨度为 `MUSIC_FADE_DB` |
+| 效果录音 / WAV 写盘 | `AudioEffectRecord` / 自写 PCM 头 | 需要可用音频设备; 仅支持 8/16bit, 其它格式明确报错 |
 
-标准预设名：`reverb` / `reverb_hall` / `delay` / `distortion` / `limiter` / `compressor` / `eq_lowpass` / `eq_highpass` / `eq_bandpass` / `spectrum`。
-
-- `resolve_bus(bus, fx)`：`fx` 非空时自动建 `FX_<bus>` 效果总线，`play_stream()` 内部自动调用。
-- WAV 写盘说明：4.7.1 内置 `AudioStreamWAV.save_to_wav()` 会把 16bit 立体声写成 mono 头（数据仍交错），Godot 重导入后声道/时长错乱，故 `save_wav()` 自写标准头。
+- 标准预设名：`reverb` / `reverb_hall` / `delay` / `distortion` / `limiter` / `compressor` / `eq_lowpass` / `eq_highpass` / `eq_bandpass` / `spectrum`。
+- 场景树未就绪时的播放请求会排队（上限 `PENDING_LIMIT`），`SceneTree.root` ready 后统一补播。
 
 ### 5.9 其他工具
 
