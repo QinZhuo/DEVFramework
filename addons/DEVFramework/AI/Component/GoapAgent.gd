@@ -1,4 +1,4 @@
-class_name GoapAgent extends Component
+class_name GoapAgent extends Node
 
 ## GOAP 智能体 — 挂在任意 NPC / 单位节点上的通用 AI 组件。
 ##

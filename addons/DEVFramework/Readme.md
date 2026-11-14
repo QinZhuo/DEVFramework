@@ -30,7 +30,9 @@ func apply(ctx) -> void:
 	ctx.damage = value.get_int(ctx)
 ```
 
-**Entity 家族**：`Modifier` / `ModifierValue`（base + 修饰链，`value` 只读，改 `base_value` 或 `add_modifier`）、`StateMachine`（异步转换、guard/enter/exit）、`Component`（节点组件）。
+**Entity 家族**：`Modifier` / `ModifierValue`（base + 修饰链，`value` 只读，改 `base_value` 或 `add_modifier`）、`StateMachine`（异步转换、guard/enter/exit）。
+
+挂在实体下的逻辑用**普通 Node**（需要实体就 `@export var entity: Entity2D` 或 `get_parent() as Entity2D`），框架不再提供"节点组件"基类。
 
 `def` 是鸭子约定：子类自己声明 `var def: XxxDef`，`Entity.new(some_def)` 才能注入。
 

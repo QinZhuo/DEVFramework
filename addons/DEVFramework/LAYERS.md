@@ -43,9 +43,9 @@
 | 功能轴 | `<Module>/{Def,Entity,Tool,View}/` 自包含 | 可拔插功能域：AI、ECS、Task、GameCommand、Tween、Camera |
 
 归属三问：**删除测试**（整文件夹删掉还能编译？）→ **API 宽度**（少量入口类，还是被广泛继承）→ **共变率**（是否总一起改）。
-红线：同一功能域的 Def 与 Entity 不许劈到两处；跨模块依赖单向且显式（现存两条：`Entity/Component → ECS`、`MCP → Camera`）。
+红线：同一功能域的 Def 与 Entity 不许劈到两处；跨模块依赖单向且显式（现存两条：`Entity → ECS`、`MCP → Camera`）。
 
-**已知偏差**：`ECS/` 被 `Entity`/`Component` 内建桥接（`ECSLink` 类型注解），实际扮演核心层，删除测试对它不成立 ——
+**已知偏差**：`ECS/` 被 `Entity`（含 `Entity2D/3D`）内建桥接（`ECSLink` 类型注解），实际扮演核心层，删除测试对它不成立 ——
 要么抽成可选桥接，要么正式归入分层轴，不要让文档与代码各说各话。
 
 ## 六、违规自查

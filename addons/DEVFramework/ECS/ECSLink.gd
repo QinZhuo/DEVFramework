@@ -6,7 +6,7 @@ class_name ECSLink extends RefCounted
 ## 无需任何布尔开关。不使用 ecs.* API 则保持纯 OOP, 零开销。
 ## 数据单一源 = ECS 列; 持有方(Node 组件 / 实体对象)只做门面。
 ##
-## 用法(在 Entity / Component 内建, 子类直接用):
+## 用法(在 Entity / Entity2D / Entity3D 内建, 子类直接用):
 ##   ecs.world = my_world                       # 绑定世界(由使用方设置)
 ##   ecs.add_component(ECSAttribute, {"atk": 10})   # 数据进 ECS 列
 ##   ecs.set_field(ECSAttribute, &"atk", 20)    # 读写 ECS
@@ -15,7 +15,7 @@ class_name ECSLink extends RefCounted
 var world: ECSWorld
 var entity_id: int = -1
 
-## 持有者(Entity2D/Entity/Component/Node 等)。sync 系列默认以持有者为目标对象,
+## 持有者(Entity2D/Entity3D/Entity 等)。sync 系列默认以持有者为目标对象,
 ## 组件 = 持有者脚本(自身组件); 也可用 sync_*_comp 显式指定组件。
 var owner: Object = null
 

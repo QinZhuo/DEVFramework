@@ -9,7 +9,7 @@
 ##   e.set_field(HealthComponent, &"hp", 80)         # 读写 ECS
 ##   e.destroy()                            # 销毁
 ## 数据只在 ECS(SoA 列), Entity 对象只是门面; 不调用 ECS API 则纯 OOP, 零开销。
-## Component(Node) 仅作为"表现/交互补充"时使用(见 Component 文档)。
+## 表现/交互用普通 Node 挂在实体下(持有 Entity2D/3D 引用即可), 不需要额外基类。
 
 signal entity_changed()
 

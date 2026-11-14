@@ -2,7 +2,7 @@
 
 C++ 原生列存储（`ECSCore`，注册在框架共享库 `Native/dev.gdextension`）+ GDScript 封装（`ECSWorld` / `ECSSystem` / 查询链 DSL）。
 
-三种用法：**海量实体**（纯数据 + 渲染直读列）、**关键实体**（`Component` 桥接场景节点）、**数值逻辑**（系统内批量执行）。
+三种用法：**海量实体**（纯数据 + 渲染直读列）、**关键实体**（`Entity2D/3D` 桥接场景节点）、**数值逻辑**（系统内批量执行）。
 
 ## 快速开始
 
@@ -144,7 +144,7 @@ var data := world.serialize()
 var restored := world.deserialize(data)
 ```
 
-## Entity / Component 桥接
+## Entity 桥接
 
 ```gdscript
 # Entity2D/3D 子类：@export 纯数据变量 = ECS 字段（不想进 ECS 的用 const ECS_EXCLUDE 排除）
@@ -160,12 +160,12 @@ unit.destroy()
 ecs.sync_from(comp, &"pos", label_node, &"position")
 ```
 
-`Component`（Node）挂在 `Entity2D/3D` 下补充宿主数据：`register_to_host()` / `sync_from_host()` / `sync_to_host()`。
+挂在实体下的逻辑用**普通 Node**：持有实体引用（`@export var entity: Entity2D`，或 `get_parent() as Entity2D`），直接调 `entity.set_field(...)` / `entity.add_component(...)`。
 `ECSSyncSystem` 批量把带 `NodeLink` 的实体字段同步到节点（主线程，`can_run_parallel()=false`）。
 
 ## 性能要点
 
 - 数值热点用规则 DSL（C++ batch）；复杂逻辑用 `process(fields)` 预拉列 + 自动写回。
 - 高频写用 `borrow_columns` / `return_columns` 避免 COW。
-- 海量实体渲染直读列（参考 `ECSPointCloud`），关键实体用 `Component`。
+- 海量实体渲染直读列（参考 `ECSPointCloud`），关键实体用 `Entity2D/3D`。
 - 位置用 `Vector2`/`Vector3` 单字段，不拆 x/y。
