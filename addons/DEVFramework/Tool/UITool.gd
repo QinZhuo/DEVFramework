@@ -1,55 +1,7 @@
 ## UI 管理器
-##
-## 纯栈管理器，不负责面板的显示/隐藏。
-## 负责 UI 面板的注册/注销、栈排序、返回路由（[method back]）、焦点管理。
-## UI 面板需预先摆放在场景树中，通过 [Panel2D] / [UIPanel3D] 的 [method open] / [method close] 同时完成显示与注册。
-##
-## 职责划分：
-##   [b]Panel2D/UIPanel3D[/b] — 显示/隐藏动画、生命周期信号
-##   [b]UITool[/b]            — 栈管理、层级互斥、返回路由、焦点管理
-##
-## 基于 [enum Layer] 将 UI 分为 6 种类型，每种类型有独立的行为逻辑：
-##
-##   [b]BACKGROUND (0)[/b] — 常驻背景层
-##     入栈管理、最低优先级。
-##
-##   [b]HUD (100)[/b] — 抬头显示层
-##     入栈管理、多元素共存、不参与 back() 返回键。
-##
-##   [b]PANEL (200)[/b] — 主界面层
-##     入栈管理、多元素共存、参与 back() 返回键。完整生命周期。
-##
-##   [b]DIALOG (300)[/b] — 对话框层
-##     同层互斥：打开新 DIALOG 时自动关闭已有 DIALOG。参与 back() 返回键。
-##
-##   [b]TOOLTIP (400)[/b] — 提示层
-##     不入栈，单独管理。单实例：同时只允许一个 TOOLTIP。
-##
-##   [b]TOP (500)[/b] — 系统顶层
-##     最高优先级，覆盖一切。用于 Loading、系统通知等。
-##
-## 使用方式：
-##   [codeblock]
-##   panel.open()                          # 显示面板并注册到 UITool（推荐）
-##   panel.close()                         # 隐藏面板并从 UITool 注销（推荐）
-##   UITool.register(panel)                # 仅注册到栈（不触发显示）
-##   UITool.unregister(panel)              # 仅从栈注销（不触发隐藏）
-##   UITool.toggle(panel)                  # 切换
-##   UITool.back()                         # 返回键处理
-##   UITool.is_focus(panel)                # 面板是否拥有焦点
-##   UITool.Layer.PANEL                    # 层级常量
-##   [/codeblock]
 class_name UITool
 
 ## UI 层级常量，数字越大越靠前。
-##
-## 不同层级对应不同的 UI 类型和交互行为（见类文档）。
-## [br]0: BACKGROUND — 背景
-## [br]100: HUD — 抬头显示
-## [br]200: PANEL — 主界面
-## [br]300: DIALOG — 对话框
-## [br]400: TOOLTIP — 提示
-## [br]500: TOP — 系统顶层
 enum Layer {
 	BACKGROUND = 0,
 	HUD = 100,
@@ -60,8 +12,6 @@ enum Layer {
 }
 
 # ============================================================
-# 内部状态
-# ============================================================
 
 ## 常规 UI 栈（全部六种入栈）
 static var _stack: Array[Node] = []
@@ -70,20 +20,9 @@ static var _stack: Array[Node] = []
 static var _current_tooltip: Node = null
 
 # ============================================================
-# 公开接口 — 通用
-# ============================================================
 
 ## 注册面板（仅栈管理，不触发面板显示）。
-##
-## 通常不需要主动调用 — [Panel2D] / [UIPanel3D] 的 [method open] 会自动调用此方法。
-## 仅在需要绕过面板自身显示逻辑、仅做栈注册的极少数场景下使用。
-##
-## 自动根据面板的 [code]layer[/code] 属性判断 UI 类型，执行对应的注册逻辑：
-## [br]• BACKGROUND / HUD / PANEL：入栈，多元素可共存。
-## [br]• DIALOG：入栈，同层互斥（自动关闭已有 DIALOG）。
-## [br]• TOOLTIP：不入栈，单实例（关闭旧的，记录新的）。
 ## [br][br][b]注意：[/b]此方法仅管理栈，不触发 [code]panel.open()[/code] 显示逻辑。
-## 如需同时注册并显示，请直接调用 [code]panel.open()[/code]。
 static func register(panel: Node) -> void:
 	if not is_instance_valid(panel):
 		return
@@ -119,11 +58,7 @@ static func register(panel: Node) -> void:
 		panel._focus_enter()
 
 ## 注销面板（仅栈管理，不触发面板隐藏）。
-##
-## 通常不需要主动调用 — [Panel2D] / [UIPanel3D] 的 [method close] 会自动调用此方法。
-##
 ## [b]注意：[/b]此方法仅从栈中移除，不触发 [code]panel.close()[/code] 隐藏逻辑。
-## 如需同时注销并隐藏，请直接调用 [code]panel.close()[/code]。
 static func unregister(panel: Node) -> void:
 	if not is_instance_valid(panel):
 		_stack.erase(panel)
@@ -165,8 +100,6 @@ static func toggle(panel: Node) -> void:
 		panel.open()
 
 ## 返回键处理：优先 DIALOG，其次 PANEL。
-## 返回是否被消费（= 面板确实处理了返回）。面板的 `_back()` 返回 false 表示它不接管返回键
-## （如常驻主菜单），此时继续尝试下一层，避免"吞掉返回键却不做任何事"。
 static func back() -> bool:
 	var top_dialog := get_top_of_layer(Layer.DIALOG)
 	if top_dialog and _call_back(top_dialog):
@@ -179,7 +112,6 @@ static func back() -> bool:
 	return false
 
 ## 点击空白处返回：仅当栈顶面板声明了 [code]dismiss_on_blank_click[/code] 时生效。
-## 与 ESC 走同一条返回链，因此同样支持面板自己的 `_back()` 覆盖。
 static func dismiss_on_blank_click() -> bool:
 	var top := get_top()
 	if not is_instance_valid(top) or not ("dismiss_on_blank_click" in top) or not top.dismiss_on_blank_click:
@@ -187,7 +119,6 @@ static func dismiss_on_blank_click() -> bool:
 	return back()
 
 ## 调用面板的 `_back()`，未实现则默认 close()。返回是否消费。
-## 兼容返回 void 的旧实现（视为已消费）。
 static func _call_back(panel: Node) -> bool:
 	if not panel.has_method("_back"):
 		panel.close()
@@ -207,14 +138,10 @@ static func close_all() -> void:
 		_current_tooltip.close()
 
 ## 清空栈与 ToolTip 登记（切场景 / 回标题时调用）。
-## 只清框架的静态状态，**不触发面板动画、不同步面板自身的 is_open** ——
-## 只在对局整体结束、面板即将被释放时用；对局中途调用会让面板状态与栈脱节。
 static func reset() -> void:
 	_stack.clear()
 	_current_tooltip = null
 
-# ============================================================
-# 查询
 # ============================================================
 
 ## 获取栈顶面板
@@ -252,8 +179,6 @@ static func get_stack_size() -> int:
 	return _stack.size()
 
 # ============================================================
-# 公开接口 — 工具
-# ============================================================
 
 ## 根据 Layer 值获取 UI 类型的名称（通过枚举 keys 自动获取）
 static func get_layer_type_name(layer: int) -> String:
@@ -276,8 +201,6 @@ static func is_focus(panel: Node) -> bool:
 	return true
 
 # ============================================================
-# 内部 — 工具
-# ============================================================
 
 ## 安全获取节点的 layer 属性，不存在时返回 0
 static func _get_layer(node: Node) -> int:
@@ -287,8 +210,6 @@ static func _get_layer(node: Node) -> int:
 	return int(val) if val != null else 0
 
 # ============================================================
-# 内部 — 回调
-# ============================================================
 
 static func _sort() -> void:
 	_stack.sort_custom(func(a, b):
@@ -296,7 +217,6 @@ static func _sort() -> void:
 	)
 
 ## 关闭指定层级的所有面板（委托调用面板的 [code]close()[/code]，触发完整关闭 + 注销流程）。
-## 主要用于同层互斥场景（如打开新 DIALOG 时自动关闭已有的 DIALOG）。
 static func _close_all_of_layer(layer: Layer) -> void:
 	var to_close: Array[Node] = []
 	for panel in _stack:
@@ -305,8 +225,6 @@ static func _close_all_of_layer(layer: Layer) -> void:
 	for panel in to_close:
 		panel.close()
 
-# ============================================================
-# 调试
 # ============================================================
 
 ## 生成当前栈内容的字符串表示

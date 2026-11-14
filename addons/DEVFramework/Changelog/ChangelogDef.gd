@@ -1,8 +1,5 @@
 @tool
 ## 更新日志定义：一个版本的若干更新条目
-##
-## 纯配置（Def），在 Assets/Def/ 下做成 .tres，由 ChangelogTool 扫描读取。
-## 参考示例：res://Assets/Def/Changelog/ChangelogExample.tres
 class_name ChangelogDef extends Def
 
 ## 更新条目（每个条目介绍一个功能更新）

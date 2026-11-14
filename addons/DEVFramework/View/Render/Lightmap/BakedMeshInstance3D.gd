@@ -1,8 +1,4 @@
 ## 自带烘焙光照的网格实例：进树就挂光，编辑器里也直接看得到。
-## 换网格或换 material_override 之后调一次 [method apply_lightmap] 重挂。
-##
-## 整套光照系统对外的门面就是这一个节点类：美术把 MeshInstance3D 换成它即可，
-## 全局开关和整体亮度也都收在这里，不用再去翻 Binder。
 @tool
 class_name BakedMeshInstance3D extends MeshInstance3D
 

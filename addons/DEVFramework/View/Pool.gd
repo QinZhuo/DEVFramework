@@ -1,6 +1,4 @@
 ## 通用节点池：只负责实例复用，实例怎么造由 [member factory] 决定。
-##
-## 空闲实例挂在 [member idle_parent] 下（常驻隐藏节点，不属于任何视图），池被丢弃也不会漏节点。
 ## ⚠️ 别想用 _notification 收尾：RefCounted 进 PREDELETE 时脚本成员已经清空了，那里读不到东西。
 class_name Pool extends RefCounted
 
@@ -21,7 +19,6 @@ var reused_count: int = 0
 
 var _idle: Array[Node] = []
 ## 借出中的实例 id → weakref（唯一真相：只有这里记录的是"借出未还"）。
-## 存 weakref 才能识别"被外部 free 掉的借出实例"——它们永远不会走 pool_return
 var _in_use: Dictionary = {}
 
 ## 摊还清理：每借出/归还这么多次顺手剪一遍失效条目，不必逐帧扫
@@ -114,7 +111,6 @@ func _push_idle(item: Node) -> void:
 	_idle.append(item)
 
 ## 纯视图（MeshInstance3D / Control）没有 on_pool_return 替它藏，
-## 不处理就会以上一次的变换留在场景里，看起来像多出来的幽灵模型
 func _set_visible(item: Node, visible: bool) -> void:
 	if item is Node3D:
 		(item as Node3D).visible = visible

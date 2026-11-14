@@ -1,23 +1,5 @@
 @tool
 ## 教程引导覆盖层 — 遮罩/挖孔/边框/箭头/提示气泡一体化控件, 也是教程流程的唯一控制器
-## (直接订阅 GroupTask 的逐步信号, 步骤进入→渲染、纯提示点击→判定完成), 类 Godot 内置控件, 支持主题定制。
-##
-## 用法(项目创建后挂到自己的 CanvasLayer):
-##   var guide := TutorialOverlay.new()
-##   guide.set_anchors_preset(Control.PRESET_FULL_RECT)
-##   guide.start(flow, host)                       # 一行启动(推荐)
-##   guide.stop()                                  # 提前结束/跳过
-## 低层手动路径: focus(target, target_def, block, click_to_complete, tip_text) / blur()
-##
-## 主题命名空间 "TutorialOverlay"(与 OptionSelector 一致, 走 Godot 标准主题查找链:
-## 本地 → 祖先 → 项目主题, 未定义时用 _DEFAULT_* 回退):
-##   Color    dim_color         遮罩暗色
-##   StyleBox frame_stylebox    挖孔边框样式
-##   Color    arrow_color       指示箭头颜色
-##   int      arrow_size        箭头长度(像素)
-##   StyleBox tip_stylebox      提示气泡面板
-##   Color    tip_font_color    气泡文字颜色
-##   int      tip_font_size     气泡字号
 class_name TutorialOverlay extends Control
 
 ## 空洞/孔内点击(仅 click_to_complete 步骤启用, 用于"点屏幕区域完成"兜底)
@@ -29,7 +11,6 @@ signal step_completed(step: Task)
 ## 教程被提前结束/跳过(stop(), 供漏斗埋点"中途放弃")
 signal stopped()
 ## 纯提示步骤的"继续"输入动作(键盘/手柄), 空 = 仅指针点击。
-## 有 target 的步骤不走此动作 —— 完成靠目标自身交互(Enter 会激活已聚焦的目标控件)。
 @export var advance_action: StringName = &"ui_accept"
 
 const _DEFAULT_DIM := Color(0, 0, 0, 0.55)
@@ -61,10 +42,8 @@ var _active_step: Task  # 当前活跃任务步骤(纯提示点击完成请求�
 var _on_step_changed: Callable  # bind_task 步骤推进回调(宿主存进度/发日志等)
 var _hover_hits_draggable := false  # 最近物理帧鼠标位置是否命中可拖拽 3D 目标(拖拽按下放行用)
 ## 放行孔外按下(拖拽类步骤: 目标可能超出挖孔, 需放行按下才能开始拖拽)。
-## 由 TutorialTargetDef.allow_outside_drag 在 show_step 时自动带入, 也可在运行时手动改。
 var allow_hand_drag := false
 ## 拖拽放行判定(可选注入): funcref/无参 lambda, 返回 true 时 Guide 放行全部指针事件,
-## 避免打断"拖出聚焦框"的拖拽。框架不认识"该项目的拖拽视图类", 由项目注入"是否正在拖拽"。
 var drag_checker: Callable = Callable()
 
 # --- 主题缓存 ---
@@ -111,7 +90,6 @@ func _notification(what: int) -> void:
 
 
 # ------------------------------------------------------------
-# 公开接口
 # ------------------------------------------------------------
 
 ## 聚焦目标(全屏遮罩 + 挖孔; target 为空 = 纯提示不挖孔)
@@ -135,7 +113,6 @@ func focus(target: Node, target_def: TutorialTargetDef, block: bool, click_to_co
 
 
 ## 从任务步骤渲染表现(播放桥接: 外部连 task.entity_changed 调用本方法; 无表现字段的普通步骤退化为纯提示)
-## 锁定语义自动推导:
 ##   - 存在 target → 遮挡目标外输入(遮罩挖孔、只点目标, 完成靠目标自身交互/信号)
 ##   - 无 target 无信号 → 纯提示: 画全屏暗区(除文本气泡外调暗), 强制"点任意处继续"
 ##   - 无 target 有信号 → 纯提示不遮挡, 等待信号推进(如结算衔接步骤, 不拦截面板按钮)
@@ -148,7 +125,6 @@ func show_step(step: Task, host: Node) -> void:
 	# 完成语义由 TutorialStepDef 归口(resolve_target/has_signals), 表现层只组合决策, 不反射任务内部
 	var target: Node = step_def.resolve_target(host) if step_def else null
 	# 每步重置拖拽放行态: 避免上一步开启的放行残留到本步骤导致误放行孔外点击;
-	# 初值取 TutorialTargetDef.allow_outside_drag(拖拽类步骤在配置里声明), 运行期仍可手动改。
 	allow_hand_drag = target_def.allow_outside_drag if target_def else false
 	var has_target := target != null
 	# 完成方式自动推导(归口 TutorialStepDef.click_to_complete_for, target 已解析, 不重复 resolve):
@@ -157,9 +133,6 @@ func show_step(step: Task, host: Node) -> void:
 	# - 无 target 无信号 → 纯提示, 点击任意处完成(由此 click_to_complete 承载, 与完成请求共用)
 	var click_to_complete: bool = step_def.click_to_complete_for(has_target) if step_def else false
 	# 遮罩策略: 有 target(挖孔) 或"点击任意处继续"的纯提示(click_to_complete)都画暗区并强制点击,
-	# 使全屏文本提示与指定操作步骤一样: 除文本气泡高亮外其余位置调暗, 玩家只能点击继续。
-	# 仅"等待信号"的纯提示步骤(click_to_complete=false)保持不遮罩, 以便玩家操作界面触发信号。
-	# block_input=false 的步骤(目标只是第一步操作)只画框与箭头, 不拦输入。
 	var block := (has_target or click_to_complete) and (step_def.block_input if step_def else true)
 	focus(target, target_def,
 			block,
@@ -187,15 +160,9 @@ func blur() -> void:
 
 
 # ------------------------------------------------------------
-# 一行启动(便捷; 等价外部手动桥接: 创建任务→连信号→activate→首次渲染)
 # ------------------------------------------------------------
 
 ## 在已挂载的 Guide 上直接启动教程: 内部完成"Task 推进→渲染"桥接, 完成后自动 blur。
-## 与手动路径完全等价(外部仍可通过返回的 task 连接 completed / 调 save_data 存档)。
-## [param flow] 教程流程(GroupTaskDef, 步骤为 TutorialStepDef; SEQUENTIAL)
-## [param host] 教程宿主(目标路径/信号解析相对它)
-## [param opts] {pause_tree: bool} 可选暂停世界(完成后自动恢复)
-## [return] GroupTask 实体(由外部持有)
 func start(flow: GroupTaskDef, host: Node, opts: Dictionary = {}) -> GroupTask:
 	var task := flow.create_entity() as GroupTask
 	if opts.get("pause_tree", false):
@@ -208,11 +175,6 @@ func start(flow: GroupTaskDef, host: Node, opts: Dictionary = {}) -> GroupTask:
 
 
 ## 绑定外部创建的任务(与 start() 等价, 但由外部持有任务实体, 便于存档/连接 completed)。
-## 直接订阅 GroupTask 的逐步信号(step_entered/child_completed/completed), Guide 即教程控制器:
-## 步骤进入→渲染表现、纯提示点击→判定完成。无中间转发器。
-## [param task] 已激活的 GroupTask(步骤为 TutorialStepDef)
-## [param host] 教程宿主(步骤 target 相对它解析)
-## [param on_step_changed] 步骤推进回调(宿主存进度/发日志等, 可选)
 func bind_task(task: GroupTask, host: Node, on_step_changed: Callable = Callable()) -> void:
 	_task = task
 	_host = host
@@ -258,7 +220,6 @@ func refresh() -> void:
 
 
 ## 纯提示(无目标)步骤的"点任意处 / 按继续键"完成: 由本控制器判定 click_to_complete 后推进。
-## 完成语义(是否该点击完成)由 TutorialStepDef.click_to_complete 归口, 此处与 show_step 共用同一来源。
 func _on_hole_clicked_internal() -> void:
 	var step := _active_step
 	if step and not step.is_completed and _click_to_complete:
@@ -283,7 +244,6 @@ func get_hole_rect() -> Rect2:
 
 
 ## 是否处于"聚焦并阻挡目标外输入"状态(供外部判断快捷键/操作是否应禁用)。
-## 纯提示(无目标, _block=false)或已 blur(_active=false) 时返回 false, 不阻挡任何输入。
 func is_blocking() -> bool:
 	return _active and _block
 
@@ -299,14 +259,11 @@ func set_tip(text: String) -> void:
 
 
 ## 设置纯提示气泡的顶部上限 Y(屏幕坐标)。
-## 纯提示(无目标)气泡默认贴屏幕底部铺满显示; 传入有效上限后, 气泡顶部不会高于该 Y,
-## 用于"提示框不遮住指定的底部区域"。传 -1 取消限制。
 func set_tip_top_limit(max_y: float) -> void:
 	_tip_top_limit = max_y
 
 
 # ------------------------------------------------------------
-# 构建
 # ------------------------------------------------------------
 
 func _build_widgets() -> void:
@@ -334,7 +291,6 @@ func _build_widgets() -> void:
 
 
 # ------------------------------------------------------------
-# 主题
 # ------------------------------------------------------------
 
 func _apply_theme() -> void:
@@ -365,19 +321,15 @@ func _read_const(name: String, fallback: int) -> int:
 
 
 # ------------------------------------------------------------
-# 几何更新(每帧, 目标移动/镜头转动持续校正)
 # ------------------------------------------------------------
 
 ## 节点级输入拦截：在事件进入 GUI(_gui_input) 与物理拾取(Area3D 的 input_event / mouse_entered) 之前运行。
-## 分两类:
 ##   - 纯提示(无目标): 不锁、无遮罩, 点任意处即继续(hole_clicked)。
 ##   - 强制锁定(有目标): 把落在挖孔之外的指针事件(点击+移动)标记为已处理,
-##     既阻止目标外的 2D/3D 点击, 也阻止鼠标移过框外 3D 物体触发 mouse_entered 高亮。
 func _input(event: InputEvent) -> void:
 	if not _active:
 		return
 	# 拖拽手势放行: 3D 拖拽由 _unhandled_input 驱动, 需要把物体拖出聚焦框外,
-	# 此时若按孔外拦截会把事件标记为已处理, 打断拖拽。进入拖拽状态后放行全部指针事件。
 	if _is_dragging_3d():
 		return
 	if _allow_fullscreen_click():
@@ -393,7 +345,6 @@ func _input(event: InputEvent) -> void:
 		return  # 非指针事件(键盘/手柄)不处理
 	if _hole.size == Vector2.ZERO:
 		# 空孔: 目标不存在/失效时拦全部指针交互(纯"无目标全屏阻断");
-		# 目标为有效节点但暂不可见(如被上层面板遮住/界面未打开)时放行输入,
 		# 让玩家能点上层面板的按钮继续(否则被拦截导致卡死)。
 		if _block_when_hole_empty():
 			get_viewport().set_input_as_handled()
@@ -401,8 +352,6 @@ func _input(event: InputEvent) -> void:
 	if not _hole.has_point(pos):
 		# 孔外: 拦点击与 hover。但"按下"命中可拖拽 3D 目标(如拖拽类交互)时
 		# 需放行, 否则 3D 拾取收不到按下、拖拽无法开始(_is_dragging_3d 此时仍为 false)。
-		# 命中结果在 _physics_process 中更新(仅那时 direct_space_state 可安全访问), 供此处读取缓存;
-		# 配置了 allow_outside_drag 的拖拽类步骤也放行孔外按下(目标可能超出挖孔, 需放行按下才能起拖)。
 		if _is_primary_press(event):
 			if _hover_hits_draggable or allow_hand_drag:
 				return
@@ -410,15 +359,12 @@ func _input(event: InputEvent) -> void:
 
 
 ## 当前是否有拖拽正在进行(拖拽需要把物品拖出聚焦框, 放行全部指针事件以免打断)。
-## 判定来自 drag_checker —— 框架不认识"该项目的拖拽视图类", 由调用方注入。
 func _is_dragging_3d() -> bool:
 	return drag_checker.is_valid() and drag_checker.call()
 
 
 ## 在物理阶段更新"鼠标位置是否命中可拖拽目标"缓存(仅拖拽放行开启时才检测, 避免每帧射线开销)。
 ## 注意: 物理射线查询只能在 _physics_process(物理通知)内安全访问 direct_space_state,
-## _input 阶段访问会报 "Space state is inaccessible"。故把检测放到物理帧更新,
-## _input 按下时读取缓存来判断是否放行拖拽, 避免吞掉拖拽按下导致"拖不动"。
 func _physics_process(_delta: float) -> void:
 	if not _active or not _block:
 		return
@@ -450,7 +396,6 @@ func _query_hover_draggable() -> bool:
 
 
 ## 命中节点是否"可拖拽"(鸭子类型: 框架不认识具体拖拽视图类)。
-## 命中节点或其祖先带 is_dragging 属性 —— 拖拽视图的通行约定, 与是否正在拖拽无关。
 static func _is_draggable_node(collider) -> bool:
 	while collider:
 		if "is_dragging" in collider:
@@ -496,17 +441,12 @@ func _pointer_position(event: InputEvent) -> Vector2:
 
 
 ## 判断该步骤是否放行全屏点击(点击任意处继续)。
-## 只要步骤"点击完成"(纯提示, 或 click_to_complete_with_target 的框选说明), 就整屏放行 ——
 ## 点气泡、点框外都算继续; 否则点了毫无反应, 极易被当成卡死。
-## 需要目标交互的步骤(不等点击完成)不放行, 目标外一律拦截。
 func _allow_fullscreen_click() -> bool:
 	return _click_to_complete
 
 
 ## 挖孔为空(_hole.size==ZERO)时是否仍需拦截全部指针交互 / 绘制全屏暗区。
-## 仅当目标不存在或已失效(纯"无目标全屏阻断"步骤)时返回 true;
-## 目标为有效节点但当前不可见(如被上层面板遮住、界面未打开, 挖孔为空)时返回 false,
-## 使引导让出输入, 让玩家能点上层面板的按钮继续, 而非拦截所有点击导致卡死。
 func _block_when_hole_empty() -> bool:
 	return _target == null or not is_instance_valid(_target)
 
@@ -529,7 +469,6 @@ func _process(delta: float) -> void:
 
 
 ## 目标节点失效(被移除/替换)时按 node_path 自动重新解析, 避免"购买后货架卡更替"等场景挖孔永久退化为纯提示。
-## 仅当当前目标无效且存在 target_def 时才尝试; 仍解析不到则保持纯提示/放行(交给 _block_when_hole_empty 兜底)。
 func _try_refresh_target() -> void:
 	if _target != null and is_instance_valid(_target):
 		return
@@ -554,10 +493,6 @@ func _update_geometry() -> void:
 
 
 ## 挖孔"死区跟随": 仅当实际显示的 mesh(目标精确矩形, 已含 padding)超出当前聚焦框
-## (外扩 padding 的死区)时才把挖孔吸附到目标; 目标仍被死区包容时挖孔固定不动,
-## 避免镜头轻微转动 / 目标微移导致挖孔持续跳变。
-## 死区大小 = TutorialTargetDef.padding: padding 越大, 目标允许移动/变化的范围越大,
-## 聚焦框更新越不频繁; padding 越小则越灵敏。
 func _advance_hole(_delta: float) -> bool:
 	if _target_rect.size == Vector2.ZERO or _hole.size == Vector2.ZERO:
 		var changed := _hole != _target_rect
@@ -576,10 +511,6 @@ func _advance_hole(_delta: float) -> bool:
 func _apply_rects() -> void:
 	var v := get_viewport_rect().size
 	# 拖拽中必须放行: 3D 拖拽要把目标拖出挖孔, 而孔外的暗区 Control 是
-	# MOUSE_FILTER_STOP —— 它会把拖动途中的鼠标移动事件吃掉(GUI 命中 STOP 即 set_input_as_handled),
-	# 事件进不到 DragView3D._unhandled_input ⇒ 物体停在孔边不动, 表现为"拖一下就卡住拖不动"。
-	# 按下那一刻由 allow_outside_drag/_hover_hits_draggable 放行, 但拖动**过程中**的事件同样要放行,
-	# 故拖拽期间暗区/感应区一律 IGNORE; 拖拽态纳入缓存键, 起拖/落手各重排一次布局。
 	var dragging := _is_dragging_3d()
 	# 布局未变化则跳过: 每帧重设子控件 size/position 会反复触发 Control 重排
 	var key := [_active, _block, _click_to_complete, _hole, v, _target, dragging]
@@ -602,8 +533,6 @@ func _apply_rects() -> void:
 	_sensor.visible = _block and _click_to_complete and not dragging
 	if _hole.size == Vector2.ZERO:
 		# 不挖孔: 单块全屏板(阻断时拦截全屏, 不阻断时仅视觉由 _draw 画暗区)
-		# 目标为有效节点但暂不可见(如被上层面板遮住、界面未打开)时拦截板不拦截输入(IGNORE),
-		# 让玩家能点上层面板继续; 仅"无目标全屏阻断"步骤才拦全屏(与 _block_when_hole_empty 一致)。
 		_dim_top.position = Vector2.ZERO
 		_dim_top.size = v
 		_dim_top.mouse_filter = Control.MOUSE_FILTER_STOP \
@@ -612,7 +541,6 @@ func _apply_rects() -> void:
 			r.mouse_filter = Control.MOUSE_FILTER_IGNORE
 			r.size = Vector2.ZERO
 		# 仅"无目标"的纯提示步骤可全屏点击兜底(与 _allow_fullscreen_click 一致);
-		# 有目标时孔空(目标尚不可见), 感应区不覆盖, 防止绕过目标外拦截完成
 		_sensor.position = Vector2.ZERO
 		_sensor.size = v if _block and _allow_fullscreen_click() else Vector2.ZERO
 		return
@@ -645,7 +573,6 @@ func _on_sensor_input(event: InputEvent) -> void:
 
 
 ## 箭头: 默认置于挖孔上方(尖端朝下指向目标); 顶部空间放不下才翻到下方兜底。
-## 气泡随箭头同侧(默认上方), 不随目标左右偏移/浮动
 func _update_arrow(v: Vector2) -> void:
 	if _hole.size == Vector2.ZERO or not _arrow:
 		_arrow_dir = Vector2.RIGHT
@@ -662,14 +589,10 @@ func _update_arrow(v: Vector2) -> void:
 
 
 ## 提示气泡置于箭头尾端外侧(与箭头同侧, 默认上方), 固定不动不跟随浮动, 避免晃动影响阅读;
-## 无箭头时: 有挖孔则置于孔下方; 纯提示(无孔)则横向布满屏幕、贴屏幕底部显示,
-## 且顶部不高于 _tip_top_limit(避免遮住指定区域)。
 func _place_tip(v: Vector2) -> void:
 	if _tip_panel == null:
 		return
 	# 挖孔步骤(target 有效): 挖孔为空(_hole.size==ZERO)且目标当前不可见(如界面尚未打开)时隐藏气泡,
-	# 待目标可见后(_hole 非空)再显示, 避免提示在目标出现前提前弹出。
-	# 仅当 _hole 为空且目标确实不可见才隐藏, 避免挖孔步骤初始帧(_hole 尚未逼近)误隐藏气泡。
 	if _target != null and is_instance_valid(_target):
 		if _hole.size == Vector2.ZERO and not _target.is_visible_in_tree():
 			if _tip_panel.visible:
@@ -732,7 +655,6 @@ func _place_tip(v: Vector2) -> void:
 
 
 # ------------------------------------------------------------
-# 绘制: 层级 = 暗区 → 边框 → 箭头(同一 CanvasItem 内先画后叠, 箭头恒在顶层)
 # ------------------------------------------------------------
 
 func _draw() -> void:
@@ -749,9 +671,6 @@ func _draw() -> void:
 
 
 ## 暗区: 与拦截板矩形一致(4 矩形拼洞), 直接绘制在本控件(不再被子节点遮盖)
-## 仅强制锁定(_block)时画暗区; 纯提示(无目标、不锁)不画黑遮罩, 只留气泡。
-## 挖孔目标当前不可见(_hole 为空, 如界面尚未打开)时不画暗区, 让屏幕恢复正常,
-## 待目标可见后再画暗区(挖孔)。仅"无目标的全屏阻断"步骤画全屏暗区。
 func _draw_dim() -> void:
 	if not _block:
 		return

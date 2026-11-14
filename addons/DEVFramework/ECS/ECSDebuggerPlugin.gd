@@ -1,9 +1,7 @@
 @tool
 ## ECS 运行时查看器(EditorDebuggerPlugin) —— 游戏运行时在 Godot Debugger 面板新增 tab。
-## 参考 Godot 内置 Profiler(多列耗时 Tree) 与 远程场景树(分栏 + 组件字段树 + 属性编辑) 设计:
 ##   · 左侧: 每系统耗时(多列: 系统/耗时ms/占比%) + 系统拓扑(执行顺序) + 自动刷新开关
 ##   · 右侧: 实体查看(输入 ID → 组件折叠树, 字段带类型) + 改值(数值/向量/颜色/布尔)
-## 数据来自 World 节点 EngineDebugger 推送(ecs_debug:view)与请求(ecs_debug)。
 
 class_name ECSDebuggerPlugin
 extends EditorDebuggerPlugin

@@ -2,14 +2,6 @@ class_name ECSSpatialIndex
 extends RefCounted
 
 ## ECS 空间索引 —— 网格分桶, 快速邻居查询。
-##
-## 用途: 战斗范围检测 / 视野判断 / 寻路邻居搜索。
-## 比全量遍历快: 将实体按网格分桶, 查询时只检查相邻桶。
-##
-## 用法:
-##   var idx := ECSSpatialIndex.new(world, ECSDemoMoveComponent, &"pos", 64.0)
-##   idx.rebuild()                              # 每帧(或实体移动后)重建
-##   var nearby := idx.query_radius(pos, 100.0)  # 半径内实体 ID
 
 var world: ECSWorld
 var comp: Script          # 位置组件
@@ -80,8 +72,6 @@ func query_nearest(pos: Vector2, radius: float) -> int:
 	return best
 
 ## 快速最近实体: 只查所在格及相邻 8 格(比 query_nearest 的半径扫描快,
-## 适合"找同区域敌人"场景)。radius 用于二次距离过滤。
-## exclude: 排除的实体 ID(通常是自身, 避免找到自己)。
 func query_cell_nearest(pos: Vector2, max_dist: float, exclude: int = -1) -> int:
 	var pos_col: PackedVector2Array = world.get_column(comp, field)
 	var best := -1

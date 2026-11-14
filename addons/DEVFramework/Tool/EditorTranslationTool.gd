@@ -3,8 +3,6 @@ class_name EditorTranslationTool
 extends RefCounted
 
 ## 独立模块: 编辑器翻译。
-## 从任意目录 CSV 按"编辑器语言"直接取词(不经 TranslationServer), 供编辑器 UI(如工具菜单)
-## 等只读场景统一使用; 与运行时翻译 TranslationTool(.translation + TranslationServer) 职责分离。
 
 ## 缓存: csv_dir -> {id: {locale: text}}
 static var _csv_cache: Dictionary = {}

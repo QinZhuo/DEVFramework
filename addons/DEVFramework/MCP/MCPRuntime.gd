@@ -2,17 +2,8 @@
 extends RefCounted
 
 ## ======= 运行时（游戏进程）桥接 =======
-##
 ## 由 MCPDevServer 以 preload 常量 `MCPRuntime` 引用。**必须 @tool 且不声明 class_name**
-## （同 MCPResult / MCPRouter：动态加载路径下声明 class_name 会与同名 const 冲突）。
-##
-## 边界：只负责"**哪个进程**"这一维度 —— get_logs / clear_logs 的 process 分派、
-## run_tests 的编辑器段与游戏段合并、游戏启动/停止/等待、截图的进程分派。
-## 协议形状、工具注册、HTTP 连接都在服务器侧。
-##
 ## 为什么这些必须集中在一处：它们全都围绕同一条判断"这条请求该在编辑器进程还是游戏进程执行"。
-## 分散时最容易出的错是**默认读错进程**（历史故障：查编辑器错误却拿到游戏的），
-## 所以 process 参数一律必填，缺省即报错。
 
 const MCPLogTools := preload("res://addons/DEVFramework/MCP/MCPLogTools.gd")
 
@@ -81,7 +72,6 @@ func call_run_tests_routed(args: Dictionary) -> Dictionary:
 		return await _run_tests_both(script)
 	if process == "game":
 		# 内联源码先在编辑器内编译预检：语法错就地拦截，不把坏代码转发到游戏进程
-		# （游戏进程里解析错会触发调试器断点，中断游戏）。
 		if TestRunner.is_inline_source(script):
 			var pre := TestRunner.precheck_inline(script, server._logger)
 			if pre != "":
@@ -122,7 +112,6 @@ func _run_tests_in_game(script: String) -> Dictionary:
 
 
 ## process=both: 编辑器段 → 游戏段，合并成一份汇总。
-## 拆成两次调用的问题不是麻烦，而是**误判**：调用方往往只跑记得的那一半就宣布全绿。
 func _run_tests_both(script: String) -> Dictionary:
 	if TestRunner.is_inline_source(script):
 		# 内联源码只跑一次：它是临时逻辑验证，两段跑同一段代码只是翻倍耗时
@@ -145,7 +134,6 @@ func _run_tests_both(script: String) -> Dictionary:
 
 
 ## 游戏段没跑成 = 全量没跑成：记成**一条失败项**而不是静默省略
-## （省略的话 total 只含编辑器段，调用方看到"失败 0"会当成全绿 —— 半个结果最危险）。
 func _both_with_game_failure(editor_sum: Dictionary, script: String, reason: String) -> Dictionary:
 	var merged: Dictionary = TestRunner.merge_summaries([editor_sum], script)
 	merged["total"] = int(merged["total"]) + 1
@@ -191,7 +179,6 @@ func call_game_control(args: Dictionary) -> Dictionary:
 			return server._call_debug_continue({})
 		"start":
 			# 已在运行时自动停旧实例再启动：旧实例持有的是启动时固化的脚本，而
-			# "改完脚本 → 重启 → 验证"是最高频组合，多要求一步就多一次忘了重启的机会。
 			if _has_game_session():
 				await _call_stop_game({})
 				if not await _wait_game_stopped(5.0):
@@ -242,7 +229,6 @@ func _call_run_game(args: Dictionary) -> Dictionary:
 				"必须提供 scene(要运行的场景 res:// 路径), 例如 res://Scenes/<主场景>.tscn",
 				"传入 scene 参数后重试。")
 	# uid:// → res://。解析失败时模块会先重扫 UID 缓存再重试一次 —— 编辑器重启后第一次启动
-	# 必然撞上缓存未就绪，而那正是"改代码 → restart_editor → 验证"的第一个动作。
 	var scene: String = await server._mod("MCPScriptSync").resolve_scene_path(raw)
 	if scene.is_empty():
 		return server._err_validation("无法把%s解析为项目内资源路径: %s" % [source, raw],
@@ -254,7 +240,6 @@ func _call_run_game(args: Dictionary) -> Dictionary:
 	if not scene_res is PackedScene:
 		return server._fail("不是有效场景文件: %s(类型: %s)" % [scene, scene_res.get_class() if scene_res else "null"])
 	# 以调试模式启动(等效编辑器 F5)：编辑器自动建立 EngineDebugger 调试线，
-	# 游戏进程内的 autoload 注册消息捕获器并回发 ready，之后运行时工具经调试线可用。
 	server._mod("MCPEditorEnv").play_custom_scene(scene)
 	var ok_ready := await _wait_game_ready(15.0)
 	if not ok_ready:

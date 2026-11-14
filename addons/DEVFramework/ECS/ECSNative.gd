@@ -2,15 +2,6 @@ class_name ECSNative
 extends RefCounted
 
 ## ECS 原生桥接 —— 懒加载 ECSCore(C++ 库)。
-## 原生库由**框架级统一入口** FrameworkNative 管理:
-##   res://addons/DEVFramework/Native/dev.gdextension
-## ECS 只声明自己的必需方法集并委托加载, 不直接操作 ClassDB。
-## 框架强依赖 C++ 原生库: 库缺失/版本不匹配时明确 push_error 报错(无静默回退)。
-## 所有调用走动态 ClassDB 派发, 避免编辑器启动早期静态解析崩溃。
-##
-## 重要: 组件脚本一律通过 resource_path + load() 实例化, 不使用全局类名 .new()。
-## 原因: 新加入的 class_name 脚本在 ClassDB 注册存在时序窗口, 全局类引用实例化
-## 可能报 "Nonexistent function 'new' in base 'GDScript'", 而 load(path) 稳定可靠。
 
 static var _required_methods := [
 	&"register_component", &"create_entity", &"is_alive", &"destroy_entity",
@@ -30,13 +21,10 @@ static func is_available() -> bool:
 	return get_instance() != null
 
 ## 稳定实例化脚本: 通过 resource_path 加载并 new, 规避全局类注册时序问题。
-## 若脚本处于半编译状态(can_instantiate()=false), 主动 reload() 强制编译后再 new。
-## 返回实例或 null。统一走框架级 FrameworkNative.instantiate_script。
 static func instantiate_script(component_class: Script) -> Variant:
 	return FrameworkNative.instantiate_script(component_class)
 
 ## 注册组件: 反射 component_class 的 schema(统一走 collect_schema)。
-## 成功返回组件类名(StringName), 失败返回空 StringName。
 static func register(component_class: Script) -> StringName:
 	var inst := get_instance()
 	if inst == null:
@@ -67,13 +55,6 @@ static func refresh() -> void:
 
 
 ## —— 统一字段反射工具 ——
-## 所有"把对象的脚本变量当作组件数据"的地方(get_schema / register_component /
-## build_prefab / Entity2D.register_to_ecs)都走这里, 保证反射规则一致。
-##
-## 清晰规则(Entity 节点脚本):
-##   ① 当前脚本直接声明的 @export 或 @export_storage 纯数据变量 = ECS 数据
-##   ② 若某字段想 @export(在 Inspector 编辑)但不想进 ECS, 用 const ECS_EXCLUDE 排除
-##   ③ 自动排除: 继承基类(Node2D/Entity2D)的原生/桥接属性、非 @export 的显示/内部变量
 
 ## 当前脚本直接声明的字段名(排除继承基类脚本变量): {StringName: true}
 static func _own_script_field_names(instance) -> Dictionary:
@@ -93,7 +74,6 @@ static func _own_script_field_names(instance) -> Dictionary:
 
 
 ## 读取脚本声明的排除表 `const ECS_EXCLUDE := ["field", ...]`。
-## 用于: 字段想 @export(编辑器可调)但不想作为 ECS 数据(如显示配置)。
 static func _excluded_fields(instance) -> Dictionary:
 	var excluded := {}
 	var s: Script = instance.get_script()
@@ -107,8 +87,6 @@ static func _excluded_fields(instance) -> Dictionary:
 
 
 ## 统一反射条件。
-## require_export=true 时只收 @export 或 @export_storage 字段(EDITOR 或 STORAGE);
-## false 收全部脚本纯变量(ECSComponent 子类)。
 static func _is_data_field(p: Dictionary, require_export: bool) -> bool:
 	if not (p.usage & PROPERTY_USAGE_SCRIPT_VARIABLE):
 		return false
@@ -120,8 +98,6 @@ static func _is_data_field(p: Dictionary, require_export: bool) -> bool:
 
 
 ## 数据字段信息缓存: Script -> {require_export+own_only 组合 -> [{name, type}]}
-## 字段集合是脚本静态的(声明/排除表/export 标记不变), 反射一次缓存, 之后只读值 ——
-## 避免 Entity 批量 register_to_ecs 时每次 10000 次完整反射(get_property_list 遍历)。
 static var _data_fields_cache := {}
 
 

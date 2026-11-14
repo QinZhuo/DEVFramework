@@ -1,9 +1,6 @@
 @tool
 ## Def 静态数据基类
-##
-## Def 只应包含通过 @export 定义的静态配置数据，
 ## 不得存储任何运行时缓存或状态信息。
-## 运行时状态由外部上下文持有，Def 仅提供对上下文的读写约定。
 @abstract class_name Def extends Resource
 
 var name: String:
@@ -36,7 +33,6 @@ static func get_def_desc(def: Def, data):
 	return def.get_desc(data) if def else ""
 
 ## 翻译 CSV 路径统一构造: 目录只有 TranslationTool.TRANSLATION_DIR 一处,
-## 子类覆写 get_csv_path 时只给出文件名(如 Def.csv_path("signal"))。
 static func csv_path(file_stem: String) -> String:
 	return TranslationTool.TRANSLATION_DIR.path_join(file_stem + ".csv")
 
@@ -67,7 +63,6 @@ func save_data():
 	return resource_path.trim_prefix(DEFS_BASE)
 
 ## 通用接口：递归加载指定文件夹（及子目录）下所有满足 filter 的 Def
-## 兼容导出包的 .tres.remap；sort_key 非空时按其升序排序
 static func load_defs_in_dir(dir_path: String, filter: Callable, sort_key: Callable = Callable()) -> Array[Def]:
 	var defs: Array[Def] = SaveTool.load_defs(dir_path, filter)
 	if sort_key.is_valid():
@@ -75,7 +70,6 @@ static func load_defs_in_dir(dir_path: String, filter: Callable, sort_key: Calla
 	return defs
 
 ## 从存档数据中加载 Def（兼容旧存档的完整路径格式）
-## 文件不存在 / 非 Def 资源时返回 null 并输出日志
 static func load_data(path: String) -> Def:
 	var full_path: String = path if path.begins_with("res://") else DEFS_BASE + path
 	var res := FileTool.load_resource(full_path)

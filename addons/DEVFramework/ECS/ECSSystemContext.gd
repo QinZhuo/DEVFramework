@@ -2,7 +2,6 @@ class_name ECSSystemContext
 extends RefCounted
 
 ## 系统执行上下文 —— 系统内部访问世界数据的唯一通道。
-## 推荐统一走 for_each 查询链(C++ batch 执行); 底层列直连见 ECSWorld.get_column/set_column。
 
 var world: ECSWorld
 var _pending: Array = []   # 本系统创建的查询(系统 _run 结束后自动执行未显式 execute 的)
@@ -25,8 +24,6 @@ func emit_event(type: StringName, payload = null) -> void:
 	world.emit_event(type, payload)
 
 ## 统一查询链入口(与 ECSQuery 同一套遍历→条件→动作构建器)。
-## 声明式写法: 链尾无需 .execute() —— 系统 _run 结束后框架自动执行未执行的查询。
-## 需要立即结果时仍可显式 .execute()(返回处理实体数)。
 func for_each(anchor, must: Array = [], without: Array = []) -> ECSQuery:
 	# 查询对象池复用: 系统 _run 每帧构建的查询链结构固定, 复用对象免 new/load 开销
 	var q: ECSQuery
@@ -42,8 +39,6 @@ func for_each(anchor, must: Array = [], without: Array = []) -> ECSQuery:
 	return q
 
 ## 批量收集便捷: 单次遍历匹配实体同时判定多组条件, 返回各行集(Array[PackedInt32Array])。
-## 适合同一 anchor 多个不同条件的场景: 一次扫描替代 N 次 collect。
-## groups: Array, 每组 = 条件列表(空组 = 全部实体)。常配 apply_rows / apply_col_rows 使用。
 func collect_batch(anchor, groups: Array, must: Array = [], without: Array = []) -> Array:
 	return world.batch_collect(anchor, must, without, groups)
 
@@ -58,8 +53,6 @@ func apply_col_rows(anchor, rows: PackedInt32Array, op_comp, op_field: StringNam
 	return world.batch_apply_col_rows(anchor, rows, op_comp, op_field, src_comp, src_field, op, factor, addend)
 
 ## 系统 _run 结束后由 ECSWorld 调用: 自动执行本系统未显式 execute 的查询。
-## 优化: 同一 anchor+must+without 的多个查询合并为一次 batch_collect 单遍扫描,
-## 各组条件一次解析判定, 动作复用行集 —— 比逐查询各自 collect(全表/签名多遍)更快。
 func _auto_execute() -> void:
 	if _pending.is_empty():
 		return

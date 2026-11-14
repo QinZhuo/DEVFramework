@@ -1,16 +1,6 @@
 @tool
 ## 烘焙舞台：只在编辑器里用，运行时永远不实例化。
-##
-## 它做编辑器才能做的两件事：
-##   1. 给每类资源摆一份实体（LightmapGI 只认场景里的实体几何体）；
-##   2. 把每类资源在图集里占的位置记成 [AssetLightmapRegion]，写进一份
-##      <场景名>_lightmap_set.res —— 位置固定跟着场景走，没有任何路径配置。
-##      不复制贴图：图集由 [member AssetLightmapSet.data] 直接引用。
-##
-## 节点名就是资源键（= 资源文件名），光照位置和运行时挂光都靠它对齐，
 ## 所以不要再给副本套一层容器节点。
-##
-## 用法：点「烘焙并导出」。副本自动同步后无条件重烘，改灯 / 环境 / 自发光都不会漏。
 class_name AssetLightmapStage extends Node3D
 
 ## 副本标记：sync 只清理带这个标记的节点
@@ -28,8 +18,6 @@ const SPACING := 10.0
 @export_tool_button("烘焙并导出") var export_button: Callable = export_all
 
 ## 键 → 资源。目录内容在导出时才读，不和场景重复维护。
-## 只收烘得动的：LightmapGI 对没有 UV2 的网格不写任何光照数据，
-## 摆上去只会白占一份副本节点，还挤掉图集位置
 func _collect() -> Dictionary:
 	var out := {}
 	for res in meshes:
@@ -53,8 +41,6 @@ static func _take(out: Dictionary, res: Resource) -> void:
 		out[key] = res
 
 ## 导出。副本同步是导出的前置步骤，所以不单独给按钮：
-## 忘了同步就烘焙，等于拿旧几何体烘出来的光照去配新资源，而且不会有任何提示。
-## 每次都重烘：几何没变的判断不可靠（灯 / 环境 / 自发光都改不到几何上），增量省下的时间不值得
 func export_all() -> void:
 	if not Engine.is_editor_hint():
 		return
@@ -64,7 +50,6 @@ func export_all() -> void:
 		return
 	_warn_without_static_light()
 	## SH 叠加层要读 l1（方向项）：不勾 Bake Directional 时图集里只有 l0，
-	## 光的"朝向感"和高光全都没有，看起来就是一片平淡的亮度
 	var gi := _lightmap()
 	if gi != null and not gi.directional:
 		gi.directional = true
@@ -89,9 +74,7 @@ func export_all() -> void:
 		return
 	LogTool.log("烘焙", "光照", set.regions.size(), "类 →", path)
 	## 场景必须一起存：LightmapGI 的 light_data 引用只在场景里，不存的话下次打开就没有烘焙数据，
-	## 既看不到效果，也没法在旧结果上增量重烘。
 	## ⚠️ 用 save_scene_as 显式给路径：save_scene() 在"当前场景"解析不到保存目标时
-	## （例如场景是程序化 reload 进来的）会弹「保存到」对话框，脚本化烘焙不该打断用户。
 	## 注意它没有返回值（void），别写成 `if ... != OK`（会直接编译失败）
 	EditorInterface.save_scene_as(scene_path)
 	## 新产物立刻可用：否则编辑器兜底还拿着上一次的扫描结论
@@ -114,7 +97,6 @@ func _warn_without_static_light() -> void:
 			% visible + "烘出来会全黑；把要参与烘焙的灯设为 Static 再重烘")
 
 ## 资源有数据没有（副本被遮挡、UV2 缺失，烘完会静默丢失）。
-## 反方向由 [method _export_set] 自己报：它录入时就会跳过已不存在的资源
 static func _report(set: AssetLightmapSet, all: Dictionary) -> void:
 	var missing := []
 	for key in all:
@@ -124,7 +106,6 @@ static func _report(set: AssetLightmapSet, all: Dictionary) -> void:
 		LogTool.warn("烘焙", "这些资源没烘出光照（检查 UV2，或副本被遮挡）:", missing)
 
 ## 同步副本：补缺、清多余、按顺序摆位
-## [param all] 可选的「键 → 资源」表；不传就自己扫一遍（导出路径会传进来，省一次目录扫描）
 func sync(all := {}) -> void:
 	if all.is_empty():
 		all = _collect()
@@ -156,7 +137,6 @@ func sync(all := {}) -> void:
 		node.set_meta(META, true)
 		add_child(node)
 		## owner 必须是场景根（PackedScene 只存 owner == 根 的节点）：
-		## 记成舞台自己的话副本不会进场景文件，light_data 里 "../CardBox" 这些路径下次加载就找不到
 		node.owner = _root()
 		node.position = _slot(placed)
 		placed += 1
@@ -165,7 +145,6 @@ func sync(all := {}) -> void:
 		LogTool.log("烘焙", "副本已同步", placed, "份")
 
 ## 引擎没给 LightmapGI 暴露烘焙 API，只能借检查器上那个按钮：选中它再按下。
-## 找不到按钮（编辑器换语言/改版）就返回 false，让调用方退回手动
 func bake() -> bool:
 	var gi := _lightmap()
 	if gi == null:
@@ -188,13 +167,9 @@ func bake() -> bool:
 
 	## 完成判据：副本数到位 **且** `.lmbake` 被重写。
 	## ⚠️ 两个坑都别踩：
-	##   ① 只看"副本数"——上一次烘焙的数据早就是这个数，按下瞬间就满足，导出的是旧数据
-	##      （regions 的 uv/页号与新图集对不上 ⇒ 模型上出现斜条纹）；
-	##   ② 先把 light_data 置空再按——编辑器会以为还没有烘焙文件，弹「选择光照贴图烘焙文件」
 	var data_path := gi.light_data.resource_path if gi.light_data != null else ""
 	var before_mtime := FileAccess.get_modified_time(data_path) if not data_path.is_empty() else 0
 	## ⚠️ 预期噪音：编辑器在烘焙开始时重建 Inspector，按钮在信号发射途中被释放，
-	## 引擎会打印 "Object was freed while a signal is being emitted"。不影响烘焙结果，别当错误排查
 	btn.pressed.emit()
 	for i in 18000:
 		await get_tree().create_timer(0.05).timeout
@@ -204,7 +179,6 @@ func bake() -> bool:
 		if gi.light_data == null or gi.light_data.get_user_count() != expect or i < 30:
 			continue
 		## 以 .lmbake 落盘时间为准：副本数在按下瞬间就满足，实例 id 也会被编辑器提前换掉，
-		## 只有"文件被重写"才说明这一次真的烘完了
 		if data_path.is_empty() or FileAccess.get_modified_time(data_path) > before_mtime:
 			return true
 	LogTool.warn("烘焙", "等待烘焙超时（%d 份副本未全部产出或数据未更新），请确认烘焙是否仍在进行" % expect)
@@ -223,7 +197,6 @@ static func _bake_button(node: Node) -> Button:
 	return null
 
 ## 舞台下的副本。只认自己打过标记的节点：灯光、环境、相机这些烘焙辅助节点
-## 和副本同居一个父节点，靠名字猜谁是副本迟早会删错东西
 func _copies() -> Array[Node3D]:
 	var out: Array[Node3D] = []
 	for child in get_children():

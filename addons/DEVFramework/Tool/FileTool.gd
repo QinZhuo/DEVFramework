@@ -1,23 +1,12 @@
 @tool
 class_name FileTool
 ## 文件读写公共原语 —— 框架内一切"落盘"统一走这里, 避免各处各写一份临时文件 + 改名样板。
-##
-## 为什么需要原子写入:
-## `FileAccess.open(path, WRITE)` 会**先把文件截断清空**, 若写入过程中崩溃/断电/进程被杀,
-## 读者拿到的就是半截文件 —— 存档损坏最典型的成因。原子写入 = 先写同目录 `.tmp`, 再 `rename` 覆盖;
-## 同一文件系统内的 rename 是原子操作, 读者要么看到旧档、要么看到新档, 绝不会看到中间态。
-##
 ## rename 覆盖语义(已实测 + 官方文档核对): POSIX `rename(2)` 覆盖已存在目标, Windows 亦然
 ## (Godot 4.7 实测 `rename_absolute(tmp, 已存在目标)` 返回 OK 且内容被替换)。
-## 但官方文档未承诺跨平台一致, 故失败且目标存在时回退为"删目标再 rename"(窗口极小, 仍远优于直接覆写)。
-##
 ## `.tmp` 必须与被写文件**同目录**: 跨文件系统 rename 会失败(EXDEV), 那时原子性也无从谈起。
 
 
 ## 递归收集目录下的文件, 按扩展名过滤(需带点, 如 [code][".tres"][/code]; 空则不过滤)。
-##
-## 自动归一导出包的 [code].remap[/code]([code]x.tres.remap[/code] → [code]x.tres[/code]),
-## 因此开发态与导出包用同一套代码路径。返回 res:// 完整路径。
 static func list_files(dir_path: String, extensions: PackedStringArray = PackedStringArray(), recursive := true) -> PackedStringArray:
 	var out := PackedStringArray()
 	var stack: Array[String] = [dir_path]
@@ -76,7 +65,6 @@ static func _match_ext(path: String, extensions: PackedStringArray) -> bool:
 
 
 ## 裸路径补全 res:// 前缀(不校验存在性, 不做 uid 解析 —— 那属于调用方语义)。
-## "a/b" 与 "/a/b" 都归一为 "res://a/b"。
 static func to_res_path(path: String) -> String:
 	if path.begins_with("res://"):
 		return path
@@ -92,7 +80,6 @@ static func abs_to_res(path: String) -> String:
 
 
 ## 加载资源: 不存在 / 加载失败一律返回 null(不抛错)。
-## 收敛全框架 "ResourceLoader.exists + load" 的样板(Def 存档 / Def 目录扫描 / 表格浏览等)。
 static func load_resource(path: String) -> Resource:
 	if not ResourceLoader.exists(path):
 		return null
@@ -131,9 +118,6 @@ static func read_text(path: String) -> String:
 
 
 ## 增量读取"只追加"文本文件的新增完整行（tail -f 语义），配合 [method LogTool.set_mirror_path] 做跨进程日志转发。
-## [param offset] 上次读到的字节偏移（首次传 0），由调用方持有，本函数无状态。
-## 返回 {lines: PackedStringArray, offset: int}：只给出以换行结尾的完整行（半行留到下次），
-## 文件被截断/重建（size 变小）时自动从头读。
 static func read_new_lines(path: String, offset: int, max_chunk := 1 << 16) -> Dictionary:
 	var result := {"lines": PackedStringArray(), "offset": offset}
 	var f := FileAccess.open(path, FileAccess.READ)

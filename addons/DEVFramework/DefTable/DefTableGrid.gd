@@ -1,12 +1,9 @@
 @tool
 ## DefTable 表格网格容器(变高行 + 行虚拟化)。
-## 行高由外部(View)按单元格文本预计算后传入, 本容器只负责摆位与滚动定位,
-## 保证滚动范围(row_offsets)精确且不随可见行变化抖动。
 class_name DefTableGrid
 extends Container
 
 ## 行高下限(全表唯一来源): set_row_heights 统一钳制, 偏移/渲染共用同一份 row_heights,
-## 保证摆位与渲染高度一致, 避免单元格溢出到下一行造成重叠。
 ## DefTableView 的兜底行高与 DefTableCell 的初始高度都引用本常量, 不要再写第二份字面量。
 const MIN_ROW_HEIGHT := 32.0
 
@@ -65,8 +62,6 @@ func configure(widths: Array[float], rows_total: int) -> void:
 
 
 ## 传入预计算的行高, 刷新偏移与滚动范围。
-## 在此统一钳制到 MIN_ROW_HEIGHT, 使 row_heights 与 row_offsets 口径一致
-## (渲染用同一份 row_heights, 不再在 sort_children 里二次钳制)。
 func set_row_heights(heights: Array[float]) -> void:
 	row_heights = heights.duplicate()
 	for i in row_heights.size():
@@ -110,8 +105,6 @@ func row_index_at(y: float) -> int:
 
 
 ## 由 Container 在布局时调用。
-## 行容器模型: 子节点 = 行 Control(meta: row_index / cell_parked), 一次摆整行;
-## 单元格是行容器的子节点, 在行内由 View 定点摆放, 不经此排序。
 func sort_children() -> void:
 	var ncols := column_widths.size()
 	if ncols == 0:

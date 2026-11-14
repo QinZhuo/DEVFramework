@@ -1,24 +1,10 @@
 class_name GoapAgent extends Node
 
 ## GOAP 智能体 — 挂在任意 NPC / 单位节点上的通用 AI 组件。
-##
-## 工作流程：
-##   1. 每帧 tick，处于空闲时周期性（replan_interval）或世界状态变化时请求规划
-##   2. 按优先级选择第一个能规划出行动序列的目标
-##   3. 依序执行行动；行动会修改世界状态
-##   4. 行动完成后（默认）立即重新规划，形成"目标导向"的持续决策
-##
-## 接入方式：
 ##   - 在场景中配置 goals / actions 数组（Def 资源）
 ##   - 行动执行：配置 GoapActionDef.perform_method，在 Agent 子类（或挂载脚本）
-##     中实现同名方法。方法返回 true / false / null 分别表示同步完成 / 失败 / 异步
 ##   - 异步执行：方法内部完成后调用 notify_action_finished(success)
 ##   - 世界状态：set_state(key, value) / get_state(key)
-##
-## 扩展点（覆写）：
-##   - is_goal_active(goal)   : 额外目标激活判断
-##   - sort_goals(goals)      : 自定义目标优先级排序
-##   - on_action_execute(action) : perform_method 为空时的兜底执行钩子
 
 @export var goals: Array[GoapGoalDef] = []
 @export var actions: Array[GoapActionDef] = []
@@ -27,7 +13,6 @@ class_name GoapAgent extends Node
 @export var auto_plan: bool = true
 @export var replan_after_action: bool = true
 ## 行动失败后重新规划的最小冷却时间（秒）。防止"失败->立即重规划->再失败"的同帧
-## 死循环刷爆 CPU。连续失败会退避（见 failure_backoff_factor）。
 @export_range(0.0, 5.0, 0.05) var failure_replan_delay: float = 0.5
 ## 连续失败退避倍数：第 n 次失败冷却 = failure_replan_delay * factor^(n-1)（封顶见 failure_backoff_max）
 @export_range(1.0, 4.0, 0.1) var failure_backoff_factor: float = 1.5
@@ -155,7 +140,6 @@ func _execute_next_action() -> void:
 		return
 	var action: GoapAction = current_plan.pop_front()
 	# 执行前校验：行动前提 / 附加条件在规划后可能已失效（如目标被抢占、状态变化）。
-	# 不满足则丢弃整个剩余计划重新规划，避免用陈旧世界状态硬执行导致反复失败。
 	if not action.can_run(world_state, self):
 		current_plan.clear()
 		action.end(self)
@@ -215,7 +199,6 @@ func _finish_plan(success: bool) -> void:
 
 
 ## 中断当前执行并回到空闲状态（供外部事件如被杀/重生时调用）。
-## 清空进行中的动作与剩余计划，置脏以便下一帧重新规划。
 func reset_plan() -> void:
 	_state = AgentState.IDLE
 	_current_action = null

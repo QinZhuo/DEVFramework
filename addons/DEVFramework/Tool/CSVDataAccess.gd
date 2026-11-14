@@ -36,7 +36,6 @@ static func load_csv_data(path: String) -> Dictionary[String, Dictionary]:
 
 
 ## Save dictionary to CSV file.
-## 优化：先读取现有列顺序（打开写文件之前），再写入，避免截断后读取空文件
 static func save_csv_data(path: String, data: Dictionary[String, Dictionary]) -> void:
 	if !path.ends_with(".csv"):
 		path += ".csv"
@@ -114,7 +113,6 @@ static func _write_empty_csv(path: String) -> void:
 	file.close()
 
 ## 获取单个值
-## 优化：改用 get() 而非 get_or_add()，避免误解（get_or_add 会修改临时字典但无意义）
 static func get_csv_value(path: String, id: String, column: String, default: String = "") -> String:
 	var data := load_csv_data(path)
 	var row: Dictionary = data.get(id.strip_edges(), {})
@@ -127,7 +125,6 @@ static func set_csv_value(path: String, id: String, column: String, value: Strin
 	save_csv_data(path, data)
 
 ## 批量更新数据（一次读写，适用于多处修改的场景）
-## 用法：update_csv_data(path, func(data) { data["id"]["col"] = "val" })
 static func update_csv_data(path: String, modify: Callable) -> void:
 	var data := load_csv_data(path)
 	modify.call(data)
@@ -140,7 +137,6 @@ static func remove_row(path: String, id: String) -> void:
 		save_csv_data(path, data)
 
 ## 检查 CSV 文件是否包含指定列
-## 优化：复用 _read_columns 避免重复打开文件
 static func has_column(path: String, column: String) -> bool:
 	return _read_columns(path).has(column)
 
@@ -149,7 +145,6 @@ static func get_columns(path: String) -> PackedStringArray:
 	return PackedStringArray(_read_columns(path))
 
 ## 将 locale 映射到 CSV 中匹配度最高的列名
-## 使用 Godot 内置的 TranslationServer.compare_locales 进行匹配，无需硬编码映射
 static func _locale_to_column(path: String, locale: String) -> String:
 	if locale.is_empty():
 		return "en"
@@ -169,7 +164,6 @@ static func _locale_to_column(path: String, locale: String) -> String:
 	return best
 
 ## 确保 CSV 文件存在，不存在则创建一个空文件（仅 id 列头）
-## 优化：合并文件存在性检查与创建，减少一次文件操作
 static func ensure_csv_headers(path: String) -> void:
 	if not path.ends_with(".csv"):
 		path += ".csv"
@@ -188,8 +182,6 @@ static func ensure_csv_headers(path: String) -> void:
 	LogTool.log("表格", "CSV文件已创建:", path)
 
 ## 写入翻译值到 CSV（自动将 locale 映射到列名）
-## 使用 Godot 内置的 compare_locales 匹配列名，无需硬编码映射表
-## 如果 CSV 文件不存在，自动创建
 static func set_translation_value(path: String, id: String, locale: String, value: String) -> void:
 	ensure_csv_headers(path)
 	var col := _locale_to_column(path, locale)

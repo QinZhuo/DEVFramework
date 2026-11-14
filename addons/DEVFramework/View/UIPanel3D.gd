@@ -1,15 +1,6 @@
 ## 3D UI 面板基类
-##
-## 与 [UIPanel] 接口完全对齐，提供统一的打开/关闭生命周期。
-## [method open] — 先注册到 [UITool] 进行栈管理与层级互斥，然后执行进入动画。
-## [method close] — 执行离开动画并从 [UITool] 自动注销，动画结束后隐藏。
-## 继承自 [Node3D]，适用于 3D 空间的 UI 面板。
-##
-## 状态机实现见 [UIPanelTool]（与 [UIPanel] 共用，避免两份实现漂移）。
 class_name UIPanel3D extends Node3D
 
-# ============================================================
-# 导出属性
 # ============================================================
 
 ## 进入/离开动画，为空则直接切换显隐
@@ -25,15 +16,11 @@ class_name UIPanel3D extends Node3D
 @export var dismiss_on_blank_click: bool = false
 
 # ============================================================
-# 状态
-# ============================================================
 
 var is_open: bool = false
 ## 每次 open() 自增，用于 await_closed() 检测版本是否过期
 var _open_version := 0
 
-# ============================================================
-# 信号
 # ============================================================
 
 ## 打开动画开始
@@ -45,8 +32,6 @@ signal on_close()
 ## 关闭动画完成
 signal on_closed()
 
-# ============================================================
-# 公开接口
 # ============================================================
 
 ## 打开面板。完整流程见 [UIPanelTool.open]。
@@ -77,7 +62,6 @@ func await_closed() -> bool:
 	return await UIPanelTool.await_closed(self)
 
 ## 返回键处理，由 [method UITool.back] 调用。默认关闭面板并返回 true（已消费）。
-## 子类返回 false 表示不接管返回键（如常驻界面的面板），调用方会继续回退。
 func _back() -> bool:
 	close()
 	return true
@@ -91,8 +75,6 @@ func _focus_exit() -> void:
 	pass
 
 ## 应用面板显隐（[UIPanelTool.open] / [UIPanelTool.close] 调用）。
-## 默认切换自身 [member visible]；面板若本身是房间里的实体模型（关闭后本体仍需保留），
-## 重写本方法只显隐 UI 部分、保留本体。
 func apply_visibility(shown: bool) -> void:
 	visible = shown
 

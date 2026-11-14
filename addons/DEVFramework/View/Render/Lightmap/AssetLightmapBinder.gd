@@ -1,44 +1,26 @@
 ## 把一份 [AssetLightmapRegion] 绑到 MeshInstance3D 的材质上。
-##
 ## 唯一的做法：把实例实际用到的每个 surface 材质复制一份，在副本上挂一层 next_pass
-## （[AssetLightmapPass.gdshader]）。主材质资源一个字节都不动，同一份 mesh 能被任意多个
-## 实例共用；而 next_pass 对任何材质都成立（StandardMaterial3D / ShaderMaterial / 第三方），
 ## 也不要求业务 shader 认识烘焙光——**这是唯一通用、且运行时换材质也安全的供光方式**。
-##
-## 为什么不是引擎原生 LightmapGI：它按场景节点路径绑定，对象池借出来的实例路径对不上；
 ## 手动 `instance_geometry_set_lightmap` 实测在本引擎版本上无效（绑上去全黑）。
-##
-## 为什么不是 material_overlay：它是「整个实例一份材质」，多 surface 模型（盒体 + 玻璃罩）
-## 会被同一份材质盖到每个 surface 上，光叠加不止一次；而且描边（OutlineEffect）已经占着它。
-##
-## 副本按「光照 + 基材质」缓存，同类物品共用一份，不随实例数量膨胀，重复 apply 也不会再套一层。
 @tool
 class_name AssetLightmapBinder
 
 const SHADER := preload("res://addons/DEVFramework/View/Render/Lightmap/AssetLightmapPass.gdshader")
 
 ## 全局混合强度，1.0 ≈ 与烘焙场景里引擎 LightmapGI 的观感一致（实测平均亮度比 1.00）。
-## 调它不需要重烘，设为 0 等于关掉烘焙光
 static var strength := 1.0
 
 ## 主材质「已经算过的那份环境光」的等效辐照度：加色层减掉它，才等价于引擎的「替换」语义。
-##
-## 烘焙光在引擎里是替换环境光，而 next_pass 只能往上加；不减的话就是「环境光 + 烘焙光」
 ## 算两遍，实测偏亮 1.36 倍。减去标定值后为 1.00 倍，单模型最大偏差 7%。
-##
-## 这个值取决于现场 environment 的 ambient_light_energy / 天空贡献，换光照配置需要重标。
-## 设为 0 等于退回纯叠加行为（只想"更亮一点"时可以用）
 static var ambient_ref := 0.055
 
 ## 宿主材质上记着它复制自哪份基材质。重复 apply 时靠它找回原材质，
-## 避免把宿主再复制一遍套出第二层，也避免换场景换光照后残留旧光
 const BASE_META := &"asset_lightmap_base"
 
 ## 「光照 + 基材质」→ 复制出来的宿主材质（宿主 next_pass → 偏移层）
 static var _pairs: Dictionary = {}
 
 ## 已挂光的实例（instance_id → weakref）：换光照库 / 全局开关时靠它整体重挂。
-## 由 [BakedMeshInstance3D] 进出树时登记，Binder 不认识它（只按方法名回调），避免两边互相引用
 static var _live: Dictionary = {}
 
 ## 逐面可叠加结论按 mesh 资源缓存：每次借出都遍历所有 surface 的顶点数组太浪费
@@ -48,7 +30,6 @@ static var _bakeable: Dictionary = {}
 static var _warned_no_material := false
 
 ## 挂光。重复调用只更新参数，不会叠出第二层。
-## 逐面判定：缺 UV2 的面只是跳过，不拖累同一模型上有 UV2 的面
 static func apply(mi: MeshInstance3D, light: AssetLightmapRegion, atlas: TextureLayered) -> bool:
 	if mi == null or not is_instance_valid(mi) or light == null or not light.has_area():
 		return false
@@ -94,13 +75,10 @@ static func _opaque(mat: Material) -> bool:
 	return not (mat is BaseMaterial3D) or (mat as BaseMaterial3D).transparency == BaseMaterial3D.TRANSPARENCY_DISABLED
 
 ## 整网格是否值得烘焙：至少有一个不透明面带 UV2。
-## 只看会叠加的面：玻璃罩本来就不叠，它缺 UV2 不该拖累整个模型
-## 骨骼网格照样挂：next_pass 跟着主材质一起走，不涉及顶点，变形网格也正确
 static func can_bake(mesh: Mesh) -> bool:
 	return true in _surface_flags(mesh)
 
 ## 逐面结论（true = 该面能安全叠加）：没有 UV2 就采样不到 SH 贴图，
-## 会退化成单点取色（一整块纯色 + bloom），这种面跳过即可
 static func _surface_flags(mesh: Mesh) -> Array:
 	if mesh == null or mesh.get_surface_count() == 0:
 		return []
@@ -139,7 +117,6 @@ static func _shared(base: Material, light: AssetLightmapRegion, atlas: TextureLa
 	return host
 
 ## 回收某份光照名下的材质副本：缓存键里带着光照实例 id，
-## 光照被整套换掉后这些副本再也没人认领，不清就一路堆到进程结束
 static func release(light: AssetLightmapRegion) -> void:
 	if light == null:
 		return
@@ -184,8 +161,6 @@ static func refresh_all() -> void:
 			mi.call(&"apply_lightmap")
 
 ## 摘掉挂上去的光，还原成基材质本身。
-## 调用方不必先判断"有没有挂过"：没有就什么都不做（幂等）
-## 实例池与场景是分开的：同一个节点可能先在带烘焙图的场景里挂光、再被别的场景借走，
 ## 那边没有烘焙图，得把它擦干净，否则会顶着上一个场景的光出现
 static func clear(mi: MeshInstance3D) -> void:
 	if mi == null or not is_instance_valid(mi) or mi.mesh == null:

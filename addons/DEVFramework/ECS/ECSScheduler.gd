@@ -2,12 +2,6 @@ class_name ECSScheduler
 extends RefCounted
 
 ## 系统调度器：注册表 + 拓扑排序 + 频率节流 + 串行/并行执行 + 耗时统计。
-##
-## 从 ECSWorld 拆出（它只管数据面）。需要的数据面能力只有三处：`world.native()`、
-## `world.resolve_component_name()`、`world` 本身作为 `ECSSystemContext` 的宿主。
-##
-## 执行顺序 = 依赖图拓扑序（before/after + 读写组件自动推断），同层按 priority 降序；
-## 并行按"上一帧访问记录 + 声明组件"分批，批内无交集才真并行。
 
 var world: ECSWorld
 
@@ -22,7 +16,6 @@ var _sorted_index := {}          # ECSSystem -> _sorted 下标(批分组排序/�
 var _dirty_schedule := true
 
 # ---------------- 并行调度 ----------------
-## 全局开关: 关闭后回退纯串行(行为与旧版完全一致)。
 var parallel_enabled: bool = true
 ## 并行线程数。0=自动(硬件核数-1, 上限 8)。
 var parallel_threads: int = 0
@@ -48,11 +41,8 @@ func _init(owner: ECSWorld) -> void:
 
 
 # ============================================================
-#  注册
-# ============================================================
 
 ## 注册系统。priority 越大越先执行；不传则取 system.priority。
-## before/after: 依赖声明的系统引用数组(该系统须在 after 之后、before 之前执行)。
 func register(system: ECSSystem, priority = null, before: Array = [], after: Array = []) -> void:
 	if system == null or _system_index.has(system):
 		return
@@ -123,11 +113,8 @@ func set_paused(paused: bool) -> void:
 
 
 # ============================================================
-#  每帧执行
-# ============================================================
 
 ## 驱动一帧：排序 → 频率判定 → 串行或并行执行 → 并入访问记录。
-## 事件派发与命令缓冲 flush 归 ECSWorld（数据面职责）。
 func tick(delta: float) -> void:
 	_resort()
 	# 频率调度: 主线程先对每个系统做 interval/rate/fixed_step 判断, 标记本帧是否运行
@@ -174,8 +161,6 @@ func debug_parallel_stats() -> Dictionary:
 
 
 # ============================================================
-#  耗时统计
-# ============================================================
 
 ## 各系统本帧耗时(ms), 键为系统名。
 func get_system_times() -> Dictionary:
@@ -205,8 +190,6 @@ func get_topology() -> Dictionary:
 	return {"order": order}
 
 
-# ============================================================
-#  内部：排序与执行
 # ============================================================
 
 ## 依赖图拓扑排序: 满足 before/after 约束, 同层按优先级降序。依赖环时优先保留高优先级者。

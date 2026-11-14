@@ -1,6 +1,5 @@
 @tool
 ## 音频资产烘焙(仅编辑器) —— 经效果链实时录音 + 写标准 WAV。游戏运行时不调用。
-## 运行时播放见 AudioTool, 总线布局见 AudioMixerTool。
 class_name AudioBakeTool
 
 ## 效果尾音余量(秒): 混响/延迟会延长尾音, 按此额外录一段
@@ -8,7 +7,6 @@ const TAIL_SEC := 0.8
 
 
 ## 把音频经效果链真实播放一遍并用 AudioEffectRecord 录回, 返回带效果的流。
-## 需要可用音频设备(mixer 实时处理); 耗时为音频实时时长 + [constant TAIL_SEC]。
 static func bake_with_fx(stream: AudioStreamWAV, fx_chain: Array[AudioEffect]) -> AudioStreamWAV:
 	if stream == null:
 		return null

@@ -2,17 +2,8 @@
 extends RefCounted
 
 ## ======= 多实例路由：这条调用该落在哪个编辑器 + 实例管理工具 =======
-##
 ## 由 MCPDevServer 以 preload 常量 `MCPRouter` 引用。**必须 @tool 且不声明 class_name**
-## （同 MCPResult / MCPToolSchema：动态加载路径下声明 class_name 会与同名 const 冲突）。
-##
-## 边界：只读 server 的注册表（`_hub`）、`_hub_port`、`_tool_defs` 与游戏调用超时；
-## 不碰 HTTP 连接表、不碰任何工具实现。
-##
-## 路由优先级: 调用参数 instance > use_instance 设的默认目标(跨进程落盘) > 就地执行。
-## 设过默认目标但它不在线时**报错**, 不回落就地执行 —— 中枢可能已换到别的项目。
 ## **不做"唯一的其他实例自动选中"**: 那在"开了两个项目、只想改当前这个"时会静默改错项目;
-## 而报错并要求显式选择只多一次调用。
 
 const MCPResult := preload("res://addons/DEVFramework/MCP/MCPResult.gd")
 
@@ -21,7 +12,6 @@ const MCPResult := preload("res://addons/DEVFramework/MCP/MCPResult.gd")
 const HUB_TOOLS := ["list_instances", "use_instance"]
 
 ## 注入进每个工具 schema 的 `instance` 参数说明。
-## 写成 const 而不是每次现拼: 它随 tools/list 发给每一个工具。
 const INSTANCE_ARG_DESC := "可选: 目标编辑器实例。省略则用 use_instance 设置的默认目标(未设置时=本实例)。可填实例 id(如 MyGame@a1b2c3d4)、唯一前缀、或端口号; 不确定时先调 list_instances。"
 
 ## MCPDevServer（Variant: 跨编译代次不信任类型标注）
@@ -33,7 +23,6 @@ func _init(owner) -> void:
 
 
 ## tools/list 出口整形: 每个工具多一个可选 `instance` 参数(实例管理工具除外)。
-## 只在有注册表的进程注入 —— 没有注册表时转发必然落空。
 func tools_for_list(defs: Array) -> Array:
 	var hub = server._hub
 	if hub == null:
@@ -42,8 +31,6 @@ func tools_for_list(defs: Array) -> Array:
 
 
 ## 解析本条 tools/call 该由谁执行。
-## 返回 {"port": int} —— 0 表示就地执行; >0 表示转发到该端口。
-## 返回 {"error": str, "recovery": str} —— 路由失败(不存在/有歧义/目标离线), 已带可读提示。
 func resolve_route(tool_name: String, args: Dictionary) -> Dictionary:
 	var hub = server._hub
 	# 成员进程没有注册表(它只是被转发的一端): 请求能到这里就说明是直连成员端口的。
@@ -94,11 +81,7 @@ func _route_of(entry: Dictionary, via: String) -> Dictionary:
 
 
 ## 转发一条 tools/call 到目标实例, 返回**已经可以回给客户端的** JSON-RPC 响应。
-##
 ## 三件事必须做对:
-##   1. 去掉 arguments 里的 instance —— 目标实例不认识它, 留着只会混进日志与结构化回显。
-##   2. 超时按 游戏调用上限 + 余量 走: 目标实例上可能是 eval_code/run_tests 这类长任务。
-##   3. 目标不可达时给明确错误, 而不是把空字典当响应返回。
 func forward(req: Dictionary, req_id: Variant, _tool_name: String, route: Dictionary, proto: String, margin_ms: int) -> Dictionary:
 	var hub = server._hub
 	var fwd: Dictionary = req.duplicate(true)
@@ -125,11 +108,6 @@ func forward(req: Dictionary, req_id: Variant, _tool_name: String, route: Dictio
 
 
 ## 给工具结果盖上"本次在哪个项目执行"的章（`_meta.target` + 正文末尾一行）。
-##
-## 为什么两处都要: `_meta` 是结构化字段(客户端/脚本可读), 但多数客户端只把 content 转给模型,
-## `_meta` 会被丢掉 —— 而"改错项目"恰恰只能靠模型自己看出来。
-##
-## 幂等: 已有章则原样返回(执行方盖的比调用方补的更准)。
 func stamp(result: Dictionary, iid: String, ppath: String, role: String) -> Dictionary:
 	if iid.is_empty():
 		return result
@@ -150,7 +128,6 @@ func stamp(result: Dictionary, iid: String, ppath: String, role: String) -> Dict
 
 
 ## 转发结果若没有执行方盖的章(对端还是旧版本代码), 由中枢补一个 ——
-## 至少要能回答"这条结果来自哪个项目"。项目路径从注册表按 instance_id 查。
 func _stamp_forwarded(resp: Dictionary, route: Dictionary) -> void:
 	var result: Variant = resp.get("result", null)
 	if not (result is Dictionary):

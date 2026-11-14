@@ -3,10 +3,6 @@ class_name EditorScriptMenuTool
 extends RefCounted
 
 ## 在 项目→工具 下添加子菜单, 自动注册所有 Tool 目录下 extends EditorScript 的编辑器工具。
-## 由 EditorPlugin 调用 register()/unregister()。菜单显示名经独立翻译模块 EditorTranslationTool
-## 按编辑器语言取词(以脚本文件名为 ID), 未命中回退 class_name / 文件名。
-## 翻译数据按工具归属分目录读取: 框架自带工具读框架翻译目录, 项目工具读项目翻译目录, 框架本体不含项目词条。
-## 监听编辑器语言设置变化并自动重建子菜单, 语言切换即时生效, 无需重载插件。
 const SUBMENU_NAME := "EditorScript"
 const SCAN_ROOT := "res://"
 const FRAMEWORK_ROOT := "res://addons/DEVFramework/"
@@ -111,7 +107,6 @@ static func _translation_dir(path: String) -> String:
 
 
 ## 递归遍历目录树, 仅当 is_tool_root 为真时收集其中的 EditorScript 脚本;
-## 遇到名为 Tool 的子目录则作为新的工具根(is_tool_root=true)继续下钻, 从而覆盖所有 Tool 文件夹。
 static func _scan_tool_dirs(dir: DirAccess, dir_path: String, is_tool_root: bool, out: Array) -> void:
 	if dir == null:
 		return

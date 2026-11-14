@@ -6,23 +6,6 @@ extends RefCounted
 ##   - 系统注册与按优先级调度(tick)
 ##   - 系统级并行执行(冲突检测分批, 多线程并行)
 ##   - 批量查询与列访问(高频路径)
-##   - 批量事件队列(替代信号风暴)
-##
-## 用法(场景驱动, 推荐):
-##   场景里放一个 World 节点, 在 Inspector 配置 systems(要注册的系统)即可自动创建世界并注册,
-##   无需手写 world = ECSWorld.new() / register_system(...)。
-##   代码用法: var world = ECSWorld.new(); world.register_system(HealSystem.new())。
-##
-## 系统级并行(默认开启, 无需任何配置即可自动生效):
-##   - 首帧自动串行预热, 采集各系统实际访问的组件集合
-##   - 之后每帧按"组件访问冲突"贪心分批: 访问同一组件或有 before/after
-##     依赖的系统自动串行, 互不干扰的系统在多个线程上并行执行
-##   - 不可并行的系统(如访问场景树/节点)需覆写 ECSSystem.can_run_parallel()
-##     返回 false(参考 ECSSyncSystem)
-##   - 并行系统内请用 Command Buffer 排队结构变更(cmd_*),
-##     且 read_components()/write_components() 声明尽量准确
-##   - 关闭并行: world.parallel_enabled = false(回退纯串行, 与旧版行为一致)
-##   - 线程数: world.parallel_threads = N(0=自动)
 
 ## —— 批量运算操作符(传给 batch_apply / batch_apply_where 的 op 参数) ——
 enum BatchOp {
@@ -87,11 +70,8 @@ var _cmd_mutex := Mutex.new()             # 命令缓冲
 var _struct_mutex := Mutex.new()          # 立即结构变更(create/destroy/add/remove)
 
 # ---------------- 组件生命周期钩子 ----------------
-## 组件钩子表: compName(StringName) -> {add: Array[Callable], remove: Array[Callable]}
-## 触发时机:
 ##   - add 钩子: 实体获得组件后(立即版 add_component 或命令缓冲 flush 后)
 ##   - remove 钩子: 实体失去组件后(立即版 remove_component、destroy 或 flush 后)
-## 回调签名: func(entity: int)
 var _component_hooks := {}
 var _entity_destroyed_hooks: Array = []   # Array[Callable], func(entity: int)
 var _has_any_component_hooks := false     # 快速判断: 是否需要枚举实体组件
@@ -99,7 +79,6 @@ var _has_any_component_hooks := false     # 快速判断: 是否需要枚举实�
 var _parent_children := {}
 
 # ---------------- 变化检测 ----------------
-## 写路径(通过框架写 API 的字段修改)会标记对应组件"本帧被写"。
 ## 注意: get_column 返回共享引用后原地修改不经过写 API, 不会被标记。
 var _frame_count := 0                     # 本世界已 tick 帧数
 # ---------------- 调试统计(实体/系统查看器用) ----------------
@@ -113,16 +92,12 @@ var _event_queues := {}                  # type(StringName) -> Array[Variant]
 var _event_subscribers := {}             # type(StringName) -> Array[Callable]
 
 # ---------------- 查询缓存(增量失效) ----------------
-# 缓存条目: {result, deps: PackedStringArray, comp_v: {组件->版本}, world_v: int}
-# 命中条件: 全局版本一致 且 每条依赖组件的版本一致 —— 只失效真正受影响组件的缓存,
-#           create_entity 不再失效任何缓存, add/remove 组件只失效该组件的缓存。
 var _query_cache := {}
 var _comp_versions := {}                  # 组件名 -> 结构版本(该组件实体集合变化的代数)
 var _world_version := 0                   # 全局结构版本(destroy/批量结构变更时 +1)
 
 func _init(p_use_shared_core: bool = true) -> void:
 	# 默认使用全局共享核心(游戏通常只有一个世界);
-	# 需要多个隔离世界(如性能对比/沙盒)时传 false 创建独立核心。
 	if p_use_shared_core:
 		_core = ECSNative.get_instance()
 	else:
@@ -135,15 +110,10 @@ func native() -> Object:
 	return _core
 
 # ============================================================
-#  组件注册
-# ============================================================
 
 ## 注册组件类(ECSComponent 子类)。重复注册幂等。
-## 通过当前世界自己的 _core 注册(不依赖全局单例)。
-## component_class 支持两类脚本:
 ##   · ECSComponent 子类: 反射其全部脚本变量(@export 数据字段)
 ##   · 普通脚本(如 Entity2D 子类/任意 Node): 反射其 @export 纯数据变量
-## schema 反射统一走 ECSNative.collect_schema。
 func register_component(component_class: Script) -> bool:
 	if _component_registered.get(component_class, false):
 		return true
@@ -189,8 +159,6 @@ func registered_components() -> Array[Script]:
 	return _components
 
 # ============================================================
-#  实体
-# ============================================================
 
 ## 创建实体, 返回实体 id(int32: index|version<<24)
 ## 注意: 新实体无组件, 不影响任何查询结果 → 不失效查询缓存。
@@ -205,9 +173,6 @@ func is_alive(entity: int) -> bool:
 	return _core.is_alive(entity)
 
 ## 销毁实体(从所有组件移除, 复用 id 防悬垂)
-## 销毁会移除实体的全部组件(组件未知) → 全局版本失效。
-## 若注册了组件 remove 钩子, 会在实体真正销毁前枚举组件并触发 remove;
-## 随后触发 on_entity_destroyed 钩子。
 func destroy_entity(entity: int) -> void:
 	_cleanup_relations(entity)   # 关系清理: 解除该实体的父/子关联(索引 + 对端 target)
 	var pending_comps: Array = []
@@ -221,8 +186,6 @@ func destroy_entity(entity: int) -> void:
 		_fire_component_remove(c, entity)
 	_fire_entity_destroyed(entity)
 
-# ============================================================
-#  关系实体 (entity↔entity 关联: ECSParent{target} + 关系索引)
 # ============================================================
 
 ## 设置 child 的父实体为 parent(自动维护关系索引)。child/parent 需存活。
@@ -284,8 +247,6 @@ func _cleanup_relations(entity: int) -> void:
 ##   · Script(ECSComponent 子类/普通 Node 脚本)
 ##   · 类名 StringName/String
 ##   · 实例(一参数模式): 传组件实例/节点实例, 自动反射其 @export 数据字段作为初值
-## def_data 可覆盖部分字段初值(其余用 schema 默认值)。
-## 只失效该组件相关的查询缓存。成功后触发该组件的 on_component_added 钩子(若有注册)。
 func add_component(entity: int, component, def_data: Dictionary = {}) -> bool:
 	# 一参数实例模式: 传入实例(非 Script/名字), 自动反射其 @export 数据字段为初值
 	if not (component is Script or component is String or component is StringName):
@@ -328,7 +289,6 @@ func remove_component(entity: int, component) -> void:
 		_fire_component_remove(name, entity)
 
 ## 统一的组件名解析入口(全框架唯一实现): Script -> 注册名 / 反射类名; String(Name) 原样返回。
-## 未注册的 Script 回退到资源路径反射出的类名, 保证"附加组件"与"查询条件"两侧解析出同一个名字。
 func resolve_component_name(component) -> StringName:
 	if component is Script:
 		var n: StringName = _component_names.get(component, &"")
@@ -344,8 +304,6 @@ func resolve_component_name(component) -> StringName:
 	return &""
 
 # ============================================================
-#  字段访问(低频: 单实体)
-# ============================================================
 
 func get_field(entity: int, component, field: StringName):
 	var cn := resolve_component_name(component)
@@ -359,19 +317,9 @@ func set_field(entity: int, component, field: StringName, value) -> void:
 	_mark_dirty(cn)
 
 # ============================================================
-#  批量查询与列访问(高频: 系统内)
-# ============================================================
 
 ## 查询匹配实体(返回 anchor 组件的 dense 行号列表)。
-## anchor/must/without 传组件类名或 Script。
-## 行号可直接索引 get_column 返回的列 —— 列按行号紧凑存储(缓存友好, 内存紧凑)。
 ## 注意: 行号属于 anchor 组件; 跨组件访问时, 先 entity_of_row(anchor, row) 取实体ID,
-##       再 row_of_entity(other_comp, entity) 得其他组件的行号。
-## 需要实体 ID 时用 entity_of_row() 转换。
-## 需要"一次拿多组件对齐行号"时改用 query_aligned()(免逐实体转换)。
-## 聚合行号(某组件 get_column 的索引) -> 实体 ID(archetype 下跨块聚合顺序)。
-## 配合 query_rows(返回聚合行号) 使用: 先 query_rows 拿行号, 再 get_entity_at 转实体 ID,
-## 再 get_field(实体ID, ...) 读取。
 func get_entity_at(component, row: int) -> int:
 	return _core.get_entity_at(resolve_component_name(component), row)
 
@@ -387,7 +335,6 @@ var change_detection: bool:
 		_core.set_change_detection(v)
 
 ## 查询匹配实体, 直接返回实体 ID 数组(archetype 下最直观: 配 get_field/set_field 使用)。
-## 例: var ents = world.query_entities(BallComponent); for e in ents: world.get_field(e, BallComponent, &"hp")
 func query_entities(anchor, must: Array = [], without: Array = []) -> PackedInt32Array:
 	var anchor_name := resolve_component_name(anchor)
 	if anchor_name == &"":
@@ -410,8 +357,6 @@ func query_entities(anchor, must: Array = [], without: Array = []) -> PackedInt3
 	return _core.query_entities(anchor_name, must_names, without_names)
 
 ## 全量聚合行号(无条件查询): 返回该组件所有实体的聚合行号(0..N-1)。
-## 与 query_rows 采用同一套失效契约(组件版本 + 全局版本), 因此命令缓冲 / Prefab /
-## 反序列化 / 条件批量等任意结构变更路径都无需手动清缓存 —— 版本号变化即自动重算。
 var _all_rows_cache := {}
 
 func query_all_rows(anchor) -> PackedInt32Array:
@@ -431,7 +376,6 @@ func query_all_rows(anchor) -> PackedInt32Array:
 	return rows
 
 ## 统一解析查询参数: anchor/must/without 的类名解析 + 访问记录(三条查询路径共用)。
-## 返回 [anchor_name, must_names, without_names]; anchor 无效时返回空数组。
 func _resolve_query_args(anchor, must: Array, without: Array) -> Array:
 	var anchor_name: StringName = resolve_component_name(anchor)
 	if anchor_name == &"":
@@ -454,7 +398,6 @@ func _resolve_query_args(anchor, must: Array, without: Array) -> Array:
 	return [anchor_name, must_names, without_names]
 
 ## 查询缓存键: 扁平字符串键(字段间用 \u001e, 数组元素间用 \u001f),
-## 免去 str(PackedStringArray) 的括号/引号/逗号格式化开销。
 const _QKEY_FIELD := "\u001e"
 const _QKEY_ITEM := "\u001f"
 
@@ -487,16 +430,6 @@ func query_rows(anchor, must: Array = [], without: Array = []) -> PackedInt32Arr
 	return result
 
 ## 对齐行号查询: 一次遍历收集匹配实体, 返回 anchor 与全部 must 组件的对齐 dense 行号。
-## 返回 Array[int] 数组: [0] = anchor 行号, [1..] = 对应 must[i] 组件的行号。
-## 第 k 个匹配实体: anchor 列用 [0][k] 索引, must[i] 列用 [1+i][k] 索引 ——
-## 同一 k 直接并行索引各组件列, 免去逐实体 entity_of_row/row_of_entity 跨语言转换。
-## 用法:
-##   var aligned = world.query_aligned(MoveComponent, [HealthComponent])
-##   var pos: PackedVector2Array = world.get_column(MoveComponent, &"pos")
-##   var hp: PackedInt32Array = world.get_column(HealthComponent, &"hp")
-##   for i in aligned[0].size():
-##       pos[aligned[0][i]].x += ...      # 移动组件行
-##       hp[aligned[1][i]] -= 5           # 血量组件行(同一实体)
 func query_aligned(anchor, must: Array = [], without: Array = []) -> Array:
 	var args := _resolve_query_args(anchor, must, without)
 	if args.is_empty():
@@ -519,9 +452,6 @@ func query_aligned(anchor, must: Array = [], without: Array = []) -> Array:
 	return result
 
 ## 对齐行号 + 条件过滤查询(供 查询链.call 等高级遍历)。
-## 只返回满足 conditions 的实体; 对齐输出的组件由 comps 显式指定。
-## 返回 Array: [0] = anchor 行号(已过滤), [1..] = comps[i] 的对齐行号。
-## 不缓存(条件变化无稳定签名)。conditions 格式同 batch_apply_where。
 func query_aligned_where(anchor, must: Array = [], without: Array = [],
 		conditions: Array = [], comps: Array = []) -> Array:
 	var args := _resolve_query_args(anchor, must, without)
@@ -543,7 +473,6 @@ func query_aligned_where(anchor, must: Array = [], without: Array = [],
 		_normalize_conds(conditions), comps_names)
 
 ## 一次写回多组件多列(与 get_columns 返回结构同构, 一次跨语言替代 N 次 set_column)。
-## values: {组件类名: {字段名: PackedArray}} —— 组件类名可用类名(StringName)或 Script。
 func set_columns(values: Dictionary) -> void:
 	var norm := {}
 	for comp in values:
@@ -556,7 +485,6 @@ func set_columns(values: Dictionary) -> void:
 	_core.set_columns(norm)
 
 ## 借出列(写路径消除 COW): 把内部列移出返回独占引用, 回调内写列 O(1) 无深拷贝。
-## 返回 {组件类名: {字段名: PackedArray}}(与 get_columns 同构)。
 ## 借出期间内部该列为空, 不得被其他路径读取; 必须配 return_columns() 归还。
 func borrow_columns(comps_fields: Array) -> Dictionary:
 	var norm := []
@@ -579,8 +507,6 @@ func is_column_borrowed() -> bool:
 	return _core.is_column_borrowed()
 
 ## 列间运算: 对满足条件的实体, 用 src 组件字段列对目标字段做运算。
-## op: ECSWorld.ColOp(ADD/SUB/MUL/DIV/SET); 目标列 = 目标列 OP (src列 * factor + addend)。
-## 支持 INT/FLOAT(含 addend) 与 VECTOR2/VECTOR3(factor 标量缩放, 忽略 addend)。
 func batch_apply_col(anchor, must: Array, op_comp, op_field: StringName,
 		src_comp, src_field: StringName, op: int, factor: float = 1.0,
 		addend: float = 0.0, conditions: Array = []) -> int:
@@ -623,7 +549,6 @@ func batch_clamp_where(anchor, must: Array, op_comp, op_field: StringName,
 
 
 ## int 列钳制的 GDScript 兜底实现(原生 batch_clamp 仅支持 float 列):
-## 用对齐查询取 满足条件 且 拥有 op/min/max 字段的实体行号, 逐行 clampi 后整列写回
 func _gd_batch_clamp_int(an: StringName, must: Array, ocn: StringName, op_field: StringName,
 		mincn: StringName, min_field: StringName, maxcn: StringName, max_field: StringName,
 		conditions: Array) -> int:
@@ -694,9 +619,6 @@ func set_column(component, field: StringName, values) -> void:
 	_mark_dirty(cn)
 
 ## 一次取多组件多列(一次跨语言调用替代 N 次 get_column)。
-## comps_fields: Array[{comp: 组件类/类名, fields: [字段名...]}]
-## 返回 {组件类名: {字段名: PackedArray}} —— 列按该组件 dense 行号索引。
-## 例: world.get_columns([{comp: HealthComponent, fields: [&"hp", &"max_hp"]}])
 func get_columns(comps_fields: Array) -> Dictionary:
 	var norm := []
 	for cf in comps_fields:
@@ -718,7 +640,6 @@ func row_of_entity(component, entity: int) -> int:
 # ---- 原生API层: 批量运算(纯 C++ 循环, 无 GDScript 解释开销) ----
 
 ## 批量数值变换(anchor 组件中同时拥有 must 的实体, 对 op 字段原地运算)。
-## op: ECSWorld.BatchOp(ADD=0 加法, MUL_ADD=1 乘加, SET=2 赋值)
 func batch_apply(anchor, must: Array, op_comp, op_field: StringName, op: int, factor: float, addend: float) -> int:
 	var an := resolve_component_name(anchor)
 	var ocn := resolve_component_name(op_comp)
@@ -773,14 +694,8 @@ func count(component) -> int:
 	return _core.count_entities(resolve_component_name(component))
 
 # ============================================================
-#  Command Buffer (延迟结构变更)
-#  系统内排队 create/destroy/add_component/remove_component,
-#  帧末 tick() 末尾统一 flush —— 遍历中不直接改结构(无重入/迭代失效),
-#  为系统并行执行铺路。
-# ============================================================
 
 ## 排队: 创建实体。返回负值占位句柄(-(创建序号+1)),
-## 可用于 cmd_add_component/cmd_remove_component 引用, flush 后解析为真实实体。
 func cmd_create() -> int:
 	_cmd_mutex.lock()
 	_core.cmd_create()
@@ -823,8 +738,6 @@ func cmd_pending_count() -> int:
 	return n
 
 ## 立即执行全部排队命令(通常由 tick() 帧末自动调用)。
-## 按命令类型精确失效查询缓存: add/remove 组件只失效该组件, destroy 全局失效。
-## flush 后在主线程触发对应组件钩子(占位实体经 created_entity_at 解析为真实实体)。
 func cmd_flush() -> void:
 	# flush 前收集 destroy 目标的组件(destroy 后无法枚举)
 	var destroy_comps := {}
@@ -886,11 +799,8 @@ var _cmd_create_count: int = 0
 var _cmd_ops: Array = []   # 本帧排队的命令操作记录(供 flush 精确失效缓存)
 
 # ============================================================
-#  系统
-# ============================================================
 
 ## 注册系统(委托调度器)。priority 越大越先执行；不传则取 system.priority。
-## before/after: 依赖声明的系统引用数组(该系统须在 after 之后、before 之前执行)。
 func register_system(system: ECSSystem, priority = null, before: Array = [], after: Array = []) -> void:
 	scheduler().register(system, priority, before, after)
 
@@ -909,8 +819,6 @@ func _record_access(comp: StringName) -> void:
 	scheduler().record_access(comp)
 
 ## 每帧驱动全部系统。内部先按依赖图拓扑排序(优先级仅作同层平级次序)。
-## 帧末自动 flush Command Buffer(延迟结构变更)。
-## 系统级并行: 满足条件时, 按"组件访问冲突检测"把互不冲突的系统分批并行执行;
 ## 否则回退纯串行(行为与旧版一致)。并行开启时第一帧自动串行预热以采集访问记录。
 func tick(delta: float) -> void:
 	_frame_count += 1
@@ -962,11 +870,6 @@ func is_parallel_active() -> bool:
 func debug_parallel_stats() -> Dictionary:
 	return scheduler().debug_parallel_stats()
 
-# ============================================================
-#  组件生命周期钩子 (on_add / on_remove / on_destroy)
-#  触发时机: 立即版 add_component/remove_component 成功时; destroy_entity 时;
-#            命令缓冲 flush 后(主线程, 并行系统内 cmd_* 的钩子安全在此触发)。
-#  回调签名: func(entity: int)
 # ============================================================
 
 ## 注册组件 add 钩子: 实体获得该组件后触发。
@@ -1030,11 +933,7 @@ func _fire_entity_destroyed(entity: int) -> void:
 		cb.call(entity)
 
 # ============================================================
-#  变化检测 (组件级脏标记)
-#  通过框架写 API 的字段修改会标记组件"本帧被写":
-#    set_field / set_column / batch_apply / batch_apply_where / batch_clamp / batch_vec_add
 #  注意: get_column 返回共享引用后原地修改不经过写 API, 不会被标记。
-# ============================================================
 
 ## 标记组件本帧被写(写路径内部调用)。
 func _mark_dirty(comp: StringName) -> void:
@@ -1060,11 +959,8 @@ func dirty_components() -> Array:
 	return out
 
 # ============================================================
-#  批量事件(替代信号风暴: 帧内累积, 帧末一次性派发)
-# ============================================================
 
 ## 投递事件(帧末统一派发给订阅者)。
-## payload 可为任意值; 也支持带实体信息的字典 {entity: id, data: ...}。
 func emit_event(type: StringName, payload = null) -> void:
 	_event_mutex.lock()
 	if not _event_queues.has(type):
@@ -1073,7 +969,6 @@ func emit_event(type: StringName, payload = null) -> void:
 	_event_mutex.unlock()
 
 ## 投递"实体事件": 指定事件的来源/目标实体。
-## 订阅者可用 on_entity_event(带组件过滤)只收到相关实体的事件。
 func emit_entity_event(type: StringName, entity: int, data = null) -> void:
 	var payload := {"entity": entity, "data": data}
 	emit_event(type, payload)
@@ -1085,8 +980,6 @@ func on_event(type: StringName, handler: Callable) -> void:
 	_event_subscribers[type].append(handler)
 
 ## 订阅"实体事件"并按组件过滤。
-## 只收到: 事件携带 entity_id, 且该实体拥有全部 filter 组件。
-## handler(entity_id, data)。
 func on_entity_event(type: StringName, filter: Array, handler: Callable) -> void:
 	var wrapped := func(payload):
 		if not payload is Dictionary or not payload.has("entity"):
@@ -1099,8 +992,6 @@ func on_entity_event(type: StringName, filter: Array, handler: Callable) -> void
 	on_event(type, wrapped)
 
 ## 订阅"实体事件"并按组件过滤(带 where 条件)。
-## conditions: Array[Dictionary] 同 batch_apply_where 条件格式。
-## handler(entity_id, data)。
 func on_entity_event_where(type: StringName, filter: Array, conditions: Array, handler: Callable) -> void:
 	var wrapped := func(payload):
 		if not payload is Dictionary or not payload.has("entity"):
@@ -1187,15 +1078,12 @@ func _dispatch_events() -> void:
 				h.call(payload)
 
 # ============================================================
-#  序列化/存档 (对接 SaveTool)
-# ============================================================
 
 ## 序列化整个世界的组件数据 → Dictionary, 可交给 SaveTool.save_data 存档。
 func serialize() -> Dictionary:
 	return _core.serialize()
 
 ## 反序列化: 重建实体与数据。
-## 返回 Array[int]: 新建实体的真实实体 ID 列表(用它绑定 Component 等)。
 ## 注意: 组件需先 register_component(名称一致)再调用。
 func deserialize(data: Dictionary) -> Array:
 	var ids: Array = _core.deserialize(data)
@@ -1207,24 +1095,10 @@ func debug_stats() -> Dictionary:
 	return _core.debug_stats()
 
 # ============================================================
-#  原生API层: 条件过滤批量(只处理满足条件的实体)
-# ============================================================
 
 ## 条件过滤批量运算: 仅对满足全部条件的实体执行 op 运算。
-## 参数含义:
-##   anchor/must: 匹配实体的组件签名(anchor 必含, must 全含)
-##   op_comp/op_field: 要修改的目标组件与字段
-##   op: ECSWorld.BatchOp(ADD 加 / MUL_ADD 乘加 / SET 赋值)
-##   factor: MUL_ADD 时的乘数; addend: ADD/MUL_ADD 时的加数
-##   conditions: Array[Dictionary] 过滤条件, 每项 {comp, field, op, value}
 ##     - comp 可传组件类(Script)或类名(String); field 传字段名
 ##     - op: ECSWorld.CondOp(LT < / LE <= / GT > / GE >= / EQ == / NE !=)
-## 返回处理的实体数。
-##
-## 示例(给 hp<50 的实体 +10):
-##   world.batch_apply_where(HealthComponent, [], HealthComponent, &"hp",
-##       ECSWorld.BatchOp.ADD_VALUE, 0.0, 10.0,
-##       [{comp: HealthComponent, field: &"hp", op: ECSWorld.CondOp.LESS_THAN, value: 50}])
 func batch_apply_where(anchor, must: Array, op_comp, op_field: StringName,
 		op: int, factor: float, addend: float, conditions: Array) -> int:
 	var an := resolve_component_name(anchor)
@@ -1240,10 +1114,6 @@ func batch_apply_where(anchor, must: Array, op_comp, op_field: StringName,
 		ocn, op_field, op, factor, addend, _normalize_conds(conditions))
 
 ## 统计满足指定条件的实体数量(纯查询, 不修改任何数据)。
-## conditions 格式同 batch_apply_where。
-## 示例(统计血量不满的敌人数量):
-##   world.batch_count_where(HealthComponent, [],
-##       [{comp: HealthComponent, field: &"hp", op: ECSWorld.CondOp.LESS_THAN, value: 100}])
 func batch_count_where(anchor, must: Array, conditions: Array) -> int:
 	var an := resolve_component_name(anchor)
 	_record_access(an)
@@ -1254,9 +1124,6 @@ func batch_count_where(anchor, must: Array, conditions: Array) -> int:
 	return _core.batch_count(an, _names(must), _normalize_conds(conditions))
 
 ## 批量收集: 单次遍历匹配 anchor+must(不含 without)的签名实体, 同时判定多组条件,
-## 产出多组 anchor 行号。比逐查询各自 collect 省去 N 次全表扫描。
-## groups: Array, 每组 = 条件列表(格式同 batch_apply_where, 空组 = 无条件 = 全部实体)。
-## 返回 Array[PackedInt32Array], 第 i 组对应 groups[i] 满足条件的实体 anchor 行号。
 func batch_collect(anchor, must: Array, without: Array, groups: Array) -> Array:
 	var an := resolve_component_name(anchor)
 	_record_access(an)
@@ -1282,7 +1149,6 @@ func batch_collect_norm(anchor, must: Array, without: Array, norm_groups: Array)
 	return _core.batch_collect(an, _names(must), _names(without), norm_groups)
 
 ## 对预收集的行集做标量批量动作(跳过收集, 复用 batch_collect 的行集)。
-## rows: anchor 行号(PackedInt32Array)。op: ECSWorld.BatchOp。支持向量分量字段(如 &"vel.x")。
 func batch_apply_rows(anchor, rows: PackedInt32Array, op_comp, op_field: StringName,
 		op: int, factor: float, addend: float) -> int:
 	var an := resolve_component_name(anchor)
@@ -1305,7 +1171,6 @@ func batch_apply_col_rows(anchor, rows: PackedInt32Array, op_comp, op_field: Str
 	return _core.batch_apply_col_rows(an, rows, ocn, op_field, scn, src_field, op, factor, addend)
 
 ## 批量执行多个动作(一次跨语言, 免逐动作跨语言调用)。
-## actions: Array[Dictionary], 每项 {t:0=col列间,1=scalar标量, of, sf/sc?, op, f, v/add}。
 func batch_apply_actions(anchor, rows: PackedInt32Array, actions: Array) -> int:
 	var an := resolve_component_name(anchor)
 	_record_access(an)
@@ -1325,8 +1190,6 @@ func _normalize_conds(conditions: Array) -> Array:
 	return out
 
 # ============================================================
-#  Prefab 预制体 (模板实体 + 批量实例化)
-# ============================================================
 
 ## 创建 prefab 模板实体(带模板标记, 不参与普通查询/序列化)。
 func create_prefab() -> int:
@@ -1337,7 +1200,6 @@ func is_prefab(entity: int) -> bool:
 	return _core.is_prefab(entity)
 
 ## 给 prefab 模板添加组件并设置初始字段值。
-## values: Dictionary {字段名: 初始值}
 func prefab_add(prefab: int, component, values: Dictionary) -> bool:
 	register_component(component) if component is Script else null
 	var name := resolve_component_name(component)
@@ -1346,8 +1208,6 @@ func prefab_add(prefab: int, component, values: Dictionary) -> bool:
 	return _core.prefab_add(prefab, name, values)
 
 ## 批量实例化: 复制 prefab 的组件结构与字段值到 count 个新实体。
-## overrides: Dictionary {组件类名: {字段名: 覆盖值}}(可选)
-## 返回新实体 ID 数组(Array[int])。
 func instantiate(prefab: int, count: int, overrides: Dictionary = {}) -> Array:
 	# overrides 的 key 可能是 Script, 归一化为类名
 	var norm_overrides := {}
@@ -1357,8 +1217,6 @@ func instantiate(prefab: int, count: int, overrides: Dictionary = {}) -> Array:
 	return _core.instantiate(prefab, count, norm_overrides)
 
 ## 便捷: 从 ECSPrefabDef 配置构建 prefab 模板, 返回 prefab 实体 ID。
-## 配置用"组件实例数组": 每个实例的 @export 字段 = 该组件初始值。
-## 之后可 world.instantiate(prefab, n) 批量生成。
 func build_prefab(def: ECSPrefabDef) -> int:
 	if def == null:
 		return -1
@@ -1377,15 +1235,12 @@ func build_prefab(def: ECSPrefabDef) -> int:
 	return prefab
 
 ## 便捷: 从配置直接批量生成实体(构建 prefab + 实例化)。
-## 返回新实体 ID 数组。
 func spawn_from_def(def: ECSPrefabDef, count: int = 1, overrides: Dictionary = {}) -> Array:
 	var prefab := build_prefab(def)
 	if prefab < 0:
 		return []
 	return instantiate(prefab, count, overrides)
 
-# ============================================================
-#  暂停/恢复(对比时暂停未选中的世界)
 # ============================================================
 
 ## 暂停或恢复世界(暂停 = 不执行任何系统, 用于多世界对比)。

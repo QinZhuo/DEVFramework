@@ -1,22 +1,11 @@
 class_name ECSLink extends RefCounted
 
 ## ECS 桥接对象 —— 让普通对象(Node/RefCounted)把数据放进 ECS。
-##
-## 隐式启用: 调用 add_component/get_field/set_field 等时自动创建并绑定一个 ECS 实体,
-## 无需任何布尔开关。不使用 ecs.* API 则保持纯 OOP, 零开销。
-## 数据单一源 = ECS 列; 持有方(Node 组件 / 实体对象)只做门面。
-##
-## 用法(在 Entity / Entity2D / Entity3D 内建, 子类直接用):
-##   ecs.world = my_world                       # 绑定世界(由使用方设置)
-##   ecs.add_component(ECSAttribute, {"atk": 10})   # 数据进 ECS 列
-##   ecs.set_field(ECSAttribute, &"atk", 20)    # 读写 ECS
-##   ecs.destroy()                              # 销毁实体
 
 var world: ECSWorld
 var entity_id: int = -1
 
 ## 持有者(Entity2D/Entity3D/Entity 等)。sync 系列默认以持有者为目标对象,
-## 组件 = 持有者脚本(自身组件); 也可用 sync_*_comp 显式指定组件。
 var owner: Object = null
 
 
@@ -25,7 +14,6 @@ func _init(new_owner: Object = null) -> void:
 
 
 ## 懒创建 ECS 实体(首次使用时绑定), 返回实体 ID。
-## owner 是节点(Entity2D/3D)时, 自动附加 NodeLink(实体↔节点关联, 供 ECSSyncSystem 同步)。
 func ensure_entity() -> int:
 	if entity_id < 0 and world != null:
 		entity_id = world.create_entity()
@@ -34,7 +22,6 @@ func ensure_entity() -> int:
 
 
 ## owner 是节点时自动挂 NodeLink(无需手动 attach_node_link)。
-## node_path 在节点入树后有效, 由持有方 _ready 调 refresh_node_link() 刷新。
 func _auto_node_link() -> void:
 	if owner == null or not (owner is Node) or world == null or entity_id < 0:
 		return
@@ -43,8 +30,6 @@ func _auto_node_link() -> void:
 
 
 ## 刷新 NodeLink.node_path(节点入树后路径有效)。持有方在 _ready 调用。
-## 若实体尚无 NodeLink(如手动设 entity_id 的场景), 这里确保挂载。
-## 节点未入树时跳过(路径无效), 入树后由持有方 _ready 再次调用。
 func refresh_node_link() -> void:
 	if owner == null or not (owner is Node) or world == null or entity_id < 0:
 		return
@@ -62,7 +47,6 @@ func is_bound() -> bool:
 
 
 ## 给实体附加 ECS 数据组件(数据只在 ECS 列)。
-## comp 支持 Script/类名, 或**实例(一参数模式)** —— 传组件实例/节点实例时自动反射其 @export 字段为初值。
 func add_component(comp, values: Dictionary = {}) -> bool:
 	if world == null:
 		push_warning("ECSLink: 未设置 world, 无法附加组件。请先 ecs.world = ...")
@@ -100,10 +84,8 @@ func destroy() -> void:
 
 
 ## —— 通用字段同步(ECS ↔ 持有者, 只传两个字符串) ——
-## 目标对象 = owner(持有者), 组件 = owner 的脚本(自身组件)。用于单实体/低频。
 
 ## ECS → 持有者: 把持有者脚本组件 field 字段同步到持有者 obj_prop 属性。
-## 用法: ecs.sync_from(&"pos", &"position")
 func sync_from(field: StringName, obj_prop: StringName = field) -> void:
 	if owner == null:
 		return
@@ -111,7 +93,6 @@ func sync_from(field: StringName, obj_prop: StringName = field) -> void:
 
 
 ## 持有者 → ECS: 把持有者 obj_prop 属性同步到持有者脚本组件 field 字段。
-## 用法: ecs.sync_to(&"position", &"pos")
 func sync_to(field: StringName, obj_prop: StringName = field) -> void:
 	if owner == null:
 		return
@@ -119,7 +100,6 @@ func sync_to(field: StringName, obj_prop: StringName = field) -> void:
 
 
 ## 显式指定组件的版本(组件非持有者自身脚本时, 如 Entity 挂外部组件)。
-## 用法: ecs.sync_from_comp(ECSDemoMoveComponent, &"pos", &"position")
 func sync_from_comp(comp, field: StringName, obj_prop: StringName = field) -> void:
 	if owner == null:
 		return

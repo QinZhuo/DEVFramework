@@ -20,8 +20,6 @@ func _to_string():
 
 func get_desc(data) -> String:
 	## 用单空格 join（跳过空描述）：
-	## 原来逐个 `+= desc + " "` 会留下尾随空格，子效果描述自身带前导/尾随空格时
-	## 还会拼出双空格（如「获得2格挡  重复2次」）
 	var parts: PackedStringArray = []
 	for effect in effects:
 		if effect == null:

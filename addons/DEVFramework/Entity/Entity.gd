@@ -1,15 +1,6 @@
 @abstract class_name Entity extends RefCounted
 
 ## 运行时实体基类 —— 也是 **ECS 桥接的重点**。
-##
-## 理想用法: 只用 Entity(及其子类) 就能把数据放进 ECS, 无需接触裸 ECS API:
-##   var e := Entity.new()                  # 或项目自定义子类
-##   e.ecs.world = world                    # 绑定世界(懒创建 ECS 实体)
-##   e.add_component(HealthComponent, {"hp": 100})   # 数据进 ECS 列
-##   e.set_field(HealthComponent, &"hp", 80)         # 读写 ECS
-##   e.destroy()                            # 销毁
-## 数据只在 ECS(SoA 列), Entity 对象只是门面; 不调用 ECS API 则纯 OOP, 零开销。
-## 表现/交互用普通 Node 挂在实体下(持有 Entity2D/3D 引用即可), 不需要额外基类。
 
 signal entity_changed()
 
@@ -68,8 +59,6 @@ func _to_string():
 
 
 ## —— ECS↔对象桥接: 把本实体(脚本)作为数据组件注册进 ECS ——
-## 反射本实体脚本的 @export 纯数据变量作为组件 schema, 注册并写入当前值。
-## 用法: 子类声明 @export 数据字段, 设好初值后 e.register_to_ecs()。
 func register_to_ecs() -> bool:
 	if ecs.world == null:
 		push_warning("Entity(%s): 未设置 world, 无法注册到 ECS。" % to_string())

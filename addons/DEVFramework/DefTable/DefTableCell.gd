@@ -1,16 +1,9 @@
 @tool
 ## DefTable 类型化单元格基类。
-## 每种显示类型一个子类(Text/Number/Bool/Color/Resource/Array/Dict),
-## 通过 make_cell() 工厂创建。单元格本身是 Control, 子节点:
 ##   - Back   : 背景(斑马纹/行染色)
 ##   - Sel    : 选中高亮
 ##   - Content: 内容节点(由子类创建)
-## 参考 resources_spreadsheet_view 的 cell_editor 类型化架构。
-##
 ## ⚠ 池化复用与尺寸钳制: 单元格在 View 的两级对象池中跨行/跨目录复用,
-##   上一任行的 custom_minimum_size 会把新 size 向上钳制成旧行高(视觉重叠伪影)。
-##   约定: 复用侧设 size 前必须先归零 minsize(View 侧 _attach_cell/_fill_row 已处理);
-##   本类不自行维护 minsize, 其值始终由 View 的 _fill_cell 按当前行高写入。
 class_name DefTableCell
 extends Control
 
@@ -24,11 +17,9 @@ const CELL_MARGIN_R := 2.0
 const CELL_MARGIN_T := 2.0
 const CELL_MARGIN_B := 2.0
 ## 资源单元格缩略图(模型/贴图预览)边长: 固定较大尺寸, 所在行由 View 撑高以容纳,
-## 保证模型/贴图缩略图看得清; 未加载到预览时不占用空间(见 set_resource_preview)
 const RESOURCE_PREVIEW_SIZE := 64.0
 
 ## tooltip 气泡限宽: 原生 tooltip 是**不换行的单行 Label**, 长文本会撑出一条超宽气泡;
-## 自定义气泡按此宽度自动换行(见 _make_custom_tooltip)。
 const TOOLTIP_MAX_WIDTH := 1000.0
 ## tooltip 字长上限: 超长文本换行后仍会拖慢气泡构建/渲染, 截断到该字符数(加省略号)。
 const TOOLTIP_MAX_CHARS := 2000
@@ -159,10 +150,6 @@ func set_selected(selected: bool) -> void:
 
 
 ## 悬停气泡: Godot 原生 tooltip 是单行 Label(不换行), 文本过长会撑成一条超宽气泡且卡顿
-## (见 viewport.cpp _gui_show_tooltip 未设 autowrap)。这里自带折行 + 限宽/限长的 Label 替代。
-## 【为何手动折行而非 autowrap】开启 autowrap 的 Label 在"最小尺寸"阶段只返回单行高
-## (label.cpp get_minimum_size), PopupPanel 会据此把气泡压成一行高; 只有显式插入 \n 的
-## 普通过 Label 才会把换行计入最小高度, 气泡才被正确撑高。
 func _make_custom_tooltip(for_text: String) -> Object:
 	if for_text.is_empty():
 		return null
@@ -181,7 +168,6 @@ func _make_custom_tooltip(for_text: String) -> Object:
 
 
 ## 按像素宽手动折行; 文本先截断到 TOOLTIP_MAX_CHARS。
-## 【为何按"累积串"量宽而不是逐字符宽度相加】单字符宽度之和会低估整串宽
 ## (实测 "A"=10px 但 12 个 A 的整串=137px), 逐字符累加会让行宽超限。故每步量 cand=cur+ch。
 func _wrap_text(text: String, font: Font, fsize: int, max_w: float) -> String:
 	var raw := text if text.length() <= TOOLTIP_MAX_CHARS else text.substr(0, TOOLTIP_MAX_CHARS) + "…"

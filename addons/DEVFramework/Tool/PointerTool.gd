@@ -1,7 +1,6 @@
 class_name PointerTool
 
 ## 指针状态登记：任何可点的 3D 物体在鼠标进入/离开时登记自己，
-## 输入层据此区分「点在交互物上」与「点在空白上」（如点空白返回）。
 
 ## 当前压在指针下的可交互对象
 static var over: Node3D = null
@@ -10,7 +9,6 @@ static var over: Node3D = null
 static var dragging: Node3D = null
 
 ## 悬停接线：进入/离开转给表现层回调，离开树时兜底注销（回收的视图不残留登记）。
-## 表现层自己管 enter/exit，是因为是否算"悬停"由视图状态决定（如拖拽中不点亮）。
 static func bind(area: Area3D, on_enter: Callable, on_exit: Callable) -> void:
 	if area.mouse_entered.is_connected(on_enter):
 		return

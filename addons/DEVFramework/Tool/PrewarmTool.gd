@@ -1,5 +1,4 @@
 ## 资源预热 — 后台批量预取，把"首次用到才同步 load"的开销挪到空闲期。
-## 用法：register 分组登记路径 → prewarm 启动（立即返回，逐帧推进）。
 class_name PrewarmTool
 
 ## 组名 → 路径清单

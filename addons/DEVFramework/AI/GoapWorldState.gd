@@ -1,8 +1,6 @@
 class_name GoapWorldState extends RefCounted
 
 ## GOAP 世界状态 — 一组键值对，描述 Agent 对世界的认知。
-## 键通常为 StringName，值为任意可比较的 Variant（bool / int / String 等）。
-## 提供"部分匹配"与"应用效果"两个核心操作，供规划器与行动使用。
 
 var _values: Dictionary = {}
 
@@ -38,7 +36,6 @@ func erase(key) -> bool:
 
 
 ## partial 中的每一项都与当前状态一致则视为"满足"。
-## 当前状态可以包含 partial 之外的键（允许额外信息）。
 func matches(partial: Dictionary) -> bool:
 	for key in partial:
 		if not _values.has(key) or _values[key] != partial[key]:

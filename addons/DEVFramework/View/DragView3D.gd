@@ -1,11 +1,4 @@
 ## 通用 3D 拖拽视图基类，提供完整的拖拽生命周期管理。
-## 继承自 ButtonView3D，子类可自由扩展拖拽行为（排序、跨容器移动等）。
-## [br][br]
-## 拖拽生命周期：[br]
-##   按下左键 → [code]_start_drag()[/code] → [code]_on_drag_started()[/code] (虚)[br]
-##   拖动鼠标 → [code]_drag()[/code] → [code]_on_drag_move()[/code] (虚)[br]
-##   释放左键 → [code]_end_drag()[/code] → [code]_on_drag_ended()[/code] (虚) → 归位动画[br]
-##   按下右键 → [code]_cancel_drag()[/code] → [code]_on_drag_cancelled()[/code] (虚) → 回到起点
 class_name DragView3D extends ButtonView3D
 
 ## 希望拖拽时产生缩放动画的节点，为空则使用自身
@@ -29,7 +22,6 @@ signal drag_ended()
 signal drag_cancelled()
 
 ## ---------------------------------------------------- 拖拽状态
-## 是否正在拖拽中（由 PointerTool.dragging 推导）
 var is_dragging: bool:
 	get: return PointerTool.dragging == self
 var drag_offset: Vector3 = Vector3.ZERO
@@ -279,5 +271,4 @@ func _apply_sort(new_index: int):
 	drag_container.data.insert(new_index, dragged_item)
 
 	## 必须走容器的 resync_views：它按 data 重新对齐**所有**槽位（views[i] ↔ data[i]）。
-	## 只改 data 而不对齐，之后 refresh_item / remove_item / get_item_position 会按错位的槽位操作
 	drag_container.resync_views()

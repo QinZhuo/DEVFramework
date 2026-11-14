@@ -11,7 +11,6 @@ const _DEFAULT_DESC := Color(0.55, 0.55, 0.6, 1)
 const _DEFAULT_VAL := Color(0.9, 0.9, 0.9, 1)
 
 # ------------------------------------------------------------
-# 导出属性
 # ------------------------------------------------------------
 
 @export var display_mode: DisplayMode = DisplayMode.SPINNER:
@@ -55,7 +54,6 @@ var _current_index: int = 0
 			_apply_disabled()
 
 # ------------------------------------------------------------
-# 状态变量
 # ------------------------------------------------------------
 
 var highlight_color: Color = _DEFAULT_HIGHLIGHT
@@ -71,7 +69,6 @@ var _next_btn: Button  # SPINNER 右箭头
 var _toggle_btns: Array[Button] = []  # TOGGLE 按钮组
 
 # ------------------------------------------------------------
-# 生命周期
 # ------------------------------------------------------------
 
 func _enter_tree() -> void:
@@ -100,7 +97,6 @@ func _ready() -> void:
 	current_index = _clamp_index(current_index)
 
 # ------------------------------------------------------------
-# 构建 & 重建
 # ------------------------------------------------------------
 
 func _rebuild() -> void:
@@ -179,7 +175,6 @@ func _build_toggle() -> void:
 		_toggle_btns.append(btn)
 
 # ------------------------------------------------------------
-# 公开接口
 # ------------------------------------------------------------
 
 func get_focus_target() -> Control:
@@ -223,7 +218,6 @@ func get_current_value() -> Variant:
 	return options[current_index] if current_index >= 0 and current_index < options.size() else null
 
 # ------------------------------------------------------------
-# 输入处理
 # ------------------------------------------------------------
 
 func _clamp_index(idx: int) -> int:
@@ -259,7 +253,6 @@ func _on_value_gui_input(event: InputEvent) -> void:
 		_value_btn.accept_event()
 
 # ------------------------------------------------------------
-# 聚焦高亮
 # ------------------------------------------------------------
 
 func _on_focus_entered() -> void:
@@ -276,7 +269,6 @@ func _on_focus_exited() -> void:
 	_description_label.add_theme_color_override("font_color", _desc_color)
 
 # ------------------------------------------------------------
-# 主题
 # ------------------------------------------------------------
 
 func _apply_theme() -> void:
@@ -368,7 +360,6 @@ func _read_font_size() -> int:
 	return get_theme_font_size("font_size", "OptionSelector") if has_theme_font_size("font_size", "OptionSelector") else -1
 
 # ------------------------------------------------------------
-# 显示同步
 # ------------------------------------------------------------
 
 func _sync_display() -> void:

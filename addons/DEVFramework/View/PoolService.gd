@@ -1,5 +1,4 @@
 ## 池注册表：按 key 存取。空闲实例统一挂在常驻的隐藏节点 PoolIdle 下，
-## 池本身是 RefCounted，丢了也不会带走节点。
 class_name PoolService
 
 ## key -> Pool
@@ -78,7 +77,6 @@ static func _ensure_idle_root() -> Node:
 	_idle_root.name = "PoolIdle"
 	_idle_root.process_mode = Node.PROCESS_MODE_DISABLED
 	## 场景 _ready 期间 root 正在装配子节点，此时 add_child 会直接失败（池多半就是在这时首建的）。
-	## 延到空闲帧挂上即可：期间它照样能当父节点用，空闲实例随它一起入树
 	tree.root.add_child.call_deferred(_idle_root)
 	return _idle_root
 
@@ -99,7 +97,6 @@ static func _idle_parent_for(key: String) -> Node:
 	return parent
 
 ## 工厂背后的来源（view_scene.instantiate 的 Callable 挂在 PackedScene 上）。
-## 匿名 lambda 拿不到宿主，只能返回 null（此时不做校验）
 static func _factory_owner(factory: Callable) -> Object:
 	return factory.get_object() if factory.is_valid() else null
 

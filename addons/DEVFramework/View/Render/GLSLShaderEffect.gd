@@ -33,7 +33,6 @@ func _init() -> void:
 
 
 ## normal/motion 缓冲只在 effect 声明需要时才生成；漏声明时 get_texture 会拿到空 RID 并每帧报错。
-## 按 shader 是否用到对应采样自动声明，省去在资源里手填。
 func _sync_needs() -> void:
 	var code := define_code + main_code
 	needs_normal_roughness = code.contains("get_normal_roughness")
@@ -51,7 +50,6 @@ func _notification(what: int) -> void:
 
 
 #region 此区域中的代码在渲染线程上运行。
-# 检查我们的着色器是否已更改并需要重新编译。
 func _check_shader() -> bool:
 	if not rd:
 		return false

@@ -2,31 +2,7 @@
 class_name InputTool
 
 # ============================================================
-# 按键图标 —— 来源与补充方式
-# ============================================================
-## 快捷键提示里的按键一律用图标，不用文字（见 TipTool._format / _normalize）：
-## 图标写在 Assets/Translation/tip.csv 对应事件行里，形如
-##   KEY_ENTER,[img=48x48]res://Assets/Texture/Keycap/keyboard_mouse/keyboard_enter.png[/img],...
-## 键名规则见 _event_key：一律取枚举名，手柄 JOY_BUTTON_*、摇杆 JOY_AXIS_*、鼠标 MOUSE_BUTTON_*、键盘 KEY_*。
-## 组合键不必单独配行，_key_text 会把修饰键和主键拆开再拼（Shift+Backspace → 两个图标）。
-## 图标画布 Kenney 64、Xelu 100（内容均占约 75%~85%），故按 [img=48x48] 引用，视觉内容约 36px ≈ 提示条 38px 中文文字高度。
-##
-## 项目内图标目录：res://Assets/Texture/Keycap/（CC0）
-##   xbox/           手柄键位、摇杆轴、扳机、背键          Kenney Input Prompts
-##   keyboard_mouse/ 键盘键、鼠标左右中键                  Xelu Free Key Prompts（实心字，小尺寸可读）
-##   keyboard_mouse/ 滚轮、侧键                            Kenney Input Prompts
-##   touch/          触摸手势                              Kenney Input Prompts
-## JOY_BUTTON_* / JOY_AXIS_* / MOUSE_BUTTON_* / KEY_* 已全部映射到 tip.csv。
-##
-## 需要整套或补别的平台时去这些地方取（均可免费商用）：
-##   Kenney Input Prompts  https://kenney.nl/assets/input-prompts       全套 3000+，含 PS/Switch/Steam Deck/Quest/触屏，CC0
-##   Xelu Free Key Prompts https://thoseawesomeguys.com/prompts/        键盘/手柄扁平风，键位最全，CC0
-##   Game-icons.net        https://game-icons.net/                      通用图标（耳机、麦克风等），CC BY 3.0
-##   Kenney Game Icons     https://kenney.nl/assets/game-icons          设备/功能类图标，CC0
-## 步骤：图片放入 Assets/Texture/Keycap/ → tip.csv 加 [img=宽x高]res://...[/img] → 重新导入 tip.csv 即生效。
 
-# ============================================================
-# 常量
 # ============================================================
 
 const DEFAULT_SAVE_PATH := "user://input_settings.cfg"
@@ -45,8 +21,6 @@ static var last_device: InputDevice = InputDevice.MOUSE
 static func is_navigation() -> bool:
 	return device_mode == DeviceMode.NAVIGATION
 
-# ============================================================
-# 设备模式切换
 # ============================================================
 
 ## 切换设备模式。
@@ -103,8 +77,6 @@ static func _is_navigation_event(event: InputEvent) -> bool:
 	return _nav_dir(event) != Vector2.ZERO
 
 # ============================================================
-# 2D 焦点组 — 通过 focus_mode 控制控件是否参与 Godot 自动导航
-# ============================================================
 
 ## 当前焦点组节点列表。
 static var _focus_group: Array[Node] = []
@@ -113,7 +85,6 @@ static var _focus_group: Array[Node] = []
 static var _focus_index: int = -1
 
 ## 注册焦点组。2D 控件设为 FOCUS_ALL 启用导航，3D 节点交由 InputTool 手动管理。
-## 注册完直接落焦点（NAVIGATION 下）——调用方不必再自己补 `_ensure_focus`。
 static func register_focus_group(nodes: Array[Node], default_index: int = 0) -> void:
 	_set_group_focus_mode(_focus_group, false)
 	## 换组前先通知旧焦点退出，否则 3D 高亮残留在上一个面板的节点上
@@ -145,7 +116,6 @@ static func clear_focus_group() -> void:
 	LogTool.log("焦点导航", "焦点组已清空")
 
 ## 当前焦点节点（越界/空组返回 null；可能已释放，用前按需判 is_instance_valid）。
-## 参数与返回值不加类型标注，理由同 `_is_active`。
 static func _focused():
 	if _focus_index < 0 or _focus_index >= _focus_group.size():
 		return null
@@ -164,7 +134,6 @@ static func _set_group_focus_mode(nodes: Array[Node], enabled: bool) -> void:
 
 ## 剔除焦点组里已释放的节点（注册方被销毁时未必来得及注销）。
 ## ⚠️ 已释放实例一旦作为参数传给带 `Node` 标注的函数，Godot 在**传参阶段**就报
-## "previously freed is not a subclass of Node"，调试模式下当场中断主循环（表现为整局卡死）。
 static func _prune_focus_group() -> void:
 	if _focus_group.is_empty():
 		return
@@ -228,8 +197,6 @@ static func _ensure_2d_focus() -> void:
 			target.grab_focus.call_deferred()
 
 # ============================================================
-# 3D 焦点导航 — 手动管理 3D 节点的焦点切换
-# ============================================================
 
 ## 获取当前聚焦的 3D 节点（已释放/失效时返回 null）。
 static func get_3d_focus() -> Node:
@@ -287,7 +254,6 @@ static func _ensure_3d_focus() -> void:
 	_focus_index = -1
 
 ## 方向判定：先认 InputMap 动作，再兜底硬编码 WASD / 方向键
-## （ui_* 只绑了手柄或没绑键盘时，键盘导航仍可用）
 static func _nav_dir(event: InputEvent) -> Vector2:
 	if _match_dir(event, &"ui_up", KEY_W, KEY_UP): return Vector2.UP
 	if _match_dir(event, &"ui_down", KEY_S, KEY_DOWN): return Vector2.DOWN
@@ -372,12 +338,8 @@ static func _activate_3d() -> void:
 		node._mouse_up()
 
 # ============================================================
-# 通用辅助
-# ============================================================
 
 ## 检查节点是否可交互（有效、在场景树、可见、未禁用）。
-## 参数**不加类型标注**：已释放实例可以传进来由 `is_instance_valid` 兜住，
-## 标成 `Node` 反而会在传参阶段抛 "previously freed"（见 `_prune_focus_group`）。
 static func _is_active(node) -> bool:
 	if not is_instance_valid(node) or not node.is_inside_tree() or not node.is_visible_in_tree():
 		return false
@@ -392,7 +354,6 @@ static func _in_direction(delta: Vector2, direction: Vector2) -> bool:
 				(direction.y < -0.5 and delta.y >= 0))
 
 ## 触发节点焦点退出回调。优先 _focus_exit，回退 _mouse_exit。
-## 参数不加类型标注，理由同 `_is_active`。
 static func _notify_focus_exit(node) -> void:
 	if not is_instance_valid(node):
 		return
@@ -410,8 +371,6 @@ static func _notify_focus_enter(node) -> void:
 	elif node.has_method("_mouse_enter"):
 		node._mouse_enter()
 
-# ============================================================
-# InputMap 操作
 # ============================================================
 
 ## 键位版本：任何改键后自增，提示层据此判断文案要不要重画
@@ -483,8 +442,6 @@ static func _safe_erase(action: StringName) -> void:
 		Input.action_release(action)
 
 # ============================================================
-# 快捷键绑定
-# ============================================================
 
 static func bind_shortcut(button: BaseButton, action: StringName, key: Key, ctrl: bool = false, shift: bool = false) -> void:
 	if not InputMap.has_action(action):
@@ -500,8 +457,6 @@ static func bind_shortcuts(bindings: Dictionary) -> void:
 		bind_shortcut(button, cfg.get("action", &"") as StringName, cfg.get("key", KEY_NONE) as Key,
 			cfg.get("ctrl", false), cfg.get("shift", false))
 
-# ============================================================
-# 持久化
 # ============================================================
 
 static func save(path: String = DEFAULT_SAVE_PATH) -> int:
@@ -549,8 +504,6 @@ static func reset_to_defaults() -> void:
 	InputMap.load_from_project_settings()
 
 # ============================================================
-# 序列化
-# ============================================================
 
 static func _event_to_dict(ev: InputEvent) -> Dictionary:
 	if ev is InputEventKey:
@@ -592,8 +545,6 @@ static func _dict_to_event(data: Dictionary) -> InputEvent:
 	return null
 
 # ============================================================
-# 工厂方法
-# ============================================================
 
 static func key_event(keycode: Key, ctrl: bool = false, shift: bool = false, alt: bool = false, meta: bool = false) -> InputEventKey:
 	var e := InputEventKey.new()
@@ -626,12 +577,8 @@ static func create_shortcut(event: InputEvent) -> Shortcut:
 	return s
 
 # ============================================================
-# 按键提示 — 文案走 csv：手柄/鼠标用枚举名反查，键盘直接用 as_text
-# ============================================================
 
 ## 手柄按钮（值与 JoyButton 对齐）。Godot 没有枚举名反射，但 enum 在脚本里就是
-## Dictionary，find_key() 能直接反查名字，所以不用再维护 value → key 的映射表。
-## 新增手柄键：这里加一行，csv 加一行 JOY_BUTTON_<名字> 即生效。
 enum JoyKey {
 	A = 0, B = 1, X = 2, Y = 3, BACK = 4, GUIDE = 5, START = 6,
 	LEFT_STICK = 7, RIGHT_STICK = 8, LEFT_SHOULDER = 9, RIGHT_SHOULDER = 10,
@@ -649,7 +596,6 @@ enum MouseKey {
 }
 
 ## 按键/动作 → 文本（该设备无绑定时返回 ""）
-## device 指定设备（[enum InputDevice]），-1 表示按当前模式取（键鼠共用键盘）
 static func input_text(target: Variant, device := -1) -> String:
 	if target is InputEvent:
 		return _event_text(target, device)
@@ -662,7 +608,6 @@ static func input_text(target: Variant, device := -1) -> String:
 	return ""
 
 ## 事件 → 文本；csv 没配就回退系统键名。
-## 摇杆/扳机无图标时返回空，不上长英文（as_text 形如 "Joypad Motion ... Value 1.00"）
 static func _event_text(event: InputEvent, device := -1) -> String:
 	if not _match_device(event, device):
 		return ""
@@ -708,7 +653,6 @@ static func _event_key(event: InputEvent) -> String:
 	return prefix + str(name) if name != null else ""
 
 ## 事件是否符合设备：device >= 0 时只认该设备；-1 时按模式（鼠标/触摸归指针，
-## 手柄归导航，键盘两种共用）
 static func _match_device(event: InputEvent, device := -1) -> bool:
 	if device >= 0:
 		return _device_of(event) == device

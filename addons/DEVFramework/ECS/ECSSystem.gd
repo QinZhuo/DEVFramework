@@ -2,9 +2,6 @@ class_name ECSSystem
 extends RefCounted
 
 ## ECS 系统运行时基类 —— 逻辑、配置与运行态都在实例上，不依赖 Def 数据管线。
-##
-## 系统是**代码创建**的运行时对象：子类在 World._setup_world() 里 new 出来、给字段赋值后
-## register_system()。不提供 Inspector 配置，也就不需要配置资源层。
 
 ## 优先级（大者先跑，同优先级按注册顺序）；register_system() 不传参时取它
 var priority: int = 0
@@ -13,11 +10,6 @@ var priority: int = 0
 var enabled: bool = true
 
 ## —— 频率控制(参考 Flecs interval/rate、Unity RateUtils、Bevy FixedUpdate) ——
-## interval:   每隔 interval 秒运行一次(0 = 每帧)。低频系统(AI/UI/网络)用它省 CPU。
-## rate:       每 rate 帧运行一次(1 = 每帧)。次高频逻辑按帧率节流。
-## fixed_step: 固定步长(秒)。>0 时按固定步长运行: 每帧累积时间, 够一个步长才运行一次,
-##             且系统 _run 收到的是 fixed_step(而非帧 delta) → 物理/网络确定性。
-##             与 interval/rate 互斥(优先 fixed_step)。
 var interval: float = 0.0
 var rate: int = 1
 var fixed_step: float = 0.0
@@ -36,7 +28,6 @@ func get_system_name() -> String:
 
 
 ## 频率调度(主线程, ECSWorld.tick 开头对每个系统调用一次)。
-## 返回本帧系统应使用的 delta; -1 表示本帧不运行。内部更新累积计数。
 func _schedule(delta: float) -> float:
 	if not enabled:
 		_frame_delta = -1.0
@@ -71,14 +62,11 @@ func required_components() -> Array[Script]:
 
 
 ## 本系统"只读"的组件类。用于依赖图自动推断。
-## 默认 = required_components()(假设全部只读), 可覆写以精确声明。
 func read_components() -> Array[Script]:
 	return required_components()
 
 
 ## 本系统"会写入"的组件类。用于依赖图自动推断。
-## 默认 = 空(假设只读), 写入系统请覆写。
-## 例: func write_components() -> Array[Script]: return [HealthComponent]
 func write_components() -> Array[Script]:
 	return []
 
@@ -98,8 +86,5 @@ func _on_registered(_world: ECSWorld) -> void:
 ##   - 不访问场景树/节点/渲染/UI 等主线程独占资源
 ##   - 不依赖帧内其他系统产生的瞬时状态
 ##   - read_components()/write_components() 已准确声明全部读写组件
-## 框架会按"组件访问集合"自动做冲突检测: 访问同一组件的系统自动串行,
-## 互不访问的系统才真正并行 —— 无需在此手动指定谁与谁并行。
-## 访问场景树/节点的系统(如 ECSSyncSystem)必须覆写返回 false。
 func can_run_parallel() -> bool:
 	return true

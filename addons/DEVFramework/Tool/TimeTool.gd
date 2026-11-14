@@ -1,16 +1,7 @@
 @tool
 ## 时间缩放工具 — 基于 ModifierValue（×100）管理 Engine.time_scale
-##
-## base_value = 基础游戏速度（×100），其他 modifier 以 PERCENT 模式叠加。
-## 最终值 = base_value × ∏pctᵢ / 100
-##
 ## ⚠️ 改 `time_scale` 的同时抬高物理 tick 频率，使每 tick 的 game delta 保持不变：
-## 只放大 `time_scale` 时，同一段"0.1 秒"跨越的物理 tick 数会随速度变少，
-## 动画 / 位移 / 物理命中判定的采样粒度随之改变 ⇒ 同样的输入会跑出不同结果。
-##
-## 频率只跟随 [method set_rate_scale]（离散档位）：高倍速下每帧要跑多个物理步，
 ## **运行期反复重设物理频率**会让物理时钟与逻辑时钟错位（实测 3x 结果直接分叉），
-## 所以档位内的连续微调（动态提速等）只改 `time_scale`。
 class_name TimeTool
 
 ## 每帧物理步下限（= Godot 默认值）
@@ -29,7 +20,6 @@ static func _ensure() -> void:
 	_mv.base_value = 100
 	_mv.value_changed.connect(func(_m): _apply(_mv.value / 100.0))
 	## 物理时钟不"追赶/平滑"真实时间：默认值会按帧率抖动调整每帧物理步数
-	## （Godot 文档：值越高，游戏时钟与真实时钟偏差越大，但能平滑帧率抖动）
 	## ⇒ 确定性场景必须关掉，否则同样的时间片在不同帧率下跑出的步数不同。
 	if "physics_jitter_fix" in Engine:
 		Engine.set("physics_jitter_fix", 0.0)
@@ -48,7 +38,6 @@ static func _apply(scale: float) -> void:
 	if Engine.physics_ticks_per_second != ticks:
 		Engine.physics_ticks_per_second = ticks
 	## 每帧物理步上限：Godot 文档要求"提高物理频率时同步调大"，否则低帧率下会变慢/漂移。
-	## 按约 5 步/帧给余量（3x → 90Hz，预算 18 步，覆盖 20 FPS 以下）。
 	var steps := maxi(MIN_STEPS_PER_FRAME * 2, ticks / 5)
 	if Engine.max_physics_steps_per_frame != steps:
 		Engine.max_physics_steps_per_frame = steps

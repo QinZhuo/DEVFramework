@@ -1,14 +1,6 @@
 class_name Entity3D extends Node3D
 
 ## 3D 节点实体 —— ECS 实体 + Node3D 场景表现。定位: **ECS ↔ Node 桥接**。
-## 用法:
-##   var e := Entity3D.new()
-##   e.world = my_world
-##   e.pos = Vector3.ZERO; e.hp = 100
-##   e.register_to_ecs()
-##   e.sync_from_ecs(&"pos", &"position")   # 同步指定字段: ECS pos → 节点 position
-##   e.sync_to_ecs(&"position", &"pos")     # 反向
-## 通用字段同步(任意 Node/对象可用): ecs.sync_from / sync_to。
 
 ## ECS 桥接(数据在 ECS 列, 懒创建)
 var _ecs: ECSLink = null

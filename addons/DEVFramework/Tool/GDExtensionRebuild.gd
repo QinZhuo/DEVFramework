@@ -3,54 +3,9 @@ class_name GDExtensionRebuild
 extends EditorScript
 
 ## 通用 GDExtension 一键构建工具 —— 零配置构建 + 规范命名部署, 支持任何 godot-cpp 生态扩展。
-##
-## 自动出现在 项目 → 工具 → EditorScript（EditorScriptMenuTool 扫描注册）。
-## 一次运行自动完成: 发现扩展工程 → 读 CMakeLists 分辨"如何构建/产物去哪"
-## → CMake 配置(必要时)/异步编译(不卡编辑器, 实时回显) → 产物改名为规范名部署。
-##
-## 两条"事实源":
-##   1) CMakeLists.txt(构建事实源): 只需解析出 add_library 目标名 与 *_OUTPUT_DIRECTORY 直出目录 ——
-##      OUTPUT_NAME 各平台条件块为**可选项**(有则直出名即规范名, 零改名);
-##      未写时 CMake 直出默认名(如 libdev.dylib), 工具统一改名为规范名:
-##        lib<名>.<平台>.<debug|release>.<架构>.dylib / <名>.<平台>.<类型>.<架构>.dll / lib<名>...so
-##      该规范名与 godot-cpp 官方 [libraries] 键风格一致, *.gdextension 声明无需手改;
-##   2) CMakeCache.txt(已配置过): 生成器/编译器/API/构建类型 全以缓存为准, 只 cmake --build。
-## 一次运行自动构建两个版本: 先当前编辑器类型(debug 编辑器优先出 debug), 再另一版本;
-## debug 与 release 各用独立构建缓存(复用前校验 CMakeCache 的 CMAKE_BUILD_TYPE, 不符即作废重配)。
-## 任一步推导失败 → 明确报错终止(宁可失败也不猜测), 修正 CMakeLists 后重跑。
-## 声明同步(dev_framework/gdextension_build/sync_gdextension, 默认开): 部署后以"规范名产物"为准,
-## 自动回写 *.gdextension [libraries] 的本平台键 —— 已有键只更新值(键名/架构风格不动), 缺键按
-## "<平台>.<构建类型>[.<架构>]" 新增; template_debug 等其他体系键与其他段一律不碰。
-## 跨项目零手工对齐; 不凭空创建 *.gdextension(entry_symbol 写在 C++ 里无法推导, 引擎侧需自行提供)。
-## 关闭时退化为一致性校验告警。Native 清理白名单 = 声明键文件 + 本机两类型规范名,
-## 杜绝"清理误删声明产物"—— 无任何白名单依据时跳过清理(宁可残留也不误删)。
-## 跨架构(dev_framework/gdextension_build/cross_archs, 默认开): 声明驱动的补缺构建 ——
-## 以 *.gdextension [libraries] 声明的本平台架构为准, macOS 上自动交叉编译缺失架构
-## (Apple 工具链原生支持 -arch 交叉, 零额外工具链; CMAKE_OSX_ARCHITECTURES 按架构独立缓存目录);
-## 其他平台交叉工具链复杂, 仅构建本机架构并提示。首次交叉构建需全量编译 godot-cpp, 耗时较长属正常。
-## universal 合并(默认执行, 无开关): macOS 各类型多架构产物齐后
-## 自动 lipo -create 合并为 lib<名>.macos.<类型>.universal.dylib —— 这正是 Godot 官方引擎发布的做法
-## (各架构独立构建保留各自 -march 优化, 再合并; 优于 CMAKE_OSX_ARCHITECTURES 一次出双架构——那会废掉
 ## -march, fat binary 只能用默认基线)。声明键保持架构专属不动: universal 与架构键同时声明会触发
-## 引擎重复库警告(Godot 4.4+ PR #98809), 发布用 universal 时二选一切换。
-##
 ## 源码目录: 唯一工程根 res://gdextension(不存在才扫 addons/*/);
-## 构建后端固定只用 CMake 原生 Makefiles。
-## 缓存纪律: 一切中间产物/CMake 缓存统一放 res://.godot/gdextension_build/(引擎自带全局忽略),
-## 不进入工程目录; 部署后按规格 [libraries] 白名单清理 Native —— 只保留各平台/类型/架构键声明的
-## 必要产物, 清掉无后缀原始/导入库(.a)与规格外历史库及临时残留(~*/TMP), 工程内只留必要文件。
-## 自动闭环(可用 ProjectSettings 布尔开关关闭, 均默认开):
-##   dev_framework/gdextension_build/auto_update_submodule  godot-cpp 对齐, 但"永不全量重建"为最高约束:
-##     本地有可编译绑定快照(钉版或引擎回退) → 完全跳过(无网络、不切版本); 仅本地完全无快照才一次性对齐。
-##   dev_framework/gdextension_build/auto_reload_editor      构建+部署成功后自动 重载当前项目 使新扩展生效。
-## 增量保证: 首装(或配置被换清)后的所有构建都是纯增量 —— 不因上游分支漂移/tag 更新反复重编;
 ## 唯一可能的全量 = 首次构建 or 本地彻底无绑定快照时的一次性对齐(之后回归纯增量)。
-## 编辑器内自动显示: 完成/失败时自动弹引擎顶部 Toaster 提示(Godot 4.3+ 顶部非模态小条);
-## 过程输出实时回显 Output 面板并镜像到 res://.godot/gdextension_build/build.log,
-## 阶段/进度(state.txt)与最终摘要(last_build.txt)同步落盘 —— 全程零手动查询。
-## 通用性: 工具链与 git 均按 环境变量→PATH→常见约定目录扫描 定位, 不写死任何机器/用户路径, 跨项目跨平台。
-## 已知边界(引擎层面): 编辑器只在启动时加载扩展; Windows 上编辑器锁住正在加载的 dll 会致覆盖失败,
-## 工具会打印手动复制指引。发布由 CI 负责(本工具仅本机迭代)。
 
 const KEY_UPDATE_SUBMODULE := "dev_framework/gdextension_build/auto_update_submodule"
 const KEY_RELOAD_EDITOR := "dev_framework/gdextension_build/auto_reload_editor"
@@ -144,8 +99,6 @@ func _run() -> void:
 			type_archs[type] = []
 		type_archs[type].append(actual)
 	# 各类型多架构产物齐 → lipo 合并 universal 并删除输入架构文件(macOS 自带 lipo; 非 macOS/单架构自动跳过);
-	# 合并成功的类型: 声明切到 universal 键; 未合并的类型: 按架构文件同步声明。
-	# 轮间不做任何清理(防止删掉后续轮/合并所需文件), 全部完成后统一终清一次。
 	var target_name := String(info.get("target", ""))
 	var platform := _os_label()
 	if target_name != "":
@@ -203,10 +156,6 @@ func _finish_with(result: String) -> void:
 # ------------------------------------------------------------ 零配置定位
 
 ## 定位构建目标 —— 只需 CMakeLists 给出 目标名 + 输出目录:
-##   1) 解析 add_library 目标名 / *_OUTPUT_DIRECTORY 直出目录;
-##   2) 按工具规范名推导各构建类型产物(lib<名>.<平台>.<类型>.<架构>.<ext>);
-##   3) 直出名若与规范名不同(未写 OUTPUT_NAME 的默认名), 编译后由 _deploy 改名归位。
-## 推导不出目标名/输出目录 → 直接报错终止, 不做猜测式匹配。
 func _locate() -> Dictionary:
 	var dirs: Array[String] = []
 	if _is_ext_source("res://gdextension"):
@@ -225,7 +174,6 @@ func _locate() -> Dictionary:
 	var gdext_res := _find_gdextension(info)
 
 	# 类型 = 配置的构建类型(如 ["release"]=仅 release, 单版本提速); 空配置则 [当前编辑器类型优先, 另一类型]
-	# 架构 = 本机 + 声明中缺失的交叉架构(仅 macOS)
 	var types: Array[String] = _plan_build_types()
 	var archs := _plan_archs(gdext_res)
 	var targets: Array = []
@@ -243,8 +191,6 @@ func _locate() -> Dictionary:
 
 
 ## 由 CMake 信息推导指定构建类型/架构的预期产物: {file(文件名), res(res://落点), abs(绝对路径)}。
-## 文件名 = 工具规范名 lib<target>.<平台>.<类型>.<架构>.<ext>(与 godot-cpp 官方 [libraries] 键风格一致);
-## CMakeLists 若钉了同名 OUTPUT_NAME 则直出即命中(零改名), 未钉/默认名由 _deploy 统一改名归位。
 func _expected_artifact(info: Dictionary, type: String, arch := "") -> Dictionary:
 	var out_dirs: Array = info.get("out_dirs", [])
 	var target := String(info.get("target", ""))
@@ -256,8 +202,6 @@ func _expected_artifact(info: Dictionary, type: String, arch := "") -> Dictionar
 
 
 ## 本轮要构建的架构列表: 本机架构恒在; macOS 额外补齐 *.gdextension 声明中缺失的架构
-## (Apple 工具链原生支持 -arch 交叉编译, 零额外工具链); 其他平台仅本机并提示。
-## universal 键视为不指定架构(本机产物即可覆盖), 不触发交叉构建。
 func _plan_archs(gdext_res: String) -> Array[String]:
 	var host := _arch()
 	var archs: Array[String] = [host]
@@ -290,9 +234,6 @@ func _declared_missing_archs(gdext_res: String, host: String) -> Array[String]:
 
 
 ## 工具规范产物名: lib<名>.<平台>.<debug|release>.<架构>.dylib /
-##                 <名>.<平台>.<debug|release>.<架构>.dll(Windows 无 lib 前缀) /
-##                 lib<名>.<平台>.<debug|release>.<架构>.so
-## 架构缺省取编辑器运行架构 —— 与 .gdextension 官方键/tag 命名对齐。
 func _canonical_file(target: String, type: String, arch := "") -> String:
 	var ext := ""
 	var prefix := "lib"
@@ -366,10 +307,6 @@ static func _is_ext_source(dir_path: String) -> bool:
 # ------------------------------------------------------------ 读 CMakeLists 分辨"如何构建"(三个高可信 token)
 
 ## 返回 {target, out_dirs(绝对), api_default, output_name(当前平台+类型), output_names(全量)}。
-## 不解释 CMake 语义, 只扫模板级高可信写法;
-## 扫不到任何 token 也不报错 —— 交由缓存/默认/模糊找库兜底。
-## OUTPUT_NAME 解析: 跟踪 if/elseif 条件块, 按 "平台.构建类型" 归档 ——
-## CMakeLists 由该单点钉死各平台产物名, 产物路径完全可推导, 无需模糊匹配。
 func _read_cmake_info(project_dir: String) -> Dictionary:
 	var info := {target = "", out_dirs = [], api_default = "", output_name = "", output_names = {}}
 	var cmake_path := _abs(project_dir).path_join("CMakeLists.txt")
@@ -461,8 +398,6 @@ func _which(prog: String) -> bool:
 
 
 ## Windows: 确保 MinGW 工具链在本次构建的 PATH 中。
-## CMake 虽以缓存里的绝对路径启动构建器(CMAKE_MAKE_PROGRAM), 但 MinGW Makefiles 生成的 Makefile
-## 会递归调 `$(MAKE)`(展开为字面量 make), 子进程只能靠 PATH 解析 —— 故编译器与 make 任一缺失都
 ## 必须注入工具链 bin 目录; 只看 g++ 会漏掉"有 g++ 无 make"的机器(w64devkit 同目录两者皆有)。
 func _ensure_toolchain_env() -> void:
 	if OS.get_name() != "Windows":
@@ -525,7 +460,6 @@ func _cache_files() -> Array[String]:
 
 
 ## 从 CMakeCache.txt 读某个路径项(前缀匹配 "<key>:<TYPE>=", 覆盖 FILEPATH/INTERNAL 等);
-## 未找到 / NOTFOUND / 空值 均返回 ""
 func _cache_value(cache: String, key: String) -> String:
 	var f := FileAccess.open(cache, FileAccess.READ)
 	if f == null:
@@ -556,7 +490,6 @@ func _cache_toolchain_dir(cache: String, key: String) -> String:
 
 ## 校验缓存里记录的工具链绝对路径是否仍指向真实存在的文件 —— 换机器 / 换工具链安装位置后
 ## 这些路径会失效(缓存随文件夹一起被拷走时尤其典型), 此时必须作废重配, 否则 cmake --build
-## 会去调旧机器上的编译器 / 构建器。返回失效项说明(空 = 全部存活)。
 func _dead_toolchain_paths(build_dir: String) -> Array[String]:
 	var cache := build_dir.path_join("CMakeCache.txt")
 	var dead: Array[String] = []
@@ -568,10 +501,6 @@ func _dead_toolchain_paths(build_dir: String) -> Array[String]:
 
 
 ## 通用可执行文件定位 —— 跨平台、不写死用户名/机器路径:
-##   1) 环境变量目录(MINGW_HOME/W64DEVKIT_HOME/MSYS2_ROOT/GIT_HOME 等);
-##   2) 用户主目录与 LOCALAPPDATA 下按名命中的目录 + scoop/apps 包目录;
-##   3) 各平台常见安装根(Program Files、C:/msys64、C:/msys2)。
-## 返回"包含 exe 的 bin 目录", 找不到返回 ""。
 static func _find_exe_dir(exe: String) -> String:
 	var sub_paths := ["", "bin", "cmd", "usr/bin", "mingw64/bin", "ucrt64/bin"]
 	var roots: Array[String] = []
@@ -666,15 +595,11 @@ static func _git_exec(args: PackedStringArray, out: Array = []) -> int:
 
 ## 把 godot-cpp submodule 与当前引擎对齐 —— 但以"永不全量重建"为最高约束:
 ##   唯一原则: 本地存在任何可编译的绑定快照(钉版或引擎回退) → 直接跳过(无网络、不切版本、不重建);
-##   只有本地完全无可用快照(钉版异常/引擎远新于上游) 才解析并一次性对齐, 对齐后即永久回到纯增量。
-## 不因上游分支漂移而反复重编: 上游无匹配 tag 时回退其默认分支 HEAD 仅发生在那"一次性"里。
-## 任何 git 失败都不中断构建 —— 打印告警并沿用现有 submodule。
 func _sync_godot_cpp(source_dir: String) -> void:
 	var vi: Dictionary = Engine.get_version_info()
 	var engine_api := "%d.%d" % [int(vi.get("major", 4)), int(vi.get("minor", 0))]
 	var def_api := _cmake_api_default(source_dir)
 	# 核心原则 —— 只要有"可编译"的本地快照(CMakeLists 钉版, 或引擎回退版), 就绝不动 submodule:
-	# 不产生网络、不切换版本、不触碰构建缓存 ⇒ 首装成功后的所有后续构建都是纯增量。
 	if def_api != "" and _has_snapshot(source_dir, def_api):
 		_log("godot-cpp 钉版快照已在本地(默认 ", def_api, "), 无需同步 —— 纯增量。")
 		return
@@ -720,8 +645,6 @@ func _sync_godot_cpp(source_dir: String) -> void:
 
 
 ## 解析 godot-cpp 应检出的引用(静态可测, 只 ls-remote, 不改动工作树)。
-## tag 命名如 godot-4.7-stable / godot-4.4.1-stable(patch 为 0 时省略); 取"主次版本与引擎一致"的最新 tag,
-## 无匹配(如上游尚无 4.7 tag)则回退默认分支 HEAD —— 其携带最新引擎 API, 避免错配旧版。
 static func _resolve_godot_cpp_ref(godot_cpp_abs: String, engine_version: String) -> Dictionary:
 	var tags: Array = []
 	if OS.execute(_git_exe(), ["-C", godot_cpp_abs, "ls-remote", "--tags", "origin"], tags) != 0:
@@ -834,10 +757,6 @@ func _kill_build_tree(pid: int) -> void:
 
 
 ## 构建缓存统一放 res://.godot/gdextension_build/(引擎自带全局忽略, 不入库、不污染工程)。
-## 目录名固定 <源>-<os>-<架构>-<类型> —— 类型/架构天然隔离, 不再从"任意缓存"复用
-## (旧逻辑会把 release 塞进 debug 缓存目录: 单配置生成器忽略 --config, release 实际从未编译)。
-## 复用前 _ready_build_dir 还会校验缓存里的 CMAKE_BUILD_TYPE / CMAKE_OSX_ARCHITECTURES /
-## 工具链绝对路径(编译器 / 构建器 / cmake, 换机器后指向旧机器路径即失效), 任一不符即作废重配。
 func _pick_build_dir(source_dir: String, type: String, arch: String) -> String:
 	var cache_root := _abs("res://.godot/gdextension_build")
 	var dir := cache_root.path_join("%s-%s-%s-%s" % [source_dir.get_file(), _os_label(), arch, type])
@@ -1014,8 +933,6 @@ func _build(build_dir: String, type: String) -> bool:
 	if jobs <= 0:
 		jobs = clampi(OS.get_processor_count(), MIN_JOBS, MAX_JOBS)
 	# 子进程输出重定向到文件, 本进程定时尾读回显 —— 不经过 Godot execute_with_pipe 管道。
-	# 原因: Godot Windows 的管道实现存在读取竞态(高频起停子进程时读线程停摆 → 子进程写管道被堵 → 构建死锁),
-	# ninja/make 下均已复现。文件 IO 无此问题, 编辑器仍可用, 输出仍实时(受 stdout 块缓冲影响略有分批)。
 	var raw := _raw_log_path()
 	DirAccess.remove_absolute(raw)
 	_raw_log_pos = 0
@@ -1037,7 +954,6 @@ func _build(build_dir: String, type: String) -> bool:
 	else:
 		run_args = PackedStringArray(["-c", cmd_line])
 	# 用 create_process 启动, 完全不建立管道: 子进程链若继承管道句柄会导致其等待 EOF 而死锁
-	# (此前 Ninja/Make 在 Godot 内异步卡死、引擎 PeekNamedPipe 报错的根因)。输出已重定向到文件。
 	_build_started_unix = Time.get_unix_time_from_system()
 	var pid := OS.create_process(shell, run_args)
 	if pid <= 0:
@@ -1151,8 +1067,6 @@ func _count_build_objects(build_dir: String) -> int:
 
 
 ## 编译目标总数: 统计整个构建树所有 build.make 里的"对象编译目标"(去重)。
-## 覆盖根工程与 godot-cpp 子 make; 同一对象会有多行依赖声明, 故按目标路径去重后再计数。
-## 只认 "<path>.o/.obj" 形式的目标行, 与扩展名差异(Unix .o / Windows .obj)无关。解析一次并缓存。
 func _total_compile_units(build_dir: String) -> int:
 	if _total_targets >= 0:
 		return _total_targets
@@ -1201,9 +1115,6 @@ func _drain_log(raw_path: String) -> bool:
 # ------------------------------------------------------------ 部署: CMake 直出验证 + 纯 CMake 推导的残留清理
 
 ## 部署: 默认名直出 → 实盘最新非常规名动态库 → 已存在规范名, 三级判定后统一**改名**为规范名
-## (CMake 默认名 libdev.dylib → libdev.macos.debug.arm64.dylib), 与 *.gdextension 声明天然对应。
-## CMakeLists 钉了规范名 OUTPUT_NAME 时改名零成本(同名跳过)。找不到产物返回 ""(部署失败)。
-## Windows 边界: 编辑器锁住加载中的 dll 致改名失败 → 保留直出名并告警(声明同步按实盘名对齐, 保可用)。
 func _deploy(target_res: String, info: Dictionary, type: String, arch: String) -> String:
 	var out_dir: String = info.get("out_dirs", [])[0]
 	var target := String(info.get("target", ""))
@@ -1212,7 +1123,6 @@ func _deploy(target_res: String, info: Dictionary, type: String, arch: String) -
 	var direct := _default_out_file(target)   # CMake 默认直出名(刚链接, mtime 最新, 内容必然新鲜)
 	# 已知命名集合 = 默认名 + 本目标全部 类型×架构 规范名: 都是"声明/最终形态"文件,
 	# 不作为实盘扫描候选 —— 否则同目录其他 类型/架构 的产物(先构建的 debug 库、
-	# 钉了 OUTPUT_NAME 的直出规范名)会被误认为本次直出物而遭改名劫持
 	var known := PackedStringArray()
 	if direct != "":
 		known.append(direct)
@@ -1220,7 +1130,6 @@ func _deploy(target_res: String, info: Dictionary, type: String, arch: String) -
 		for a in GDEXT_ARCHS:
 			known.append(_canonical_file(target, t, a))
 	# 默认名命中须是"本次链接"的产物(mtime ≥ 本次编译启动): 编译器直出名与本工具约定不符时
-	# (MinGW lib 前缀等), 上一次部署失败残留的默认名旧库会顶替直出名存在, 不可当作新产物
 	var direct_fresh := false
 	if direct != "" and FileAccess.file_exists(String(out_dir).path_join(direct)):
 		direct_fresh = FileAccess.get_modified_time(String(out_dir).path_join(direct)) + 5.0 >= _build_started_unix
@@ -1234,9 +1143,7 @@ func _deploy(target_res: String, info: Dictionary, type: String, arch: String) -
 			actual = direct
 	else:
 		# 默认名缺失/非本次产物 → 先实盘取本目标"最新"的非常规名动态库(刚链接完, 最新即本次
-		# 直出; 兼容 MinGW lib 前缀等编译器直出名差异), 最后才退回已存在的规范名
 		# (CMake 钉了 OUTPUT_NAME 且刚重链)。顺序不能反: 先认"规范名已存在"会把编译器直出的
-		# 非默认名新产物当残留清掉, 而同目录旧规范名库被误当新产物(陈旧命中)。
 		actual = _scan_dynamic_libs(out_dir, target, known)
 		if actual != "":
 			_log("规范名产物未直出, 实盘取最新动态库: ", actual)
@@ -1276,8 +1183,6 @@ func _rename_lib(dir_path: String, from_file: String, to_file: String) -> bool:
 
 
 ## 终清: 全部轮次与合并完成后执行一次(轮间零清理, 合并输入绝不误删)。
-## 白名单 = 声明值文件(此刻已是最终形态: 已合并类型为 universal 键, 未合并类型为架构键)
-## + universal 产物 + 未合并类型的架构规范名防御(声明同步失败时仍保产物可用)。
 func _final_cleanup(info: Dictionary, gdext_res: String, target: String) -> void:
 	var native_dir: String = info.get("out_dirs", [])[0]
 	var keep := _gdext_keep_files(gdext_res)
@@ -1295,7 +1200,6 @@ func _final_cleanup(info: Dictionary, gdext_res: String, target: String) -> void
 
 
 ## 在产物输出目录(*_OUTPUT_DIRECTORY)里定位 *.gdextension(与产物同目录是框架约定)。
-## 找不到返回 ""(此时跳过声明同步与校验, 引擎侧需自行提供声明文件)。
 func _find_gdextension(info: Dictionary) -> String:
 	for d in info.get("out_dirs", []):
 		var dir := DirAccess.open(String(d))
@@ -1318,9 +1222,6 @@ func _universal_file(target: String, type: String) -> String:
 
 
 ## lipo 合并: 同类型多架构产物 → universal 单文件, 成功后**删除输入架构文件**
-## (universal 为最终形态, 声明由 _gdext_adopt_universal 切到 universal 键; 输入由下次构建重新直出)。
-## Godot 官方引擎发布即此做法: 各架构独立构建(保留各自 -march 优化)后合并。
-## macOS 自带 lipo(Xcode CLT); 非 macOS / 单架构时跳过。失败返回 ""(不影响独立产物)。
 func _lipo_merge(info: Dictionary, target: String, type: String, files: Array) -> String:
 	if _os_label() != "macos" or files.size() < 2:
 		return ""
@@ -1350,9 +1251,7 @@ func _lipo_merge(info: Dictionary, target: String, type: String, files: Array) -
 
 
 ## 声明切换 universal: 合并成功后调用 —— 本平台+本类型的架构专属键改写/删除, 统一为
-## "<平台>.<类型>.universal = universal 产物路径"(Godot 4.4+ 支持加载 universal 标签;
 ## universal 与架构键同声明会触发引擎重复库警告, 故架构键必须移除)。
-## 首个架构键行原位改写为 universal 键(行数不变、无空行残留), 其余架构键行删除。
 func _gdext_adopt_universal(gdext_res: String, platform: String, type: String, uni_res: String) -> void:
 	var parsed := _gdext_parse(gdext_res)
 	if parsed.is_empty():
@@ -1436,10 +1335,6 @@ func _declared_archs(gdext_res: String) -> Array[String]:
 
 
 ## 实盘扫描: 输出目录里"本目标"的动态库(dylib/dll/so), 取 mtime 最新 ——
-## 覆盖编译器直出名差异(MinGW 默认加 lib 前缀)与变量拼接名等解析器无法预知的直出名
-## (刚编译完, 最新即本次直出)。只认文件名含目标名的库(不劫持同目录其他目标的产物);
-## 排除 exclude(默认名+全部规范名: 其他 类型/架构 的声明产物不是本次直出物)、
-## universal 合并产物与编辑器 ~ 临时残留。返回文件名, 无动态库返回 ""。
 func _scan_dynamic_libs(dir_path: String, target_name: String, exclude: PackedStringArray) -> String:
 	var best := ""
 	var best_m := -1
@@ -1500,7 +1395,6 @@ func _gdext_parse(gdext_res: String) -> Dictionary:
 
 
 ## 声明键是否属于"本平台 + 本构建类型": 首 tag = 平台, 且键无任何类型 tag(通用键)或含目标类型。
-## template_debug/template_release 等其他体系键不视为目标(不更新、不冲突)。
 static func _gdext_key_matches(key: String, platform: String, type: String, arch: String) -> bool:
 	var tags := key.split(".")
 	if tags.is_empty() or tags[0] != platform:
@@ -1515,7 +1409,6 @@ static func _gdext_key_matches(key: String, platform: String, type: String, arch
 	if has_type and not tags.has(type):
 		return false
 	# 架构校验: 键含架构 tag → 必须与产物架构一致(杜绝 arm64 键被 x86_64 产物覆盖);
-	# 键无架构 tag(通用键) → 仅 universal 产物可写(单架构产物写通用键会破坏其他架构)。
 	if not arch_tags.is_empty():
 		return arch_tags.has(arch)
 	return arch == "universal"
@@ -1530,9 +1423,6 @@ static func _file_arch(file: String) -> String:
 
 
 ## 声明同步: 以实盘产物为准, 把 [libraries] 里"本平台+本类型"的键值写成产物路径。
-## 已有匹配键 → 只更新值(键名与其架构 tag 风格保持不动); 值已一致则不写(零 diff);
-## 无匹配键 → 按 "<平台>.<类型>[.<文件名内架构>]" 新增(引擎特性匹配要求键 tags ⊆ 当前 features,
-## 缺架构 tag 的键对同平台各架构通用, 故自动新增也不锁死架构)。
 func _gdext_sync(gdext_res: String, file_res: String, platform: String, type: String, file: String) -> void:
 	var parsed := _gdext_parse(gdext_res)
 	if parsed.is_empty():
@@ -1606,7 +1496,6 @@ func _gdext_keep_files(gdext_res: String) -> PackedStringArray:
 
 
 ## CMake OUTPUT_NAME 全量平台条目 → 各平台产物文件名白名单。
-## 例: macos.debug→lib<名>.dylib / windows.debug→<名>.dll / linux.release→lib<名>.so
 func _cmake_keep_names(info: Dictionary) -> PackedStringArray:
 	var keep := PackedStringArray()
 	var names: Dictionary = info.get("output_names", {})
@@ -1634,8 +1523,6 @@ func _cmake_keep_names(info: Dictionary) -> PackedStringArray:
 
 
 ## 部署后清理产物目录: 只保留 CMake OUTPUT_NAME 推导出的各平台产物。
-## 清掉三类"插件加载不需要"的残留: 导入库(.a/.lib)、历史库文件、
-## 系统锁或覆盖中断产生的临时件(~*/ *.TMP)。其余平台发布件(在白名单内)一律保留。
 func _cleanup_native(native_dir: String, keep: PackedStringArray) -> void:
 	var keep_set := {}
 	for k in keep:
@@ -1679,7 +1566,6 @@ func _arch() -> String:
 	if arch != "universal":
 		return arch
 	# universal 二进制无法从引擎 API 得知真实运行架构: 在 Apple Silicon 上归一为 x86_64
-	# 会构建出宿主无法加载的库, 故用 uname 探测硬件架构(arm64/x86_64), 失败才回退旧规则
 	if OS.get_name() == "macOS":
 		var out: Array = []
 		if OS.execute("uname", PackedStringArray(["-m"]), out) == 0 and not out.is_empty():
@@ -1703,10 +1589,6 @@ func _build_type() -> String:
 
 
 ## 本次要构建的构建类型清单(配置驱动):
-##   ProjectSettings: dev_framework/gdextension_build/build_types (Array[String])
-##   合法项仅 debug / release —— 填 ["release"] 即"只构建 release"单版本提速。
-##   空/未配置 → 回退默认: 当前编辑器类型优先 + 另一版本(双版本)。
-##   结果写入 _build_types, 部署保活(_final_cleanup)据此只保护实际构建的类型产物。
 func _plan_build_types() -> Array[String]:
 	var cfg: Array = ProjectSettings.get_setting(KEY_BUILD_TYPES, [])
 	var out: Array[String] = []
@@ -1761,7 +1643,6 @@ func _log_path() -> String:
 
 
 ## 编辑器内自动提示: Godot 4.3+ 顶部 Toaster(非模态、自动消失), 无需翻日志或手动查询。
-## 旧引擎无 get_editor_toaster 时静默跳过(日志/状态文件照常, 功能不受影响)。
 func _toast(text: String) -> void:
 	var ei := get_editor_interface()
 	if ei == null or not ei.has_method("get_editor_toaster"):
@@ -1778,7 +1659,6 @@ func _state_write(text: String) -> void:
 
 
 ## 最终摘要(成败/用时/产物/下一步): 自动重载前落盘 + 同步进 build.log/Output,
-## 让 build.log 尾部即可看到最终结果(不依赖任何手动查询入口)
 func _summary_write(text: String) -> void:
 	FileTool.write_text(_abs("res://.godot/gdextension_build/last_build.txt"), text)
 	for line in text.split("\n"):

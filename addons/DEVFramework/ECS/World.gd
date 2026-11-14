@@ -2,16 +2,7 @@ class_name World
 extends Node
 
 ## ECS 世界桥接层 —— 场景里放本节点即自动创建 ECSWorld + 每帧 tick, 系统在 _setup_world() 里注册。
-##
-## 用法:
-##   1. 场景里放一个本节点(可作根), 继承本类并覆写 _setup_world(world) 注册系统。
-##   2. _ready 自动创建 ECSWorld + 调用 _setup_world; _process 自动 tick 全部系统。
-##   3. 需要生成实体等初始化: 监听 world_ready 信号(ecs 已就绪), 或在 _setup_world 之后做。
-##   4. 切换实现时 = 实例化/删除对应场景。
-##
-## 系统是纯运行时对象, 没有 Inspector 配置层: 参数在 _setup_world 里直接赋值。
 
-## 并行线程数(传给 ECSWorld.parallel_threads, 0=自动按硬件)
 ## 并行线程数(传给 ECSWorld.parallel_threads, 0=自动按硬件)
 @export var parallel_threads := 0
 ## _ready 时自动初始化世界

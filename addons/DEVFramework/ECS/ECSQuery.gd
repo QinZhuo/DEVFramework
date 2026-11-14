@@ -2,18 +2,6 @@ class_name ECSQuery
 extends RefCounted
 
 ## 统一查询链 —— 查询链(声明规则)与手写脚本系统共用的"遍历→条件→动作"构建器。
-##
-## 三种动作模式:
-##   1. 标量声明动作(规则层, C++ batch 执行, 最快):
-##        for_each(Comp).where(&"x").less_than(50).add(&"x", 10)   # 加
-##        ...sub(...) / mul(...) / div(...) / set_value(...)       # 减/乘/除/赋值
-##   2. 列间声明动作(规则层, C++ batch 执行, 列与列联动):
-##        for_each(Comp).add_from(&"size", Comp, &"hp")             # size += hp
-##        ...mul_from(...) / sub_from(...) / div_from(...) / set_from(...)
-##        for_each(Comp).clamp_where(&"hp", Comp, &"min_hp", Comp, &"max_hp")
-##   3. Callback 动作(手写层, GDScript 执行, 最灵活):
-##        for_each(Comp).process(func(rows, data): ...)   # data 预拉列, 自动写回
-## 手写层与规则层共享同一查询链: 组件匹配(must/without) + 条件(where) 完全一致。
 
 var world: ECSWorld
 var anchor  # 锚组件(Script 或类名)
@@ -67,7 +55,6 @@ func where(field: StringName) -> ECSCond:
 	return ECSCond.new(self, field)
 
 ## 直接指定完整条件(等价 where().xxx())。**唯一的条件写入点**: ECSCond 的全部比较操作符
-## 都收敛到此, 在此统一失效规范化缓存, 保证查询对象被池化复用时不会读到上一帧的条件。
 func where_cond(field: StringName, op: int, value) -> ECSQuery:
 	conditions.append({"comp": anchor, "field": field, "op": op, "value": value})
 	_norm_conds.clear()
@@ -103,7 +90,6 @@ func set_value(field: StringName, value) -> ECSQuery:
 
 
 # ---------- 列间声明动作(规则层, C++ batch 执行, 列与列联动) ----------
-# 参数顺序统一为: (目标字段, 源组件, 源字段)。例: add_from(&"dmg", BattleCell, &"atk") 即 dmg += atk。
 
 ## 动作: 目标字段 += 源字段列(可乘 factor)。例: add_from(&"dmg", BattleCell, &"atk", 2.0) → dmg += atk*2
 func add_from(field: StringName, src, src_field: StringName, factor: float = 1.0) -> ECSQuery:
@@ -147,23 +133,11 @@ func clamp_where(field: StringName, min_comp, min_field: StringName,
 # ---------- Callback 动作(手写层, GDScript 执行) ----------
 
 ## 声明要遍历的锚组件字段(数组), 配合 .process(cb) 使用 —— 推荐写法:
-##   ctx.for_each(BattleCell).with([&"hp", &"pos"]).process(func(rows, hp, pos):
-##       for r in rows:
-##           hp[r] -= 1
-##           pos[r] += Vector2(1, 0)
-##   )
-## 回调参数: 第 1 个是 rows(满足条件的行号), 之后按声明顺序对应各字段列。
-## 框架借出独占列(写无 COW) → 回调内直接读写列 → 自动写回, 回调内零跨语言。
 func with(fields: Array) -> ECSQuery:
 	_with_fields = fields
 	return self
 
 ## 动作: 用 GDScript Callback 自定义遍历逻辑。三种用法:
-##   A. 推荐: 先 .with(&"f1", &"f2", ...) 声明字段, 再 process(cb) —— 回调 cb(rows, col1, col2, ...)
-##      直接收列参数(顺序对应声明), 无字符串 key, 自动写回。
-##   B. process(cb, fields: Dictionary) —— 回调 cb(rows, data), data[组件类名][字段名] 访问。
-##      fields = {组件: [字段...]} 组件→字段映射; 适合跨组件多字段。
-##   C. process(cb, comps: Array) —— 回调 cb(rows, comp_rows, world); 回调内 get_column/set_column。
 func process(cb: Callable, fields = {}) -> ECSQuery:
 	if not _with_fields.is_empty():
 		# A 模式: with(字段...) 声明 → 回调直接收列参数
@@ -178,7 +152,6 @@ func process(cb: Callable, fields = {}) -> ECSQuery:
 
 
 ## 执行查询(返回处理实体数)。通常无需手动调用 —— 系统 _run 结束后框架自动执行本系统未 execute 的查询;
-## 仅当需要立即拿到结果(处理实体数)时才显式调用。已执行过的查询再次调用返回缓存结果。
 func execute() -> int:
 	if _executed:
 		return _last_count
@@ -191,8 +164,6 @@ var _last_count := 0
 
 
 ## 用预收集的行集执行本查询的全部动作(跳过收集)。rows 为 anchor 行号。
-## 供 ECSSystemContext 自动合并批量查询时调用(同 anchor 多查询一次 batch_collect)。
-## 仅当本查询全部动作可"行集化"(标量/列间)时使用; 含 callback/clamp 类动作时整体回退原 _run。
 func _apply_rows(rows: PackedInt32Array) -> int:
 	if world == null:
 		return 0
@@ -226,7 +197,6 @@ func _apply_rows(rows: PackedInt32Array) -> int:
 
 func _comp_name(c) -> StringName:
 	# 统一走 ECSWorld 的解析器(全框架唯一实现): 避免此处回退成脚本资源字符串,
-	# 与写入侧(类名)解析出两个名字, 导致查询静默落空。
 	if world == null:
 		return StringName(str(c))
 	return world.resolve_component_name(c)

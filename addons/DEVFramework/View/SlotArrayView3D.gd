@@ -1,11 +1,5 @@
 @tool
 ## 槽位数组视图：**Node3D 子节点 = 槽位**（其他类型子节点忽略），`data[i]` 的视图挂在槽位 i 下。
-##
-## 契约：① `views[i]` 显示 `data[i]`（定位按视图当前的 `data` 比对，视图名只用于 Scene Tree 可读，
-## 数据项不需要实现 `get_view_name()`）；② `data[i] == null` = 空槽位（跳过但占索引）；
-## ③ `data` 多于槽位 = 多余项不显示并报错；④ `add_item()` 槽位满时落到最后一格。
-##
-## 算法实现在 ArrayViewTool（与 Node2D 版共用同一份），本类只负责类型与宿主钩子。
 class_name SlotArrayView3D extends Node3D
 
 ## 视图场景（每个数据项实例化一个）
@@ -47,7 +41,6 @@ func _ready():
 	_preview_setup()
 
 ## 槽位 = 本节点的 Node3D 子节点（按顺序）。
-## 承载动画 / 辅助节点的普通 Node 不算槽位，可以放心挂在本节点下。
 func _get_slots() -> Array[Node3D]:
 	var slots: Array[Node3D] = []
 	for child in get_children():

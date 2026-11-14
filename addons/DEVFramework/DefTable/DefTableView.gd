@@ -1,7 +1,5 @@
 @tool
 ## DefTable 顶部 Main Screen: 按 Def 类型目录加载 Def 资源(.tres),
-## 以只读表格展示, 支持选择/复制/粘贴(批量赋值)/Inspector 联动/排序。
-## 参照 resources_spreadsheet_view 的表格交互, 但去掉单元格内编辑, 只做展示+复制粘贴。
 class_name DefTableView
 extends Control
 
@@ -13,7 +11,6 @@ const ROW_HEIGHT := DefTableGrid.MIN_ROW_HEIGHT
 const DEFS_BASE := Def.DEFS_BASE
 const MAX_COL_WIDTH := 600.0
 ## 单元格内容左右内边距(与 DefTableCell 的 CELL_MARGIN_L/R 一致):
-## 列宽测量/行高测量都减此值得到"渲染可用宽", 保证测量与渲染同一口径
 const CELL_PADDING := 8.0
 ## 行高垂直余量: 叠加在字体实测高度上, 给文字上下留呼吸感(单行与多行行高共用)
 const ROW_V_PADDING := 8.0
@@ -106,7 +103,6 @@ func _ready() -> void:
 	dir_tree.item_selected.connect(_on_dir_selected)
 	_setup_hover_highlight()
 	# 用 _shortcut_input 处理快捷键(Ctrl+C/V 在编辑器里可能先被编辑器自身的快捷键消费,
-	# _shortcut_input 比 _unhandled_input 更早触发, 能可靠捕获)
 	set_process_shortcut_input(true)
 	set_process_unhandled_input(true)
 
@@ -124,7 +120,6 @@ func _refresh_dir_list() -> void:
 	root.set_text(0, DEFS_BASE.trim_suffix("/").get_file())
 	root.set_icon(0, _folder_icon())
 	# 每个目录路径拆段, 按父子关系挂到 Tree; 节点 metadata 存完整目录路径
-	# _dirs 已按字典序排序, 保证父目录先于子目录处理
 	var parents := {}  # 目录路径 -> TreeItem
 	parents[DEFS_BASE] = root
 	for d in _dirs:
@@ -239,7 +234,6 @@ func _load_dir(path: String) -> void:
 
 
 ## 清空网格中所有单元格节点(目录切换/列结构变化时调用)。
-## 行身份模型: 全部回收入池而非销毁(池按 Kind 分桶, 跨目录复用类型安全)
 func _clear_grid_cells() -> void:
 	_recycle_all_rows()
 	first_row = 0
@@ -377,7 +371,6 @@ func _resource_display_text(value: Resource) -> String:
 
 
 ## 解析粘贴文本为列值。返回 {ok: bool, value: Variant, error: String}
-## 校验类型并给出具体错误(如"期望 int, 得到 'abc'"), 失败时 ok=false 且 value 无效
 func _from_text(text: String, col: int) -> Dictionary:
 	var type_name := _type_display_name(column_types[col])
 	if text == "":
@@ -543,12 +536,8 @@ func _compare_values(a, b) -> bool:
 
 
 ## 计算列宽 + 行高 (单次遍历, 缓存文本测量结果)
-## 参考 jospic/dynamicdatatable: 列宽 = 全量遍历 font.get_string_size 取最大值;
-## 参考 don-tnowe: 行高 = 内容驱动(超长文本换行后扩展)。
-## 性能约定:
 ##   · 文本经 _cell_text 缓存, 布局与渲染共享一份(计算型 getter 只算一次)
 ##   · 仅含显式换行的内容做 RTL 实测撑行; 单行内容(BBCode 与否)固定行高,
-##     由 RichTextLabel 在单元格内自动换行+裁剪 —— 避免 O(单元格数) 次 RTL 全排版卡帧
 func _compute_layout() -> void:
 	var font := get_theme_font("font", "Label")
 	var fsize := get_theme_font_size("font", "Label")
@@ -586,11 +575,9 @@ func _compute_layout() -> void:
 			if is_bb:
 				tw += text.count("[img]") * IMG_PREVIEW_MIN_WIDTH
 			# 列宽扩到能容纳单行文本: 留足 CELL_PADDING 余量,
-			# 使"渲染可用宽(列宽-8)" >= 文本宽, 避免单行内容因边距差意外换行/裁切
 			if tw + CELL_PADDING >= column_widths[col] and column_widths[col] < MAX_COL_WIDTH:
 				column_widths[col] = minf(tw + CELL_PADDING, MAX_COL_WIDTH)
 			# 自动行高: 仅显式多行内容(字典/数组/多段描述)按实际渲染高度撑行;
-			# 单行内容(BBCode 含 [img])固定行高, 超出部分由单元格裁剪, 完整内容见 tooltip
 			if measure_text.contains("\n"):
 				var lh := _measure_bbcode_height(text, column_widths[col] - CELL_PADDING)
 				if lh > row_h:
@@ -606,8 +593,6 @@ func _compute_layout() -> void:
 
 
 ## 用复用 RichTextLabel(进树 + reset_size 同步测量)计算 BBCode 文本高度
-## 复用同一实例避免反复 new/free, 提升大数据量布局性能
-## 用 get_content_height() 而非 fit_content 的 get_minimum_size():
 ##   · fit_content 模式在隐藏控件上测出的最小尺寸异常虚高(短文本也可能返回 90+px)
 ##   · 固定宽度 + get_content_height 与单元格实际渲染一致
 ## 测量用 RTL 必须与单元格渲染同口径: 清除默认 stylebox 的 32px 内容边距,
@@ -637,7 +622,6 @@ func _measure_bbcode_height(text: String, width: float) -> float:
 
 
 ## 测量当前主题下单行文本实际高度 + 垂直余量(替代硬编码 ROW_HEIGHT, 适配不同编辑器字号;
-## 余量给文字上下留呼吸感, 避免字体撑满行高显得拥挤)
 func _measure_line_height() -> float:
 	if not is_inside_tree():
 		return ROW_HEIGHT
@@ -672,7 +656,6 @@ func _strip_bbcode(text: String) -> String:
 
 
 ## 用纯 Font 测量单行文本宽度(纯文本宽, 不含内边距; 调用方自行加 CELL_PADDING)
-## 按文本缓存结果, 大量重复文本(同列同值)时显著提速
 func _measure_text_width(text: String, font: Font, fsize: int) -> float:
 	if text == "" or font == null:
 		return 0.0
@@ -730,7 +713,6 @@ func _make_header_button(col: int) -> Button:
 	btn.pressed.connect(_on_header_pressed.bind(col))
 	btn.tooltip_text = String(columns[col])
 	# 表头分隔线。去掉主题默认内容边距, 让按钮宽度=列宽,
-	# 避免"列名驱动的窄列"因 Button 自带 padding 比内容列宽, 导致表头与数据错位。
 	var sb := StyleBoxFlat.new()
 	sb.bg_color = Color(0.16, 0.16, 0.18, 0.35)
 	sb.set_border_width_all(0)
@@ -809,9 +791,6 @@ func _update_visible_rows(force_rebuild: bool = false) -> void:
 	var view_h := maxf(grid_scroll.size.y, 1.0)
 	var new_first: int = grid.row_index_at(grid_scroll.scroll_vertical)
 	# 累加起点必须是首行的绝对偏移 row_offsets[new_first], 而非 scroll_vertical:
-	# 当滚动停在高行中部时(scroll_y > row_offsets[new_first]), 从 scroll_y 累加会把
-	# 已滚过该行的像素虚增进去, 使 acc 提前触底 —— 窗口过早收窄, 视口下方行不被物化
-	# ("下面的数据没更新")。从首行真实顶部开始累加才能精确覆盖完整视口。
 	var acc := 0.0
 	if grid.row_offsets.size() > 0:
 		acc = grid.row_offsets[new_first]
@@ -852,18 +831,8 @@ func _update_visible_rows(force_rebuild: bool = false) -> void:
 
 
 ## ======= 行容器 + 双轴虚拟化 + 两级对象池 =======
-## 垂直: 每行一个行容器(Control), 进出窗口只做 1 次节点停泊/摆位(194 格 → 1 节点)
-## 水平: 列窗口化, 仅物化与水平视口相交的列(194 列不再全量建格)
-## 行池: 整行回收时其格子原样随行入池(零逐格开销), 复用时按新窗口收编/裁剪/校验类型
-## 格池: 列窗口收缩拆出的散格(已脱离父节点), 供任意行补格; Kind 分桶防跨目录类型错位
-##
 ## ⚠ 尺寸钳制陷阱(曾导致快速滚动后格子重叠的伪影):
-##   Control.size 赋值会被 custom_minimum_size 向上钳制(effective = max(size, minsize))。
-##   池化格子在上一任行可能被 _fill_cell 写入大行高的 minsize; 复用到矮行时
-##   先设 size 再由 _fill_cell 修正 minsize 的顺序来不及 —— size 已被顶成旧大值,
-##   格子溢出压到相邻行, 视觉上"部分重叠"。
 ##   约定: 任何对池化格子的 size 赋值前, 必须先把 custom_minimum_size 归零
-##   (见 _attach_cell / _fill_row), minsize 由随后的 _fill_cell 写入正确行高。
 
 ## 已物化行: row -> {"ctl": Control行容器, "frozen": DefTableCell, "cells": Dictionary(col->cell)}
 var _live_rows := {}
@@ -1101,7 +1070,6 @@ func _backfill_resource_previews() -> void:
 
 
 ## 行染色(don-tnowe row stylization): 取该行首个有效 Color 值, 低透明度染整行;
-## 无颜色值则全透明(保持斑马纹)。_load_dir 后预计算, 避免逐格扫描
 func _compute_row_tints() -> void:
 	_row_tints.clear()
 	for r in rows.size():
@@ -1129,7 +1097,6 @@ func _row_tint_for(row: int) -> Color:
 
 
 ## 悬停行高亮(B3, Excel crosshair 风格): 由 DefTableGrid 自绘(hover_row 属性),
-## 主网格与冻结首列同步; 离开网格或滚动时清除
 func _setup_hover_highlight() -> void:
 	grid.mouse_exited.connect(func() -> void: _set_hover_row(-1))
 	frozen_grid.mouse_exited.connect(func() -> void: _set_hover_row(-1))
@@ -1191,7 +1158,6 @@ func _display_kind(col: int) -> int:
 
 
 ## 该行是否含可预览的资源引用(OBJECT 列): 用于把行撑高以容纳缩略图。
-## 判定与 _request_resource_preview 一致(Texture2D 或带路径的 Resource 才会真正出图)
 func _row_has_resource_preview(res: Resource) -> bool:
 	for col in range(1, columns.size()):
 		if column_types[col] != TYPE_OBJECT:
@@ -1252,9 +1218,6 @@ func _fill_cell(cell: DefTableCellClass, pos: Vector2i, tint: Color = Color(1, 1
 
 
 ## 取单元格展示文本(带缓存): 计算型 getter 属性(如 EntityDef.tr_desc 递归构建整棵
-## effect 树的描述)每次 res.get() 都全量重算, 布局+渲染两阶段至少访问两次,
-## 按 Resource 实例缓存一份文本, 排序/滚动复用不受行序影响。
-## 缓存在 _clear_measure_cache(目录切换)与粘贴提交后失效。
 func _cell_text(res: Resource, col: int) -> String:
 	var arr: PackedStringArray = _text_cache.get(res, PackedStringArray())
 	if arr.size() <= col:
@@ -1319,7 +1282,6 @@ func _set_cell_selected(cell_pos: Vector2i, selected: bool) -> void:
 
 
 ## 定位单元格节点(冻结列或滚动网格), 不可见返回 null。
-## 行容器+列虚拟化模型: 从 _live_rows 按行取, 主格查 cells 字典(仅物化列存在)
 func _get_cell_node(cell_pos: Vector2i) -> DefTableCellClass:
 	if not _live_rows.has(cell_pos.y):
 		return null
@@ -1427,7 +1389,6 @@ func _on_frozen_v_scroll(v: float) -> void:
 
 
 ## 滚动统一入口: 防抖合并同帧多次事件(下一帧统一重建), 并安排"停止检测"补拉预览。
-## 原实现 _scroll_frame_pending 只置位不复位, 首次滚动后预览请求被永久禁用(bug), 此处一并修复。
 var _scroll_seq := 0
 
 func _schedule_scroll_update() -> void:
@@ -1497,7 +1458,6 @@ func _copy_selected() -> void:
 
 
 ## 复制用文本: 保证能与 _from_text 往返还原(原始值序列化)
-## 资源复制路径, 数组/字典用 JSON(含资源路径), 其余用 var_to_str(可被 str_to_var 还原)
 func _cell_copy_text(value, col: int) -> String:
 	if value == null:
 		return ""
@@ -1600,7 +1560,6 @@ func _shortcut_input(event: InputEvent) -> void:
 	if not visible or not is_inside_tree():
 		return
 	# 处理 Ctrl+C / Ctrl+V 复制粘贴(在编辑器里 _shortcut_input 比 _unhandled_input 更早触发,
-	# 能避开编辑器自身对 Ctrl+C 的节点复制快捷键消费)
 	if event is InputEventKey:
 		var key_event := event as InputEventKey
 		if not key_event.pressed:

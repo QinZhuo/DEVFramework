@@ -1,18 +1,5 @@
 @tool
 ## 更新日志工具 —— 只提供版本判定 / 条目过滤 / 已见版本记录，不包含任何 UI。
-##
-## 已见版本**不单独存储文件**，由项目并入自己的游戏存档统一持久化：
-## [codeblock]
-## # 读档（游戏启动加载存档后、判断更新前）
-## ChangelogTool.load_seen_version(save_data.get("changelog_version", ""))
-## if ChangelogTool.has_update():
-##     var entries := ChangelogTool.get_pending_entries()  # 待展示条目
-##     changelog_popup.show_entries(entries)               # 项目自建弹窗
-##     ChangelogTool.mark_seen()                           # 展示后记录已见版本
-## # 存档时
-## save_data["changelog_version"] = ChangelogTool.get_seen_version()
-## [/codeblock]
-## 若项目不把已见版本并入存档，状态仅存内存：重启后视为首次运行（不弹窗）。
 class_name ChangelogTool
 
 ## 当前版本号：Godot 内置项目设置（项目设置 → Application → Config → Version）
@@ -29,8 +16,6 @@ static func is_debug_mode() -> bool:
 	return DebugTool.is_debug_mode()
 
 
-# ============================================================
-# 查询
 # ============================================================
 
 ## 当前项目版本：读内置项目设置；未配置时回退到日志 Def 中的最高版本；都为空返回 ""
@@ -72,8 +57,6 @@ static func get_pending_entries() -> Array[ChangelogEntryDef]:
 
 
 # ============================================================
-# 状态记录（内存态，由项目并入存档持久化）
-# ============================================================
 
 ## 记录已展示到的版本（默认记录当前版本；可传 version 覆盖，便于模拟旧已见版本）
 static func mark_seen(version := "") -> void:
@@ -91,8 +74,6 @@ static func load_seen_version(seen: Variant) -> void:
 	_seen_version = str(seen) if seen is String or seen is int or seen is float else ""
 
 
-# ============================================================
-# 内部
 # ============================================================
 
 ## 收集全部日志 Def 的条目（按 Def 内声明顺序）

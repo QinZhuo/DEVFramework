@@ -63,7 +63,6 @@ func _unhandled_input(input_event: InputEvent) -> void:
 	viewport.push_input(input_event)
 
 ## 子视口内的 2D 矩形 → 主屏幕矩形（贴图面四角投影后的包围盒）。
-## 与 `_on_input_event` 的"屏幕命中点 → 视口坐标"互逆，供挖孔/定位等需要反查屏幕位置的地方使用。
 func viewport_rect_to_screen(rect: Rect2) -> Rect2:
 	if viewport == null or mesh == null or viewport.size.x <= 0 or viewport.size.y <= 0:
 		return Rect2()
@@ -111,7 +110,6 @@ func _on_input_event(camera: Camera3D, input_event: InputEvent, event_position: 
 		(0.5 - local_pos.y / mesh_size.y) * viewport.size.y)
 
 	# 复制一份再改坐标：这个事件对象是同一帧内所有 Area3D 共用的，
-	# 就地改写会把子视口坐标泄漏给其它面板和主视口的 UI
 	var ev := input_event.duplicate() as InputEvent
 	ev.position = event_pos2D
 	if ev is InputEventMouse:

@@ -1,9 +1,5 @@
 ## 泛型数组视图（**流式布局**）：`data` 的每一项实例化一个 `view_scene`，
-## 由 FlowContainer 按子节点内容尺寸流动排布、装满一行就换行 —— 适合卡片/标签这类"自适应尺寸"的列表。
-## 槽位数固定、需要"一个槽位一个视图"的场景用 SlotArrayView2D / SlotArrayView3D。
-##
 ## ⚠️ 数据项**不需要** `get_view_name()`：定位按「视图当前显示的 data」比对，视图名只用于 Scene Tree 可读。
-## 视图全部生成完毕时发 `view_finished`；要"确保已建完"请 `await wait_finished()`。
 @tool
 class_name ArrayView extends FlowContainer
 
@@ -23,7 +19,6 @@ signal view_finished
 ## 池容量（0 = 不预热、空闲不限）：首次使用前预建这么多个空闲实例，同时作为空闲上限
 @export var pool_size: int = 0
 ## 每帧生成数量，0 表示全部立即生成（默认）。大于 0 时分帧创建子节点，
-## 避免大量 UI 节点一次性 instantiate 导致掉帧。
 @export var items_per_frame: int = 0
 ## 仅编辑器：铺几个空视图看排版（owner 为空，不会存进场景）
 @export var preview_count: int = 3:
@@ -37,7 +32,6 @@ var data: Array:
 		refresh()
 
 ## 与 data 一一对应的视图列表。⚠️ 不能直接拿 get_child(index) 当第 index 项：
-## 视图走 tween_free 淡出时旧节点还挂在子节点里一会儿，子节点序号会和 data 错位
 var views: Array[Node] = []
 
 ## 对象池（pool_key 自动解析到这里；也可直接注入）
@@ -107,12 +101,10 @@ func _insert_view(index: int, item) -> Node:
 	return view
 
 ## 添加新项目到视图中（追加到末尾）
-## [param item] 要添加的数据项
 func add_item(item) -> Node:
 	return _insert_view(views.size(), item)
 
 ## ---- 索引接口（主实现）----
-## 索引 == data 的顺序位 == views 的槽位（**不是**子节点序号，见 views 的说明）
 
 ## 取第 index 个视图（越界 / 空位返回 null）
 func get_view(index: int) -> Node:
@@ -136,12 +128,10 @@ func remove_at(index: int) -> void:
 ## ---- 数据项接口（便利重载：① ② ③ 骨架统一在 ArrayViewTool.refresh_item）----
 
 ## 刷新单项视图（便利重载）；定位不到时当作新增
-## [param item] 要刷新的数据项
 func refresh_item(item) -> Node:
 	return ArrayViewTool.refresh_item(self, item)
 
 ## 从视图中移除指定项目
-## [param item] 要移除的数据项
 func remove_item(item) -> void:
 	ArrayViewTool.remove_item(self, item)
 

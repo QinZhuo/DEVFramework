@@ -1,9 +1,6 @@
 @tool
 ## 教程目标定义 — 描述"当前步骤指哪个节点", 2D/3D 通用。
-##
 ## 定位: 相对教程宿主 root 的节点路径(node_path 必须存在, 否则视为纯提示步骤)。
-## 核心能力: 把 Control / Node2D / Node3D 统一换算为屏幕矩形(Rect2),
-## 供遮罩挖孔、指示箭头、点击兜底共用; 挖孔尺寸 = 目标自身视觉体量 + padding 外扩。
 class_name TutorialTargetDef extends Def
 
 ## 目标节点路径(相对教程宿主 root)
@@ -54,7 +51,6 @@ static func _rect_2d(item: CanvasItem) -> Rect2:
 
 
 ## 子视口内的 2D 矩形 → 主视口矩形(约定: 承载该视口的 SubView3D 是视口的祖先)。
-## 主视口内的普通 UI 原样返回。
 static func _sub_view_screen_rect(viewport: Viewport, rect: Rect2) -> Rect2:
 	if not (viewport is SubViewport):
 		return rect
@@ -67,8 +63,6 @@ static func _sub_view_screen_rect(viewport: Viewport, rect: Rect2) -> Rect2:
 
 
 ## Node3D → 屏幕矩形。统一用"可见 mesh 世界 AABB 合并投影"而非顶点投影:
-## 顶点 unproject 在运行时不可靠(可能退化为点); AABB 合并跳过隐藏节点,
-## 既贴合真实显示内容, 又不会因隐藏大 mesh 而偏大。
 static func _rect_3d(node: Node3D) -> Rect2:
 	var cam := node.get_viewport().get_camera_3d()
 	if cam == null:
@@ -90,7 +84,6 @@ static func _rect_3d(node: Node3D) -> Rect2:
 
 
 ## 汇总"真实显示中"的网格世界 AABB(合并)。收所有可见 MeshInstance3D 与 Label3D;
-## 隐藏/父链隐藏节点被跳过, 使挖孔贴合实际显示内容。
 static func _visible_mesh_aabb(node: Node3D) -> AABB:
 	if not node.is_visible_in_tree():
 		return AABB()

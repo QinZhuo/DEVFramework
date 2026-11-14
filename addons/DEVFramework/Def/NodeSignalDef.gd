@@ -1,8 +1,5 @@
 @tool
 ## 节点信号定义 — 连接上下文 root 下指定节点的指定信号。
-##
-## 通用信号源: 让 TaskDef(SignalTaskDef) 能订阅任意场景节点信号(如 Button.pressed)。
-## data 约定: connect_signal(data, cb) 中的 data 携带宿主根节点(SignalDef.get_root)。
 class_name NodeSignalDef extends SignalDef
 
 ## 目标节点路径(相对上下文 root)

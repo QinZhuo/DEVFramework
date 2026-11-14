@@ -11,10 +11,7 @@ static var _last_ts_usec: int = 0
 
 
 ## 镜像缓冲：把日志同时写进文件，供**另一个进程**读取（典型场景：编辑器工具读游戏侧进度）。
-##
-## 为什么不常驻句柄：Godot 在 Windows 上持有写句柄期间，另一个 Godot 进程打不开该文件；
 ## 为什么不每条 open/close：单次约 8ms，实测 2000 行要 15 秒。
-## ⇒ 攒一批再"打开-追加-关闭"，句柄只存在几毫秒，读取方几乎总能打开。
 const MIRROR_FLUSH_LINES := 50
 const MIRROR_FLUSH_MS := 200
 
@@ -23,7 +20,6 @@ static var _mirror_buffer: PackedStringArray = PackedStringArray()
 static var _mirror_last_flush: int = 0
 
 ## 开启日志镜像（会清空目标文件）；传空字符串等于关闭。
-## 写入的是纯文本（不带 BBCode），每行形如 `[标签] 消息`
 static func set_mirror_path(path: String) -> void:
 	_mirror_flush()
 	_mirror_path = path

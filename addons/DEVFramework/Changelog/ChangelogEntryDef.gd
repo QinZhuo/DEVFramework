@@ -1,8 +1,5 @@
 @tool
 ## 单条版本更新日志条目
-##
-## 每个条目只介绍"一个"功能/玩法更新，用一条文本说明；
-## [member target] 可指向任意资源（配置 Def / 图片 / 模型等），具体如何展示由项目自定。
 class_name ChangelogEntryDef extends Resource
 
 ## 更新分类（项目可用于 UI 配色 / 图标）

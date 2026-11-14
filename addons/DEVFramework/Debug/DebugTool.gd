@@ -1,24 +1,5 @@
 @tool
 ## Debug 工具 —— Debug 模式判定 / 调试分支信息的框架级统一入口。
-##
-## 整合项目里原先散落的"测试环境"判断，统一为 Debug 概念：
-## [br]- Debug 模式 = 编辑器内运行（编辑器 / 从编辑器启动）或 当前运行在配置的调试分支上
-## [br]- 调试分支名在项目设置 dev_framework/debug/branch_names 配置（英文逗号分隔多个分支名）
-## [br]- 框架内模块（如更新日志的 debug_only 条目）默认经由本工具判定，无需各自实现
-##
-## 两处可注入的扩展点（默认行为开箱即用，通常无需注册）：
-## [br]- [method set_debug_checker]：覆盖整个 Debug 模式判定
-## [br]- [method set_branch_provider]：覆盖分支探测来源（默认经 [SteamTool.get_beta_branch_name] 动态查询，不引用 `Steam` 标识符）
-## [br]未安装 GodotSteam 的项目照样可编译运行，只是拿不到分支名；需要特殊来源时自行注入：[codeblock]
-## DebugTool.set_branch_provider(func(): return Steam.getCurrentBetaName())
-## [/codeblock]
-##
-## [codeblock]
-## DebugTool.is_debug_mode()      # 面板显隐 / debug_only 更新日志等统一判定
-## DebugTool.is_editor()          # 是否编辑器环境
-## DebugTool.get_debug_branch()   # 当前调试分支名（正式分支返回 ""）
-## DebugTool.refresh_debug_branch()  # 分支名缓存失效，下次重新查询
-## [/codeblock]
 class_name DebugTool extends RefCounted
 
 ## 调试分支名的项目设置键（支持英文逗号分隔多个分支名，未配置则视为正式分支）
@@ -34,8 +15,6 @@ static var _branch: String = ""
 static var _branch_resolved := false
 
 
-# ============================================================
-# 模式判定
 # ============================================================
 
 ## 是否处于 Debug 模式：外部注入判定优先；默认 = 编辑器 或 调试分支
@@ -73,11 +52,8 @@ static func debug_branch_names() -> PackedStringArray:
 
 
 # ============================================================
-# 分支探测
-# ============================================================
 
 ## 注入分支探测逻辑（无参 Callable 返回当前分支名，空 = 正式分支 / 未知）
-## 默认走 [SteamTool.get_beta_branch_name]，无需注册
 static func set_branch_provider(provider: Callable) -> void:
 	_branch_provider = provider
 	refresh_debug_branch()

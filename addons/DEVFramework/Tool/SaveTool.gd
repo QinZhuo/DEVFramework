@@ -19,7 +19,6 @@ static var _save_states: Dictionary = {}
 
 
 ## 校验版本并补全缺失字段：以 defaults 为底，data 覆盖，缺失字段由 defaults 补齐
-## [br]data 不是 Dictionary 时返回 defaults 副本；版本一致时直接返回 data
 static func check_version(data: Variant, version: String, defaults: Dictionary) -> Dictionary:
 	if not data is Dictionary:
 		return defaults.duplicate(true)
@@ -31,8 +30,6 @@ static func check_version(data: Variant, version: String, defaults: Dictionary) 
 
 
 ## 比较两个点分语义版本号（如 "0.5.0"、"1.2.3.4"）
-## [br]a 高于 b 返回 1，a 低于 b 返回 -1，相等返回 0
-## [br]缺失的部分按 0 处理；任一为空视为相等（返回 0），便于对旧数据无为处理
 static func compare_version(a: String, b: String) -> int:
 	if a.is_empty() or b.is_empty():
 		return 0
@@ -53,8 +50,6 @@ static func is_version_newer(a: String, b: String) -> bool:
 
 
 # ============================================================
-# 数据合并
-# ============================================================
 
 enum MergeMode {
 	KEEP,        ## 保留 base，忽略 incoming
@@ -66,12 +61,6 @@ enum MergeMode {
 }
 
 ## 合并两个字典，返回新字典（不修改原数据）
-## [br]每个字段的值可以是 MergeMode 枚举，或 ARRAY_UNION 时用数组 [MergeMode, dedup_key, limit]
-## [br][param rules] 可以是 Dictionary（按字段指定）或单个 MergeMode（全局默认）
-## [codeblock]
-## SaveTool.merge_data(local, cloud, {name = SaveTool.MergeMode.NON_EMPTY})
-## SaveTool.merge_data(local, cloud, SaveTool.MergeMode.KEEP)  # 全部保留本地
-## [/codeblock]
 static func merge_data(base: Dictionary, incoming: Dictionary, rules: Variant = {}) -> Dictionary:
 	if not incoming is Dictionary or incoming.is_empty():
 		return base.duplicate(true)
@@ -155,8 +144,6 @@ static func _is_non_empty(val) -> bool:
 
 
 # ============================================================
-# GZIP 编码/解码（可独立调用）
-# ============================================================
 
 ## 将数据编码为 "GZIP" + 压缩字节数组
 static func gzip_encode(data: Variant) -> PackedByteArray:
@@ -176,12 +163,8 @@ static func gzip_decode(raw: PackedByteArray) -> Variant:
 
 
 # ============================================================
-# 文件 I/O
-# ============================================================
 
 ## 保存数据。JSON: 纯文本。GZIP: gzip_encode。BYTES: 原样落盘（均为原子写入 + 单份备份）
-## [param keep_backup] 为 false 时不生成备份——构建产物（烘焙出的内置数据等）坏了重新生成即可，
-## 留着备份只会占体积并被打进导出包
 static func save_data(path: String, data, mode: Mode = Mode.JSON, keep_backup := true) -> Error:
 	var _t := LogTool.timer("存档", str("保存 ", path))
 	var actual_path := _actual_path(path, mode)
@@ -200,11 +183,7 @@ static func save_data(path: String, data, mode: Mode = Mode.JSON, keep_backup :=
 
 
 ## 加载数据（主档 → 唯一备份回退）。
-##
 ## `decode` 只在 JSON/GZIP 之外需要：这两种模式自带"解码失败 = 这份内容不能用"的判据，而
-## BYTES 是调用方自带的编码，框架无从判断"字节读出来了、但内容已经坏了"。传一个
-## `decode.call(bytes) -> Variant`（返回 null 即视为损坏）就把 BYTES 接进了同一条回退流水线 ——
-## 于是"文件被截断/写坏"与"文件读不出来"在框架眼里是同一种失败，都退回上一次的存档。
 static func load_data(path: String, mode: Mode = Mode.JSON, decode: Callable = Callable()) -> Variant:
 	var _t := LogTool.timer("存档", str("加载 ", path))
 	var actual_path := _actual_path(path, mode)
@@ -217,12 +196,8 @@ static func load_data(path: String, mode: Mode = Mode.JSON, decode: Callable = C
 
 
 # ============================================================
-# 异步 I/O（AsyncTool 后台线程处理 CPU 密集部分）
-# ============================================================
 
 ## 异步保存。后台: gzip_encode → 主线程: 写文件
-## 同一路径多次调用时，缓存最新数据，当前保存完成后自动补存
-## 缓存时也会等待整个保存链完成才返回，确保 await 返回时数据已持久化
 static func save_async(path: String, data, mode: Mode = Mode.JSON) -> Error:
 	if _save_states.has(path):
 		_save_states[path] = [data, mode]
@@ -258,7 +233,6 @@ static func save_async(path: String, data, mode: Mode = Mode.JSON) -> Error:
 
 ## 等待保存链的超时（毫秒）。正常一次保存 300ms 内完成，超出说明保存链异常收尾（写盘/编码失败没清状态）。
 ## 必须有上限：这里原本是"无限等"，一旦某条链卡住，之后该路径的所有保存都会永远挂在这里
-## ⇒ 表现就是"整局卡死在某一步、没有任何报错"。
 const WAIT_SAVE_TIMEOUT_MS := 10000
 
 ## 等待指定路径的保存链完成（当前保存 → 缓存补存，直到 _save_states 中移除该路径）
@@ -282,7 +256,6 @@ static func _flush_pending(path: String, last_err: Error) -> Error:
 	return last_err
 
 ## 异步加载（主线程读 → 后台解码；损坏时同步回退 .bak）
-## 只有 GZIP 有"解码"这一 CPU 密集环节；JSON / BYTES 直接走同步路径
 static func load_async(path: String, mode: Mode = Mode.JSON) -> Variant:
 	if mode != Mode.GZIP:
 		return load_data(path, mode)
@@ -420,8 +393,6 @@ static func delete_data(path: String, mode: Mode = Mode.JSON) -> Error:
 
 
 # ============================================================
-# 内部：路径解析
-# ============================================================
 
 ## GZIP 模式用 SHA256 哈希文件名
 static func _actual_path(path: String, mode: Mode) -> String:
@@ -438,11 +409,8 @@ static func _sha256(input: String) -> String:
 
 
 # ============================================================
-# 资源扫描（支持打包后的 .remap 路径）
-# ============================================================
 
 ## 递归扫描 res:// 目录、用回调过滤资源（.remap 归一由 FileTool.list_files 统一处理）。
-## extensions 默认只认 .tres；表格浏览等需要同时看 .res 时可显式传入。
 static func load_defs(dir_path: String, filter: Callable,
 		extensions: PackedStringArray = PackedStringArray([".tres"])) -> Array[Def]:
 	var result: Array[Def] = []

@@ -1,24 +1,6 @@
 ## 2D UI 面板基类
-##
-## 编写 2D UI 时继承此类，提供统一的打开/关闭生命周期。
-## [method open] — 先注册到 [UITool] 进行栈管理与层级互斥，然后执行进入动画。
-## [method close] — 执行离开动画并从 [UITool] 自动注销，动画结束后隐藏。
-## 通过连接 [signal on_open] / [signal on_close] 等信号实现自定义动画。
-##
-## 状态机实现见 [UIPanelTool]（与 [UIPanel3D] 共用，避免两份实现漂移）。
-##
-## 使用方式：
-##   [codeblock]
-##   my_panel.open()                   # 注册到 UITool 并显示（推荐）
-##   my_panel.close()                  # 隐藏并从 UITool 注销（推荐）
-##   my_panel.toggle()                 # 切换打开/关闭
-##   UITool.register(my_panel)      # 仅注册到栈（不触发显示）
-##   UITool.unregister(my_panel)    # 仅从栈注销（不触发隐藏）
-##   [/codeblock]
 class_name UIPanel extends Control
 
-# ============================================================
-# 导出属性
 # ============================================================
 
 ## 进入/离开动画，为空则直接切换显隐
@@ -28,15 +10,11 @@ class_name UIPanel extends Control
 @export var layer: UITool.Layer = UITool.Layer.PANEL
 
 # ============================================================
-# 状态
-# ============================================================
 
 var is_open: bool = false
 ## 每次 open() 自增，用于 await_closed() 检测版本是否过期
 var _open_version := 0
 
-# ============================================================
-# 信号
 # ============================================================
 
 ## 打开动画开始前触发
@@ -49,8 +27,6 @@ signal on_close()
 signal on_closed()
 
 
-# ============================================================
-# 公开接口
 # ============================================================
 
 ## 打开面板。完整流程见 [UIPanelTool.open]。
@@ -78,7 +54,6 @@ func await_closed() -> bool:
 	return await UIPanelTool.await_closed(self)
 
 ## 返回键处理，由 [method UITool.back] 调用。默认关闭面板并返回 true（已消费）。
-## 子类返回 false 表示不接管返回键（如常驻界面的面板），调用方会继续回退。
 func _back() -> bool:
 	close()
 	return true

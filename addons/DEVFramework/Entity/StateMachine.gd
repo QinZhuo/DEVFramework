@@ -2,16 +2,6 @@ extends RefCounted
 class_name StateMachine
 
 # 通用有限状态机，用于流程/场景级状态管理（不做小对象级状态）。
-#
-# 用法:
-#   var sm = StateMachine.new(State.Start)
-#   sm.add_transition(State.Start, State.Shop)
-#   sm.on_enter(State.Shop, _on_enter_shop)     # 支持异步（带 await 函数）
-#   sm.on_exit(State.Shop, _on_exit_shop)
-#   await sm.transition(State.Shop)              # 异步切换（会 await guard/exit/enter）
-#   sm.force_set(State.Start)                    # 强制设置（不触发回调）
-#   sm.allow_self_transition(true)               # 允许自身到自身的转换
-#
 # 注意:
 #   - transition() 是异步函数（内部可能 await 回调），需要时请 await。
 #   - 不要用它替换大量短生命周期对象的状态（如每个 Symbol），适合管理流程类。

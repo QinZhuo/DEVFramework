@@ -2,18 +2,9 @@ class_name ECSSyncSystem
 extends ECSSystem
 
 ## ECSSyncSystem —— 批量把 ECS 字段同步到 Godot 节点属性。
-##
-## 设计:
 ##   - NodeLink 只保存 实体↔节点 关联(node_path)
 ##   - **同步哪些字段由 add_field_rule 注册的规则决定**(位置也是规则, 如 pos → position)
 ##   - 每帧: 遍历带 NodeLink 的实体, 按 comp 分组, 每 comp 一次 query_aligned + 一次实体遍历,
-##     同时应用该 comp 的全部规则字段(合并遍历, 免每规则一次遍历)
-##
-## 用法:
-##   var sync_sys := ECSSyncSystem.new()
-##   sync_sys.add_field_rule(DemoQueryBall, &"pos", &"position")    # 位置
-##   sync_sys.add_field_rule(DemoQueryBall, &"size", &"visual_size") # 任意字段
-##   world.register_system(sync_sys)
 
 ## 场景根节点(查找 NodeLink.node_path 用)。若未设置, 默认取当前场景根。
 var scene_root: Node = null
@@ -22,9 +13,7 @@ var scene_root: Node = null
 var render_enabled := true
 
 ## 服务器直连开关(默认 false): true 时 position/transform/modulate/self_modulate/visible/z_index
-## 走 RenderingServer 直连(更快, 跳过节点 setter/transform 标记)。支持 2D CanvasItem 与 3D VisualInstance3D。
 ## 注意: 直连**只改渲染**, 对应节点属性不更新, 会导致碰撞(基于节点 transform)、拾取、
-## 依赖 get_global_transform/属性读取 的逻辑拿到旧值而异常。仅在确认节点不参与碰撞/逻辑读取时开启。
 var server_direct := false
 
 ## 节点缓存: NodeLink 行号 -> Node(数组索引 O(1))。NodeLink 实体数变化时重建。
@@ -34,7 +23,6 @@ var _nl_count := -1
 var _nl_paths: PackedStringArray = []
 
 ## 同步规则(预编译为数组, 避免每实体 dict 遍历):
-## [{comp, fields: PackedStringArray, props: PackedStringArray}] — 数组索引替代 dict 查
 var _rule_items: Array = []
 
 ## 对齐行号缓存: comp -> query_aligned(NodeLink, [comp]) 结果(实体结构变化时清空)

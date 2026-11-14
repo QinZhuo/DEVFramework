@@ -1,13 +1,9 @@
 ## 数组视图的公共实现（三类视图共用，算法只此一份）：
 ##   - ArrayView：流式布局，视图 = 子节点，数量可变
 ##   - SlotArrayView2D / SlotArrayView3D：槽位 = 场景里预置的子节点，数量固定
-## 视图的创建 / 释放 / 重绑 / 定位统一在这里；`slot_*` 系列由槽位类委托调用（传 [code]self[/code]）。
 class_name ArrayViewTool
 
 ## 获取数据项的视图名（= 视图的节点名）。
-## 名字**只用于 Scene Tree 可读**，不承担定位职责（数组视图按「视图当前的 data」比对定位）
-## ⇒ 数据项**不必**实现 `get_view_name()`；没实现时退化为「类名_索引」（Card_0 / Dictionary_3）。
-## [param item] 数据项
 ## [param index] 数据项在 data 中的索引（无 get_view_name() 时用来保证节点名唯一）；<0 = 未知
 static func get_item_name(item, index: int = -1) -> String:
 	var suffix := "" if index < 0 else "_%d" % index
@@ -25,14 +21,12 @@ static func get_item_name(item, index: int = -1) -> String:
 
 ## 安全的等值判断：保留 `==` 的**值语义**（内容相同的 Dictionary 仍能配上），但类型不同时返回 false
 ## ⚠️ 不能直接写 `a == b`：GDScript 的 `==` 在类型不同时会**直接抛错**（如 bool vs String），
-## 而"视图是否显示某项"这种比对本该是"不匹配"而不是崩。只要"同一个实例"请用引擎的 `is_same()`。
 static func same_data(a, b) -> bool:
 	if typeof(a) != typeof(b):
 		return false
 	return a == b
 
 ## 该视图是否正在显示 item —— 数组视图「按数据找视图」的**唯一入口**
-## （ArrayView / SlotArrayView2D / SlotArrayView3D 都走这里，对应规则只有一份，不会各自分叉）
 static func shows(view: Node, item) -> bool:
 	if view == null or not is_instance_valid(view):
 		return false
@@ -41,9 +35,6 @@ static func shows(view: Node, item) -> bool:
 	return same_data(view.data, item)
 
 ## 安全写入视图的 data：类型不兼容时**跳过并告警**，而不是让引擎抛错中断流程。
-## 视图的 data 声明成具体类型（如 `var data: bool`）时，塞进别的类型会直接报
-## "Invalid assignment..." ⇒ 写入前先按属性声明的类型判一次（与 shows() 是一对读写入口）。
-## [returns] 是否写入成功
 static func set_data(view: Node, item) -> bool:
 	if view == null or not is_instance_valid(view) or not ("data" in view):
 		return false
@@ -66,7 +57,6 @@ static func _data_accepts(view: Node, item) -> bool:
 	return true
 
 ## ---- 视图列表的通用操作 ----
-## ArrayView / SlotArrayView2D / SlotArrayView3D 共用，避免各自实现出细微差别
 
 ## 取第 index 个视图（越界 / 空位返回 null）
 static func get_view(views: Array, index: int) -> Node:
@@ -111,10 +101,7 @@ static func rebind_view(views: Array, index: int, item) -> Node:
 	return view
 
 ## ---- 按数据项操作（ArrayView / SlotArrayView2D / SlotArrayView3D 共用同一份骨架）----
-## 骨架只此一处：三个宿主类各自只实现"执行"，避免分支结构各写一遍、改一处漏一处。
 ## ⚠️ 宿主协议（全部是已有的公开接口，不额外要求新方法）：
-## `data` / `views`（两个索引空间的数组）、`refresh_at(index)`（①分支的执行，各族自己定强度：
-## Slot 会整体重排、ArrayView 只刷那一格）、`add_item(item)`（③分支）、`remove_at(index)`（删除）
 
 ## 刷新某个数据项的视图：① data 里有 ⇒ 按索引；② 只有视图里有 ⇒ 就地重绑；③ 都没有 ⇒ 当作新增
 static func refresh_item(host, item) -> Node:
@@ -177,8 +164,6 @@ static func resolve_pool(pool_key: String, view_scene: PackedScene) -> Pool:
 	return PoolService.ensure(pool_key, view_scene.instantiate)
 
 ## 惰性解析并写回宿主的 pool（data 可能早于 _ready 赋值），并应用宿主声明的池容量
-## [code]pool_size[/code] = 空闲上限 + 预热数量；只在池完全空时预建 ——
-## 跑起来之后再补空闲实例，会和下一次归还在 max_idle 上撞车白白销毁
 static func ensure_pool(host) -> void:
 	if host.pool == null:
 		host.pool = resolve_pool(host.pool_key, host.view_scene)
@@ -190,12 +175,6 @@ static func ensure_pool(host) -> void:
 		host.pool.prewarm(size)
 
 ## 创建并配置一个数据项的视图实例。
-## 有池先借，池空或没有池才现场实例化（不会返回 null）。
-## [param view_scene] 用于实例化的 PackedScene（必填）
-## [param pool] 可选对象池
-## [param item] 数据项
-## [param index] 数据项索引（仅用于生成可读的视图名）
-## [returns] 配置好的视图节点，失败返回 null
 static func create_view(view_scene: PackedScene, pool: Pool, item, index: int = -1) -> Node:
 	var view: Node = pool.pool_get() if pool else null
 	if view == null:
@@ -204,7 +183,6 @@ static func create_view(view_scene: PackedScene, pool: Pool, item, index: int = 
 			return null
 		view = view_scene.instantiate()
 	## Node 型数据项挂在视图下：必须从旧父节点（上一个拿它的池化视图）迁过来，
-	## 只判"有没有父节点"会把已经挂错的项留在池里的旧视图上
 	if item is Node and item.get_parent() != view:
 		if item.get_parent() != null:
 			item.get_parent().remove_child(item)
@@ -215,14 +193,10 @@ static func create_view(view_scene: PackedScene, pool: Pool, item, index: int = 
 	return view
 
 ## 释放标记：tween_free 淡出期间节点仍在树内（也不在 queue_free 队列里），
-## 只靠 is_queued_for_deletion() 挡不住同一帧的第二次释放。
 const FREEING_META := &"_array_view_freeing"
 
 ## 释放一个视图节点。重复调用、已失效、已进入释放流程的节点直接忽略。
 ## 优先归还对象池，否则尝试 tween_free，最后 queue_free。
-## [param view] 要释放的视图节点
-## [param pool] 可选对象池
-## [returns] 本次是否真的释放（重复调用返回 false）
 static func free_view(view: Node, pool: Pool) -> bool:
 	if not is_instance_valid(view):
 		return false
@@ -236,17 +210,13 @@ static func free_view(view: Node, pool: Pool) -> bool:
 		view.tween_free()
 	else:
 		## queue_free 是**延迟**释放：不先摘除，节点会在槽位里多留一帧。
-		## 若同一帧又往该槽位放新视图，新节点会因重名被引擎改名为 @Xxx@N，
-		## 且两个视图重叠一帧（闪现）。因此先摘除再释放。
 		if view.get_parent() != null:
 			view.get_parent().remove_child(view)
 		view.queue_free()
 	return true
 
 ## ---- 槽位操作（SlotArrayView2D / SlotArrayView3D 共用同一份实现）----
-## 两个槽位类只有"节点类型"不同（Godot 无法共享基类），算法全部收在这里，改一处即可。
 ## ⚠️ 宿主协议：`data` / `views` / `view_scene` / `pool` / `auto_hide_empty`、
-## `_get_slots()` / `_resize_views()` / `_update_slot_visibility()`
 
 ## 按 data 重建全部槽位视图
 static func slot_refresh(host) -> void:
@@ -274,7 +244,6 @@ static func slot_clear(host) -> void:
 	host._update_slot_visibility()
 
 ## 按 data 重新对齐：保证 views[i] 显示 data[i]。
-## 复用已有视图实例（只改 data / 名字，不重建节点 ⇒ 不闪烁）；视图跟不上数据时才换新实例。
 ## 删除 / 排序 / 中间插入后**必须**走这里 —— 槽位索引与 data 索引错位会让显示顺序乱掉。
 static func slot_resync(host) -> void:
 	host._resize_views()
@@ -356,8 +325,6 @@ static func slot_preview_setup(host) -> void:
 	host._update_slot_visibility()
 
 ## 整排间距的缩放系数：整排总长（间距 × (count-1)）超过 max_length 时压到该长度。
-## max_length <= 0 = 不限制；单项 / 零间距时恒为 1（无法也无必要压缩）。
-## 由 [OffsetArrayView2D] / [OffsetArrayView3D] 共用：两者只差 Vector 类型，判定规则只此一份。
 static func layout_scale(step_length: float, count: int, max_length: float) -> float:
 	if max_length <= 0.0 or count < 2 or step_length <= 0.0:
 		return 1.0

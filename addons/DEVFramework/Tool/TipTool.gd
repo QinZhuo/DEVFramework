@@ -1,8 +1,6 @@
 class_name TipTool
 
 ## 操作提示条：把「按键 + 文案 key」渲染成 "[图标] 文案 · [图标] 文案"。
-## 多来源共用一个栈：priority 大者优先，同级后进优先；source 失效（释放/隐藏）自动收起。
-## 宿主只需 attach() 一次渲染目标，其余地方直接 show_tip / hide_tip。
 
 ## 渲染目标与显隐动画（宿主注入）
 static var label: RichTextLabel
@@ -56,10 +54,6 @@ static func attach(target: RichTextLabel, target_tween: TweenAnimation = null) -
 	_render()
 
 ## 显示提示。entries 三种写法：
-##   &"key"                确认键 + 文案（多数场景）
-##   [[keys, &"key"], ...] 自定义按键
-##   [&"key", &"key2"]     多个确认键文案
-## delay > 0 时延迟显示，供悬停使用
 static func show_tip(entries: Variant, source: Object = null, priority := 0, delay := 0.0) -> void:
 	if not _can_show():
 		return
@@ -106,7 +100,6 @@ static func confirm_keys() -> Array:
 	return [InputTool.key_event(KEY_ENTER)]
 
 ## 统一成 [[按键, 文案key], ...] 并限制条数
-## 按键写空数组表示「确认键」，渲染时再取当前绑定，改键后自动跟随
 ## 丢弃没有合法文案 key 的条目（如空 click_tip），否则只会渲染出孤立按键图标
 static func _normalize(entries: Variant) -> Array:
 	var items := []

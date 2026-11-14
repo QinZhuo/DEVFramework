@@ -1,11 +1,5 @@
 @tool
 ## 运行时音频入口 —— 播放(2D/3D 同接口) + 背景音乐交叉淡化 + 总线音量/静音。
-## 实现: 每条总线一条常驻复音通道(AudioStreamPolyphonic), 播放不新建节点, 超出复音上限由引擎裁掉最旧一路。
-## 分工: 效果预设与总线布局见 AudioMixerTool(编辑器/启动期), 资产烘焙见 AudioBakeTool。
-## 使用:
-##   AudioTool.play(stream, {bus = "SFX", volume_db = -6.0})
-##   AudioTool.play(stream, {target = node3d, unit_size = 10.0})   # 3D 定位
-##   AudioTool.play_music(stream, {fade = 0.5})
 class_name AudioTool
 
 ## 每条通道的同时发声上限(远超实际密度, 极端叠加时多出的新声音被引擎丢弃)
@@ -30,13 +24,8 @@ static var _flush_connected := false
 
 
 # ============================================================
-# 播放
-# ============================================================
 
 ## 播放音频流。返回是否已受理(树未就绪时会排队, 就绪后补播, 同样算受理)。
-## [param opts] 可选键:
-##   bus(String) / volume_db(float) / pitch(float) / jitter(音高随机 ±音分, 高频音效防机械感)
-##   target(Node3D, 挂在其上做定位播放; 无效时回退 2D 通道) / unit_size / attenuation_model(3D 衰减)
 static func play(stream: AudioStream, opts := {}) -> bool:
 	if stream == null:
 		return false
@@ -59,11 +48,8 @@ static func stop_all(bus := "") -> void:
 
 
 # ============================================================
-# 背景音乐
-# ============================================================
 
 ## 播放背景音乐(单通道, 与旧曲交叉淡化; 同一 stream 重复调用忽略)。stream 为空=停止。
-## [param opts] 可选键: bus(默认 Music) / volume_db / fade(默认 0.5s, 0=硬切)
 static func play_music(stream: AudioStream, opts := {}) -> void:
 	var db := VariantTool.get_float(opts, "volume_db", 0.0)
 	var fade := VariantTool.get_float(opts, "fade", 0.5)
@@ -107,8 +93,6 @@ static func reset() -> void:
 
 
 # ============================================================
-# 总线音量
-# ============================================================
 
 ## 设置总线音量(dB); 总线不存在时忽略
 static func set_bus_volume(bus: String, db: float) -> void:
@@ -130,8 +114,6 @@ static func set_bus_mute(bus: String, muted: bool) -> void:
 		AudioServer.set_bus_mute(idx, muted)
 
 
-# ============================================================
-# 内部: 通道与播放
 # ============================================================
 
 static func _play_now(stream: AudioStream, opts: Dictionary) -> bool:
@@ -245,8 +227,6 @@ static func _fade_out_music(base_db: float, fade: float) -> void:
 	)
 
 
-# ============================================================
-# 内部: 树就绪与待播队列
 # ============================================================
 
 ## SceneTree.root 已就绪(可安全 add_child 通道)

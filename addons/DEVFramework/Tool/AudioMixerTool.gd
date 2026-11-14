@@ -1,11 +1,5 @@
 @tool
 ## 音频配置(编辑器/启动期) —— 效果预设 + 总线布局的构建/应用/保存。
-## 布局文件路径跟随项目设置 audio/buses/default_bus_layout(引擎启动加载的就是它), 不写死项目路径。
-## 运行时播放见 AudioTool, 资产烘焙见 AudioBakeTool。
-## 使用:
-##   var layout := AudioMixerTool.build_layout({"Master": ["limiter"], "SFX": ["reverb"], "UI": []})
-##   AudioMixerTool.apply_layout(layout)
-##   AudioMixerTool.save_layout(layout)
 class_name AudioMixerTool
 
 ## 总线布局的项目设置键
@@ -98,7 +92,6 @@ static func fx(name: String, params := {}) -> AudioEffect:
 
 
 ## 由总线表构建布局(纯函数, 不改 AudioServer)。0 号必须是 Master。
-## [param spec] 形如 {"Master": ["limiter"], "SFX": {"effects": ["reverb"], "volume_db": -2.0, "send": "Master"}}
 static func build_layout(spec: Dictionary) -> AudioBusLayout:
 	if spec.is_empty() or not spec.has("Master"):
 		LogTool.error("音频", "总线表无效(须非空且含 Master): ", spec)
@@ -152,7 +145,6 @@ static func save_layout(layout: AudioBusLayout) -> Error:
 
 
 ## 布局落盘路径: 取项目设置 audio/buses/default_bus_layout, uid:// 解析成实际路径;
-## 未配置或解析失败时兜底引擎默认路径
 static func layout_path() -> String:
 	var raw := str(ProjectSettings.get_setting(LAYOUT_SETTING, "")).strip_edges()
 	if raw.begins_with("uid://"):
