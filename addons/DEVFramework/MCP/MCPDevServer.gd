@@ -1777,7 +1777,7 @@ func _call_list_instances(_args: Dictionary) -> Dictionary:
 	var data := {
 		"role": "hub" if bool(_hub.hub_mode) else "member",
 		"hub_port": _hub_port,
-		"active_instance": _hub.active_instance,
+		"active_instance": _hub.get_active_uid(),
 		"active_project": _hub.active_label(),
 		"instance_count": instances.size(),
 		"instances": instances,

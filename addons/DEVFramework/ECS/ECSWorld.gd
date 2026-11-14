@@ -22,8 +22,7 @@ extends RefCounted
 ##   - 并行系统内请用 Command Buffer 排队结构变更(cmd_*),
 ##     且 read_components()/write_components() 声明尽量准确
 ##   - 关闭并行: world.parallel_enabled = false(回退纯串行, 与旧版行为一致)
-##   - 线程数: world.parallel_threads = N(0=自动); 最小并行系统数:
-##     world.parallel_min_systems = N
+##   - 线程数: world.parallel_threads = N(0=自动)
 
 ## —— 批量运算操作符(传给 batch_apply / batch_apply_where 的 op 参数) ——
 enum BatchOp {
@@ -59,31 +58,29 @@ var _component_registered := {}          # Script -> bool (避免重复注册)
 var _component_names := {}               # Script -> StringName
 var _components: Array[Script] = []
 
-# ---------------- 系统调度 ----------------
-var _systems: Array[ECSSystem] = []
-var _system_index := {}          # ECSSystem -> _systems 下标(注册/移除时增量维护, 取代 _systems.find)
-var _system_priorities: Array[int] = []
-var _system_before: Array = []   # 每系统: 必须在其后执行的系统引用数组
-var _system_after: Array = []    # 每系统: 必须在其前执行的系统引用数组
-var _sorted: Array[ECSSystem] = []
-var _sorted_index := {}          # ECSSystem -> _sorted 下标(随 _resort 重建, 供批分组排序/依赖判定)
-var _dirty_schedule := true
+# ---------------- 系统调度(状态全在 ECSScheduler) ----------------
+var _scheduler: ECSScheduler = null
 
-# ---------------- 系统级并行调度 ----------------
-## 全局开关: 是否启用系统级并行执行。关闭后回退纯串行(行为与旧版完全一致)。
-var parallel_enabled: bool = true
-## 并行线程数。0=自动(硬件核数-1, 上限8)。同一并行批内最多并行这么多系统。
-var parallel_threads: int = 0
+## 系统级并行开关(转发给调度器)。关闭后回退纯串行。
+var parallel_enabled: bool:
+	get:
+		return scheduler().parallel_enabled
+	set(value):
+		scheduler().parallel_enabled = value
 
-var _tracking := false                    # 本帧是否追踪组件访问(并行打开且系统数达标)
-var _preheated := false                   # 是否已完成首帧串行预热(此后才允许并行)
-var _parallel_batch_active := false       # 本帧正处于并行批(禁用查询缓存, 防陈旧结果)
-var _access_sets := {}                    # ECSSystem -> {compName:true} 上一帧累积的访问记录
-var _pending_access := {}                 # ECSSystem -> {compName:true} 本帧访问缓冲
-var _access_target: Dictionary = {}       # 当前任务的访问目标集(读写全在 _access_mutex 内, 防并行竞争)
-var _access_target_active := false        # 当前是否有活动任务在记录访问
-var _system_access_declared := {}         # ECSSystem -> {compName:true} 声明的读写组件(静态缓存)
-var _access_mutex := Mutex.new()
+## 并行线程数(0=自动; 转发给调度器)。
+var parallel_threads: int:
+	get:
+		return scheduler().parallel_threads
+	set(value):
+		scheduler().parallel_threads = value
+
+
+## 调度器懒创建(它要回指本世界: 解析组件名、取原生核心、作上下文宿主)。
+func scheduler() -> ECSScheduler:
+	if _scheduler == null:
+		_scheduler = ECSScheduler.new(self)
+	return _scheduler
 var _cache_mutex := Mutex.new()           # 查询缓存
 var _event_mutex := Mutex.new()           # 事件队列
 var _cmd_mutex := Mutex.new()             # 命令缓冲
@@ -106,12 +103,10 @@ var _parent_children := {}
 ## 注意: get_column 返回共享引用后原地修改不经过写 API, 不会被标记。
 var _frame_count := 0                     # 本世界已 tick 帧数
 # ---------------- 调试统计(实体/系统查看器用) ----------------
-var _system_times := {}                        # ECSSystem -> 本帧耗时 ms(并行安全)
-var _system_runs := {}                          # ECSSystem -> 累计运行次数
-var _system_times_lock := Mutex.new()
 var _component_by_name := {}                   # 组件类名(StringName) -> 脚本
 var _component_schemas := {}                   # 组件类名 -> [{name, type}] 字段列表
 var _dirty_comps := {}                    # compName -> 帧号(该帧被写)
+var _dirty_mutex := Mutex.new()
 
 # ---------------- 事件队列 ----------------
 var _event_queues := {}                  # type(StringName) -> Array[Variant]
@@ -425,7 +420,7 @@ func query_all_rows(anchor) -> PackedInt32Array:
 		return PackedInt32Array()
 	_record_access(cn)
 	# 并行批内主线程可能正在改结构 → 绕过缓存, 避免读到陈旧行集(与 query_rows 一致)
-	if _parallel_batch_active:
+	if scheduler().is_parallel_active():
 		return _core.query_rows(cn, [], [])
 	var cv: int = _comp_versions.get(cn, 0)
 	var entry: Dictionary = _all_rows_cache.get(cn, {})
@@ -477,7 +472,7 @@ func query_rows(anchor, must: Array = [], without: Array = []) -> PackedInt32Arr
 	var must_names: PackedStringArray = args[1]
 	var without_names: PackedStringArray = args[2]
 	# 并行批内跳过查询缓存: 主线程系统可能正在改结构, 用缓存会读到陈旧结果
-	if _parallel_batch_active:
+	if scheduler().is_parallel_active():
 		return _core.query_rows(anchor_name, must_names, without_names)
 	var key := _query_cache_key("r", anchor_name, must_names, without_names)
 	_cache_mutex.lock()
@@ -509,7 +504,7 @@ func query_aligned(anchor, must: Array = [], without: Array = []) -> Array:
 	var anchor_name: StringName = args[0]
 	var must_names: PackedStringArray = args[1]
 	var without_names: PackedStringArray = args[2]
-	if _parallel_batch_active:
+	if scheduler().is_parallel_active():
 		return _core.query_rows_aligned(anchor_name, must_names, without_names)
 	var key := _query_cache_key("a", anchor_name, must_names, without_names)
 	_cache_mutex.lock()
@@ -894,57 +889,24 @@ var _cmd_ops: Array = []   # 本帧排队的命令操作记录(供 flush 精确�
 #  系统
 # ============================================================
 
-## 注册系统。priority 越大越先执行；不传则取 system.priority。
+## 注册系统(委托调度器)。priority 越大越先执行；不传则取 system.priority。
 ## before/after: 依赖声明的系统引用数组(该系统须在 after 之后、before 之前执行)。
 func register_system(system: ECSSystem, priority = null, before: Array = [], after: Array = []) -> void:
-	if system == null or _system_index.has(system):
-		return
-	var prio := system.priority if priority == null else int(priority)
-	# 系统内所需的组件必须在注册前已注册
-	for comp in system.required_components():
-		register_component(comp)
-	_system_index[system] = _systems.size()
-	_systems.append(system)
-	_system_priorities.append(prio)
-	_system_before.append(before)
-	_system_after.append(after)
-	# 预解析声明组件(静态, 供并行冲突检测)
-	var declared := {}
-	for c in system.read_components():
-		var cn := resolve_component_name(c)
-		if cn != &"":
-			declared[cn] = true
-	for c in system.write_components():
-		var cn := resolve_component_name(c)
-		if cn != &"":
-			declared[cn] = true
-	_system_access_declared[system] = declared
-	_dirty_schedule = true
-	# 系统初始化钩子(需要世界引用的实现在此保存)
-	system._on_registered(self)
-	# 日志: 系统名 + 优先级 + 使用组件
-	var used := PackedStringArray()
-	for c in system.required_components():
-		if c != null:
-			used.append(str(c.get_global_name()))
-	LogTool.log("ECS", "注册系统 %s (优先级 %d, 组件: %s)" % [system.get_system_name(), prio, ", ".join(used)])
+	scheduler().register(system, priority, before, after)
+
 
 func remove_system(system: ECSSystem) -> void:
-	var i: int = _system_index.get(system, -1)
-	if i < 0:
-		return
-	_systems.remove_at(i)
-	_system_priorities.remove_at(i)
-	_system_before.remove_at(i)
-	_system_after.remove_at(i)
-	_system_index.erase(system)
-	# 被删位置之后的元素整体前移一位, 增量重建其下标
-	for k in range(i, _systems.size()):
-		_system_index[_systems[k]] = k
-	_system_access_declared.erase(system)
-	_access_sets.erase(system)
-	_pending_access.erase(system)
-	_dirty_schedule = true
+	scheduler().remove(system)
+
+
+## 已注册系统(副本, 供宿主只读遍历; 不要在遍历中注册/移除)。
+func get_systems() -> Array[ECSSystem]:
+	return scheduler().get_systems()
+
+
+## 记录"当前任务"对某组件的访问(查询/批量路径内部调用, 供下一帧并行分批)。
+func _record_access(comp: StringName) -> void:
+	scheduler().record_access(comp)
 
 ## 每帧驱动全部系统。内部先按依赖图拓扑排序(优先级仅作同层平级次序)。
 ## 帧末自动 flush Command Buffer(延迟结构变更)。
@@ -952,215 +914,13 @@ func remove_system(system: ECSSystem) -> void:
 ## 否则回退纯串行(行为与旧版一致)。并行开启时第一帧自动串行预热以采集访问记录。
 func tick(delta: float) -> void:
 	_frame_count += 1
-	_resort()
-	# 频率调度: 主线程先对每个系统做 interval/rate/fixed_step 判断, 标记本帧是否运行
-	for system in _sorted:
-		system._schedule(delta)
-	var parallel_now := _should_parallel()
-	_tracking = parallel_enabled
-	if parallel_now:
-		_parallel_batch_active = true
-		_parallel_tick(delta)
-		_parallel_batch_active = false
-	else:
-		for system in _sorted:
-			if system._frame_delta < 0.0:
-				continue
-			_run_system(system)
-	if _tracking:
-		_finalize_access()
-	_preheated = true
+	scheduler().tick(delta)
 	_dispatch_events()
 	cmd_flush()
 
-## 依赖图拓扑排序: 满足 before/after 约束, 同层按优先级降序。
-## 依赖冲突(环)时优先保留 priority 更高者, 弱化为无约束。
-func _resort() -> void:
-	if not _dirty_schedule:
-		return
-	_sorted.clear()
-	_sorted_index.clear()
-	_dirty_schedule = false
-	if _systems.is_empty():
-		return
-
-	# 1) 建立 "系统 -> 其前置集合(必须先于它执行)" 映射
-	var n := _systems.size()
-	var prerequisites: Array = []  # 每项: Array[ECSSystem] 必须在其之前
-	prerequisites.resize(n)
-	# 预计算各系统的读写组件集合(用于自动推断)
-	var sys_writes: Array = []   # 每项: Array[StringName] 写入组件
-	var sys_reads: Array = []    # 每项: Array[StringName] 读取组件
-	for i in n:
-		var w: Array[StringName] = []
-		for c in _systems[i].write_components():
-			var cn: StringName = resolve_component_name(c)
-			if cn != &"":
-				w.append(cn)
-		sys_writes.append(w)
-		var r: Array[StringName] = []
-		for c in _systems[i].read_components():
-			var cn: StringName = resolve_component_name(c)
-			if cn != &"":
-				r.append(cn)
-		sys_reads.append(r)
-	for i in n:
-		var pre: Array = []
-		for other in _system_after[i]:
-			if other is ECSSystem and _system_index.has(other):
-				pre.append(other)
-		# before[b] = x 表示 x 必须在 b 之前 => 对 x 而言 b 是其 after
-		for j in n:
-			if _system_before[j].has(_systems[i]):
-				pre.append(_systems[j])
-		# 自动推断: 若该系统的 after/before 声明为空, 则按读写组件推断
-		# 规则: 写某组件的系统, 必须在"读或写同一组件"的系统之前
-		if _system_after[i].is_empty() and _system_before[i].is_empty():
-			for j in n:
-				if j == i:
-					continue
-				# 若 j 读/写了 i 写入的组件, 则 i 必须先于 j
-				var conflict := false
-				for ci in sys_writes[i]:
-					if sys_reads[j].has(ci) or sys_writes[j].has(ci):
-						conflict = true
-						break
-				if conflict and not pre.has(_systems[j]):
-					pre.append(_systems[j])
-		prerequisites[i] = pre
-
-	# 2) Kahn 拓扑排序(每次取"前置全满足且优先级最高"者)
-	var done := {}
-	var result: Array = []
-	while result.size() < n:
-		var best := -1
-		for i in n:
-			if done.has(i):
-				continue
-			var ready := true
-			for pre in prerequisites[i]:
-				if not done.has(_system_index.get(pre, -1)):
-					ready = false
-					break
-			if not ready:
-				continue
-			if best == -1 or _system_priorities[i] > _system_priorities[best]:
-				best = i
-		if best == -1:
-			# 依赖环: 取剩余中优先级最高者强制执行, 破坏环
-			for i in n:
-				if done.has(i):
-					continue
-				if best == -1 or _system_priorities[i] > _system_priorities[best]:
-					best = i
-		done[best] = true
-		result.append(_systems[best])
-	_sorted.clear()
-	_sorted_index.clear()
-	for k in result.size():
-		var s: ECSSystem = result[k]
-		_sorted.append(s)
-		_sorted_index[s] = k
-
-# ============================================================
-#  系统级并行执行
-# ============================================================
-
-## 启用系统的数量(过滤 disabled)。
-func _enabled_system_count() -> int:
-	var n := 0
-	for s in _sorted:
-		if s.enabled:
-			n += 1
-	return n
-
-## 是否进入并行执行。
-## 条件: 开关打开 + 已过首帧串行预热(采集访问记录)。单系统也走 worker 线程(不占主线程)。
-func _should_parallel() -> bool:
-	if not parallel_enabled:
-		return false
-	return _preheated
-
-## 记录"当前任务"对某组件的访问(供下一帧冲突检测)。
-## 读+写全在 _access_mutex 内: 并行 worker 即使短暂共享目标集, 字典写入也被串行化,
-## 杜绝"两个线程同时写同一 Dictionary"的内存竞争(C++ 段错误)。归属在极端时序下可能错乱,
-## 但只影响冲突检测精度(可并行度), 不影响正确性 —— 真冲突系统由 declared 声明兜底串行化。
-func _record_access(comp: StringName) -> void:
-	if not _tracking or comp == &"":
-		return
-	_access_mutex.lock()
-	if _access_target_active:
-		_access_target[comp] = true
-	_access_mutex.unlock()
-
-## 帧末把本帧访问并入累积集(供下一帧分批)。
-func _finalize_access() -> void:
-	for s in _pending_access:
-		_access_sets[s] = _pending_access[s]
-	_pending_access.clear()
-
-## 开启/关闭某系统的访问记录任务(锁内切换目标集, 与 _record_access 的锁内读写互斥)。
-func _begin_access(system: ECSSystem) -> void:
-	_access_mutex.lock()
-	if not _pending_access.has(system):
-		_pending_access[system] = {}
-	_access_target = _pending_access[system]
-	_access_target_active = true
-	_access_mutex.unlock()
-
-func _end_access() -> void:
-	_access_mutex.lock()
-	_access_target_active = false
-	_access_target = {}
-	_access_mutex.unlock()
-
-## 串行执行单个系统(记录访问上下文)。用系统本帧调度后的 _frame_delta 作为 delta。
-## 每系统独立 ctx; _run 结束后自动执行该系统未显式 execute 的查询。
-func _run_system(system: ECSSystem) -> void:
-	var delta: float = system._frame_delta
-	if delta < 0.0:
-		return
-	var t0 := Time.get_ticks_usec()
-	var ctx := ECSSystemContext.new(self)
-	if not _tracking:
-		system._run(ctx, delta)
-		ctx._auto_execute()
-		_record_system_time(system, t0)
-		return
-	_begin_access(system)
-	system._run(ctx, delta)
-	ctx._auto_execute()
-	_end_access()
-	_record_system_time(system, t0)
-
-## 并行 worker 入口(在线程中执行系统)。
-func _parallel_worker(system: ECSSystem) -> void:
-	var delta: float = system._frame_delta
-	if delta < 0.0:
-		return
-	var t0 := Time.get_ticks_usec()
-	var ctx := ECSSystemContext.new(self)
-	_begin_access(system)
-	system._run(ctx, delta)
-	ctx._auto_execute()
-	_end_access()
-	_record_system_time(system, t0)
-
-## 记录系统本帧耗时(ms), 线程安全(并行 worker 也调用)。
-func _record_system_time(system: ECSSystem, t0: int) -> void:
-	_system_times_lock.lock()
-	_system_times[system] = (Time.get_ticks_usec() - t0) / 1000.0
-	_system_runs[system] = int(_system_runs.get(system, 0)) + 1
-	_system_times_lock.unlock()
-
-## 调试: 各系统本帧耗时(ms), 键为系统类名。
+## 调试: 各系统本帧耗时(ms), 键为系统名。
 func get_system_times() -> Dictionary:
-	var out := {}
-	_system_times_lock.lock()
-	for s in _system_times:
-		out[s.get_system_name()] = _system_times[s]
-	_system_times_lock.unlock()
-	return out
+	return scheduler().get_system_times()
 
 ## 调试: 返回实体的组件字段视图 {组件名: {字段: 值}}(实体/组件查看器用)。
 func get_entity_view(entity: int) -> Dictionary:
@@ -1183,150 +943,24 @@ func set_entity_field(entity: int, comp, field: StringName, value) -> void:
 func get_archetype_groups() -> Array:
 	return _core.get_archetype_groups()
 
-## 调试: 各系统耗时与累计运行次数 {类名: {ms, runs}}(查看器表格列: 耗时/avg/max/调用)。
+## 调试: 各系统耗时与累计运行次数(转发调度器)。
 func get_system_stats() -> Dictionary:
-	var out := {}
-	_system_times_lock.lock()
-	for s in _system_times:
-		var nm := "?"
-		if s.get_script() != null:
-			nm = s.get_script().get_global_name()
-		out[nm] = {"ms": _system_times[s], "runs": int(_system_runs.get(s, 0))}
-	_system_times_lock.unlock()
-	return out
+	return scheduler().get_system_stats()
+
 
 ## 调试: 系统拓扑(当前执行顺序 + 是否可并行)。
 func get_topology() -> Dictionary:
-	var order := []
-	for s in _sorted:
-		var nm := "?"
-		if s.get_script() != null:
-			nm = s.get_script().get_global_name()
-		order.append({"name": nm, "parallel": s.can_run_parallel()})
-	return {"order": order}
+	return scheduler().get_topology()
 
-## 系统 a(索引)是否依赖 b(索引): b 必须先于 a 执行。
-func _system_depends(a: int, b: int) -> bool:
-	return _system_after[a].has(_systems[b]) or _system_before[b].has(_systems[a])
-
-## 系统访问集合与批内已占用组件是否有交集。
-func _sig_conflicts(acc: Dictionary, declared: Dictionary, cur_comps: Dictionary) -> bool:
-	for c in acc:
-		if cur_comps.has(c):
-			return true
-	for c in declared:
-		if cur_comps.has(c):
-			return true
-	return false
-
-## 输出 cur(合成一批) 与 barrier(各自单批), 按每组首系统在拓扑序中的位置排序,
-## 保持相对顺序的同时让互无依赖的可并行系统聚成一批(顺序无关重排)。
-func _flush_parallel(groups: Array, cur: Array, barrier: Array) -> void:
-	if cur.is_empty() and barrier.is_empty():
-		return
-	var blocks := []  # Array[Array], 每组一个系统列表
-	if not cur.is_empty():
-		blocks.append(cur)
-	for bs in barrier:
-		blocks.append([bs])
-	blocks.sort_custom(func(a, b): return _sorted_index.get(a[0], -1) < _sorted_index.get(b[0], -1))
-	for blk in blocks:
-		groups.append(blk)
-
-## 基于上一帧访问记录 + 声明组件, 把系统分批:
-## 批内任意两系统组件访问集合无交集 且 无 before/after 依赖(可安全并行)。
-## 批间保持原拓扑顺序(串行)。
-## 顺序无关重排: 不可并行系统(屏障)不打断当前批, 而是挂起——两侧无依赖的
-## 可并行系统仍可同批(如 Move/Heal 被 Sync 隔开时也能并行), 屏障随后单独串行。
-func _build_parallel_groups() -> Array:
-	var groups := []
-	var cur: Array = []       # 当前可并行批
-	var cur_comps := {}       # cur 的组件占用
-	var barrier: Array = []   # 挂起的不可并行系统(屏障, 按 _sorted 序)
-	for s in _sorted:
-		if not s.enabled or s._frame_delta < 0.0:
-			continue
-		if not s.can_run_parallel():
-			# 屏障: 不打断当前批, 挂起; 后续加入 cur 的系统须与屏障无依赖
-			barrier.append(s)
-			continue
-		var acc: Dictionary = _access_sets.get(s, {})
-		var declared: Dictionary = _system_access_declared.get(s, {})
-		var conflict := _sig_conflicts(acc, declared, cur_comps)
-		if not conflict:
-			var si: int = _system_index.get(s, -1)
-			for cs in cur:
-				var ci: int = _system_index.get(cs, -1)
-				if _system_depends(si, ci) or _system_depends(ci, si):
-					conflict = true
-					break
-			if not conflict:
-				for bs in barrier:
-					var bi: int = _system_index.get(bs, -1)
-					if _system_depends(si, bi) or _system_depends(bi, si):
-						conflict = true
-						break
-		if conflict:
-			_flush_parallel(groups, cur, barrier)
-			cur = []
-			cur_comps = {}
-			barrier = []
-		cur.append(s)
-		for c in acc:
-			cur_comps[c] = true
-		for c in declared:
-			cur_comps[c] = true
-	_flush_parallel(groups, cur, barrier)
-	return groups
-
-## 并行 tick: 按组串行、组内并行执行全部系统。
-func _parallel_tick(delta: float) -> void:
-	_pending_access.clear()
-	var groups: Array = _build_parallel_groups()
-	var max_par := _effective_threads()
-	for group in groups:
-		_run_group(group, delta, max_par)
-
-## 执行一组系统。组内并行(线程数受 max_par 限制), 超量部分拆成子批。
-## 不可并行系统(can_run_parallel=false, 如访问场景树)必须主线程串行;
-## 可并行系统(含单系统)交给 worker 线程执行(系统逻辑不占主线程)。
-func _run_group(group: Array, _delta: float, max_par: int) -> void:
-	if group.size() == 1 and not group[0].can_run_parallel():
-		_run_system(group[0])
-		return
-	var start := 0
-	while start < group.size():
-		var end := mini(start + max_par, group.size())
-		_run_parallel_slice(group.slice(start, end))
-		start = end
-
-## 并行执行一批系统: 全部交给 C++ 持久 worker 池执行(免每帧临时建线程)。
-func _run_parallel_slice(slice: Array) -> void:
-	var tasks := []
-	for s in slice:
-		tasks.append(_parallel_worker.bind(s))
-	_core.run_systems_parallel(tasks)
-
-## 有效并行线程数(单个并行批最多并行多少个系统)。0=自动。
-func _effective_threads() -> int:
-	var n := parallel_threads
-	if n <= 0:
-		var cores := OS.get_processor_count()
-		n = maxi(1, cores - 1)
-		n = clampi(n, 1, 8)
-	return n
 
 ## 是否正在使用并行执行(调试/UI 展示用)。
 func is_parallel_active() -> bool:
-	return _parallel_batch_active
+	return scheduler().is_parallel_active()
 
-## 上一帧并行组统计(调试/UI 展示用): {batches: int, max_group: int, parallel_groups: int}
+
+## 并行统计(调试/UI 展示用)。
 func debug_parallel_stats() -> Dictionary:
-	return {
-		"parallel_enabled": parallel_enabled,
-		"effective_threads": _effective_threads(),
-		"tracked_systems": _access_sets.size(),
-	}
+	return scheduler().debug_parallel_stats()
 
 # ============================================================
 #  组件生命周期钩子 (on_add / on_remove / on_destroy)
@@ -1406,9 +1040,9 @@ func _fire_entity_destroyed(entity: int) -> void:
 func _mark_dirty(comp: StringName) -> void:
 	if comp == &"":
 		return
-	_access_mutex.lock()
+	_dirty_mutex.lock()
 	_dirty_comps[comp] = _frame_count
-	_access_mutex.unlock()
+	_dirty_mutex.unlock()
 
 ## 本帧内该组件是否被任何写 API 修改过(组件级, 非实体级)。
 func is_component_dirty(comp) -> bool:
@@ -1757,10 +1391,4 @@ func spawn_from_def(def: ECSPrefabDef, count: int = 1, overrides: Dictionary = {
 ## 暂停或恢复世界(暂停 = 不执行任何系统, 用于多世界对比)。
 ## ⚠️ 会覆盖各系统自己的 enabled: 恢复时一律置 true, 原本手动关掉的系统会被一起打开。
 func set_paused(paused: bool) -> void:
-	for s in _systems:
-		s.enabled = not paused
-
-
-## 已注册系统(副本, 供宿主只读遍历; 不要在遍历中注册/移除系统)。
-func get_systems() -> Array[ECSSystem]:
-	return _systems.duplicate()
+	scheduler().set_paused(paused)

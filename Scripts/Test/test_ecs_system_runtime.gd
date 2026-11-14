@@ -55,7 +55,7 @@ func test_priority_used_when_not_passed() -> void:
 	var system := Ticker.new()
 	system.priority = 42
 	world.register_system(system)
-	assert_eq(world._system_priorities[0], 42, "不传优先级时应取 system.priority")
+	assert_eq(world.scheduler().get_priority(system), 42, "不传优先级时应取 system.priority")
 
 
 func test_world_setup_registers_runtime_systems() -> void:
@@ -63,7 +63,9 @@ func test_world_setup_registers_runtime_systems() -> void:
 	var e1 := w1.init_world()
 	var w2 := TickerWorld.new()
 	var e2 := w2.init_world()
-	assert_eq(e1._systems.size(), 1, "应注册 1 个系统")
-	assert_true(e1._systems[0] != e2._systems[0], "两个世界应各自 new 一份")
+	var sys1 := e1.get_systems()
+	var sys2 := e2.get_systems()
+	assert_eq(sys1.size(), 1, "应注册 1 个系统")
+	assert_true(sys1[0] != sys2[0], "两个世界应各自 new 一份")
 	w1.free()
 	w2.free()

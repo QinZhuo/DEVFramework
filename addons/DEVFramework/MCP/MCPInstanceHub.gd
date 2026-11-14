@@ -409,6 +409,12 @@ func resolve_active() -> Dictionary:
 	return again
 
 
+## 默认目标的 uid(先确保已从磁盘恢复; 直接读字段会在首次调用前拿到空串)。
+func get_active_uid() -> String:
+	_ensure_target_loaded()
+	return active_instance
+
+
 ## 默认目标的可读标签(报错用): 优先项目路径, 回退 instance_id。
 func active_label() -> String:
 	_ensure_target_loaded()

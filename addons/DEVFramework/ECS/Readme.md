@@ -2,6 +2,8 @@
 
 C++ 原生列存储（`ECSCore`，注册在框架共享库 `Native/dev.gdextension`）+ GDScript 封装（`ECSWorld` / `ECSSystem` / 查询链 DSL）。
 
+`ECSWorld` 只管数据面；系统注册、拓扑排序、频率节流、并行分批与耗时统计都在 `ECSScheduler`（`world.scheduler()`）。
+
 三种用法：**海量实体**（纯数据 + 渲染直读列）、**关键实体**（`Entity2D/3D` 桥接场景节点）、**数值逻辑**（系统内批量执行）。
 
 ## 快速开始
@@ -114,7 +116,6 @@ var data: Dictionary = world.borrow_columns(norm)   # 独占引用，改完 retu
 ```gdscript
 world.parallel_enabled = true
 world.parallel_threads = 0        # 0 = 自动
-world.parallel_min_systems = 2
 ```
 
 并行系统要求：不访问场景树、读写声明准确、结构变更走命令缓冲。调试：`is_parallel_active()` / `debug_parallel_stats()`。
