@@ -4,9 +4,9 @@ extends ECSSystem
 ## ECS 查询链实现的小球逻辑系统 —— 全部用**现有通用原语** + **向量分量字段**表达,
 ## 无 process 回调: 移动/回弹/hp 周期/size 都走 C++ batch。
 ## 分量字段("pos.x"/"vel.y")由框架解析为向量分量操作。
-## Def 风格: @export 可在场景/Inspector 配置(在 ECSWorld 的 systems 里注册本系统即可)。
+## 系统是纯运行时对象：参数由创建方直接赋值（见 DemoQueryWorld._setup_world）。
 
-@export var hp_rate := 2.0   # 每秒 hp 变化(满 100 周期约 50 秒)
+var hp_rate := 2.0   # 每秒 hp 变化(满 100 周期约 50 秒)
 
 func required_components() -> Array[Script]:
 	return [DemoQueryBall]

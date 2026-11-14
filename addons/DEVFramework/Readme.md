@@ -395,14 +395,16 @@ TranslationTool.set_locale("zh_CN")              # 切换语言
 TranslationTool.get_locales() / get_display_name("zh_CN")
 ```
 
-### 5.7 ActorTool — 生命周期编排
+### 5.7 NodeTreeTool — 生命周期编排（原 ActorTool）
 
 按约定在场景节点上实现 `game_init()`、`game_ready()`、`save_data()`、`load_data()` 方法，由父节点统一调度：
 
 ```gdscript
-await ActorTool.game_ready(root)      # 遍历子节点调用 game_ready
-var data = await ActorTool.save_data(root)
-await ActorTool.load_data(root, data)
+await NodeTreeTool.game_init(root)    # 只调用一次的初始化
+await NodeTreeTool.game_ready(root)   # 遍历子节点调用 game_ready（读档后也会调用）
+var data = await NodeTreeTool.save_data(root)
+await NodeTreeTool.load_data(root, data)
+NodeTreeTool.is_alive(node)           # 未释放 + 在树内 + 父链可见
 ```
 
 ### 5.8 音频（AudioTool / AudioMixerTool / AudioBakeTool）

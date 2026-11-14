@@ -171,6 +171,25 @@ class_name HealthComponent extends ECSComponent
 
 ## 四、系统与统一查询链
 
+系统是**纯运行时对象**（`ECSSystem extends RefCounted`）：不继承 `Def`，也没有配置资源层。
+参数在创建时直接赋值，注册进世界即可。
+
+```gdscript
+class_name DemoQueryWorld extends World
+
+func _setup_world(world: ECSWorld) -> void:
+	var ball_sys := DemoQueryBallSystem.new()
+	ball_sys.hp_rate = 2.0
+	world.register_system(ball_sys)
+
+	var sync := ECSSyncSystem.new()
+	sync.add_field_rule(DemoQueryBall, &"pos", &"position")
+	world.register_system(sync)
+```
+
+`World` 节点只负责建世界与每帧 tick，系统在 `_setup_world(world)` 里注册。每个世界 new 一份实例，
+运行态天然隔离 —— 不需要 `duplicate()`，也不需要 Inspector 配置对象。
+
 系统继承 `ECSSystem`，实现 `_run(ctx, delta)`。**所有逻辑走统一查询链 `ctx.for_each(...)`**，与规则层同一套构建器。
 
 ```gdscript
@@ -192,6 +211,8 @@ func _run(ctx: ECSSystemContext, delta: float) -> void:
 | `read_components()` / `write_components()` | 读写声明（并行冲突检测 + 依赖排序用） |
 | `can_run_parallel()` | 默认 true；访问场景树/节点须覆写 false（参考 `ECSSyncSystem`） |
 | `_run(ctx, delta)` | 每帧逻辑 |
+| `priority` / `enabled` | 注册顺序权重（`register_system` 不传参时取它）/ 启停 |
+| `interval` / `rate` / `fixed_step` | 频率控制，`fixed_step` > `interval` > `rate` |
 
 **三种动作模式**（同一查询链）：
 - **标量动作**：`.add()/.sub()/.mul()/.div()/.set_value()` → C++ batch

@@ -1,19 +1,17 @@
 class_name World
 extends Node
 
-## ECS 世界桥接层 —— 场景里配置好系统, 自动创建 ECSWorld 并注册, 无需手写 world 创建/注册代码。
+## ECS 世界桥接层 —— 场景里放本节点即自动创建 ECSWorld + 每帧 tick, 系统在 _setup_world() 里注册。
 ##
-## 用法(场景驱动, 推荐):
-##   1. 场景里放一个本节点(可作根), Inspector 配置 systems(要注册的系统 Def 实例)。
-##   2. _ready 自动创建 ECSWorld + 注册系统; _process 自动 tick 全部系统。
-##   3. 需要生成实体等初始化: 监听 world_ready 信号(ecs 已就绪), 或覆写 _setup_world(world)。
+## 用法:
+##   1. 场景里放一个本节点(可作根), 继承本类并覆写 _setup_world(world) 注册系统。
+##   2. _ready 自动创建 ECSWorld + 调用 _setup_world; _process 自动 tick 全部系统。
+##   3. 需要生成实体等初始化: 监听 world_ready 信号(ecs 已就绪), 或在 _setup_world 之后做。
 ##   4. 切换实现时 = 实例化/删除对应场景。
 ##
-## 扩展: 无需每个实现都继承本类; 需要特殊 tick/初始化时用 Spawner 子节点监听 world_ready,
-##       或继承本类覆写 _setup_world / tick。
+## 系统是纯运行时对象, 没有 Inspector 配置层: 参数在 _setup_world 里直接赋值。
 
-## 要注册的系统(Def 实例, 场景/Inspector 配置)。每个都会被复制为独立实例再注册。
-@export var systems: Array[ECSSystem] = []
+## 并行线程数(传给 ECSWorld.parallel_threads, 0=自动按硬件)
 ## 并行线程数(传给 ECSWorld.parallel_threads, 0=自动按硬件)
 @export var parallel_threads := 0
 ## _ready 时自动初始化世界
@@ -108,22 +106,18 @@ func _on_debug_req(msg: String, data: Array) -> void:
 				EngineDebugger.send_message("ecs_debug:view", [{"entity": e2, "view": ecs.get_entity_view(e2)}])
 
 
-## 创建世界并注册配置的系统(每系统复制为独立实例, 状态互不干扰)。重复调用幂等。
+## 创建世界并交给 _setup_world 注册系统。重复调用幂等。
 func init_world() -> ECSWorld:
 	if ecs != null:
 		return ecs
 	# 每世界独立 C++ 核心: 场景切换=实例化/删除场景, 若共享核心会导致旧世界实体残留累积
 	ecs = ECSWorld.new(false)
 	ecs.parallel_threads = parallel_threads
-	for sys in systems:
-		if sys == null:
-			continue
-		ecs.register_system(sys.duplicate(true))
 	_setup_world(ecs)
 	return ecs
 
 
-## 覆写点: 世界初始化后的额外配置(或直接生成实体)。
+## 覆写点: 注册系统 / 生成实体等世界初始化(ecs 已就绪)。
 func _setup_world(_world: ECSWorld) -> void:
 	pass
 

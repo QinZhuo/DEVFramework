@@ -211,27 +211,37 @@ static func create_view(view_scene: PackedScene, pool: Pool, item, index: int = 
 		view.add_child(item)
 	set_data(view, item)
 	view.name = get_item_name(item, index)
+	view.remove_meta(FREEING_META)
 	return view
 
-## 释放一个视图节点。
+## 释放标记：tween_free 淡出期间节点仍在树内（也不在 queue_free 队列里），
+## 只靠 is_queued_for_deletion() 挡不住同一帧的第二次释放。
+const FREEING_META := &"_array_view_freeing"
+
+## 释放一个视图节点。重复调用、已失效、已进入释放流程的节点直接忽略。
 ## 优先归还对象池，否则尝试 tween_free，最后 queue_free。
 ## [param view] 要释放的视图节点
 ## [param pool] 可选对象池
-static func free_view(view: Node, pool: Pool):
+## [returns] 本次是否真的释放（重复调用返回 false）
+static func free_view(view: Node, pool: Pool) -> bool:
 	if not is_instance_valid(view):
-		return
+		return false
+	if view.is_queued_for_deletion() or view.has_meta(FREEING_META):
+		return false
 	if pool:
 		pool.pool_return(view)
+		return true
+	if "tween_free" in view:
+		view.set_meta(FREEING_META, true)
+		view.tween_free()
 	else:
-		if "tween_free" in view:
-			view.tween_free()
-		else:
-			## queue_free 是**延迟**释放：不先摘除，节点会在槽位里多留一帧。
-			## 若同一帧又往该槽位放新视图，新节点会因重名被引擎改名为 @Xxx@N，
-			## 且两个视图重叠一帧（闪现）。因此先摘除再释放。
-			if view.get_parent() != null:
-				view.get_parent().remove_child(view)
-			view.queue_free()
+		## queue_free 是**延迟**释放：不先摘除，节点会在槽位里多留一帧。
+		## 若同一帧又往该槽位放新视图，新节点会因重名被引擎改名为 @Xxx@N，
+		## 且两个视图重叠一帧（闪现）。因此先摘除再释放。
+		if view.get_parent() != null:
+			view.get_parent().remove_child(view)
+		view.queue_free()
+	return true
 
 ## ---- 槽位操作（SlotArrayView2D / SlotArrayView3D 共用同一份实现）----
 ## 两个槽位类只有"节点类型"不同（Godot 无法共享基类），算法全部收在这里，改一处即可。

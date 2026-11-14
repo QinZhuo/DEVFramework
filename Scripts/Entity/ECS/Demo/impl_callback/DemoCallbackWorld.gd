@@ -2,8 +2,7 @@ class_name DemoCallbackWorld
 extends World
 
 ## ECS 查询链回调实现的场景化世界 —— 场景根挂本脚本(继承 World)。
-## World 基类负责创建 ECSWorld + 注册场景配置的 systems; 本脚本只负责生成球实体与显示节点。
-## 系统/同步规则在场景 Inspector 配置(根节点 systems + ECSSyncSystem.field_rules)。
+## 系统与同步规则都在 _setup_world() 里用代码创建, 没有 Inspector 配置层。
 ## 与 impl_query 共用 DemoQueryBall 组件 / DemoQueryBallNode 显示节点 / NodeLink 关联。
 ## 场景放在 impl_callback 脚本文件夹下, 由 ECSDemo 实例化/删除来切换实现。
 
@@ -14,8 +13,17 @@ var visuals: Array[DemoQueryBallNode] = []
 
 
 func _ready() -> void:
-	super()          # World: 创建 ECSWorld + 注册场景配置的系统
+	super()          # World: 创建 ECSWorld + 调用 _setup_world
 	_spawn()
+
+
+func _setup_world(world: ECSWorld) -> void:
+	world.register_system(DemoCallbackBallSystem.new())
+	var sync := ECSSyncSystem.new()
+	sync.server_direct = true
+	sync.add_field_rule(DemoQueryBall, &"pos", &"position")
+	sync.add_field_rule(DemoQueryBall, &"size", &"visual_size")
+	world.register_system(sync)
 
 
 ## 渲染开关: 控制场景内 ECSSyncSystem 的 render_enabled(渲染开/关对比用)。

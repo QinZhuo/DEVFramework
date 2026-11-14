@@ -894,17 +894,18 @@ var _cmd_ops: Array = []   # 本帧排队的命令操作记录(供 flush 精确�
 #  系统
 # ============================================================
 
-## 注册系统。priority 越大越先执行。
+## 注册系统。priority 越大越先执行；不传则取 system.priority。
 ## before/after: 依赖声明的系统引用数组(该系统须在 after 之后、before 之前执行)。
-func register_system(system: ECSSystem, priority: int = 0, before: Array = [], after: Array = []) -> void:
+func register_system(system: ECSSystem, priority = null, before: Array = [], after: Array = []) -> void:
 	if system == null or _system_index.has(system):
 		return
+	var prio := system.priority if priority == null else int(priority)
 	# 系统内所需的组件必须在注册前已注册
 	for comp in system.required_components():
 		register_component(comp)
 	_system_index[system] = _systems.size()
 	_systems.append(system)
-	_system_priorities.append(priority)
+	_system_priorities.append(prio)
 	_system_before.append(before)
 	_system_after.append(after)
 	# 预解析声明组件(静态, 供并行冲突检测)
@@ -919,17 +920,14 @@ func register_system(system: ECSSystem, priority: int = 0, before: Array = [], a
 			declared[cn] = true
 	_system_access_declared[system] = declared
 	_dirty_schedule = true
-	# 系统初始化钩子(场景配置的 field_rules 等在此应用)
+	# 系统初始化钩子(需要世界引用的实现在此保存)
 	system._on_registered(self)
 	# 日志: 系统名 + 优先级 + 使用组件
-	var sname := "?"
-	if system.get_script() != null:
-		sname = system.get_script().get_global_name()
 	var used := PackedStringArray()
 	for c in system.required_components():
 		if c != null:
 			used.append(str(c.get_global_name()))
-	LogTool.log("ECS", "注册系统 %s (优先级 %d, 组件: %s)" % [sname, priority, ", ".join(used)])
+	LogTool.log("ECS", "注册系统 %s (优先级 %d, 组件: %s)" % [system.get_system_name(), prio, ", ".join(used)])
 
 func remove_system(system: ECSSystem) -> void:
 	var i: int = _system_index.get(system, -1)
@@ -1160,10 +1158,7 @@ func get_system_times() -> Dictionary:
 	var out := {}
 	_system_times_lock.lock()
 	for s in _system_times:
-		var nm := "?"
-		if s.get_script() != null:
-			nm = s.get_script().get_global_name()
-		out[nm] = _system_times[s]
+		out[s.get_system_name()] = _system_times[s]
 	_system_times_lock.unlock()
 	return out
 

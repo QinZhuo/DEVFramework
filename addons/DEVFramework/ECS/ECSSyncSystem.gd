@@ -25,7 +25,7 @@ var render_enabled := true
 ## 走 RenderingServer 直连(更快, 跳过节点 setter/transform 标记)。支持 2D CanvasItem 与 3D VisualInstance3D。
 ## 注意: 直连**只改渲染**, 对应节点属性不更新, 会导致碰撞(基于节点 transform)、拾取、
 ## 依赖 get_global_transform/属性读取 的逻辑拿到旧值而异常。仅在确认节点不参与碰撞/逻辑读取时开启。
-@export var server_direct := false
+var server_direct := false
 
 ## 节点缓存: NodeLink 行号 -> Node(数组索引 O(1))。NodeLink 实体数变化时重建。
 var _nl_nodes: Array = []
@@ -37,17 +37,8 @@ var _nl_paths: PackedStringArray = []
 ## [{comp, fields: PackedStringArray, props: PackedStringArray}] — 数组索引替代 dict 查
 var _rule_items: Array = []
 
-## 场景/Inspector 可配置的同步规则列表(Def 风格)。注册到世界时自动应用。
-@export var field_rules: Array[SyncFieldRule] = []
-
 ## 对齐行号缓存: comp -> query_aligned(NodeLink, [comp]) 结果(实体结构变化时清空)
 var _aligned_cache := {}
-
-
-func _on_registered(_world: ECSWorld) -> void:
-	for rule in field_rules:
-		if rule != null and rule.comp != null:
-			add_field_rule(rule.comp, rule.field, rule.prop)
 
 
 ## 注册一条字段同步规则: 把 ECS 组件 comp 的 field 字段同步到关联节点的 node_prop 属性。

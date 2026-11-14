@@ -24,9 +24,13 @@ func _ready():
 	update_layout()
 	child_entered_tree.connect(_on_child_entered)
 	child_exiting_tree.connect(_on_child_exiting)
+	# 场景里预先摆好的槽位不会触发 child_entered_tree，这里统一补连一次
+	for child in get_children():
+		_on_child_entered(child)
 
 func _on_child_entered(node: Node):
-	if node is Node2D:
+	# 幂等：重挂父节点会先 exiting 再 entered，重复连接会报 "signal already connected"
+	if node is Node2D and not node.visibility_changed.is_connected(_on_visibility_changed):
 		node.visibility_changed.connect(_on_visibility_changed)
 	update_layout.call_deferred()
 

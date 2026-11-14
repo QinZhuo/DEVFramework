@@ -14,6 +14,8 @@
 
 对标业界：Unreal GAS 把属性聚合数学做成通用件、把效果定义留给数据与游戏层；ModiBuff 明言"绝大多数游戏的 buff/debuff 系统都是各游戏自己实现的"。本约定的结论与之完全一致。
 
+**附加约定**：Def 的身份 = 资源路径（存档只存路径，DLC 靠同路径覆盖），规则见第九节。
+
 ---
 
 ## 二、归属判定清单（新代码放哪？）
@@ -43,7 +45,7 @@ CartridgeInputSource extends InputSource
 
 ### 2. 组合调用（项目调用框架工具）
 ```gdscript
-await ActorTool.game_ready(self)       # Actor.gd 调度子组件生命周期
+await NodeTreeTool.game_ready(self)    # 生命周期调度（原 ActorTool）
 SaveTool.save_async(path, data)
 ```
 
@@ -85,6 +87,9 @@ SaveTool.save_async(path, data)
 | 镜头 | `VirtualCamera3D` / `CameraBrain3D` / `CameraTool`（机位竞争 + 混合数学 + 叠加偏移协议） | `PlayerCamera`（鼠标跟随手感、震屏参数、场景机位摆放） |
 | 其余 | ECS / Tween / View / Tool | Actor 及其组件、View 子类 |
 
+> 「项目」列举例来自使用本框架的游戏项目（Actor/GameContext/PlayerCamera 等），本仓库只含框架，
+> 该列仅作分层示意，不要据此在本仓库里找这些类。
+
 ---
 
 ## 六、违规自查（定期可跑）
@@ -115,8 +120,10 @@ MCP 辅助：改/删共享资源前先 `find_resource_users` 查双向依赖；�
 2. **API 宽度**：对外是少量入口类（GoapAgent/ECSWorld/CameraTool）→功能轴；是被广泛继承的基础协议（EffectDef 被 70+ 类继承）→分层轴
 3. **共变率**：一个需求总是同时改这组文件吗？是→功能轴
 
+**已知偏差**：`ECS/` 被 `Entity`/`Component` 内建桥接（`ECSLink` 类型注解），实际扮演分层轴核心，删除测试对它不成立。要么后续把桥接抽成可选依赖，要么正式把它归入分层轴——不要让文档与代码继续各说各话。
+
 **红线**：禁止把同一功能域的 Def 与 Entity 劈到分层轴两处（2026-08 已归位 Task/Audio，见第八节）。
-跨模块依赖必须单向且显式注释（如 GameCommand→ECS、Camera→UI，各模块不得反向依赖）。
+跨模块依赖必须单向且显式注释（当前实际存在的两条：`Entity/Component → ECS`、`MCP → Camera`，各模块不得反向依赖）。
 
 ---
 
@@ -126,6 +133,13 @@ MCP 辅助：改/删共享资源前先 `find_resource_users` 查双向依赖；�
 > 两个模块在本仓库存续期间的设计决策，相关目录均已移出，路径描述仅作历史存档。
 > 3D 程序化生成现为独立插件项目 `d:\Work\GodotProject\PCG`；查当前用法请去该项目的 Readme。
 > 音频合成无对应项目；历史条目里的 `Audio/`、`AudioGenDef` 等路径均已不存在，勿据此新建代码。
+
+**2026-11：ECS 系统拆「配置 / 运行时」**
+- 动因：`ECSSystem extends Def` 却在实例上挂频率累加器（`_t_acc` 等）与节点缓存，违反 `Def` 的"不存运行态"契约；`World.init_world()` 用 `duplicate(true)` 造副本时会把累加值一起复制。
+- 做法：`ECSSystem` 改为 `RefCounted` **纯运行时对象**（累加器私有，参数创建时直接赋值）；`World` 去掉 Inspector 的 `systems` 列表，系统在 `_setup_world(world)` 里代码创建并 `register_system()`；`ECSSyncSystem` 的同步规则同样在创建时用 `add_field_rule()` 声明。
+- 分层落点：系统属运行时逻辑，不进 Def 数据管线（Def 承载的是翻译走 CSV + 存档序列化，与系统无关）。曾短暂引入 `ECSSystemDef` 配置资源，因没有 Inspector 需求、只多一层概念而移除——**宁可少一层，也不要为了"统一叫 Def"造一个没人要的资源**。
+- 附带修复：`register_system()` 不传优先级时取 `system.priority`（此前系统上的 priority 根本到不了调度器）。
+- 验证：`Scripts/Test/test_ecs_system_runtime.gd`（6 项）+ ECS 既有回归全过。
 
 **2026-10：PCG 全量重构为「3D 生成运行时」，SDF 并入（功能轴）**
 - 动因：模块原为「2D 栅格地图生成 + 3D 体素补丁」，2D 占代码量 92.6%；这类产物是俯视地图数据，与"3D 模型"是两类产物，混在一处会让真正的 3D 能力被淹没。需求明确：PCG 专职服务 3D 模型世界生成，同一份数据既能产体素模型也能产 lowpoly 场景。
@@ -167,3 +181,20 @@ MCP 辅助：改/删共享资源前先 `find_resource_users` 查双向依赖；�
 - 动因：两域均通过删除测试（可整体拔除）却按分层轴摆放——Task 劈成 Def/Task+Entity/Task 两处、Audio 散落 Def/Audio+Entity/Audio+PCG 三处，违反就近原则。
 - 做法：git mv 连 uid 迁为 `Task/{Def,Entity}` 与 `Audio/{Def,Entity,Tool}` 自包含模块；15 个 task .tres 批量修正路径；AudioGenDef 留守 PCG/Def 作为单向桥接点。
 - 验证：全部引用走全局 class_name，代码零改动；资源经 uid 寻址无缝衔接。
+
+---
+
+## 九、附录：Def 寻址（路径即身份）
+
+Def 在存档里只存**相对 `res://Assets/Def/` 的路径**（`Def.save_data()`）。这是刻意选择：
+DLC / 内容包可以直接覆盖 `res://Assets/Def/xxx.tres`，玩家存档里的路径因此自动指向新内容，
+不需要任何 id 映射表。代价是三条必须守住的纪律：
+
+| # | 纪律 | 违反后果 |
+|---|---|---|
+| 1 | **不改名、不移动**已有 Def 文件 | 老存档路径失效，`Def.load_data` 返回 null，玩家那段进度丢失 |
+| 2 | **同一路径只能换实现，不能换语义** | 老存档静默读到另一份配置，没有任何报错 |
+| 3 | **关键存档数据不用内嵌子资源** | `res://x.tres::SubResource_ab` 无法被 DLC 覆盖，且子资源改名/重排即失效（`Task.gd` 已就此告警） |
+
+新增内容一律用**新路径**（覆盖只用于替换，不用于扩展）。若将来真要"同一语义跨文件迁移"，
+再引入语义 id 与迁移表；在此之前路径就是主键。

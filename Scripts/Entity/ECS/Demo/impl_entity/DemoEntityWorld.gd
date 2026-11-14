@@ -3,8 +3,8 @@ extends World
 
 ## Entity 节点写法(ECS↔Node 桥接)的场景化世界 —— 每个小球一个 DemoEntityBallNode
 ## (继承 Entity2D, 节点即数据组件), 高频逻辑由系统(DemoEntityBallSystem)列批量处理,
-## 渲染同步同样交给 ECSSyncSystem(场景 field_rules 配置 DemoEntityBallNode.pos→position / size→visual_size)。
-## 系统与同步规则都在场景 Inspector 配置(systems + field_rules); 本脚本只负责生成实体节点。
+## 渲染同步交给 ECSSyncSystem(DemoEntityBallNode.pos→position / size→visual_size)。
+## 系统与同步规则都在 _setup_world() 里用代码创建, 没有 Inspector 配置层。
 ## 场景放在 impl_entity 脚本文件夹下, 由 ECSDemo 实例化/删除来切换实现。
 
 @export var ball_count := 10000
@@ -14,8 +14,16 @@ var nodes: Array[DemoEntityBallNode] = []
 
 
 func _ready() -> void:
-	super()          # World: 创建 ECSWorld + 注册场景配置的系统(含 ECSSyncSystem)
+	super()          # World: 创建 ECSWorld + 调用 _setup_world
 	_spawn()
+
+
+func _setup_world(world: ECSWorld) -> void:
+	world.register_system(DemoEntityBallSystem.new())
+	var sync := ECSSyncSystem.new()
+	sync.add_field_rule(DemoEntityBallNode, &"pos", &"position")
+	sync.add_field_rule(DemoEntityBallNode, &"size", &"visual_size")
+	world.register_system(sync)
 
 
 ## 生成继承 Entity2D 的实体节点(数据字段 @export 在节点上声明, 节点即数据组件)。
