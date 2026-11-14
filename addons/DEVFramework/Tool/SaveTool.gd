@@ -83,7 +83,12 @@ static func merge_data(base: Dictionary, incoming: Dictionary, rules: Variant = 
 				if _is_non_empty(incoming_val):
 					result[key] = incoming_val
 			MergeMode.MAX:
-				result[key] = maxi(result.get(key) if result.get(key) is int else 0, incoming_val if incoming_val is int else 0)
+				var base_val = result.get(key)
+				## 只比数值（int / float 都算）：旧实现用 `maxi(_, else 0)` 把 float 字段静默归零
+				## （时间戳字段踩过）。非数值（规则误配到文本/数组上）保留 base，
+				## 与 ARRAY_UNION 的自愈约定一致：一个坏值不该把好数据清空。
+				if (base_val is int or base_val is float) and (incoming_val is int or incoming_val is float):
+					result[key] = max(base_val, incoming_val)
 			MergeMode.MAX_SIZE:
 				if base.get(key) is Array and incoming_val is Array:
 					var ba: Array = base[key]; var ia: Array = incoming_val
