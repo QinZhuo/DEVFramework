@@ -84,6 +84,23 @@ func refresh() -> void:
 		show_step(_active_step)
 
 
+## 临时收起表现(任务与进度保留, 稍后再 show_step/refresh 恢复)
+func blur() -> void:
+	_clear_mask()
+
+
+## 覆盖气泡文案(步骤内需要换说法时用)
+func set_tip(text: String) -> void:
+	if _mask:
+		_mask.set_tip(text)
+
+
+## 纯提示气泡的顶部下限(屏幕 Y, -1 = 不限)
+func set_tip_top_limit(max_y: float) -> void:
+	if _mask:
+		_mask.set_tip_limit(max_y)
+
+
 ## 渲染某一步: 解析目标 → 交给焦点遮罩, 提示文字取步骤 desc
 ##   - 有目标            → 只保留目标可交互, 其余变暗
 ##   - 无目标 + 有信号   → 只显示提示, 不遮挡(等待外部流程)

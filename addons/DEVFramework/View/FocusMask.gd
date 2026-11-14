@@ -8,14 +8,17 @@ class_name FocusMask extends Control
 
 ## 空白处按下(仅 click_to_complete 开启时; 供"点任意处继续")
 signal blank_pressed
+## 气泡完成一次排版(宿主可在这里对气泡做二次布局: 塞模型/改宽度等)
+signal tip_placed
 
-## 暗区绘制层(必须低于 LIFT_Z)
-const DIM_Z := 4090
-## 被点亮内容的绘制层
-const LIFT_Z := 4095
+## 绘制层: 暗区 < 点亮内容 < 描边 < 气泡(z_index 上限 4096)
+const DIM_Z := 4088
+const LIFT_Z := 4094
+const OUTLINE_Z := 4095
 const _NAV_ACTIONS: Array[StringName] = [&"ui_focus_next", &"ui_focus_prev",
 		&"ui_left", &"ui_right", &"ui_up", &"ui_down"]
 const _BACK_ACTIONS: Array[StringName] = [&"ui_focus_prev", &"ui_left", &"ui_up"]
+const _GLOW_SHADER: Shader = preload("res://addons/DEVFramework/View/FocusMaskGlow.gdshader")
 
 ## 暗区颜色(alpha = 压暗强度, rgb = 暗色倾向)
 @export var dim_color := Color(0.0, 0.0, 0.0, 0.62)
@@ -34,9 +37,26 @@ const _BACK_ACTIONS: Array[StringName] = [&"ui_focus_prev", &"ui_left", &"ui_up"
 ## 拖拽放行(可选): 返回 true 时放行全部指针事件
 var drag_checker: Callable
 
-## 提示气泡样式(空 = 内置深色圆角)
+## 提示气泡样式(空 = 内置深色圆角; 也可用主题 FocusMask/tip_stylebox)
 @export var tip_style: StyleBox
 @export var tip_font_size := 20
+## 纯提示气泡的最小高度(0 = 由文本决定)
+@export var tip_min_height := 0.0
+## 纯提示气泡的顶部下限(屏幕 Y, -1 = 不限): 气泡会落在该线以下, 避免压住指定控件
+var tip_top_limit := -1.0
+
+## 发光颜色(3D 用 alpha 轮廓, 2D 用控件矩形)
+@export var glow_color := Color(1.0, 0.86, 0.55, 1.0)
+## 3D: 发光向外扩散的半径(像素)
+@export var glow_radius := 44.0
+## 3D: 发光强度
+@export var glow_energy := 0.9
+## 3D: 物体内部的自发光抬亮
+@export var inner_boost := 0.06
+## 2D: 发光向外扩散的距离(像素), 与 glow_radius 是同一套观感
+@export var glow_width := 34.0
+## 2D 光晕细分层数(越多越平滑)
+const LAYER_COUNT := 24
 
 var _targets: Array[Node] = []
 var _paddings := PackedFloat32Array()
@@ -53,10 +73,16 @@ var _z_backup := {}
 var _dims: Array[Control] = []
 ## 可交互区域(屏幕坐标)
 var _hit_rects: Array[Rect2] = []
+## 需要矩形描边的区域(没有轮廓贴图的 2D 目标)
+var _plain_rects: Array[Rect2] = []
+## 已经有轮廓发光(3D 重渲染)的目标 → 不再画矩形光晕
+var _lit := {}
+## canvas → 是否用轮廓发光(整块贴图面提亮时关掉, 免得整块面板发光)
+var _glow_canvases := {}
 var _screen_size := Vector2.ZERO
 var _active := false
-var _tip_panel: Panel
-var _tip_label: RichTextLabel
+var tip_panel: Panel
+var tip_label: RichTextLabel
 var _tip_layout_key := []
 
 
@@ -67,7 +93,23 @@ func _init() -> void:
 func _ready() -> void:
 	visible = false
 	set_process_input(true)
+	# 描边画在自己身上: 层级要高于"被点亮内容"的贴图(LIFT_Z), 低于气泡
+	z_as_relative = false
+	z_index = OUTLINE_Z
+	_apply_theme()
 	_build_tip()
+
+
+## 主题覆盖(项目可只在 theme 里配 FocusMask/* 而不用逐个实例赋值)
+func _apply_theme() -> void:
+	if has_theme_color("dim_color", "FocusMask"):
+		dim_color = get_theme_color("dim_color", "FocusMask")
+	if has_theme_stylebox("tip_stylebox", "FocusMask"):
+		tip_style = get_theme_stylebox("tip_stylebox", "FocusMask")
+	if has_theme_font_size("tip_font_size", "FocusMask"):
+		tip_font_size = get_theme_font_size("tip_font_size", "FocusMask")
+	if has_theme_color("glow_color", "FocusMask"):
+		glow_color = get_theme_color("glow_color", "FocusMask")
 
 
 func _exit_tree() -> void:
@@ -103,6 +145,7 @@ func focus(items: Array, opts: Dictionary = {}, host: Node = null) -> void:
 	visible = true
 	_apply_presentation()
 	_update_geometry()
+	queue_redraw()
 	set_tip(str(opts.get("tip", "")))
 	_grab_target_focus()
 
@@ -116,16 +159,16 @@ func clear() -> void:
 	_hit_rects = []
 	_tip_layout_key = []
 	_release_presentation()
-	if _tip_panel:
-		_tip_panel.visible = false
+	if tip_panel:
+		tip_panel.visible = false
 
 
 ## 设置提示文字(空 = 隐藏气泡; 支持 bbcode)
 func set_tip(text: String) -> void:
-	if _tip_label == null:
+	if tip_label == null:
 		return
-	_tip_label.text = text
-	_tip_panel.visible = _active and not text.is_empty()
+	tip_label.text = text
+	tip_panel.visible = _active and not text.is_empty()
 	_tip_layout_key = []
 	_place_tip()
 
@@ -144,12 +187,17 @@ func get_hit_rects() -> Array[Rect2]:
 	return _hit_rects.duplicate()
 
 
-## 重新铺一遍表现(界面换层、目标重新可见时调用)
-func refresh() -> void:
-	if not _active:
-		return
-	_apply_presentation()
-	_update_geometry()
+## 纯提示气泡的顶部下限(屏幕 Y, -1 = 不限)
+func set_tip_limit(max_y: float) -> void:
+	tip_top_limit = max_y
+	_tip_layout_key = []
+	_place_tip()
+
+
+## 作废气泡排版缓存并立即重排(宿主改过气泡尺寸/内容后调用)
+func refresh_tip() -> void:
+	_tip_layout_key = []
+	_place_tip()
 
 
 # ------------------------------------------------------------
@@ -171,6 +219,20 @@ func _apply_presentation() -> void:
 	_lift_root_2d()
 	_add_dim(_stage_root())  # 3D 世界(以及根画布上的 2D)压暗
 	_light_3d()
+	for canvas in _lights:
+		var entry: Dictionary = _lights[canvas]
+		_apply_glow_params(entry.glow_mat)
+		# 只有"物体本身"发光; 提升出来的整块贴图面(子视口目标)只提亮不发光
+		entry.rect.material = entry.glow_mat if _glow_canvases.get(canvas, false) else null
+
+
+## 柔光参数(低分辨率模糊那一层)
+func _apply_glow_params(mat: ShaderMaterial) -> void:
+	if mat == null:
+		return
+	mat.set_shader_parameter("glow_color", glow_color)
+	mat.set_shader_parameter("glow_energy", glow_energy)
+	mat.set_shader_parameter("blur_pixels", maxf(glow_radius / 12.0, 1.0))
 
 
 ## 目标 → 真正点亮的节点(子视口里的目标升级为它的 SubView3D 面板)
@@ -272,21 +334,21 @@ func _light_3d() -> void:
 		var promoted: Node = _promoted.get(node)
 		if promoted is Node3D and _is_renderable(promoted):
 			by_canvas.get_or_add(get_viewport(), []).append(promoted)
+			if node is Node3D and promoted == node:
+				_lit[node] = true  # 真·3D 物体: 用顶点轮廓发光
+				_glow_canvases[get_viewport()] = _glow_canvases.get(get_viewport(), true)
+			else:
+				# 子视口目标: 只把整块贴图面提亮, 不整块发光; 光晕画在目标自己的矩形上
+				_glow_canvases[get_viewport()] = false
 		# 不透明子视口: 里面也要压暗背景, 只留目标(透明子视口没别的可见内容, 不用管)
 		if node is Node3D and node.get_viewport() is SubViewport \
 				and not node.get_viewport().transparent_bg:
 			by_canvas.get_or_add(node.get_viewport(), []).append(node)
+			_glow_canvases[node.get_viewport()] = false
 	for canvas in by_canvas:
-		if canvas != get_viewport() and not _has_dim(canvas):
-			_add_dim(canvas)
+		if canvas != get_viewport():
+			_add_dim(canvas)  # 不透明子视口: 里面也要压暗背景, 只留目标
 		_light_canvas(canvas, by_canvas[canvas])
-
-
-func _has_dim(parent: Node) -> bool:
-	for dim in _dims:
-		if is_instance_valid(dim) and dim.get_parent() == parent:
-			return true
-	return false
 
 
 func _is_renderable(node: Node) -> bool:
@@ -337,19 +399,23 @@ func _ensure_light(canvas: Viewport) -> Dictionary:
 	rect.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 	rect.stretch_mode = TextureRect.STRETCH_SCALE
 	rect.texture = view.get_texture()
+	var mat := ShaderMaterial.new()
+	mat.shader = _GLOW_SHADER
+	_apply_glow_params(mat)
+	rect.material = mat
 	rect.z_as_relative = false
 	rect.z_index = LIFT_Z
 	rect.visible = false
 	if canvas == get_viewport():
 		add_child(view)
 		add_child(rect)
-		if _tip_panel:
-			move_child(_tip_panel, -1)  # 气泡始终盖在点亮结果之上
+		if tip_panel:
+			move_child(tip_panel, -1)  # 气泡始终盖在点亮结果之上
 	else:
 		canvas.add_child(view)
 		canvas.add_child(rect)
 	rect.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	entry = {view = view, cam = cam, rect = rect}
+	entry = {view = view, cam = cam, rect = rect, glow_mat = mat}
 	_lights[canvas] = entry
 	return entry
 
@@ -371,6 +437,7 @@ func _sync_light(canvas: Viewport) -> void:
 	var size: Vector2i = Vector2i(get_viewport_rect().size) if canvas == get_viewport() else canvas.size
 	if entry.view.size != size:
 		entry.view.size = size
+
 	cam.global_transform = main.global_transform
 	cam.projection = main.projection
 	cam.fov = main.fov
@@ -409,8 +476,12 @@ func _release_presentation() -> void:
 		if is_instance_valid(entry.rect):
 			entry.rect.visible = false
 			entry.rect.queue_free()
+			entry.rect.queue_free()
 	_lights.clear()
 	_promoted.clear()
+	_lit.clear()
+	_glow_canvases.clear()
+	_plain_rects = []
 
 
 # --- 暗区块 & 场景范围 ---
@@ -429,22 +500,25 @@ func _add_dim(parent: Node) -> void:
 	_dims.append(dim)
 
 
-## 舞台根: 宿主 → 当前场景 → 遮罩最顶层祖先(编辑器/测试里也不去碰别的场景)
+## 舞台根: 暗区就铺在"遮罩自己所在的那个 canvas 里", 否则暗区会盖住点亮结果。
+## 3D 世界渲染到 SubViewport(再贴到屏幕上)时, 遮罩也在那个 SubViewport 里, 必须跟着进去。
 func _stage_root() -> Node:
-	var tree := get_tree()
-	if is_instance_valid(_host) and _host.is_inside_tree():
+	var my_viewport := get_viewport()
+	if is_instance_valid(_host) and _host.is_inside_tree() and _host.get_viewport() == my_viewport:
 		return _host
-	if tree.current_scene:
-		return tree.current_scene
+	var scene := get_tree().current_scene
+	if scene and scene.get_viewport() == my_viewport:
+		return scene
 	var cursor: Node = self
-	while cursor.get_parent() and cursor.get_parent() != tree.root:
+	while cursor.get_parent() and cursor.get_parent() != my_viewport:
 		cursor = cursor.get_parent()
 	return cursor
 
 
+## 需要压暗的 CanvasLayer: 整个场景里的(跨 viewport 都要, 例如贴在 SubViewport 外面的 HUD 层)
 func _collect_canvas_layers() -> Array[CanvasLayer]:
 	var result: Array[CanvasLayer] = []
-	var stack: Array[Node] = [_stage_root()]
+	var stack: Array[Node] = [get_tree().current_scene if get_tree().current_scene else _stage_root()]
 	while not stack.is_empty():
 		var node: Node = stack.pop_back()
 		if node is CanvasLayer:
@@ -597,6 +671,7 @@ func _contains(pos: Vector2) -> bool:
 func _update_geometry() -> void:
 	var view := get_viewport_rect().size
 	var hit_rects: Array[Rect2] = []
+	var plain_rects: Array[Rect2] = []
 	if view.x > 0.0 and view.y > 0.0:
 		var screen := Rect2(Vector2.ZERO, view)
 		for i in _targets.size():
@@ -607,13 +682,39 @@ func _update_geometry() -> void:
 			if rect.size == Vector2.ZERO:
 				continue
 			rect = rect.grow(_paddings[i] if i < _paddings.size() else 0.0).intersection(screen)
-			if rect.size != Vector2.ZERO:
-				hit_rects.append(rect)
-	if hit_rects == _hit_rects and view == _screen_size:
+			if rect.size == Vector2.ZERO:
+				continue
+			hit_rects.append(rect)
+			if not _lit.has(node):
+				plain_rects.append(rect)  # 没有轮廓贴图的 2D 目标: 用矩形描边
+	if hit_rects == _hit_rects and plain_rects == _plain_rects and view == _screen_size:
 		return
 	_hit_rects = hit_rects
+	_plain_rects = plain_rects
 	_screen_size = view
+	queue_redraw()  # 目标移动时描边/光晕跟着走
 	_place_tip()
+
+
+# ------------------------------------------------------------
+# 描边 + 光晕: 让"亮着"的目标在暗场里一眼看出来
+# ------------------------------------------------------------
+
+func _draw() -> void:
+	if not _active or _plain_rects.is_empty() or glow_color.a <= 0.0:
+		return
+	# 和 3D 同一套观感: 从边界向外平滑衰减的柔光; 只在矩形外侧落笔, 不糊本体
+	var spread := maxf(glow_width, 2.0)
+	var stroke := spread / float(LAYER_COUNT) + 1.0
+	for i in LAYER_COUNT:
+		var t := float(i) / float(LAYER_COUNT)
+		var alpha := glow_color.a * glow_energy * pow(1.0 - t, 2.5) * 0.16
+		if alpha <= 0.003:
+			continue
+		var ring := Color(glow_color, alpha)
+		var grow := 1.0 + spread * t
+		for rect in _plain_rects:
+			draw_rect(rect.grow(grow), ring, false, stroke)
 
 
 # ------------------------------------------------------------
@@ -621,25 +722,25 @@ func _update_geometry() -> void:
 # ------------------------------------------------------------
 
 func _build_tip() -> void:
-	if _tip_panel:
+	if tip_panel:
 		return
-	_tip_panel = Panel.new()
-	_tip_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_tip_panel.visible = false
-	# 气泡永远压在最上层(点亮结果的贴图是 LIFT_Z, 这里必须更高)
-	_tip_panel.z_as_relative = false
-	_tip_panel.z_index = LIFT_Z + 1
-	_tip_panel.add_theme_stylebox_override("panel", tip_style if tip_style else _default_tip_style())
-	_tip_label = RichTextLabel.new()
-	_tip_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_tip_label.bbcode_enabled = true
-	_tip_label.fit_content = false
-	_tip_label.scroll_active = false
-	_tip_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_tip_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	_tip_label.add_theme_font_size_override("normal_font_size", tip_font_size)
-	_tip_panel.add_child(_tip_label)
-	add_child(_tip_panel)
+	tip_panel = Panel.new()
+	tip_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	tip_panel.visible = false
+	# 气泡永远压在最上层(点亮贴图 LIFT_Z, 描边 OUTLINE_Z, 这里最高)
+	tip_panel.z_as_relative = false
+	tip_panel.z_index = OUTLINE_Z + 1
+	tip_panel.add_theme_stylebox_override("panel", tip_style if tip_style else _default_tip_style())
+	tip_label = RichTextLabel.new()
+	tip_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	tip_label.bbcode_enabled = true
+	tip_label.fit_content = false
+	tip_label.scroll_active = false
+	tip_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	tip_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	tip_label.add_theme_font_size_override("normal_font_size", tip_font_size)
+	tip_panel.add_child(tip_label)
+	add_child(tip_panel)
 
 
 static func _default_tip_style() -> StyleBoxFlat:
@@ -655,37 +756,43 @@ static func _default_tip_style() -> StyleBoxFlat:
 
 ## 气泡贴在目标下方(放不下翻到上方); 无目标时贴屏幕底部居中
 func _place_tip() -> void:
-	if _tip_panel == null or not _tip_panel.visible:
+	if tip_panel == null or not tip_panel.visible:
 		return
 	var view := _screen_size if _screen_size != Vector2.ZERO else get_viewport_rect().size
 	var anchor := _merged_rects()
-	var key := [view, _tip_label.text, anchor]
+	var key := [view, tip_label.text, anchor]
 	if key == _tip_layout_key:
 		return
 	_tip_layout_key = key
-	var box := _tip_panel.get_theme_stylebox("panel")
+	var box := tip_panel.get_theme_stylebox("panel")
 	var pad_l := box.get_margin(SIDE_LEFT) if box else 0.0
 	var pad_r := box.get_margin(SIDE_RIGHT) if box else 0.0
 	var pad_t := box.get_margin(SIDE_TOP) if box else 0.0
 	var pad_b := box.get_margin(SIDE_BOTTOM) if box else 0.0
 	var margin := 12.0
 	var width := minf(view.x - margin * 2.0, 720.0)
-	_tip_label.size = Vector2(maxf(width - pad_l - pad_r, 1.0), 0.0)
-	var height := _tip_label.get_content_height() + pad_t + pad_b
+	tip_label.size = Vector2(maxf(width - pad_l - pad_r, 1.0), 0.0)
+	var height := tip_label.get_content_height() + pad_t + pad_b
+	var pure_tip := anchor.size == Vector2.ZERO
+	if pure_tip:
+		height = maxf(height, tip_min_height)
 	var panel_size := Vector2(width, height)
 	var gap := 14.0
 	var pos := Vector2(view.x * 0.5 - width * 0.5, view.y - margin - panel_size.y)
-	if anchor.size != Vector2.ZERO:
+	if not pure_tip:
 		pos = Vector2(anchor.get_center().x - width * 0.5, anchor.end.y + gap)
 		if pos.y + panel_size.y > view.y - margin:
 			pos.y = anchor.position.y - gap - panel_size.y
+	elif tip_top_limit >= 0.0:
+		pos.y = maxf(pos.y, tip_top_limit)
 	pos.x = clampf(pos.x, margin, maxf(margin, view.x - panel_size.x - margin))
 	pos.y = clampf(pos.y, margin, maxf(margin, view.y - panel_size.y - margin))
-	_tip_panel.position = pos
-	_tip_panel.size = panel_size
-	_tip_label.position = Vector2(pad_l, pad_t)
-	_tip_label.size = Vector2(maxf(panel_size.x - pad_l - pad_r, 1.0),
+	tip_panel.position = pos
+	tip_panel.size = panel_size
+	tip_label.position = Vector2(pad_l, pad_t)
+	tip_label.size = Vector2(maxf(panel_size.x - pad_l - pad_r, 1.0),
 			maxf(panel_size.y - pad_t - pad_b, 1.0))
+	tip_placed.emit()
 
 
 func _merged_rects() -> Rect2:

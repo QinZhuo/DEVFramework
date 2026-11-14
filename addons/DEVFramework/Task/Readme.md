@@ -76,6 +76,23 @@ FocusMaskTool.clear()
 3D 走重渲染时目标不会被别的几何遮挡（X 光效果，引导场景通常想要的）；`render_3d = false` 则只提绘制层、不开额外通道。
 暗区只铺在舞台根（`FocusMaskTool.focus(..., host)`）内，所以层级高于 `FocusMaskTool.layer` 的 UI 不会被压暗。
 
+项目侧需要改气泡时用这几个钩子（不要直接改遮罩内部）：
+
+| 接口 | 用途 |
+|---|---|
+| `guide.get_mask().tip_placed` | 气泡每次排版完的回调，在这里做二次布局（塞模型、改宽度等） |
+| `mask.tip_panel` / `mask.tip_label` | 气泡容器与文字（`Panel` / `RichTextLabel`） |
+| `guide.set_tip(text)` / `guide.set_tip_top_limit(y)` | 步骤内换文案 / 纯提示气泡的顶部下限 |
+| `mask.tip_min_height` / `mask.refresh_tip()` | 气泡最小高度 / 改完尺寸后强制重排 |
+| `guide.blur()` | 临时收起表现（任务与进度保留） |
+
+"亮着"的样子：
+
+- 3D 目标（含子视口目标提升出来的贴图面）走 `FocusMaskLight.gdshader`：用重渲染结果的 alpha 当轮廓，**贴边发光（越靠边越亮）+ 向外溢出的光晕 + 轻微自发光**，所以光完全贴合物体形状（球是圆的、方块是方的），不会出现方框。参数：`rim_color/rim_width/rim_energy/halo_width/halo_energy/inner_boost`。
+- 纯 2D 控件没有轮廓贴图，用矩形描边 + 光晕（控件本身是矩形，贴合即可）：`outline_color/outline_width/glow_color/glow_layers`。
+
+主题里可配 `FocusMask/dim_color`、`FocusMask/tip_stylebox`、`FocusMask/tip_font_size`、`FocusMask/outline_color`、`FocusMask/glow_color`。
+
 ## 坑
 
 1. 需要存档/还原的任务必须用 `.tres`：运行时 `new()` 的 Def 没有 `resource_path`，存档告警且无法还原。
