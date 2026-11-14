@@ -36,11 +36,20 @@ class_name MCPDevServer extends Node
 ##      声明 class_name, 这里的同名 const 又会触发 "hides a global script class"。
 ##      故三个模块一律不声明 class_name。
 const MCPResult := preload("res://addons/DEVFramework/MCP/MCPResult.gd")
+const MCPRouter := preload("res://addons/DEVFramework/MCP/MCPRouter.gd")
+const MCPRuntime := preload("res://addons/DEVFramework/MCP/MCPRuntime.gd")
+const MCPTransport := preload("res://addons/DEVFramework/MCP/MCPTransport.gd")
 const MCPToolSchema := preload("res://addons/DEVFramework/MCP/MCPToolSchema.gd")
 const MCPArgCheck := preload("res://addons/DEVFramework/MCP/MCPArgCheck.gd")
 ## 输出整形层(序列化转义兜底 + 统一输出上限截断)。与其它 preload 的区别: 它既不注册工具也不
 ## 提供协议端点, 而是**全部工具共用的一道关口**, 详见该文件顶部注释。
 const MCPFormat := preload("res://addons/DEVFramework/MCP/MCPFormat.gd")
+
+## ------- 已拆出的子模块(同样靠 preload 常量引用, 均不声明 class_name) -------
+##   MCPRouter    路由: 选目标实例 + 转发 + 实例工具(list_instances / use_instance)
+##   MCPRuntime   进程: get_logs / run_tests 的双进程分派、游戏启停、截图分派
+##   MCPTransport 传输: HTTP/SSE/CORS、版本协商与 _meta 校验(协议常量也归它)
+## 本文件保留: 生命周期、工具注册、JSON-RPC 方法分派、结果整形。
 
 ## ------- 工具域文件 -------
 ## 每个域收编一组工具的「注册 + schema + handler + 专属辅助函数」, 统一暴露
@@ -115,7 +124,7 @@ const MCP_DIR := "res://addons/DEVFramework/MCP"
 ## ------- 配置项(ProjectSettings) -------
 const SETTING_ENABLED := "dev_framework/mcp/enabled"
 const SETTING_PORT := "dev_framework/mcp/port"
-const SETTING_TOKEN := "dev_framework/mcp/token"
+const SETTING_TOKEN := MCPTransport.SETTING_TOKEN
 const SETTING_MAX_OUTPUT_CHARS := "dev_framework/mcp/max_output_chars"
 const SETTING_LOG_TOOL_RESULTS := "dev_framework/mcp/log_tool_results"
 ## 游戏调用单次等待上限(毫秒): 编辑器等待游戏经调试线回包(_call_runtime_proxy), 以及
@@ -169,9 +178,7 @@ const DEFAULT_HUB_PORT := 9988
 ## 实例身份与中枢布局都由 MCPInstanceHub 负责(本文件只做接线)。这里只留脚本名,
 ## 走 _mod 动态编译(与其它域脚本同一条热重载链路)。
 const HUB_SCRIPT := "MCPInstanceHub"
-## 实例管理工具名。它们**不**注入 `instance` 参数(见 _hub_tools_for_list): 它们本身就在
-## 操作"实例"这个维度, 再加一个 instance 会让调用方以为能跨实例调 list_instances。
-const HUB_TOOLS := ["list_instances", "use_instance"]
+
 
 ## 统一输出上限默认值(字符)。超限则**截断**返回并附续读提示, 而非整条拒绝。
 ##
@@ -193,7 +200,7 @@ const DEFAULT_MAX_OUTPUT_CHARS := 24000
 ## PROTOCOL_VERSION 是**回落版本**: 客户端既没在 HTTP 头声明、也没在 _meta 声明时用它。
 ## 保持它在 2025-03-26 是刻意的 —— 现役客户端(Claude Code / Cursor 等)全部按旧握手走,
 ## 抬高回落值会让它们在 initialize 阶段就看到不认识的版本号。
-const PROTOCOL_VERSION := "2025-03-26"
+const PROTOCOL_VERSION := MCPTransport.PROTOCOL_VERSION
 
 ## 支持的协议版本, 新到旧。用于 initialize 的版本回显与 -32022 的 supported 列表。
 ##
@@ -213,17 +220,17 @@ const PROTOCOL_VERSION := "2025-03-26"
 ## 一样无行为差异; 列它是为了让恰好要这一版的客户端能**精确命中**。此前列表漏了它,
 ## 结果这类客户端会被 _negotiate_version 一路降级到 2025-06-18 才停下 —— 多数客户端能接受,
 ## 但严格锁版的客户端就会因版本号对不上而断连。
-const SUPPORTED_PROTOCOL_VERSIONS := ["2026-07-28", "2025-11-25", "2025-06-18", "2025-03-26"]
+const SUPPORTED_PROTOCOL_VERSIONS := MCPTransport.SUPPORTED_PROTOCOL_VERSIONS
 
 ## 2026-07-28 起, 版本改为**逐请求**声明, 且 HTTP 传输必须同时带同名头。
-const META_VERSION_KEY := "io.modelcontextprotocol/protocolVersion"
-const META_CLIENT_CAPS_KEY := "io.modelcontextprotocol/clientCapabilities"
+const META_VERSION_KEY := MCPTransport.META_VERSION_KEY
+const META_CLIENT_CAPS_KEY := MCPTransport.META_CLIENT_CAPS_KEY
 ## 首个"逐请求声明版本"的协议版本。自该版本起规范要求每个请求的 _meta 同时声明
 ## protocolVersion 与 clientCapabilities, 缺任一即为 malformed request(必须回 -32602)。
 ## 更早的版本是握手式, _meta 里本就没有这两个字段 —— 所以这个要求**只对声明了
 ## META_REQUIRED_SINCE 的请求生效**, 否则会把现有旧版客户端全部拒掉。
-const META_REQUIRED_SINCE := "2026-07-28"
-const HEADER_VERSION := "mcp-protocol-version"
+const META_REQUIRED_SINCE := MCPTransport.META_REQUIRED_SINCE
+const HEADER_VERSION := MCPTransport.HEADER_VERSION
 
 ## ======= 错误码: 本文件唯一的错误码事实来源 =======
 ##
@@ -232,21 +239,21 @@ const HEADER_VERSION := "mcp-protocol-version"
 ## 搜索漏改, 而漏改的那一处不会报错, 只会在客户端那边表现为莫名奇妙的报错分类。
 ## 标准 JSON-RPC 2.0 的码不是 MCP 私有约定, 但集中在文件头声明一次, 至少让它们可被静态检查。
 ## 请求体不是合法 JSON。进 JSON-RPC 之前就失败, 无 req_id 可回。
-const ERR_PARSE := -32700
+const ERR_PARSE := MCPTransport.ERR_PARSE
 ## JSON-RPC 层: 方法名不在 _handlers 里。
 const ERR_METHOD_NOT_FOUND := -32601
 ## JSON-RPC 层: 参数结构/取值不合法(同参数重试无意义, 故不可重试)。
-const ERR_INVALID_PARAMS := -32602
+const ERR_INVALID_PARAMS := MCPTransport.ERR_INVALID_PARAMS
 ## JSON-RPC 层: 服务端内部状态异常(通常是 handler 未产出结果)。
 const ERR_INTERNAL := -32603
 ## 传输层拒绝: 请求根本没进 JSON-RPC(方法不支持 / 鉴权失败 / Origin 被拦)。
 ## 规范把 -32000~-32099 定为"实现自用", MCP 自己没给这三种场景分配码, 故共用一个。
-const ERR_TRANSPORT_REJECTED := -32000
+const ERR_TRANSPORT_REJECTED := MCPTransport.ERR_TRANSPORT_REJECTED
 ## 2026-07-28 新增错误码(规范 baseline 里 -32000 段由 MCP 自用)。
 ## HTTP 头声明的版本与 _meta 声明的不一致。
-const ERR_HEADER_MISMATCH := -32020
+const ERR_HEADER_MISMATCH := MCPTransport.ERR_HEADER_MISMATCH
 ## 协商完成后仍发来不受支持的版本。
-const ERR_UNSUPPORTED_VERSION := -32022
+const ERR_UNSUPPORTED_VERSION := MCPTransport.ERR_UNSUPPORTED_VERSION
 
 ## tools/list 等可缓存结果建议的缓存时长。工具清单在进程生命周期内是静态的
 ## (_tool_defs 只在初始化/refresh_tools 时填充), 故给一个较长的 TTL。
@@ -342,10 +349,10 @@ var _hub_beating := false
 ## "中枢端口被非本框架程序占用"的告警只打一次。它每次心跳都会重新判定成立, 不节流就会
 ## 每 4 秒刷一条, 而且这条很长 —— 会把自己的上下文淹没掉。
 var _hub_port_foreign_warned := false
-## 上一次 `instance` 解析失败时给调用方看的说明(注入进 tools/list 的每个工具 schema)。
-## 写成 const 而不是每次现拼: 这段文案会随 tools/list 发**每一个**工具, 现拼等于每轮多几十次
-## 字符串拼接; 而它又不随状态变化(实例清单在错误信息里现取, 不在这里)。
-const _INSTANCE_ARG_DESC := "可选: 目标编辑器实例。省略则用 use_instance 设置的默认目标(未设置时=本实例)。可填实例 id(如 MyGame@a1b2c3d4)、唯一前缀、或端口号; 不确定时先调 list_instances。"
+## 路由 / 运行时 / 传输模块实例（懒创建，见 _router() / _runtime() / _transport()）。
+var _router_obj = null
+var _runtime_obj = null
+var _transport_obj = null
 
 
 ## ------- 生命周期(autoload) -------
@@ -1211,144 +1218,7 @@ func _register_instance_tools() -> void:
 ## ======= MCP 协议处理 =======
 
 func _on_request(method: String, path: String, query: String, headers: Dictionary, body: PackedByteArray, stream) -> void:
-	# MCP 服务器已关闭时忽略请求（编辑器重启期间）
-	if _http == null:
-		return
-	if method == "OPTIONS":
-		_http.send_response(stream, 204, _cors_headers(headers), "")
-		return
-	# 实例间内部端点(/hub/*): 不走 MCP 协议, 也不参与版本协商。
-	# 只由中枢应答 —— 成员收到这类请求说明调用方把中枢端口记错了, 回 404 让问题可见。
-	if path.begins_with("/hub/"):
-		_serve_hub_path(method, path, headers, body, stream)
-		return
-	if method == "GET":
-		_serve_sse(stream, headers)
-		return
-	if method != "POST":
-		_send_rpc_error(stream, 405, headers, null, ERR_TRANSPORT_REJECTED, "Method Not Allowed", {}, {"Allow": "POST, GET, OPTIONS"})
-		return
-	# 鉴权: 可选 Bearer token(dev_framework/mcp/token, 非空时启用)
-	var token: String = ProjectSettings.get_setting(SETTING_TOKEN, "")
-	if not token.is_empty():
-		var auth := str(headers.get("authorization", ""))
-		if auth != "Bearer " + token:
-			_send_rpc_error(stream, 401, headers, null, ERR_TRANSPORT_REJECTED, "Unauthorized")
-			return
-	# 校验 Origin: 拦截浏览器/外部站点的跨域调用(eval_code 可执行任意代码, 防本机 RCE)。
-	# 无 Origin(本地 CLI/工具)或本机 Origin 放行。
-	var origin := str(headers.get("origin", "")).to_lower()
-	if not origin.is_empty() and not (origin.begins_with("http://127.0.0.1") or origin.begins_with("http://localhost") or origin.begins_with("http://0.0.0.0")):
-		_send_rpc_error(stream, 403, headers, null, ERR_TRANSPORT_REJECTED, "Forbidden")
-		return
-	var parsed: Variant = JSON.parse_string(body.get_string_from_utf8())
-	if parsed == null or not parsed is Dictionary:
-		_send_rpc_error(stream, 400, headers, null, ERR_PARSE, "Parse error")
-		return
-	var req: Dictionary = parsed
-	# 协议版本协商(2026-07-28 起逐请求声明)。两处都缺省才回落 PROTOCOL_VERSION ——
-	# 旧客户端两个都不发, 走老握手, 行为与改动前完全一致。
-	var proto := str(headers.get(HEADER_VERSION, ""))
-	var meta_version := ""
-	var rparams: Variant = req.get("params", null)
-	# meta 提到函数级作用域: 除了版本号, 下面还要查 clientCapabilities 是否存在,
-	# 而原先它只在 if 块内可见。
-	var meta := {}
-	if rparams is Dictionary:
-		var raw_meta: Variant = (rparams as Dictionary).get("_meta", null)
-		if raw_meta is Dictionary:
-			meta = raw_meta
-			meta_version = str(meta.get(META_VERSION_KEY, ""))
-	if not meta_version.is_empty() and not proto.is_empty() and meta_version != proto:
-		# 规范要求二者必须一致, 不一致直接 400: 放行会让"头说 A 体说 B"的请求按错误版本解析。
-		# data 里回两个实际收到的值和可用版本: 客户端据此能自行改对后重试, 只给一句
-		# message 的话它无从判断该改哪个 —— 而它本来完全有能力自己修好。
-		_send_rpc_error(stream, 400, headers, req.get("id", null), ERR_HEADER_MISMATCH,
-			"Header mismatch: %s 与 _meta 声明的版本不一致" % HEADER_VERSION,
-			{"supported": SUPPORTED_PROTOCOL_VERSIONS, "header": proto, "meta": meta_version})
-		return
-	# declared 与 effective 必须分开, 两者含义不同:
-	#   declared  = 客户端**实际声明**了什么版本。全程只读, 用来做一致性与规范判定。
-	#   effective = 本次实际按哪一版解析。降级只改它。
-	# 早先把降级结果写回 requested, 于是"服务端决定用 2026-07-28 解析"被当成了"客户端声明了
-	# 2026-07-28", 紧接着的 _meta 必填校验据此要求该客户端补 _meta —— 而它声明的是 2099-01-01,
-	# 从未说过自己支持 2026-07-28。等于凭空造出一个它无论如何都满足不了的要求, 客户端只会看到
-	# "缺 protocolVersion"却查不出自己到底哪错了。
-	var declared := proto if not proto.is_empty() else meta_version
-	var rpc_method := str(req.get("method", ""))
-	var effective := declared
-	if not declared.is_empty() and not SUPPORTED_PROTOCOL_VERSIONS.has(declared):
-		if rpc_method == "initialize" or not _version_negotiated:
-			# 协商降级而不是报错(理由见 _negotiate_version 与 _version_negotiated 的注释)。
-			# 握手期报错等于失联: 2025-11-25 及更早的客户端拿到版本错误不会重试。
-			effective = _negotiate_version(declared)
-			LogTool.log("MCP", "%s 请求的协议版本 %s 不受支持, 协商降级为 %s (支持: %s)" % [rpc_method, declared, effective, str(SUPPORTED_PROTOCOL_VERSIONS)])
-		else:
-			# 协商完成后仍发陌生版本: 说明它跳过了握手或中途换了版本, 按猜测的版本解析只会错。
-			#
-			# 这里必须打日志 —— 本分支原本一行日志都不打, 结果是客户端界面显示
-			# "MCP error -32022: Unsupported protocol version", 而服务端日志里既没有这条
-			# 错误、也没有对应的 POST 记录, 完全看不出客户端到底要哪个版本, 无法定位。
-			LogTool.log("MCP", "拒绝 %s: 协议版本 %s 不受支持 (支持: %s)" % [rpc_method, declared, str(SUPPORTED_PROTOCOL_VERSIONS)])
-			_send_rpc_error(stream, 400, headers, req.get("id", null), ERR_UNSUPPORTED_VERSION,
-				"Unsupported protocol version",
-				{"supported": SUPPORTED_PROTOCOL_VERSIONS, "requested": declared})
-			return
-	# 2026-07-28 起规范要求: 声明了该版本的请求, 其 _meta 必须**同时**带 protocolVersion 与
-	# clientCapabilities, 缺任一即为 malformed request, 必须回 ERR_INVALID_PARAMS + HTTP 400。
-	#
-	# 刻意用 Invalid params 而不是 ERR_UNSUPPORTED_VERSION: 那是另一个问题 —— 请求可能完全合法,
-	# 只是没说清自己用的哪一版, 客户端把字段补上就能继续, 不该被当成"版本不受支持"。
-	#
-	# 两点收窄, 都是为了不误伤现有客户端:
-	#   - 只对声明了 META_REQUIRED_SINCE 的请求生效(旧版本是握手式, _meta 里没有这两个字段);
-	#   - 跳过 initialize —— 它正是用来协商版本的, 要求它先声明版本是循环依赖。
-	# 判定依据是 declared(客户端声明的原始版本)而非 effective: 若按 effective 判定, 上面刚被
-	# 降级到这个版本的客户端会被要求补 _meta, 而它降级的原因恰恰是它不认识这一版。
-	if declared == META_REQUIRED_SINCE and rpc_method != "initialize":
-		var missing: Array[String] = []
-		if meta_version.is_empty():
-			missing.append(META_VERSION_KEY)
-		if not meta.has(META_CLIENT_CAPS_KEY):
-			missing.append(META_CLIENT_CAPS_KEY)
-		if not missing.is_empty():
-			_send_rpc_error(stream, 400, headers, req.get("id", null), ERR_INVALID_PARAMS,
-				"Missing required _meta field(s): %s" % ", ".join(missing),
-				{"missing": missing, "required": [META_VERSION_KEY, META_CLIENT_CAPS_KEY]})
-			return
-	# 两处都没声明版本(老客户端)才回落 PROTOCOL_VERSION; 降级过的 effective 本身必是受支持版本
-	if effective.is_empty():
-		effective = PROTOCOL_VERSION
-	# 提前取 sessionId: 旧式 SSE 会话投递的请求要把响应改走 SSE 流, 且日志需与会话对应
-	var sid := _query_param(query, "sessionId")
-	# 默认只记**首次**版本协商那一条, 且只在全量开关打开时才记其余请求。
-	# 不记 tools/list / prompts/list / resources/list / notifications/initialized: 它们每个会话
-	# 只发生一次, 逐条打出来是纯噪音 —— 排查握手真正需要的恰恰是"协商成了什么 / 请求有没有落到
-	# 正确的 SSE 会话上", 不是这四条记账流水。tools/call 同样不打(结果已由 _log_tool_result 记过)。
-	#
-	# **initialize 必须用 _version_negotiated 收窄, 不能无条件打**: 客户端每次重连/换会话都会重发
-	# initialize, 条件里写死 rpc_method == "initialize" 时 IDE 一抖动就是一串同内容日志, 而协商
-	# 结果并不会每次都变。首协商之后该字段为 true, 重连的 initialize 便不再记录。
-	# 现场排查要全量时 set 一下即可, 不必重启编辑器(那会顺带踢掉客户端的 SSE 连接)。
-	if _log_rpc or (rpc_method == "initialize" and not _version_negotiated):
-		LogTool.log("MCP", "POST %s | 版本 %s | 会话 %s" % [rpc_method, effective, sid if not sid.is_empty() else "-"])
-	var response := await _handle_jsonrpc(req, effective)
-	if rpc_method == "initialize" and not response.is_empty():
-		_version_negotiated = true
-	# JSON-RPC 通知(无 id)按 MCP 规范回 202 空响应
-	if response.is_empty():
-		_http.send_response(stream, 202, {}, "")
-		return
-	var json := MCPFormat.json_safe(JSON.stringify(response))
-	# 旧式 SSE 会话投递的请求: 响应必须回写到它开的那条 SSE 流, POST 上只回 202。
-	# 若这里直接在 POST 上回 JSON, 旧式客户端永远读不到响应(它不读 POST 的 body),
-	# 现象是"显示已连接但所有工具都超时"。会话已失效时才降级回 Streamable HTTP 直回。
-	if _http.has_sse_session(sid):
-		if _http.send_sse_message(sid, json):
-			_http.send_response(stream, 202, {}, "")
-			return
-		LogTool.log("MCP", "旧式 SSE 会话 %s 已失效, 降级为 Streamable HTTP 直回" % sid)
-	_http.send_response(stream, 200, _cors_headers(headers), json)
+	_transport().on_request(method, path, query, headers, body, stream)
 
 
 ## GET /mcp → 开启旧式 HTTP+SSE 会话。
@@ -1361,67 +1231,34 @@ func _on_request(method: String, path: String, query: String, headers: Dictionar
 ## **实测是错的**: 客户端收到 405 后直接放弃, 一次 POST 都不发, 界面永远停在"连接中"。
 ## 所以 GET 必须真的把流开出来, 而不是拒掉。
 func _serve_sse(stream, headers: Dictionary) -> void:
-	var endpoint := _endpoint_url()
-	# 已完成握手的客户端走的是 Streamable HTTP(请求全在 POST 上直回), 它此刻 GET 开的
-	# 流只是通知/保活通道, 永不承载请求 —— 再套 10s 未使用回收就会把它当废弃流掐断,
-	# 客户端随即重开, 形成"断流-重连"死循环, 界面一直停在"连接中"。
-	var sid := _http.open_legacy_sse(stream, _sse_headers(headers), endpoint, not _version_negotiated)
-	if sid.is_empty():
-		# 开不了流(并发已满/连接已断) → 回 405, 客户端仍可退回纯 Streamable HTTP
-		_send_rpc_error(stream, 405, headers, null, ERR_TRANSPORT_REJECTED, "Method Not Allowed", {}, {"Allow": "POST, GET, OPTIONS"})
-		return
-	# 默认**不记**这条: 客户端每次重连/重试都会走一遍这里, 实测 IDE 抖动时就是一串同内容日志,
-	# 而"客户端连上了"从插件启用那条就能看出。排查"sessions 握手不通"时才 set 全量开关。
-	# 要记就只取 sid 前 8 位 —— 完整 uuid 没有可读价值, 却会挤掉后面的诊断信息。
-	if _log_rpc:
-		LogTool.log("MCP", "GET /mcp 通告 endpoint=%s, 会话 %s" % [endpoint, sid.substr(0, 8)])
+	_transport()._serve_sse(stream, headers)
 
 
 ## SSE 响应头。与 _cors_headers 分开是因为语义不同: 那里是"一次 JSON-RPC 往返"的响应头,
 ## 带 Mcp-Session-Id 指代 Streamable HTTP 的会话; 而这里开的是旧式 SSE 流, 它的身份由
 ## 通告出去的 endpoint 里的 sessionId 决定, 再附一个 Streamable HTTP 语义的会话头只会误导客户端。
 func _sse_headers(headers: Dictionary) -> Dictionary:
-	var h := {
-		"Access-Control-Allow-Methods": "POST, GET, OPTIONS",
-		"Access-Control-Allow-Headers": "Authorization, Content-Type, Mcp-Session-Id",
-	}
-	var origin := str(headers.get("origin", ""))
-	if not origin.is_empty():
-		h["Access-Control-Allow-Origin"] = origin
-	return h
+	return _transport()._sse_headers(headers)
 
 
 ## 通告给旧式客户端的 POST 地址。用绝对 URL: 部分旧客户端不会拿它与 SSE 的 URL 做相对
 ## 解析, 而是原样使用, 相对路径会被它当成不可用。
 func _endpoint_url() -> String:
-	return "http://127.0.0.1:%d/mcp" % _http.get_port()
+	return _transport()._endpoint_url()
 
 
 ## 从 query 串取参数值(键名大小写不敏感)。旧式 SSE 传输把 sessionId 放在 query 上。
 static func _query_param(query: String, key: String) -> String:
-	for pair in query.split("&", false):
-		var kv := pair.split("=", true, 1)
-		if kv.size() == 2 and kv[0].strip_edges().to_lower() == key.to_lower():
-			return kv[1].uri_decode()
-	return ""
+	return MCPTransport.query_param(query, key)
 
 
 ## CORS 响应头
 func _cors_headers(headers: Dictionary) -> Dictionary:
-	var h := {
-		"Content-Type": "application/json",
-		"Mcp-Session-Id": _make_session_id(headers),
-		"Access-Control-Allow-Methods": "POST, GET, OPTIONS",
-		"Access-Control-Allow-Headers": "Authorization, Content-Type, Mcp-Session-Id",
-	}
-	var origin := str(headers.get("origin", ""))
-	if not origin.is_empty():
-		h["Access-Control-Allow-Origin"] = origin
-	return h
+	return _transport()._cors_headers(headers)
 
 
 func _make_session_id(headers: Dictionary) -> String:
-	return headers.get("mcp-session-id", "dev-framework-default-session")
+	return _transport()._make_session_id(headers)
 
 
 ## 协议版本协商: 回一个"客户端大概率也认识"的版本。
@@ -1548,7 +1385,7 @@ func _handle_jsonrpc(req: Dictionary, proto: String = PROTOCOL_VERSION) -> Dicti
 			# 本实例执行: 摘掉只在路由层有意义的 instance 参数, 不让它进 handler 与日志。
 			# **例外是实例管理工具自己**: use_instance 的 instance 参数就是它要设置的目标,
 			# 摘掉的话它永远只会收到空串("恢复为本实例"), 而调用方完全看不出为什么。
-			if not HUB_TOOLS.has(tool_name):
+			if not MCPRouter.HUB_TOOLS.has(tool_name):
 				arguments.erase("instance")
 			# 入参校验: 拦在 handler **之前**。handler 内部的 VariantTool 是为"健壮"而非"诚实"
 			# 设计的(转换失败回落缺省值), 那在协议边界上会把参数错误伪装成合法结果 ——
@@ -1568,6 +1405,9 @@ func _handle_jsonrpc(req: Dictionary, proto: String = PROTOCOL_VERSION) -> Dicti
 			# (get_logs / 文件读写等巨量内容工具截断显示)。
 			# 必须在剥离 text/is_error **之前**记 —— 日志摘要读的就是这两个字段。
 			_log_tool_result(tool_name, result)
+			# 盖章: 结果里固定带上"本次在哪个项目执行"。多实例下最难查的不是报错, 是
+			# "结果看起来正常但打在另一个仓库上"(框架被复制进游戏项目时连内容都看不出差别)。
+			result = _stamp_target(result)
 			# 出协议边界: 剥掉仅供进程内使用的顶层 text / is_error。二者与 content[0].text
 			# 逐字节重复, 不剥等于每次调用把同一份正文传两遍(实测占大结果 45%)。详见 MCPResult.for_protocol。
 			return {"jsonrpc": "2.0", "id": req_id, "result": MCPResult.for_protocol(result)}
@@ -1624,110 +1464,45 @@ func _jsonrpc_error(req_id: Variant, code: int, message: String) -> Dictionary:
 ## 用 `_hub` 而不是判 hint, 是因为"能不能路由"的事实由"有没有注册表"决定; 判 hint 会让
 ## 判据与实际能力分离, 将来若给运行时也开多实例就得同时改三处。
 
-## tools/list 的出口整形: 每个工具多一个可选 `instance` 参数(实例管理工具自己除外)。
-## 只在有中枢注册表的进程注入 —— 没有注册表时转发必然落空, 多一个用不上的参数只是让工具表
-## 变长、并诱导模型传一个永远被忽略的值。
+## tools/list 的出口整形：交给路由层（每个工具多一个可选 `instance` 参数）。
 func _hub_tools_for_list() -> Array:
-	if _hub == null:
-		return _tool_defs
-	return _hub.inject_instance_arg(_tool_defs, _INSTANCE_ARG_DESC, HUB_TOOLS)
+	return _router().tools_for_list(_tool_defs)
 
 
-## 解析本条 tools/call 该由谁执行。
-## 返回 {"port": int} —— port=0 表示就地执行; port>0 表示转发到该端口。
-## 返回 {"error": str, "recovery": str} —— 路由失败(实例不存在/有歧义), 已带可读提示。
-##
-## 优先级: 调用参数 instance > use_instance 设的默认目标(跨进程落盘) > 就地执行。
-## 设过默认目标但它不在线时**报错**, 不再回落就地执行 —— 中枢可能已换到别的项目。
-## **不做"唯一的其他实例自动选中"**: 那在"开了两个项目、只想改当前这个"时会静默改错项目;
-## 而报错并要求显式选择只多一次调用。MCP for Unity 也明确拒绝自动猜测实例。
+## 路由模块的唯一入口（懒创建：它要回指本服务器）。
+func _router():
+	if _router_obj == null:
+		_router_obj = MCPRouter.new(self)
+	return _router_obj
+
+
+## 运行时（游戏进程）模块的唯一入口（懒创建：它要回指本服务器）。
+func _runtime():
+	if _runtime_obj == null:
+		_runtime_obj = MCPRuntime.new(self)
+	return _runtime_obj
+
+
+## 传输层模块的唯一入口（懒创建）。
+func _transport():
+	if _transport_obj == null:
+		_transport_obj = MCPTransport.new(self)
+	return _transport_obj
+
+
+## 本服务器是否跑在编辑器进程（常量不在实例上，模块需要这个判据）。
+func is_editor_mode() -> bool:
+	return _mode == MODE_EDITOR
+
+
+## 解析本条 tools/call 该由谁执行（优先级与失败策略见 MCPRouter）。
 func _resolve_route(tool_name: String, args: Dictionary) -> Dictionary:
-	# 成员进程没有注册表(它只是被转发的一端): 请求能到这里就说明是直连成员端口的,
-	# 就地执行即可 —— 否则会拿"默认目标"去查一张空表, 再把合法的本机调用误判成目标离线。
-	if _hub == null or not bool(_hub.hub_mode):
-		return {"port": 0}
-	# 实例管理工具本身不路由(它们必须在**收到请求的这个进程**上执行, 否则 list_instances 会
-	# 转发到别的实例再回来, 语义变成"问别人本机有哪些实例")。
-	if HUB_TOOLS.has(tool_name):
-		return {"port": 0}
-	var raw := VariantTool.get_string(args, "instance", "").strip_edges()
-	if not raw.is_empty():
-		# 显式标类型: _hub 是 Variant, 从其方法返回值 `:=` 推断不出类型。
-		var hit: Dictionary = _hub.resolve(raw)
-		if hit.is_empty():
-			# 区分"不存在"与"有歧义": 两者的恢复动作完全不同, 而报同一句话会让调用方
-			# 反复试同一个值(它明明在 list_instances 里看得见 —— 因为是同项目多开)。
-			if _hub.count_matches(raw) > 1:
-				return {
-					"error": "实例标识 '%s' 有歧义: 同时存在多个匹配(通常是同一个项目被打开了多次, 它们共享 instance_id)。\n%s" % [raw, _hub.describe()],
-					"recovery": "改用 uid(带 #进程号 的那个, 在 list_instances 的 uid 字段里)或直接传端口号来精确指定; 不要用 instance_id —— 同项目多开时它不唯一。",
-				}
-			return {
-				"error": "找不到实例 '%s'。当前可用实例:\n%s" % [raw, _hub.describe()],
-				"recovery": "先调 list_instances 查看可用实例(uid / 唯一前缀 / 端口号), 再把 instance 换成清单里的值; 或省略 instance 用默认目标。",
-			}
-		return _route_of(hit, "instance=%s" % raw)
-	# 默认目标: 先按 uid 找; uid 失效(编辑器重启换了进程号)时由 hub 按 instance_id 重解析。
-	var def: Dictionary = _hub.resolve_active()
-	if def.is_empty():
-		if _hub.has_active():
-			# 设过目标但不在线 ⇒ 必须报错。就地执行等于打到"当前碰巧当中枢的那个项目",
-			# 而这恰恰是中枢刚易主时最坏的一种串味。默认目标**不清空**, 目标回来即可自动接回。
-			return {
-				"error": "默认目标 %s 当前不在线(该编辑器正在重启, 或 MCP 中枢已从它切换到别的项目)。为避免改错项目, 本次调用不执行。\n%s" % [str(_hub.active_label()), _hub.describe()],
-				"recovery": "等目标编辑器启动完成后重试(默认目标不会被清掉, 回来后会按项目身份自动接回); 或先 list_instances 再用 instance 参数指定本次目标。",
-			}
-		return {"port": 0}
-	return _route_of(def, "默认目标 %s" % str(def.get("instance_id", "")))
+	return _router().resolve_route(tool_name, args)
 
 
-## 把注册表条目翻译成路由结果。指向自己时返回 port=0(就地执行)。
-## target 一律回填 **uid**: 转发失败时的诊断要落到具体进程, 而 instance_id 同项目多开时会撞。
-func _route_of(entry: Dictionary, via: String) -> Dictionary:
-	if bool(entry.get("is_self", false)):
-		return {"port": 0}
-	var port := int(entry.get("port", 0))
-	if port <= 0:
-		return {
-			"error": "实例 %s 的端口未知(它刚启动还没登记完?)。\n%s" % [str(entry.get("instance_id", "?")), _hub.describe()],
-			"recovery": "几秒后重试; 若持续如此, 检查该实例的 MCP 是否启用(dev_framework/mcp/enabled)。",
-		}
-	return {"port": port, "target": str(entry.get("instance_id", "")), "uid": str(entry.get("uid", "")), "via": via}
-
-
-## 转发一条 tools/call 到目标实例, 返回**已经可以回给客户端的** JSON-RPC 响应。
-##
-## 三件事必须在这里做对:
-##   1. 去掉 arguments 里的 instance —— 目标实例不认识它(它的 schema 里没有), 虽然入参校验
-##      不报"未声明的键", 但 handler 也读不到它, 留着只会混进日志与结构化回显。
-##   2. 超时上限: 目标实例上的工具可能包含 eval_code/run_tests 这类长任务, 用 HTTP 默认短超时
-##      会把它们全部变成"实例无响应"。统一按 游戏调用上限 + 余量 走, 与调试线代理同一口径。
-##   3. 目标不可达时给出**明确**错误(含实例 id 与原始恢复指引), 而不是把空字典当响应返回 ——
-##      后者在客户端看来是"服务器返回了空", 完全看不出是路由层的问题。
+## 转发一条 tools/call 到目标实例，返回可直接回给客户端的 JSON-RPC 响应。
 func _forward_call(req: Dictionary, req_id: Variant, tool_name: String, route: Dictionary, proto: String) -> Dictionary:
-	var fwd: Dictionary = req.duplicate(true)
-	var fparams: Variant = fwd.get("params", null)
-	if fparams is Dictionary:
-		var fargs: Variant = (fparams as Dictionary).get("arguments", null)
-		if fargs is Dictionary:
-			(fargs as Dictionary).erase("instance")
-	# id 必须原样带过去: 目标实例会按它回包, 而客户端只认自己发的那个 id。中枢直接透传它的响应,
-	# 因此两边的 id 天然一致; 万一目标把 id 改了, 下面还会强制改回来(见末尾)。
-	var timeout_ms := _game_call_timeout_ms() + _PROXY_RESPONSE_MARGIN_MS
-	var resp: Dictionary = await _hub.forward(int(route["port"]), fwd, timeout_ms, proto)
-	if resp.is_empty() or resp.has("__http_status"):
-		# 先探一下中枢注册表里它还活着吗: 心跳刚过期(实例已退出)与"TCP 层拒绝"是两种不同诊断。
-		# 查 uid 而不是 instance_id: 后者同项目多开时会命中另一个进程, 于是"它明明在表里"——
-		# 而真正该报的是"那个进程没了"。
-		var still: Dictionary = _hub.find_by_uid(str(route.get("uid", "")))
-		var tail := "该实例已不在注册表中(可能刚被关闭)。" if still.is_empty() else "该实例仍在注册表中, 但端口 %d 不接受连接(可能正在启动/卡住/防火墙拦截)。" % int(route["port"])
-		return {"jsonrpc": "2.0", "id": req_id, "result": MCPResult.for_protocol(_err_transient(
-			"转发到实例 %s 失败(%s)。\n%s\n当前可用实例:\n%s" % [str(route.get("target", "?")), route.get("via", ""), tail, _hub.describe()],
-			"用 list_instances 确认实例清单后重试; 若该实例已关闭, 用 use_instance 换成活着的那个(或传空串恢复为「本实例」)。"))}
-	if resp.has("error"):
-		return resp
-	resp["id"] = req_id
-	return resp
+	return await _router().forward(req, req_id, tool_name, route, proto, _PROXY_RESPONSE_MARGIN_MS)
 
 
 ## ======= 多实例: /hub/* 内部端点 =======
@@ -1759,67 +1534,13 @@ func _serve_hub_path(method: String, path: String, headers: Dictionary, body: Pa
 ## ======= 多实例: 实例管理工具实现 =======
 
 ## list_instances: 本机实例清单(含本进程)。中枢会给全量; 成员给"本进程 + 中枢同步来的"。
-func _call_list_instances(_args: Dictionary) -> Dictionary:
-	if _hub == null:
-		return _fail("多实例功能未启用(dev_framework/mcp/hub=false)。同一时间只应有一个编辑器在用 MCP; 同时打开多个编辑器时请开启它。")
-	# 成员侧顺手拉一次最新快照: 否则打开本工具时看到的是上一次心跳(最多 4 秒前)的清单,
-	# 而"我刚开了另一个项目, 怎么列表里还没有"是这里最容易让人困惑的时刻。
-	if not bool(_hub.hub_mode):
-		var resp: Dictionary = await _hub.post_json(_hub_port, _hub.instances_path(), {}, 2000)
-		if bool(resp.get("ok", false)) and resp.get("instances") is Array:
-			_hub.sync_from_snapshot(resp.get("instances"))
-	_hub.touch_self()
-	var instances: Array = _hub.snapshot()
-	var self_entry := {}
-	for item in instances:
-		if bool(item.get("is_self", false)):
-			self_entry = item
-	var data := {
-		"role": "hub" if bool(_hub.hub_mode) else "member",
-		"hub_port": _hub_port,
-		"active_instance": _hub.get_active_uid(),
-		"active_project": _hub.active_label(),
-		"instance_count": instances.size(),
-		"instances": instances,
-		"hint": "用 use_instance 设默认目标(跨重启保留), 或在任意工具调用里传 instance 参数单次指定。两者都没有时操作落在「本实例」; 目标不在线时报错, 不会改到别的项目。",
-	}
-	if self_entry.is_empty():
-		data["warning"] = "注册表里没有本实例条目; 若持续出现请重启编辑器(热重载可能清掉了身份)。"
-	return _ok_json(data)
+func _call_list_instances(args: Dictionary) -> Dictionary:
+	return await _router().call_list_instances(args)
 
 
 ## use_instance: 设置默认目标实例。传空 = 恢复本实例。
 func _call_use_instance(args: Dictionary) -> Dictionary:
-	if _hub == null:
-		return _fail("多实例功能未启用(dev_framework/mcp/hub=false)。")
-	var raw := VariantTool.get_string(args, "instance", "").strip_edges()
-	if raw.is_empty():
-		_hub.set_active({})
-		return _ok_json({
-			"active_instance": "",
-			"active_uid": "",
-			"message": "已恢复为「本实例」: 之后的工具调用都在本进程执行。",
-		})
-	# 显式标类型: _hub 是 Variant, 从其方法返回值用 `:=` 推断不出类型(见 _start_hub_mode)。
-	var hit: Dictionary = _hub.resolve(raw)
-	if hit.is_empty():
-		if _hub.count_matches(raw) > 1:
-			return _err_validation(
-				"实例标识 '%s' 有歧义: 有多个匹配(通常是同一项目被打开了多次, 它们共享 instance_id)。\n%s" % [raw, _hub.describe()],
-				"改用 uid(带 #进程号 的那个)或端口号, 它们必然唯一; 候选清单见 list_instances 的 uid 字段。")
-		return _err_validation(
-			"找不到实例 '%s'。当前可用实例:\n%s" % [raw, _hub.describe()],
-			"先调 list_instances 拿准确的 uid / 端口, 再重试; 或传空字符串恢复为「本实例」。")
-	# 同时记 uid(唯一) 与 instance_id(重启不变, 用于恢复), 一并落盘。
-	var uid := str(hit.get("uid", ""))
-	_hub.set_active(hit)
-	return _ok_json({
-		"active_instance": str(hit.get("instance_id", "")),
-		"active_uid": uid,
-		"is_self": bool(hit.get("is_self", false)),
-		"port": int(hit.get("port", 0)),
-		"message": ("已选中实例 %s" % str(hit.get("instance_id", ""))) + ("(就是本进程)" if bool(hit.get("is_self", false)) else " —— 之后的工具调用会转发到它") + "。",
-	})
+	return _router().call_use_instance(args)
 
 
 ## HTTP 层直接回 JSON-RPC 错误的**唯一出口**。
@@ -1890,6 +1611,21 @@ func _decorate_result(result: Dictionary, proto: String, cacheable := false) -> 
 		result["ttlMs"] = LIST_TTL_MS
 		result["cacheScope"] = "public"
 	return result
+
+
+## 给 tools/call 的结果盖上"本次在哪个项目执行"的章。
+##
+## 多实例下最危险的不是报错, 而是**结果看起来正常、却打在另一个仓库上** —— 框架被复制进
+## 游戏项目时, 两边同名文件连内容都可能一样, 从返回值上完全看不出差别。
+##
+## 落在两处: `_meta.target`(结构化, 客户端/脚本可读) + 正文末尾一行(客户端普遍只把 content
+## 转给模型, `_meta` 常被丢掉)。**转发调用由执行方盖章**, 中枢原样透传, 所以这里只处理本地执行,
+## 不会出现两重章。
+func _stamp_target(result: Dictionary) -> Dictionary:
+	if _hub == null:
+		return result
+	return _router().stamp(result, str(_hub.own_instance_id), str(_hub.own_project_path),
+			"hub" if bool(_hub.hub_mode) else "member")
 
 
 ## 安全执行工具 handler: 在执行前后记录/比对错误缓冲, 把运行期错误转换成结构化诊断附加到结果。
@@ -2085,290 +1821,60 @@ func _err(text: String, category: String, retryable: bool, recovery: String) -> 
 ## 缺省即报错, 杜绝"默认读错进程"。
 
 func _call_get_logs_local(args: Dictionary) -> Dictionary:
-	var process := _require_process(args)
-	if process != "game":
-		return _fail("导出运行时没有独立的编辑器进程; get_logs 的 process 只能是 'game'")
-	return MCPLogTools._call_get_logs(args)
+	return _runtime().call_get_logs_local(args)
 
 
 func _call_get_logs_routed(args: Dictionary) -> Dictionary:
-	var process := _require_process(args)
-	if process == "game":
-		return await _call_runtime_proxy("get_logs", args)
-	return MCPLogTools._call_get_logs(args)
+	return await _runtime().call_get_logs_routed(args)
 
 
 func _call_clear_logs_local(args: Dictionary) -> Dictionary:
-	var process := _require_process(args)
-	if process != "game":
-		return _fail("导出运行时没有独立的编辑器进程; clear_logs 的 process 只能是 'game'")
-	return MCPLogTools._call_clear_errors(args)
+	return _runtime().call_clear_logs_local(args)
 
 
 func _call_clear_logs_routed(args: Dictionary) -> Dictionary:
-	var process := _require_process(args)
-	if process == "game":
-		return await _call_runtime_proxy("clear_logs", args)
-	return MCPLogTools._call_clear_errors(args)
+	return await _runtime().call_clear_logs_routed(args)
 
 
-## 读取并校验必填的 process 参数(editor|game); 非法返回 ""。
+## 读取必填的 process 参数(editor|game)；缺省即由调用方报错。
 func _require_process(args: Dictionary) -> String:
 	return VariantTool.get_string(args, "process", "").strip_edges()
 
 
-## run_tests 的 runtime 侧(服务器位于游戏进程内): process 只能是 game(游戏用例就地跑)。
+## run_tests（双进程语义、内联预检、自动起游戏）实现见 MCPRuntime。
 func _call_run_tests_local(args: Dictionary) -> Dictionary:
-	var process := _require_process(args)
-	if process == "both":
-		return _fail("导出运行时没有独立的编辑器进程, process=both 无意义; 这里只能跑 process=game")
-	if process != "game":
-		return _fail("导出运行时没有独立的编辑器进程; run_tests 的 process 只能是 'game'")
-	return await _runtime_run_game_tests(args)
+	return await _runtime().call_run_tests_local(args)
 
 
-## run_tests 的 editor 侧: process=editor 在编辑器进程同步跑; process=game 转发到游戏进程。
-## 传 _logger: 内联源码编译失败时由 TestRunner 取回具体解析错行。
-## process=game 且为内联源码时**先在编辑器内编译预检**: 语法错就地拦截, 不把坏代码转发到游戏
-## (游戏进程里解析错会触发调试器断点中断游戏 —— 同 _call_game_eval_proxy 的转发预检)。
 func _call_run_tests_routed(args: Dictionary) -> Dictionary:
-	var script := VariantTool.get_string(args, "script").strip_edges()
-	var process := _require_process(args)
-	if process != "editor" and process != "game" and process != "both":
-		return _fail("process 必须是 editor / game / both, 收到: '%s'" % process)
-	if process == "both":
-		return await _run_tests_both(script)
-	if process == "game":
-		if TestRunner.is_inline_source(script):
-			var pre := TestRunner.precheck_inline(script, _logger)
-			if pre != "":
-				return _err_validation("内联测试代码预检未通过(未转发到游戏进程):\n%s" % pre,
-					"修正内联测试源码后重试; 或改成文件放到 %s 下再用 script 路径跑" % TestRunner.TESTS_DIR)
-		return await _run_tests_in_game(script)
-	if script.is_empty():
-		return _fail("必须指定测试脚本(script: 脚本路径子串如 'test_display_tool', 或 'all' 全量, 或内联 GDScript 源码); 不支持默认全跑")
-	return _ok_json(await TestRunner.run_all(script, TestRunner.MODE_EDITOR, _logger))
+	return await _runtime().call_run_tests_routed(args)
 
 
-## 转发游戏用例到游戏进程; **没有活跃会话时自动启动游戏**(而不是要求先 game_control(start)):
-##   · 没会话 = 用户没在玩, 自动启动不抢占任何东西(已有会话时一律不动, 那才可能打断用户);
-##   · run_tests 是唯一不过新鲜度守卫的执行入口, 复用几小时前的旧会话跑测试会拿到旧代码的
-##     "通过" —— 自动启动天然从最新磁盘脚本起进程;
-##   · "测试没跑起来"与"游戏没开"的报错几乎一样, 多要求一步就多一次误判。
-func _run_tests_in_game(script: String) -> Dictionary:
-	var auto_started := false
-	if not _has_game_session():
-		var started: Dictionary = await _call_run_game({})
-		if bool(started.get("is_error", false)):
-			return started
-		auto_started = true
-		# _call_run_game 在调试线 15s 内未就绪时返回的是**成功文案**, 这里必须区分开:
-		# 直接转发只会撞上 _call_runtime_proxy 的 transient, 白等一轮
-		if not _game_ready:
-			return _err_transient("已自动启动游戏, 但调试线 15 秒内未就绪, 本轮测试未执行",
-				"稍后重试; 或 game_control(action=start) 后确认游戏窗口已进入主场景再调 run_tests")
-		# ⚠️ 调试线就绪 ≠ 主场景初始化完: autoload 的 ready 早于场景根 _ready, 此刻注入测试会
-		# 插进 _ready 的 await 点之间, 撞上业务数据/组件尚未就绪的半初始化状态(实测: 自动启动后
-		# 立刻转发, 首轮用例常因依赖对象还是 null 而失败, 手动启动后隔几秒再调则正常)。
-		# 编辑器进程看不到游戏场景树的初始化进度, 事件式探测成本高于收益, 固定短等待相对
-		# 10~15s 的启动开销可忽略。ignore_time_scale=true: 用例常把 time_scale 调高, 这里不能被它缩短。
-		await get_tree().create_timer(2.0, true, false, true).timeout
-	var raw: Dictionary = await _call_runtime_proxy("run_tests", {"process": "game", "script": script})
-	if bool(raw.get("is_error", false)):
-		return raw
-	var sum := _summary_of(raw)
-	if sum.is_empty():
-		return raw
-	if auto_started:
-		sum["auto_started_game"] = true
-		sum["text"] = "[已自动启动游戏进程(此前无运行实例)]\n%s" % str(sum.get("text", ""))
-	return _ok_json(sum)
-
-
-## process=both: 编辑器段 → 游戏段, 合并成一份汇总。
-## 拆成两次调用的问题不是麻烦, 而是**误判**: 调用方往往只跑记得的那一半就宣布全绿。
-func _run_tests_both(script: String) -> Dictionary:
-	if TestRunner.is_inline_source(script):
-		# 内联源码只跑一次: 它是临时逻辑验证, 两段跑同一段代码只是翻倍耗时
-		return _ok_json(await TestRunner.run_all(script, TestRunner.MODE_EDITOR, _logger))
-	var editor_sum: Dictionary = await TestRunner.run_all(script, TestRunner.MODE_EDITOR, _logger)
-	# 选择器一条都没匹配上(早退结果): 游戏段必然同样为空, 不再白起一轮 ——
-	# 更不该为此自动启动游戏
-	if int(editor_sum.get("total", 0)) == 0 and int(editor_sum.get("failed", 0)) > 0:
-		return _ok_json(editor_sum)
-	var game_res: Dictionary = await _run_tests_in_game(script)
-	if bool(game_res.get("is_error", false)):
-		return _both_with_game_failure(editor_sum, script, _error_text(game_res))
-	var game_sum := _summary_of(game_res)
-	if game_sum.is_empty():
-		return _both_with_game_failure(editor_sum, script, "游戏进程返回内容无法解析为测试汇总")
-	var merged: Dictionary = TestRunner.merge_summaries([editor_sum, game_sum], script)
-	if bool(game_sum.get("auto_started_game", false)):
-		merged["auto_started_game"] = true
-		merged["text"] = "[已自动启动游戏进程(此前无运行实例)]\n%s" % str(merged.get("text", ""))
-	return _ok_json(merged)
-
-
-## 游戏段没跑成 = 全量没跑成: 记成**一条失败项**而不是静默省略。
-## 省略的话 total 只含编辑器段, 调用方看到"失败 0"会当成全绿 —— 半个结果最危险的形态。
-func _both_with_game_failure(editor_sum: Dictionary, script: String, reason: String) -> Dictionary:
-	var merged: Dictionary = TestRunner.merge_summaries([editor_sum], script)
-	merged["total"] = int(merged["total"]) + 1
-	merged["failed"] = int(merged["failed"]) + 1
-	merged["passed"] = int(merged["total"]) - int(merged["failed"])
-	merged["failures"].append("<游戏段> 未执行: %s" % reason)
-	merged["cases"].append({"case": "<游戏段>", "ok": false, "elapsed_ms": 0})
-	merged["text"] = TestRunner.render_text(merged)
-	return _ok_json(merged)
-
-
-## 取回结果里的结构化摘要(ok_json 放 structuredContent; 少数路径只有 content[].text 的 JSON)
-func _summary_of(res: Dictionary) -> Dictionary:
-	var sc: Variant = res.get("structuredContent", null)
-	if sc is Dictionary:
-		return sc
-	var content: Variant = res.get("content", null)
-	if content is Array and not content.is_empty() and content[0] is Dictionary:
-		var parsed: Variant = JSON.parse_string(str(content[0].get("text", "")))
-		if parsed is Dictionary:
-			return parsed
-	return {}
-
-
-## 取错误结果里的可读正文(错误封装把 message 放进 structuredContent.message)
-func _error_text(res: Dictionary) -> String:
-	var sc: Variant = res.get("structuredContent", null)
-	if sc is Dictionary and str(sc.get("message", "")) != "":
-		return str(sc.get("message"))
-	var content: Variant = res.get("content", null)
-	if content is Array and not content.is_empty() and content[0] is Dictionary:
-		return str(content[0].get("text", ""))
-	return "未知错误"
-
-
-## 游戏运行控制: start(支持 uid:// 场景, 已在运行时自动停止旧实例后重启)/stop/continue
-##
-## continue 并入本工具而非独立成工具, 理由见 _call_debug_continue 上方那段注释 —— 简言之:
-## 客户端决定映射哪些工具, 恢复路径必须落在**一定被映射**的那个工具上。
+## 游戏运行控制（start / stop / continue）：实现见 MCPRuntime。
 func _call_game_control(args: Dictionary) -> Dictionary:
-	match VariantTool.get_string(args, "action"):
-		"continue":
-			return _call_debug_continue({})
-		"start":
-			# 已在运行时自动停旧实例再启动, 不要求调用方手动先 stop。
-			# 旧实例持有的是它启动时固化的脚本, 而"改完脚本 → 重启 → 验证"是最高频组合;
-			# 多要求一步就多一次"忘了重启"的机会。新鲜度闸门拦下时给出的恢复动作正是 start,
-			# 若这里还要再调一次 stop, 那道提示等于没给出出路
-			if _has_game_session():
-				_call_stop_game({})
-				if not await _wait_game_stopped(5.0):
-					return _fail("旧游戏实例 5 秒内未停止, 无法重启。请用 game_control(action=stop) 确认状态后重试。")
-			return await _call_run_game(args)
-		"stop":
-			return await _call_stop_game({})
-	return _fail("未知 action: %s (可选 start/stop/continue)" % VariantTool.get_string(args, "action"))
+	return await _runtime().call_game_control(args)
 
 
-## 编辑器模式且游戏调试线活跃(编辑器进程指向游戏进程的数据/操作要走代理)
+## 编辑器模式且游戏调试线活跃（编辑器进程指向游戏进程的数据/操作要走代理）
 func _has_game_session() -> bool:
-	return _mode == MODE_EDITOR and debugger_plugin != null and debugger_plugin.has_active_session()
+	return _runtime()._has_game_session()
 
 
-## 记录"脚本新鲜度基准"的当前时刻(见 MCPScriptSync.guard_eval)。
-##
-## 基准点必须不晚于脚本加载完成的时刻才安全, 故一律取"此刻"而非任何已有的时间戳 ——
-## 原名 _active_session_started_at 声称"引擎会话给出的启动时刻", 但实现只是读当前时钟,
-## 名字会让人以为它读的是引擎会话数据而在别处被误用。reason 只进日志: 便于事后核对
-## 判据基准是否选得过晚(基准越晚, 越可能漏报"游戏加载后才改的文件")。
+## 记录"脚本新鲜度基准"的当前时刻（见 MCPScriptSync.guard_eval）。
 func _mark_script_baseline(reason: String) -> void:
-	_game_started_at = int(Time.get_unix_time_from_system())
-	LogTool.log("MCP", "脚本新鲜度基准更新(%s): %d" % [reason, _game_started_at])
+	_runtime().mark_script_baseline(reason)
 
 
 func _call_take_screenshot(args: Dictionary) -> Dictionary:
-	# game(真实截图) 分析游戏运行画面: 编辑器模式经调试线转发到游戏进程, 运行时就地。
-	var capture_type: String = VariantTool.get_string(args, "capture_type", "game")
-	if capture_type == "game":
-		if _mode == MODE_EDITOR:
-			return await _call_runtime_proxy("take_screenshot", args)
-		# 运行时模式: 直接处理
-		return await _runtime_take_screenshot(args)
-
-	# editor / scene 两模式只取编辑器进程自己的像素, 整段搬进了 MCPScreenshotEditor
-	# (含 SubViewport 渲染、frame_post_draw 那三条禁令、颜色处理 auto 判定与 1280 降采样)。
-	# 本函数必须留在主文件的只有上面 text/game 那段: 它要 _call_runtime_proxy 与
-	# _runtime_take_screenshot, 两者都依赖 _pending / debugger_plugin, 静态化不了。
-	# 那边**刻意不叫 _call_take_screenshot**: 跨文件同名会让"按函数名取实现"(grep、审计切源码)
-	# 有机会取到错误那一份, 域文件那边把理由写全了。
-	if not Engine.is_editor_hint():
-		return _fail("editor/scene 截图仅在编辑器进程可用")
-	return await _mod("MCPScreenshotEditor").capture_editor_side(capture_type, args)
+	return await _runtime().call_take_screenshot(args)
 
 
 func _call_run_game(args: Dictionary) -> Dictionary:
-	if not Engine.is_editor_hint():
-		return _fail("仅在编辑器模式可运行游戏")
-	if _has_game_session():
-		return _fail("游戏已在运行(活跃调试会话)。如需重启请用 game_control(action=start)(会自动停掉旧实例)。")
-	var raw := VariantTool.get_string(args, "scene")
-	var source := "参数 scene"
-	if raw.is_empty():
-		# 未指定时用主场景(项目里通常配置为 uid:// 形式)
-		raw = str(ProjectSettings.get_setting("application/run/main_scene", ""))
-		source = "项目主场景(application/run/main_scene)"
-		if raw.is_empty():
-			return _err_validation(
-				"必须提供 scene(要运行的场景 res:// 路径), 例如 res://Scenes/<主场景>.tscn",
-				"传入 scene 参数后重试。")
-	# uid:// → res://。解析失败时模块会先重扫重建 UID 缓存再重试一次, 因为编辑器重启后
-	# 第一次启动必然撞上缓存未就绪 —— 那正是"改代码 → restart_editor → 验证"的第一个动作
-	var scene: String = await _mod("MCPScriptSync").resolve_scene_path(raw)
-	if scene.is_empty():
-		return _err_validation("无法把%s解析为项目内资源路径: %s" % [source, raw],
-			"确认该资源已导入; 也可绕过 uid 解析 —— 直接传 res:// 路径形式。")
-	if not ResourceLoader.exists(scene):
-		return _err_validation("启动场景不存在: %s" % scene,
-			"传入存在的场景路径后重试。")
-	var scene_res: Resource = ResourceLoader.load(scene)
-	if not scene_res is PackedScene:
-		return _fail("不是有效场景文件: %s(类型: %s)" % [scene, scene_res.get_class() if scene_res else "null"])
-	# 以调试模式启动(等效编辑器 F5): 编辑器自动建立 EngineDebugger 调试线,
-	# 游戏进程内的 autoload 注册消息捕获器并回发 ready, 之后运行时工具经调试线可用。
-	_mod("MCPEditorEnv").play_custom_scene(scene)
-	var ready := await _wait_game_ready(15.0)
-	if not ready:
-		return _ok("已启动游戏(场景=%s), 但调试线 %d 秒内未就绪, 稍后重试运行时工具。" % [scene, int(15.0)])
-	return _ok("已启动游戏(调试模式, 场景=%s), 运行时工具已就绪。" % scene)
+	return await _runtime()._call_run_game(args)
 
 
-func _call_stop_game(_args: Dictionary) -> Dictionary:
-	if not Engine.is_editor_hint():
-		return _fail("仅在编辑器模式可停止游戏")
-	if debugger_plugin == null or not debugger_plugin.has_active_session():
-		return _fail("当前没有运行中的游戏")
-	_mod("MCPEditorEnv").stop_playing_scene()
-	_game_ready = false
-	return _ok("已停止游戏")
-
-
-## 等待游戏调试会话结束(供 start 前自动停止旧实例用), 超时返回 false
-func _wait_game_stopped(timeout_sec: float = 5.0) -> bool:
-	var deadline := Time.get_ticks_msec() + int(timeout_sec * 1000)
-	while Time.get_ticks_msec() < deadline:
-		if not _has_game_session():
-			return true
-		await get_tree().create_timer(0.1).timeout
-	return not _has_game_session()
-
-
-## 等待游戏进程的调试线桥接就绪(session 已激活 且 收到 dev_mcp:ready), 超时返回 false
-func _wait_game_ready(timeout_sec: float = 15.0) -> bool:
-	var deadline := Time.get_ticks_msec() + int(timeout_sec * 1000)
-	while Time.get_ticks_msec() < deadline:
-		if _game_ready and _has_game_session():
-			return true
-		await get_tree().create_timer(0.1).timeout
-	return false
+func _call_stop_game(args: Dictionary) -> Dictionary:
+	return await _runtime()._call_stop_game(args)
 
 
 ## ======= 运行时工具(游戏进程内原生执行) =======

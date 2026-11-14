@@ -77,6 +77,7 @@ func apply(ctx) -> void:
 
 - 同时开多个项目时先 `list_instances`，用 `use_instance` 选默认目标，或给单次调用带 `instance`。
 - 默认目标跨重启保留；目标不在线时直接报错，不会改到别的项目。
+- 每条工具结果末尾会带一行 `[target: 项目@哈希 (路径)]`，用来确认这次究竟落在哪个项目。
 - 常用工具：`validate`、`get_logs`、`eval_code`、`get_scene_tree`、`set_node_property`、`create_resource`、`run_tests`、`game_control`、`restart_editor`。
 - 导出包默认不带 MCP 入口（`dev_framework/mcp/runtime_enabled = false`）。
 
