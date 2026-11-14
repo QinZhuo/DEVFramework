@@ -13,17 +13,26 @@ extends TestCase
 
 const HUB_PATH := "res://addons/DEVFramework/MCP/MCPInstanceHub.gd"
 
+## 默认目标会落盘：用例必须把它重定向到临时路径，否则跑一次测试就改掉真实会话的目标。
+const TEST_TARGET := "user://test_hub_target.json"
+
 var _hub: Variant
 
 
 func cleanup() -> void:
 	_hub = null
+	var gd: Variant = load(HUB_PATH)
+	if gd != null:
+		gd.target_path_override = ""
+	if FileAccess.file_exists(TEST_TARGET):
+		DirAccess.remove_absolute(TEST_TARGET)
 
 
 func _new_hub(uid := "Self@self#1", id := "Self@self", name := "Self", path := "D:/self") -> Variant:
 	var gd: Variant = load(HUB_PATH)
 	if gd == null:
 		return null
+	gd.target_path_override = TEST_TARGET
 	_hub = gd.new()
 	_hub.set_self(uid, id, name, path)
 	_hub.set_self_port(8001)
@@ -112,13 +121,15 @@ func test_default_target_uses_uid_not_instance_id() -> void:
 	# 从错误信息里根本看不出问题。故绑定键必须是 uid。
 	var h: Variant = _new_hub()
 	h.upsert({"uid": "B@b#2", "instance_id": "B@b", "name": "B", "project_path": "D:/b", "port": 9001})
-	h.set_active("B@b#2")
+	h.set_active({"uid": "B@b#2", "instance_id": "B@b", "project_path": "D:/b"})
 	assert_eq(h.active_instance, "B@b#2", "默认目标应记录 uid")
+	assert_eq(h.active_instance_id, "B@b", "同时要记项目级 id，供重启后接回")
 	assert_true(h.active_is_remote(), "指向别的实例时应判定为远端")
-	h.set_active(h.own_uid)
+	h.set_active({"uid": h.own_uid, "instance_id": h.own_instance_id, "project_path": "D:/self"})
 	assert_false(h.active_is_remote(), "指向自己时不应判定为远端")
-	h.set_active("")
+	h.set_active({})
 	assert_false(h.active_is_remote(), "未设置默认目标时不应判定为远端")
+	assert_false(h.has_active(), "清空后不应再认为设过默认目标")
 
 
 func test_snapshot_shape() -> void:

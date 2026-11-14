@@ -27,6 +27,10 @@ const HUB_HEALTH_PATH := "/hub/health"
 ## 默认目标落盘的文件名(机器级共享; 目录见 _target_path)
 const TARGET_FILE := "devframework_mcp_target.json"
 
+## 测试用: 覆盖目标状态文件路径。空 = 用默认位置。
+## 用例必须设它 —— 否则跑一次测试就会改掉开发者真实会话的默认目标。
+static var target_path_override := ""
+
 ## uid -> 实例条目。条目形状见 _make_entry()。
 var members := {}
 ## 默认目标(服务端唯一的全局状态)。三个字段一起落盘: uid 里的进程号会变, 而 instance_id
@@ -368,6 +372,8 @@ func active_is_remote() -> bool:
 ## 位置必须**机器级**: user:// 按项目隔离, 换一个项目当中枢就读不到上个项目写下的目标。
 
 func _target_path() -> String:
+	if not target_path_override.is_empty():
+		return target_path_override
 	var base := OS.get_environment("LOCALAPPDATA")
 	if base.is_empty():
 		base = OS.get_temp_dir()

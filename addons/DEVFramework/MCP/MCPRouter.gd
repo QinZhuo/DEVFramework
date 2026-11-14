@@ -138,9 +138,10 @@ func _stamp_forwarded(resp: Dictionary, route: Dictionary) -> void:
 	var ppath := ""
 	var hub = server._hub
 	if hub != null:
-		var entry: Dictionary = hub.find_all_by_instance_id(iid)
-		if entry.size() == 1:
-			ppath = str((entry[0] as Dictionary).get("project_path", ""))
+		var hits: Array = hub.find_all_by_instance_id(iid)
+		# 同项目多开时命中多个，无法确定是哪一个 —— 宁可不填路径，也不要瞎填一个
+		if hits.size() == 1:
+			ppath = str((hits[0] as Dictionary).get("project_path", ""))
 	stamp(result, iid, ppath, "remote")
 
 

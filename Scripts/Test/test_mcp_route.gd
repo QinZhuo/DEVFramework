@@ -16,27 +16,19 @@ class FakeServer:
 	func _game_call_timeout_ms() -> int:
 		return 1000
 
-## 默认目标文件是机器级共享状态：用例会写它，跑完必须还原，否则会改掉真实会话的目标。
-var _backup := ""
-var _existed := false
+## 默认目标文件是**机器级共享状态**：用例会写它。这里把它重定向到临时路径，
+## 否则跑一次测试就会改掉开发者真实会话的默认目标（曾实际发生过）。
+const TEST_TARGET := "user://devframework_mcp_target.test.json"
 
 
 func _init() -> void:
-	var p: String = HUB.new()._target_path()
-	_existed = FileAccess.file_exists(p)
-	if _existed:
-		_backup = FileAccess.get_file_as_string(p)
+	HUB.target_path_override = TEST_TARGET
 
 
 func cleanup() -> void:
-	var p: String = HUB.new()._target_path()
-	if _existed:
-		var f := FileAccess.open(p, FileAccess.WRITE)
-		if f != null:
-			f.store_string(_backup)
-			f.close()
-	elif FileAccess.file_exists(p):
-		DirAccess.remove_absolute(p)
+	HUB.target_path_override = ""
+	if FileAccess.file_exists(TEST_TARGET):
+		DirAccess.remove_absolute(TEST_TARGET)
 
 
 func _entry(uid: String, iid: String, port: int, is_self := false) -> Dictionary:
@@ -44,6 +36,9 @@ func _entry(uid: String, iid: String, port: int, is_self := false) -> Dictionary
 
 
 func _hub_with(members: Dictionary, active_uid := "", active_iid := "", hub_mode := true) -> Variant:
+	# 每条用例都要设一次：runner 在用例之间调 cleanup()，那里会把它还原。
+	# 只写在 _init 里是不够的 —— 第一个用例之后就会被 cleanup 清掉，后续用例便写进真实文件。
+	HUB.target_path_override = TEST_TARGET
 	var h = HUB.new()
 	h.hub_mode = hub_mode
 	h._target_loaded = true          # 不读磁盘，避免用例受真实目标文件影响
@@ -96,6 +91,24 @@ func test_restores_by_instance_id_after_restart() -> void:
 	var r: Dictionary = _router(h).resolve_route("list_dir", {})
 	assert_eq(int(r.get("port", 0)), 6001, "应按 instance_id 接回同一个项目")
 	assert_eq(str(h.active_instance), "A@abc#42", "接回后应把默认目标改写成新 uid")
+
+
+## 转发结果没有执行方盖章时，由中枢补一个 —— 否则"这条结果来自哪个项目"无从回答。
+## 这条曾经因为把 Array 当 Dictionary 用而静默失效（只有转发路径会走到）。
+func test_forwarded_result_gets_target_stamp() -> void:
+	var h: Variant = _hub_with({
+		"A@abc#3": _entry("A@abc#3", "A@abc", 5555),
+	})
+	var router: Variant = _router(h)
+	var resp := {"result": {"content": [{"type": "text", "text": "ok"}]}}
+	router._stamp_forwarded(resp, {"target": "A@abc", "uid": "A@abc#3"})
+
+	var meta: Dictionary = resp["result"].get("_meta", {})
+	var target: Dictionary = meta.get("target", {})
+	assert_eq(str(target.get("instance_id", "")), "A@abc", "转发结果应带上目标实例")
+	assert_eq(str(target.get("project_path", "")), "D:/A@abc", "项目路径应从中枢注册表补全")
+	assert_true(str(resp["result"]["content"][0]["text"]).contains("[target: A@abc"),
+			"正文末尾应附一行可读标记")
 
 
 func test_member_never_routes() -> void:
