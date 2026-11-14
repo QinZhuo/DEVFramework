@@ -1940,7 +1940,7 @@ func _output_cap() -> int:
 ## 把工具调用结果记录到 MCP 日志。**成功路径默认不打**, 由 dev_framework/mcp/log_tool_results 开关。
 ##
 ## 为什么成功路径默认关闭(这不是"少打点日志"的口味问题, 有两个硬后果):
-##   1. **它会把自己抄进 get_logs 的返回值里。** 本项目的日志捕获器是 OS.add_logger 装的
+##   1. **它会把自己抄进 get_logs 的返回值里。** 框架的日志捕获器是 OS.add_logger 装的
 ##      MCPLogger, 走引擎 print 通道 —— 而本函数用的正是 LogTool.log → print_rich。所以每一条
 ##      "[editor] xxx 返回: ..." 都会进环形缓冲, 被 get_logs 原样返回给 AI。等于 MCP 每被调一次,
 ##      就往 AI 的上下文里塞一条自己写的回声, 而项目自己的日志被挤在中间。
@@ -1961,7 +1961,7 @@ func _log_tool_result(tool_name: String, result: Dictionary) -> void:
 	# 打全文还是打结构摘要(顶层键 + 数组/字典计数), 只按**长度**判, 不按工具名维护名单。
 	#
 	# 原来是一份"巨型内容工具"名单(get_logs / read_file / take_screenshot / get_scene_tree ...)。
-	# 名单是本项目要消灭的那类东西: 新增一个返回大内容的工具就会漏登记 → 日志被撑爆;
+	# 名单正是要消灭的那类东西: 新增一个返回大内容的工具就会漏登记 → 日志被撑爆;
 	# 而名单里的工具绝大多数时候返回的是短输出(get_project_info 一次几百字符), 白瞎了摘要,
 	# 把最该看的那一行变成键名罗列 —— 实测中真正需要人看的恰恰是这类短状态行。
 	# 按长度判是自适应的: 长的必压(不会出现撑爆), 短的必全(查状态时看到的就是真内容)。
@@ -2163,11 +2163,10 @@ func _run_tests_in_game(script: String) -> Dictionary:
 			return _err_transient("已自动启动游戏, 但调试线 15 秒内未就绪, 本轮测试未执行",
 				"稍后重试; 或 game_control(action=start) 后确认游戏窗口已进入主场景再调 run_tests")
 		# ⚠️ 调试线就绪 ≠ 主场景初始化完: autoload 的 ready 早于场景根 _ready, 此刻注入测试会
-		# 插进 _ready 的 await 点之间, 撞上"商店概率表/随机池还没建好"的半初始化状态
-		# (实测: 自动启动后立刻转发, 首轮必然断在 SymbolComponent.game_ready —— actor 还是 null,
-		#  而手动启动后隔几秒再调则正常)。编辑器进程看不到游戏场景树的初始化进度, 事件式探测
-		# 成本高于收益, 固定短等待相对 10~15s 的启动开销可忽略。ignore_time_scale=true:
-		# 用例常把 time_scale 调高, 这里不能被它缩短。
+		# 插进 _ready 的 await 点之间, 撞上业务数据/组件尚未就绪的半初始化状态(实测: 自动启动后
+		# 立刻转发, 首轮用例常因依赖对象还是 null 而失败, 手动启动后隔几秒再调则正常)。
+		# 编辑器进程看不到游戏场景树的初始化进度, 事件式探测成本高于收益, 固定短等待相对
+		# 10~15s 的启动开销可忽略。ignore_time_scale=true: 用例常把 time_scale 调高, 这里不能被它缩短。
 		await get_tree().create_timer(2.0, true, false, true).timeout
 	var raw: Dictionary = await _call_runtime_proxy("run_tests", {"process": "game", "script": script})
 	if bool(raw.get("is_error", false)):
@@ -2314,7 +2313,7 @@ func _call_run_game(args: Dictionary) -> Dictionary:
 		source = "项目主场景(application/run/main_scene)"
 		if raw.is_empty():
 			return _err_validation(
-				"必须提供 scene(要运行的场景 res:// 路径), 例如 res://Scenes/Main/Main.tscn",
+				"必须提供 scene(要运行的场景 res:// 路径), 例如 res://Scenes/<主场景>.tscn",
 				"传入 scene 参数后重试。")
 	# uid:// → res://。解析失败时模块会先重扫重建 UID 缓存再重试一次, 因为编辑器重启后
 	# 第一次启动必然撞上缓存未就绪 —— 那正是"改代码 → restart_editor → 验证"的第一个动作
@@ -2399,12 +2398,12 @@ func _register_game_play_tools() -> void:
 	# 排在 simulate_click 之前注册: 使用顺序就是"先查后点", 工具表按此顺序排能让 AI
 	# 先看到定位手段再看到执行手段。
 	_register_game_play_tool("get_interactables",
-		"列出当前画面里可交互的东西 —— **2D 控件(按钮/输入框/滑动条/标签)与 3D 物体(主菜单按钮/卡牌/媒体按钮都是 3D)** —— 每条带一个短引用 ref(如 e3)。**先查后点**: 拿到 ref 后用 simulate_click(ref=e3) 直接点击, 无需自己换算坐标。2D 元素给两套矩形(viewport_rect 视口坐标 / window_rect 窗口坐标); space=3d 的元素刻意不给矩形(3D 投影点会随相机漂移), 点击由工具在物体自身上激活。用 space=3d 可单独取 3D 子集(本项目实测可见 75 个, 常比 UI 还多, 混在默认清单里容易被 max_nodes 截掉)。filter=text 只取带文字的(读血量/分数/提示语), class_filter=Button 按类型筛(对 3D 元素也可按脚本名筛, 如 GameButtonView3D), text_contains 按文案筛。ref 由服务端解析成**实时**位置, 界面在查询后有动画或位移也不会点偏; 若报未知 ref 说明界面已变, 重新查一次即可。【只读】不改任何游戏状态。",
+		"列出当前画面里可交互的东西 —— **2D 控件(按钮/输入框/滑动条/标签)与 3D 物体(按钮/道具等)** —— 每条带一个短引用 ref(如 e3)。**先查后点**: 拿到 ref 后用 simulate_click(ref=e3) 直接点击, 无需自己换算坐标。2D 元素给两套矩形(viewport_rect 视口坐标 / window_rect 窗口坐标); space=3d 的元素刻意不给矩形(3D 投影点会随相机漂移), 点击由工具在物体自身上激活。用 space=3d 可单独取 3D 子集(数量可能比 UI 还多, 混在默认清单里容易被 max_nodes 截掉)。filter=text 只取带文字的(读数值/提示语), class_filter=Button 按类型筛(对 3D 元素也可按脚本名筛, 如 ButtonView3D), text_contains 按文案筛。ref 由服务端解析成**实时**位置, 界面在查询后有动画或位移也不会点偏; 若报未知 ref 说明界面已变, 重新查一次即可。【只读】不改任何游戏状态。",
 		MCPUITools.schema(),
 		MCPUITools._handle_get_interactables)
 
 	_register_game_play_tool("simulate_click",
-		"在游戏窗口模拟鼠标左键点击(按下+释放)。**推荐先用 get_interactables 拿到元素 ref, 再用 ref=e3 点击** —— 由服务端解析成实时位置, 不必自己换算坐标。ref 指向 3D 物体(space=3d)时改为在该物体自身上激活一次点击、**不注入鼠标事件**(相机可动, 投影坐标必点偏)。ref 指向子视口元素(space=subviewport, 贴在 3D 显示器/平板模型上的 UI)时事件直接 push_input 进那个子视口 —— 那块 UI 不在窗口 GUI 层, 只用 x/y 走主窗口**永远点不到**; 此时别怀疑输入被吞, 拿 ref 点即可(x/y 无法指定子视口)。也可直接传 x/y(默认窗口坐标, 传 space=viewport 则按视口坐标换算)。【副作用】注入的是**真实输入事件**, 会打进用户此刻正在玩的那个游戏窗口并走完整业务链路 —— 重复调用会重复扣血/重复触发, 故不可自动重试; 游戏未在运行时调用会失败。",
+		"在游戏窗口模拟鼠标左键点击(按下+释放)。**推荐先用 get_interactables 拿到元素 ref, 再用 ref=e3 点击** —— 由服务端解析成实时位置, 不必自己换算坐标。ref 指向 3D 物体(space=3d)时改为在该物体自身上激活一次点击、**不注入鼠标事件**(相机可动, 投影坐标必点偏)。ref 指向子视口元素(space=subviewport, 渲染在 SubViewport 里的 UI)时事件直接 push_input 进那个子视口 —— 那块 UI 不在窗口 GUI 层, 只用 x/y 走主窗口**永远点不到**; 此时别怀疑输入被吞, 拿 ref 点即可(x/y 无法指定子视口)。也可直接传 x/y(默认窗口坐标, 传 space=viewport 则按视口坐标换算)。【副作用】注入的是**真实输入事件**, 会打进用户此刻正在玩的那个游戏窗口并走完整业务链路 —— 重复调用会重复触发业务逻辑, 故不可自动重试; 游戏未在运行时调用会失败。",
 		MCPToolSchema.simulate_click(),
 		_call_simulate_click)
 
@@ -2569,11 +2568,10 @@ func _call_simulate_click(args: Dictionary) -> Dictionary:
 
 ## 在 3D 物体自身上激活一次点击(不注入鼠标事件)。
 ##
-## 为什么不用射线命中: 3D 物体投影到屏幕是个点, 而本项目相机带鼠标跟随视角(PlayerCamera 的
-## rotation_offset 按鼠标相对屏幕中心的偏移 lerp, max 5°, 实测能让屏幕元素位移 66~176px),
-## 于是"投影坐标 → 注入点击"这条回路必然脱靶, 且脱靶量随鼠标位置变化。activate() 是物体
-## 自己提供的确定性入口(ButtonView3D.activate 内部就是 _mouse_down + _mouse_up), 与真人
-## 操作、手柄焦点导航(InputTool._activate_3d)走的是同一条路径。
+## 为什么不用射线命中: 3D 物体投影到屏幕是个点, 而相机可动(视角跟随/旋转)会让投影位置随
+## 朝向漂移, 于是"投影坐标 → 注入点击"这条回路必然脱靶, 且脱靶量随鼠标位置变化。activate()
+## 是物体自己提供的确定性入口(ButtonView3D.activate 内部就是 _mouse_down + _mouse_up),
+## 与真人操作、手柄焦点导航(InputTool._activate_3d)走的是同一条路径。
 ##
 ## 代价: 绕过遮挡判定 —— 被别的物体挡住时这里照样会触发。对"点它一下会发生什么"正是想要的,
 ## 但要知道它**不等价于**"点在屏幕上那个位置"。
@@ -2673,7 +2671,7 @@ func _call_simulate_key(args: Dictionary) -> Dictionary:
 	})
 
 
-## ======= 运行时: 游戏进程用例(依赖 MonitorGame / 场景树 / 真实时间轴) =======
+## ======= 运行时: 游戏进程用例(依赖项目单例 / 场景树 / 真实时间轴) =======
 
 ## 运行中的测试标志: run_tests(process=game) 阻塞执行期间为 true —— 供 _call_runtime_tool_async
 ## 的 busy 守卫(运行期其它需主循环的工具会被拖慢/超时)与"并发第二个 run_tests 直接拒绝"使用。

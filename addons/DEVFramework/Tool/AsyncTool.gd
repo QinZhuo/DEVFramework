@@ -66,10 +66,10 @@ enum TimeBase {
 ## [param timeout_ms] 超时时间（毫秒）。>0 启用超时检测，<=0 表示不限时
 ## [param log_name] 超时日志标识（可选，便于定位）
 ## [param base] 计时基准（见 TimeBase）：
-##   · PHYSICS_TICK（默认）—— 按**物理 tick**（physics_ticks_per_second，本项目 30Hz 固定步长）计，
-##     恢复点落在固定 tick 边界上，否则"这一回合/这一步何时算结束"会随帧率与帧抖动漂移
-##     （回放实测：同一份记录会走成不同回合数）；物理 tick 同样受 time_scale 影响 ⇒ 慢动作/暂停语义不变。
-##   · REAL_TIME —— 按 `Time.get_ticks_msec()` 计，用于必须与玩家体感时间一致的场景（退出、超时兜底）：
+##   · PHYSICS_TICK（默认）—— 按**物理 tick**（physics_ticks_per_second 的固定步长）计，
+##     恢复点落在固定 tick 边界上，否则"这一步何时算结束"会随帧率与帧抖动漂移;
+##     物理 tick 同样受 time_scale 影响 ⇒ 慢动作/暂停语义不变。
+##   · REAL_TIME —— 按 `Time.get_ticks_msec()` 计，用于必须与真实时间一致的场景（退出、超时兜底）：
 ##     物理 tick 受 time_scale 影响，慢动作 0.3 倍速会把 3s 的等待拖成 ~10s。
 ## [return] 条件是否在超时前成立（未超时返回 true；未启用超时则恒为 true）
 static func await_until(done: Callable, timeout_ms: int = -1, log_name: String = "", base: TimeBase = TimeBase.PHYSICS_TICK) -> bool:
@@ -107,14 +107,11 @@ static func await_signal(sig: Signal, timeout_ms: int, log_name: String) -> Dict
 
 
 ## 等待所有 Signal 各触发一次的默认超时（毫秒）。
-## ⚠️ **必须有超时**：无界等待会让"某一侧漏发信号"直接变成整局卡死 ——
-## `MonitorGame._run_one_round` 就是靠这里的等待判定回合结束，漏发即回合永不结束
-## （实测：回放里在结算面板上再点回放，一侧触发链断在半路 ⇒ 整局卡死）。
-## ⚠️ 取得很宽（60s）是**刻意的**：这条等待覆盖的是"一整回合的符号→卡牌触发链"，
-## 实测长构筑回合单侧就要 15s 以上（每张卡 1~2s + 落点重随 3s），固定小阈值会截断正常回合
-## ⇒ 回合在链还没跑完时继续推进 ⇒ 回放与记录分叉（比卡死更隐蔽）。
-## 因此它只是**兜底**，正常局永不触发；真正的病根（一侧链断在半路）由
-## `MonitorGame._reset_fight_runtime_chain()` 在开新一遍回放前复位来处理。
+## ⚠️ **必须有超时**：无界等待会让"某一侧漏发信号"直接变成整体卡死 —— 调用方正是靠这里的
+## 等待判定流程结束，漏发即永不结束。
+## ⚠️ 取得很宽（60s）是**刻意的**：这条等待覆盖的可能是很长的一段连续触发链，固定小阈值会
+## 截断正常流程 ⇒ 流程在链还没跑完时继续推进 ⇒ 出现比卡死更难查的状态分叉。
+## 因此它只是**兜底**，正常流程永不触发。
 const SIGNAL_WAIT_TIMEOUT_MS := 60000
 
 ## 等待所有 Signal 各触发一次；内置超时保护（基于 await_until 的超时检测）。
@@ -206,7 +203,7 @@ static func await_with_timeout(action: Callable, timeout_ms: int = -1, log_name:
 static var await_with_timeout_default_ms: int = 5000
 
 ## 手动触发 Signal 所有回调并 await。
-## 连接之间**不插停顿**：节奏属于效果自己的事（见 SymbolComponent.INTERVAL_TIME、Card 的重复触发间隔等），
+## 连接之间**不插停顿**：节奏属于调用方自己的事（各自的演出/触发间隔），
 ## 框架替业务决定"每条隔多久"只会一刀切，而且把等待堆进无法中断的公共路径。
 static func await_emit(s: Signal, ...args) -> void:
 	var conns := s.get_connections()
@@ -249,16 +246,14 @@ static func await_coroutine(fs: Variant, timeout_ms: int, on_tick := Callable())
 ##
 ## ⚠️ 唯一要避开的写法：**动态调用** async 函数且不 await —— 即 `callable.call()` / `obj.call("m")`。
 ## Godot 4.7 会对这种写法报 `Trying to call an async function without "await"`：
-##   · 编辑器里直接断到调试器 ⇒ 整局停在原地（表现为 0 CPU 的"卡死"）
+##   · 编辑器里直接断到调试器 ⇒ 调用方停在原地（表现为 0 CPU 的"卡死"）
 ##   · 导出版里后续驱动根本不执行 ⇒ done 永不置位 ⇒ 调用方空等到超时
-##     （`_round_end` 的预算是 20s × 双方 ⇒ 每回合末白等 40s）
 ## 而**静态调用**（编译期已知是 async 方法的直接调用）不 await 是**合法**的：只丢弃返回值，
 ## 协程照常跑完（实测）——所以这里用 `_run_tracked(...)` 直接调用即可，无需 `call_deferred`
 ## 或 `process_frame.connect` 绕路（那两种都会改变起跑时机：延迟到 idle / 下一帧）。
 ##
-## ⚠️ 起跑时机必须保持"同帧、同步"：测试运行器用本方法驱动**每一个**用例，
-## 只要整体后移一帧，跨场边界与协程推进的相对次序就变了 ⇒ `test_cross_fight_state` /
-## 回放一致性用例假红（实测）。
+## ⚠️ 起跑时机必须保持"同帧、同步"：调用方常在一个循环里连续驱动多个协程，
+## 只要整体后移一帧，它们之间的相对次序就变了 ⇒ 依赖时序的用例会假红。
 ##
 ## ⚠️ 另一点：必须真的 `await` —— 只查句柄状态不会驱动协程；而 await 一个【已失效】的句柄
 ## 会永久挂起 ⇒ 先经 `_is_resumable` 过滤（失效视为已完成）。

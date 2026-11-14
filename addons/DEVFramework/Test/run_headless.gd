@@ -47,7 +47,7 @@ func _script_arg() -> String:
 
 
 ## 游戏进程模式: 先起主场景, 等它就绪, 再跑游戏用例。
-## ⚠️ 依赖 autoload(如 RankManager)与主场景节点在 headless 下能正常初始化;
+## ⚠️ 依赖项目 autoload 与主场景节点在 headless 下能正常初始化;
 ## 若项目的主场景在 headless 下跑不起来, 应改用 MCP `run_tests(process=game, script=...)`(跑在真实游戏进程里)。
 func _run_game() -> void:
 	var main_scene := str(ProjectSettings.get_setting("application/run/main_scene", ""))

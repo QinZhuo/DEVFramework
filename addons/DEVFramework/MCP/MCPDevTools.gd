@@ -125,7 +125,7 @@ const EVAL_CTX_DEGRADED_HINT := "后果: game_started_at 缺失使新鲜度守�
 ## 三项缺任何一项, 后果都是"看起来正常、实则失效"且都不报错。故这里不静默补值:
 ## 返回字典**恒带** degraded / reason 两键, 由 _call_eval_code 挂进响应(顶层 text +
 ## warnings + structuredContent), 用户与 AI 从 MCP 返回值就能看见, 不必翻日志。
-## 对照本仓库另外两种落法: log 域漏调返回"未就绪"是显式报错, validate 域因为漏调会静默
+## 对照框架内另外两种落法: log 域漏调返回"未就绪"是显式报错, validate 域因为漏调会静默
 ## 恒真所以直接否决接缝 —— 本域属"注入 + 自带告警"这一档。
 static func resolve_eval_ctx(override: Dictionary = {}) -> Dictionary:
 	var out := {

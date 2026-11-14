@@ -8,7 +8,7 @@ class_name FileTool
 ## 同一文件系统内的 rename 是原子操作, 读者要么看到旧档、要么看到新档, 绝不会看到中间态。
 ##
 ## rename 覆盖语义(已实测 + 官方文档核对): POSIX `rename(2)` 覆盖已存在目标, Windows 亦然
-## (本项目 Godot 4.7 实测 `rename_absolute(tmp, 已存在目标)` 返回 OK 且内容被替换)。
+## (Godot 4.7 实测 `rename_absolute(tmp, 已存在目标)` 返回 OK 且内容被替换)。
 ## 但官方文档未承诺跨平台一致, 故失败且目标存在时回退为"删目标再 rename"(窗口极小, 仍远优于直接覆写)。
 ##
 ## `.tmp` 必须与被写文件**同目录**: 跨文件系统 rename 会失败(EXDEV), 那时原子性也无从谈起。

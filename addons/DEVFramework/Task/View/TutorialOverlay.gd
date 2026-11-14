@@ -45,7 +45,7 @@ var _active := false  # 聚焦中标志: blur(完成/未开始) 时不绘制也�
 var _arrow := true  # 当前步骤是否显示指示箭头(读 TutorialTargetDef.arrow)
 var _tip_bottom_margin := 28.0  # 纯提示气泡距屏幕底部的边距(像素)
 var _tip_min_height := 160.0  # 纯提示气泡最小高度(像素, 保证文本框有足够的垂直高度)
-var _tip_top_limit := -1.0  # 纯提示气泡顶部上限 Y(屏幕坐标, 用于"不遮住商店最下方物品购买按钮"), -1 = 不限制
+var _tip_top_limit := -1.0  # 纯提示气泡顶部上限 Y(屏幕坐标, 避免遮住指定区域), -1 = 不限制
 var _hole := Rect2()
 var _target_rect := Rect2()  # 每帧精确目标矩形, _hole 平滑逼近它, 避免镜头转动/目标移动时挖孔跳变
 var _last_hole := Rect2()  # 上一帧挖孔(未变化且无动画时跳过重绘)
@@ -251,7 +251,7 @@ func _on_task_completed() -> void:
 	_task = null
 
 
-## 重新渲染当前活跃步骤(从商店返回等场景, 目标重新可见时刷新表现)
+## 重新渲染当前活跃步骤(离开子界面返回、目标重新可见时刷新表现)
 func refresh() -> void:
 	if _active_step and not _active_step.is_completed and _host:
 		show_step(_active_step, _host)
@@ -300,7 +300,7 @@ func set_tip(text: String) -> void:
 
 ## 设置纯提示气泡的顶部上限 Y(屏幕坐标)。
 ## 纯提示(无目标)气泡默认贴屏幕底部铺满显示; 传入有效上限后, 气泡顶部不会高于该 Y,
-## 用于"提示框不遮住商店最下方物品的购买按钮"。传 -1 取消限制。
+## 用于"提示框不遮住指定的底部区域"。传 -1 取消限制。
 func set_tip_top_limit(max_y: float) -> void:
 	_tip_top_limit = max_y
 
@@ -376,7 +376,7 @@ func _read_const(name: String, fallback: int) -> int:
 func _input(event: InputEvent) -> void:
 	if not _active:
 		return
-	# 拖拽手势放行: 3D 拖拽(如出售卡牌)由 _unhandled_input 驱动, 需要把物品拖出聚焦框外,
+	# 拖拽手势放行: 3D 拖拽由 _unhandled_input 驱动, 需要把物体拖出聚焦框外,
 	# 此时若按孔外拦截会把事件标记为已处理, 打断拖拽。进入拖拽状态后放行全部指针事件。
 	if _is_dragging_3d():
 		return
@@ -393,13 +393,13 @@ func _input(event: InputEvent) -> void:
 		return  # 非指针事件(键盘/手柄)不处理
 	if _hole.size == Vector2.ZERO:
 		# 空孔: 目标不存在/失效时拦全部指针交互(纯"无目标全屏阻断");
-		# 目标为有效节点但暂不可见(如战斗结算面板弹出、商店未开)时放行输入,
-		# 让玩家能点结算"继续"返回商店(否则点继续被拦截导致卡死)。
+		# 目标为有效节点但暂不可见(如被上层面板遮住/界面未打开)时放行输入,
+		# 让玩家能点上层面板的按钮继续(否则被拦截导致卡死)。
 		if _block_when_hole_empty():
 			get_viewport().set_input_as_handled()
 		return
 	if not _hole.has_point(pos):
-		# 孔外: 拦点击与 hover。但"按下"命中可拖拽 3D 目标(如手牌卡牌拖拽出售)时
+		# 孔外: 拦点击与 hover。但"按下"命中可拖拽 3D 目标(如拖拽类交互)时
 		# 需放行, 否则 3D 拾取收不到按下、拖拽无法开始(_is_dragging_3d 此时仍为 false)。
 		# 命中结果在 _physics_process 中更新(仅那时 direct_space_state 可安全访问), 供此处读取缓存;
 		# 配置了 allow_outside_drag 的拖拽类步骤也放行孔外按下(目标可能超出挖孔, 需放行按下才能起拖)。
@@ -497,7 +497,7 @@ func _pointer_position(event: InputEvent) -> Vector2:
 
 ## 判断该步骤是否放行全屏点击(点击任意处继续)。
 ## 只要步骤"点击完成"(纯提示, 或 click_to_complete_with_target 的框选说明), 就整屏放行 ——
-## 玩家点气泡、点框外都算继续; 否则点了毫无反应, 极易被当成卡死。
+## 点气泡、点框外都算继续; 否则点了毫无反应, 极易被当成卡死。
 ## 需要目标交互的步骤(不等点击完成)不放行, 目标外一律拦截。
 func _allow_fullscreen_click() -> bool:
 	return _click_to_complete
@@ -505,8 +505,8 @@ func _allow_fullscreen_click() -> bool:
 
 ## 挖孔为空(_hole.size==ZERO)时是否仍需拦截全部指针交互 / 绘制全屏暗区。
 ## 仅当目标不存在或已失效(纯"无目标全屏阻断"步骤)时返回 true;
-## 目标为有效节点但当前不可见(如战斗结算面板弹出、商店未开, 挖孔为空)时返回 false,
-## 使引导让出输入, 玩家能点结算面板"继续"按钮返回商店, 而非拦截所有点击导致卡死。
+## 目标为有效节点但当前不可见(如被上层面板遮住、界面未打开, 挖孔为空)时返回 false,
+## 使引导让出输入, 让玩家能点上层面板的按钮继续, 而非拦截所有点击导致卡死。
 func _block_when_hole_empty() -> bool:
 	return _target == null or not is_instance_valid(_target)
 
@@ -575,9 +575,9 @@ func _advance_hole(_delta: float) -> bool:
 
 func _apply_rects() -> void:
 	var v := get_viewport_rect().size
-	# 拖拽中必须放行: 3D 拖拽(手牌排序/拖去出售)要把目标拖出挖孔, 而孔外的暗区 Control 是
+	# 拖拽中必须放行: 3D 拖拽要把目标拖出挖孔, 而孔外的暗区 Control 是
 	# MOUSE_FILTER_STOP —— 它会把拖动途中的鼠标移动事件吃掉(GUI 命中 STOP 即 set_input_as_handled),
-	# 事件进不到 DragView3D._unhandled_input ⇒ 卡牌停在孔边不动, 表现为"拖一下就卡住拖不动"。
+	# 事件进不到 DragView3D._unhandled_input ⇒ 物体停在孔边不动, 表现为"拖一下就卡住拖不动"。
 	# 按下那一刻由 allow_outside_drag/_hover_hits_draggable 放行, 但拖动**过程中**的事件同样要放行,
 	# 故拖拽期间暗区/感应区一律 IGNORE; 拖拽态纳入缓存键, 起拖/落手各重排一次布局。
 	var dragging := _is_dragging_3d()
@@ -602,8 +602,8 @@ func _apply_rects() -> void:
 	_sensor.visible = _block and _click_to_complete and not dragging
 	if _hole.size == Vector2.ZERO:
 		# 不挖孔: 单块全屏板(阻断时拦截全屏, 不阻断时仅视觉由 _draw 画暗区)
-		# 目标为有效节点但暂不可见(如战斗结算面板弹出、商店未开)时拦截板不拦截输入(IGNORE),
-		# 让玩家能点结算"继续"返回商店; 仅"无目标全屏阻断"步骤才拦全屏(与 _block_when_hole_empty 一致)。
+		# 目标为有效节点但暂不可见(如被上层面板遮住、界面未打开)时拦截板不拦截输入(IGNORE),
+		# 让玩家能点上层面板继续; 仅"无目标全屏阻断"步骤才拦全屏(与 _block_when_hole_empty 一致)。
 		_dim_top.position = Vector2.ZERO
 		_dim_top.size = v
 		_dim_top.mouse_filter = Control.MOUSE_FILTER_STOP \
@@ -663,12 +663,12 @@ func _update_arrow(v: Vector2) -> void:
 
 ## 提示气泡置于箭头尾端外侧(与箭头同侧, 默认上方), 固定不动不跟随浮动, 避免晃动影响阅读;
 ## 无箭头时: 有挖孔则置于孔下方; 纯提示(无孔)则横向布满屏幕、贴屏幕底部显示,
-## 且顶部不高于 _tip_top_limit(供"不遮住商店最下方物品购买按钮")。
+## 且顶部不高于 _tip_top_limit(避免遮住指定区域)。
 func _place_tip(v: Vector2) -> void:
 	if _tip_panel == null:
 		return
-	# 挖孔步骤(target 有效): 挖孔为空(_hole.size==ZERO)且目标当前不可见(如战斗期间商店未打开)时隐藏气泡,
-	# 待目标可见后(_hole 非空)再显示, 避免"战斗结束"等提示在战斗期间提前弹出。
+	# 挖孔步骤(target 有效): 挖孔为空(_hole.size==ZERO)且目标当前不可见(如界面尚未打开)时隐藏气泡,
+	# 待目标可见后(_hole 非空)再显示, 避免提示在目标出现前提前弹出。
 	# 仅当 _hole 为空且目标确实不可见才隐藏, 避免挖孔步骤初始帧(_hole 尚未逼近)误隐藏气泡。
 	if _target != null and is_instance_valid(_target):
 		if _hole.size == Vector2.ZERO and not _target.is_visible_in_tree():
@@ -750,8 +750,8 @@ func _draw() -> void:
 
 ## 暗区: 与拦截板矩形一致(4 矩形拼洞), 直接绘制在本控件(不再被子节点遮盖)
 ## 仅强制锁定(_block)时画暗区; 纯提示(无目标、不锁)不画黑遮罩, 只留气泡。
-## 挖孔目标当前不可见(_hole 为空, 如战斗期间商店未开)时不画暗区, 让屏幕恢复正常,
-## 待回到商店目标可见后再画暗区(挖孔)。仅"无目标的全屏阻断"步骤画全屏暗区。
+## 挖孔目标当前不可见(_hole 为空, 如界面尚未打开)时不画暗区, 让屏幕恢复正常,
+## 待目标可见后再画暗区(挖孔)。仅"无目标的全屏阻断"步骤画全屏暗区。
 func _draw_dim() -> void:
 	if not _block:
 		return

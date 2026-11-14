@@ -22,14 +22,14 @@ extends RefCounted
 ##
 ## 元素并不都活在同一个空间里, 混为一谈会给出点不中的坐标, 故显式区分:
 ##   window      —— 主视口内。给两套矩形(viewport_rect / window_rect); 点击按窗口坐标注入。
-##   subviewport —— SubViewport 内。本项目把主菜单整块贴在一块 3D 平板模型上(Tablet + SubView3D),
-##                  它的 UI 活在子视口里, 与窗口坐标之间没有任何换算关系, 故只给子视口坐标,
-##                  点击时由工具直接 push_input 给那个子视口 —— 与真人点 3D 平板时 SubView3D
+##   subviewport —— SubViewport 内。UI 渲染在子视口里(如贴在 3D 模型/屏幕上的界面),
+##                  与窗口坐标之间没有任何换算关系, 故只给子视口坐标,
+##                  点击时由工具直接 push_input 给那个子视口 —— 与真人点 3D 物体时 SubView3D
 ##                  的投递路径同源(见 addons/DEVFramework/View/SubView3D.gd), 不必再把 3D 命中点
 ##                  投影回屏幕。
 ##   3d          —— 3D 物体(Area3D)。**刻意不给矩形**: 它投影到屏幕是个点/梯形, 写一个矩形出来
-##                  只会诱导调用方拿它当点击坐标。更关键的是相机可动(本项目 PlayerCamera 有鼠标
-##                  跟随视角), 投影位置随相机朝向实时漂移, 任何缓存下来的坐标都会点偏。
+##                  只会诱导调用方拿它当点击坐标。更关键的是相机可动, 投影位置随相机朝向实时漂移,
+##                  任何缓存下来的坐标都会点偏。
 ##                  故 3D 点击**不投递鼠标事件**, 而是让工具在物体自身上激活(见 simulate_click)。
 ##
 ## 依赖: MCPResult + VariantTool。不引用 MCPDevServer。必须带 @tool 且不声明 class_name。
@@ -56,11 +56,11 @@ static func schema() -> Dictionary:
 		"filter": {"type": "string", "enum": ["interactive", "text", "all"],
 			"description": "interactive=只返回可交互元素(默认, 最省 token); text=只返回带文字的; all=全部可见元素"},
 		"space": {"type": "string", "enum": ["all", "window", "subviewport", "3d"],
-			"description": "取哪一类: all=全部(默认); window=主视口 UI; subviewport=子视口 UI; 3d=3D 可交互物体。3D 物体往往比 UI 还多(本项目实测可见 75 个), 要专门点 3D 就用它取子集, 比在默认清单里翻更省"},
+			"description": "取哪一类: all=全部(默认); window=主视口 UI; subviewport=子视口 UI; 3d=3D 可交互物体。3D 物体可能比 UI 还多, 要专门点 3D 就用它取子集, 比在默认清单里翻更省"},
 		"text_contains": {"type": "string", "description": "按可见文本子串过滤(忽略大小写); 空=不过滤"},
-		"class_filter": {"type": "string", "description": "按类名子串过滤(如 Button); 对 3D 元素额外匹配脚本名(如 GameButtonView3D)。注意 2D 只匹配引擎类名(get_class), **不匹配节点名** —— 用节点名筛(如 ValueButton)会返回空, 要按名字找请用 text_contains 或直接看返回里的 name; 空=不过滤"},
+		"class_filter": {"type": "string", "description": "按类名子串过滤(如 Button); 对 3D 元素额外匹配脚本名(如 ButtonView3D)。注意 2D 只匹配引擎类名(get_class), **不匹配节点名** —— 用节点名会返回空, 要按名字找请用 text_contains 或直接看返回里的 name; 空=不过滤"},
 		"max_nodes": {"type": "integer", "description": "返回条数上限, 默认 60, 上限 200"},
-		"max_depth": {"type": "integer", "description": "遍历深度上限, 默认 24, 上限 32。本项目 UI 最深约 20 层(SettingsPanel 的选项按钮), 给小了只能看到空壳容器; 响应里 depth_capped=true 就是撞上了上限"},
+		"max_depth": {"type": "integer", "description": "遍历深度上限, 默认 24, 上限 32。UI 层级深的项目给小了只能看到空壳容器; 响应里 depth_capped=true 就是撞上了上限"},
 	}}
 
 
@@ -164,7 +164,7 @@ static func _handle_get_interactables(args: Dictionary) -> Dictionary:
 			var sp3 := _script_path(node)
 			if not sp3.is_empty():
 				e["script"] = sp3
-			# 刻意不给任何矩形: 3D 物体投影到屏幕是个点, 且本项目相机可动, 坐标会漂。
+			# 刻意不给任何矩形: 3D 物体投影到屏幕是个点, 且相机可动, 坐标会漂。
 			# 要点它就用 simulate_click(ref=...), 由工具在物体自身上激活。
 		else:
 			var c2 := node as Control
@@ -198,7 +198,7 @@ static func _handle_get_interactables(args: Dictionary) -> Dictionary:
 		"window_size": {"x": win.x, "y": win.y},
 		"content_scale": {"x": scale.x, "y": scale.y},
 		"elements": elements,
-		"hint": "用 simulate_click(ref=...) 直接点, 坐标换算与 3D 激活都由工具做, 你不必自己算。space=window 的元素两套矩形都给了; space=subviewport 的元素在子视口内(本项目主菜单整块贴在 3D 平板上), 只给子视口坐标, 点击会被直接投递进那个子视口; space=3d 是 3D 物体(主菜单按钮/卡牌/媒体按钮都是), 刻意不给坐标——投影点会随相机漂移, 点击由工具在物体自身上激活。3D 元素排在 2D 之后, 若 count_3d < count_3d_total 说明被 max_nodes 截掉了, 用 space=3d 单独查。truncated=true 是被 max_nodes 截断(调大或缩小 space 缩小范围); depth_capped=true 是遍历没走完(调大 max_depth, 或用 space/filter 缩小范围)——两者都true 时面板可能看着空, 其实内容在上限之外, 别急着当项目 bug 查。ref 仅在本次清单内有效, 界面变化后重新查询。",
+		"hint": "用 simulate_click(ref=...) 直接点, 坐标换算与 3D 激活都由工具做, 你不必自己算。space=window 的元素两套矩形都给了; space=subviewport 的元素在子视口内(UI 渲染在 SubViewport 里时), 只给子视口坐标, 点击会被直接投递进那个子视口; space=3d 是 3D 物体(按钮/道具等), 刻意不给坐标——投影点会随相机漂移, 点击由工具在物体自身上激活。3D 元素排在 2D 之后, 若 count_3d < count_3d_total 说明被 max_nodes 截掉了, 用 space=3d 单独查。truncated=true 是被 max_nodes 截断(调大或缩小 space 缩小范围); depth_capped=true 是遍历没走完(调大 max_depth, 或用 space/filter 缩小范围)——两者都true 时面板可能看着空, 其实内容在上限之外, 别急着当项目 bug 查。ref 仅在本次清单内有效, 界面变化后重新查询。",
 	})
 
 

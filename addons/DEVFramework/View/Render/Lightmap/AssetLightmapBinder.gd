@@ -3,7 +3,7 @@
 ## 唯一的做法：把实例实际用到的每个 surface 材质复制一份，在副本上挂一层 next_pass
 ## （[AssetLightmapPass.gdshader]）。主材质资源一个字节都不动，同一份 mesh 能被任意多个
 ## 实例共用；而 next_pass 对任何材质都成立（StandardMaterial3D / ShaderMaterial / 第三方），
-## 也不要求业务 shader 认识烘焙光——**这是本项目唯一通用、且运行时换材质也安全的供光方式**。
+## 也不要求业务 shader 认识烘焙光——**这是唯一通用、且运行时换材质也安全的供光方式**。
 ##
 ## 为什么不是引擎原生 LightmapGI：它按场景节点路径绑定，对象池借出来的实例路径对不上；
 ## 手动 `instance_geometry_set_lightmap` 实测在本引擎版本上无效（绑上去全黑）。
@@ -185,7 +185,7 @@ static func refresh_all() -> void:
 
 ## 摘掉挂上去的光，还原成基材质本身。
 ## 调用方不必先判断"有没有挂过"：没有就什么都不做（幂等）
-## 实例池与场景是分开的：同一份 CardBox 可能先在商店里带光、再被别的场景借走，
+## 实例池与场景是分开的：同一个节点可能先在带烘焙图的场景里挂光、再被别的场景借走，
 ## 那边没有烘焙图，得把它擦干净，否则会顶着上一个场景的光出现
 static func clear(mi: MeshInstance3D) -> void:
 	if mi == null or not is_instance_valid(mi) or mi.mesh == null:

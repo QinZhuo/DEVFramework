@@ -63,7 +63,7 @@ static func register(add_tool: Callable) -> void:
 	add_tool.call("find_resource_users",
 		"查任意资源的双向依赖: users=谁引用该资源(反向), deps=该资源依赖谁(正向依赖链, 含脚本/配置/场景/资产类型标签)。兼容 Godot4 的 res://路径 与 uid://xxx 两种引用形式。目标为带全局类名的脚本时, 额外扫描其它 .gd 中类名的词边界使用点(类型注解/extends/静态调用等, kind=class_ref)。改名/删除/移动资源前查完整影响面。",
 		{"type": "object", "properties": {
-			"path": MCPToolSchema.str_arg("目标资源路径(如 res://Scenes/Main.tscn 或 Scenes/Main.tscn)"),
+			"path": MCPToolSchema.str_arg("目标资源路径(如 res://Scenes/<场景>.tscn, 也可省略 res://)"),
 			"max_results": {"type": "integer", "description": "最多返回引用文件数, 默认 100"},
 			"include_script_refs": {"type": "boolean", "description": "是否包含 .gd 脚本里的 preload/load 引用, 默认 true"},
 			"include_class_refs": {"type": "boolean", "description": "是否包含全局类名在 .gd 中的词边界引用扫描(仅目标是带 class_name 的脚本时生效), 默认 true"}

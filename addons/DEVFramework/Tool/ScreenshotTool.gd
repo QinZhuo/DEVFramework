@@ -91,7 +91,7 @@ static func grab(viewport: Viewport, opts: Dictionary = {}) -> Image:
 ##   · 8 位格式(RGB8/RGBA8/…)= 引擎已把显示值写进目标 ⇒ **再编码一次就是二次编码**,
 ##     黑场被抬高、对比被压平, 表现为整图发灰发白("蒙一层灰白")。
 ##
-## 实测(本项目, Godot 4.7.2 / forward_plus / hdr_2d=false): 往 SubViewport 放一块
+## 实测(Godot 4.7.x / forward_plus / hdr_2d=false): 往 SubViewport 放一块
 ## Color(0.5,0.5,0.5) 的 ColorRect, 读回 FORMAT_RGB8、像素 r≈0.502(128/255), 正是屏幕上
 ## 看到的值; 3D 探针(unshaded、albedo 0.5)同样是 0.498(127/255)。即**默认配置下读回来的
 ## 就是显示值**, 老管线无条件 linear_to_srgb() 会把它推到 0.735(187/255) —— 那层灰白。

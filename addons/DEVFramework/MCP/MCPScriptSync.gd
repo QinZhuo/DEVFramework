@@ -327,7 +327,7 @@ static func changed_by_mtime(since: int) -> Array[String]:
 
 ## 递归收集 mtime 晚于 since 的 .gd
 ##
-## 只按名字跳过点目录: 本项目的隐藏目录均为点开头(.godot/.import/.git),
+## 只按名字跳过点目录: 引擎与版本控制的隐藏目录均为点开头(.godot/.import/.git),
 ## 且不依赖 current_is_hidden —— 该方法在本引擎版本不可用, 调用它会让整次
 ## 扫描抛错, 把一个性能优化变成可用性事故。
 static func _collect_gd(dir_path: String, out: Array[String], since: int) -> void:

@@ -1,5 +1,5 @@
 ## 通用 3D 拖拽视图基类，提供完整的拖拽生命周期管理。
-## 继承自 ButtonView3D，子类可自由扩展拖拽行为（排序、出售等）。
+## 继承自 ButtonView3D，子类可自由扩展拖拽行为（排序、跨容器移动等）。
 ## [br][br]
 ## 拖拽生命周期：[br]
 ##   按下左键 → [code]_start_drag()[/code] → [code]_on_drag_started()[/code] (虚)[br]
@@ -20,7 +20,7 @@ class_name DragView3D extends ButtonView3D
 ## 归位动画时长（秒）
 @export var drag_return_duration: float = 0.2
 
-## 拖拽排序吸附阈值比例（与相邻卡牌间距的比例，超过此比例才触发换位）
+## 拖拽排序吸附阈值比例（与相邻项间距的比例，超过此比例才触发换位）
 @export var drag_snap_threshold_ratio: float = 0.1
 
 ## ---------------------------------------------------- 信号
@@ -125,7 +125,7 @@ func _end_drag():
 
 	_on_drag_ended()
 
-	# 子类可能已通过 _cleanup_drag_state() 标记跳过清理（如出售后节点即将移除）
+	# 子类可能已通过 _cleanup_drag_state() 标记跳过清理（如拖出容器后节点即将移除）
 	if not is_dragging or not is_instance_valid(self):
 		return
 
@@ -176,7 +176,7 @@ func _restore_scale():
 	t.set_ease(Tween.EASE_OUT).set_trans(Tween.TRANS_BACK)
 	t.tween_property(target, "scale", Vector3.ONE, drag_return_duration * 0.75)
 
-## 统一重置拖拽状态（子类出售场景可主动调用以跳过基类清理）
+## 统一重置拖拽状态（子类处理完自身逻辑后可主动调用以跳过基类清理）
 func _cleanup_drag_state():
 	PointerTool.end_drag()
 	drag_offset = Vector3.ZERO
@@ -195,7 +195,7 @@ func _get_drag_visual_node() -> Node3D:
 func _get_rest_position() -> Vector3:
 	return Vector3.ZERO
 
-## 是否允许拖拽 —— 子类重写以实现权限控制（如仅玩家可拖、非战斗状态可拖）
+## 是否允许拖拽 —— 子类重写以实现权限控制（如仅特定状态/角色可拖）
 func _can_drag() -> bool:
 	return true
 
@@ -211,7 +211,7 @@ func _on_drag_move():
 	pass
 
 ## 拖拽结束回调 —— 默认执行 OffsetArrayView3D 排序逻辑
-## [br]子类重写时应先判断是否自行处理（如出售），否则调用 super
+## [br]子类重写时应先判断是否自行处理（如拖出后移除），否则调用 super
 func _on_drag_ended():
 	if not drag_container:
 		return

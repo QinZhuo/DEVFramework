@@ -5,7 +5,7 @@ class_name TestRunner extends RefCounted
 ##
 ## 用例按**进程归属**分两类(见 `TestCase.needs_game_process()`):
 ##   · 进程无关(默认) —— 纯逻辑/资源层面, 编辑器进程即可, 快且无副作用;
-##   · 需要游戏进程 —— 依赖 MonitorGame / 场景树 / 真实时间轴, 只能由 `run_tests(process=game)`
+##   · 需要游戏进程 —— 依赖项目单例 / 场景树 / 真实时间轴, 只能由 `run_tests(process=game)`
 ##     (MCP, 游戏进程内) 或 headless `--game` 执行。
 ## 在错误的进程里跑某类用例时, 它会被列为 **skipped 并出现在结果文本里** ——
 ## 绝不静默通过, 也绝不因"缺环境"而假失败。
@@ -181,7 +181,7 @@ static func _run_one_case(res: Script, label: String, mode: String, acc: Diction
 		var err: String = await _run_one(inst, mname, remaining, _make_heartbeat("%s › %s" % [label, mname], started_at))
 		var elapsed := Time.get_ticks_msec() - started_at
 		## 兜底收尾：不论成败都跑。手动收尾只覆盖"正常跑完"那条路，中途 return /
-		## 协程被超时中断都会跳过它 —— 对会写玩家档案的用例，那等于把测试数据留在存档里。
+		## 协程被超时中断都会跳过它 —— 对会写持久化数据的用例，那等于把测试数据留在存档里。
 		await _run_cleanup(inst, maxi(1000, remaining - elapsed))
 		var limit := int(inst.max_duration_ms())
 		if limit > 0 and elapsed > limit:

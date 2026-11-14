@@ -187,7 +187,7 @@ func _mark_off(mesh: GeometryInstance3D) -> void:
 
 
 ## 每帧补齐标记材质：
-## · 标记时还没进场景树的网格（典型：战斗开始时装备视图刚创建），进树后在这里补上；
+## · 标记时还没进场景树的网格（节点先被标记、后 add_child），进树后在这里补上；
 ## · 已失效的引用顺手清理。
 ## 已被其它实例（悬停等）接管的不抢。
 func _refresh_marks() -> void:
@@ -210,7 +210,7 @@ func _refresh_marks() -> void:
 func _viewport_runs_here(mesh: GeometryInstance3D) -> bool:
 	var vp: Viewport = mesh.get_viewport()
 	if vp == null:
-		# 还没进场景树（典型：战斗开始时装备视图刚创建、view 尚未挂上）
+		# 还没进场景树（节点已创建但尚未 add_child）
 		# ⇒ 先接受标记，进树后由 _refresh_marks() 补上材质
 		return true
 	var cam := vp.get_camera_3d()
