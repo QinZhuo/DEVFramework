@@ -49,15 +49,26 @@ const HUB_UNREGISTER_PATH := "/hub/unregister"
 const HUB_INSTANCES_PATH := "/hub/instances"
 const HUB_HEALTH_PATH := "/hub/health"
 
+## 默认目标落盘的文件名(机器级共享; 目录见 _target_path)
+const TARGET_FILE := "devframework_mcp_target.json"
+
 ## uid -> 实例条目。条目形状见 _make_entry()。
 var members := {}
-## 默认目标实例的 instance_id(项目级身份)。空串 = 不转发, 就地执行。
+## 默认目标(服务端唯一的全局状态)。三个字段一起落盘: uid 里的进程号会变, 而 instance_id
+## (= 项目名@路径哈希)在编辑器重启后不变, 所以恢复时先按 uid、失败再按 instance_id 重解析。
 ##
 ## 为什么是**全局单值**而不是"按 MCP 会话绑定": 工具 handler 拿不到会话 id(handler 签名是
 ## args 字典), 把 sid 一路穿进 50+ 个 handler 只为这一个功能不划算; 且 MCP 2026-07-28 起
 ## 协议级会话被移除, 按会话 pin 在那之后本来就会失效。单值默认目标 + 单次调用 `instance`
 ## 参数覆盖, 覆盖了全部真实用法(一个开发者、一个 agent 会话对着一个编辑器干活)。
-var active_instance := ""
+##
+## **为什么落盘**: 它原本只是中枢进程里的一个变量。中枢一易主(某个编辑器重启 → 别的实例
+## 抢到固定端口), 新中枢这个变量就是空的, 而旧的兜底是"就地执行" —— 于是静默打到另一个项目。
+## 落盘后新中枢能按 instance_id 接回原项目; 接不回时由调用方报错, **绝不就地执行**。
+var active_instance := ""        # 目标 uid(带进程号, 唯一)
+var active_instance_id := ""     # 目标项目级身份(重启不变, uid 失效时的恢复依据)
+var active_project_path := ""    # 目标项目路径(仅用于报错/展示)
+var _target_loaded := false
 
 ## 本实例身份
 var own_uid := ""
@@ -364,16 +375,94 @@ func count_matches(query: String) -> int:
 ##
 ## 绑定用 **uid** 而非 instance_id: uid 带进程号, 唯一; 而 instance_id 在同项目多开时会撞,
 ## 用它做键会让"选中 A 窗口"在 B 窗口也生效(且两边 id 相同, 从错误信息里看不出问题)。
-func set_active(uid: String) -> void:
-	active_instance = uid
+## 设置默认目标(传条目字典; 空字典 = 清空)。写入后立即落盘, 供下一个中枢接手。
+func set_active(entry: Dictionary) -> void:
+	active_instance = str(entry.get("uid", ""))
+	active_instance_id = str(entry.get("instance_id", ""))
+	active_project_path = str(entry.get("project_path", ""))
+	_target_loaded = true
+	_save_target()
+
+
+## 是否设过默认目标(可能已离线 —— 调用方据此区分"从未设过"与"设过但不在线")。
+func has_active() -> bool:
+	_ensure_target_loaded()
+	return not active_instance.is_empty() or not active_instance_id.is_empty()
+
+
+## 当前默认目标对应的在线实例; 空字典 = 没设过 / 目标不在线(调用方必须报错, **不要就地执行**)。
+##
+## uid 失效时按 instance_id 重解析: 后者 = 项目名@路径哈希, 编辑器重启不改变它 ——
+## 这正是"重启后自动接回原项目"的依据, 不是启发式猜测。
+func resolve_active() -> Dictionary:
+	_ensure_target_loaded()
+	if not active_instance.is_empty():
+		var hit := find_by_uid(active_instance)
+		if not hit.is_empty():
+			return hit
+	if active_instance_id.is_empty():
+		return {}
+	# 同项目多开时 resolve 会返回空(歧义), 此时同样交给调用方报错, 不挑一个。
+	var again := resolve(active_instance_id)
+	if not again.is_empty():
+		set_active(again)   # uid 换代: 改写并落盘
+	return again
+
+
+## 默认目标的可读标签(报错用): 优先项目路径, 回退 instance_id。
+func active_label() -> String:
+	_ensure_target_loaded()
+	if not active_project_path.is_empty():
+		return "%s (%s)" % [active_project_path, active_instance_id]
+	return active_instance_id if not active_instance_id.is_empty() else active_instance
 
 
 ## 默认目标是否落在**别的**实例上(落在自己身上等于不转发)。
 func active_is_remote() -> bool:
-	if active_instance.is_empty():
-		return false
-	var e := find_by_uid(active_instance)
+	var e := resolve_active()
 	return not e.is_empty() and not bool(e.get("is_self", false))
+
+
+## ------- 默认目标持久化 -------
+## 位置必须**机器级**: user:// 按项目隔离, 换一个项目当中枢就读不到上个项目写下的目标。
+
+func _target_path() -> String:
+	var base := OS.get_environment("LOCALAPPDATA")
+	if base.is_empty():
+		base = OS.get_temp_dir()
+	return base.path_join("DEVFrameworkMCP").path_join(TARGET_FILE)
+
+
+func _ensure_target_loaded() -> void:
+	if _target_loaded:
+		return
+	_target_loaded = true
+	if not active_instance.is_empty() or not active_instance_id.is_empty():
+		return   # 本进程内先设过, 以内存为准
+	var path := _target_path()
+	if not FileAccess.file_exists(path):
+		return
+	var parsed: Variant = JSON.parse_string(FileAccess.get_file_as_string(path))
+	if parsed is Dictionary:
+		active_instance = str(parsed.get("uid", ""))
+		active_instance_id = str(parsed.get("instance_id", ""))
+		active_project_path = str(parsed.get("project_path", ""))
+
+
+func _save_target() -> void:
+	var path := _target_path()
+	var dir := path.get_base_dir()
+	if not DirAccess.dir_exists_absolute(dir):
+		DirAccess.make_dir_recursive_absolute(dir)
+	var f := FileAccess.open(path, FileAccess.WRITE)
+	if f == null:
+		return   # 落盘失败不影响本进程; 下一个中枢会走"目标不在线 → 报错"的安全路径
+	f.store_string(JSON.stringify({
+		"uid": active_instance,
+		"instance_id": active_instance_id,
+		"project_path": active_project_path,
+	}))
+	f.close()
 
 
 ## ------- 可读描述 -------

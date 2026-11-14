@@ -1201,7 +1201,7 @@ func _register_instance_tools() -> void:
 		_call_list_instances)
 
 	_add_tool("use_instance",
-		"设置**默认目标编辑器实例**。设置后, 之后所有工具调用(未显式传 instance 参数时)都转发到该实例的编辑器进程执行。instance 可填 instance_id(如 MyGame@a1b2c3d4)、唯一前缀(hash 或项目名前缀)、端口号; 传空字符串 = 恢复为「本实例」。**同时打开多个项目时, 先调 list_instances 拿 id, 再调本工具选一个**, 否则所有操作都落在本实例上(会改错项目)。",
+		"设置**默认目标编辑器实例**。设置后, 之后所有工具调用(未显式传 instance 参数时)都转发到该实例的编辑器进程执行。instance 可填 instance_id(如 MyGame@a1b2c3d4)、唯一前缀(hash 或项目名前缀)、端口号; 传空字符串 = 恢复为「本实例」。设置会跨重启保留(目标编辑器回来后自动接回); 目标不在线时报错, 不会改到别的项目。**同时打开多个项目时, 先调 list_instances 拿 id, 再调本工具选一个**。",
 		{"type": "object", "properties": {
 			"instance": {"type": "string", "description": "目标实例: instance_id / 唯一前缀 / 端口号; 空字符串=恢复本实例。可用值见 list_instances。"},
 		}},
@@ -1637,11 +1637,14 @@ func _hub_tools_for_list() -> Array:
 ## 返回 {"port": int} —— port=0 表示就地执行; port>0 表示转发到该端口。
 ## 返回 {"error": str, "recovery": str} —— 路由失败(实例不存在/有歧义), 已带可读提示。
 ##
-## 优先级: 调用参数 instance > use_instance 设的默认目标 > 就地执行。
+## 优先级: 调用参数 instance > use_instance 设的默认目标(跨进程落盘) > 就地执行。
+## 设过默认目标但它不在线时**报错**, 不再回落就地执行 —— 中枢可能已换到别的项目。
 ## **不做"唯一的其他实例自动选中"**: 那在"开了两个项目、只想改当前这个"时会静默改错项目;
 ## 而报错并要求显式选择只多一次调用。MCP for Unity 也明确拒绝自动猜测实例。
 func _resolve_route(tool_name: String, args: Dictionary) -> Dictionary:
-	if _hub == null:
+	# 成员进程没有注册表(它只是被转发的一端): 请求能到这里就说明是直连成员端口的,
+	# 就地执行即可 —— 否则会拿"默认目标"去查一张空表, 再把合法的本机调用误判成目标离线。
+	if _hub == null or not bool(_hub.hub_mode):
 		return {"port": 0}
 	# 实例管理工具本身不路由(它们必须在**收到请求的这个进程**上执行, 否则 list_instances 会
 	# 转发到别的实例再回来, 语义变成"问别人本机有哪些实例")。
@@ -1664,17 +1667,18 @@ func _resolve_route(tool_name: String, args: Dictionary) -> Dictionary:
 				"recovery": "先调 list_instances 查看可用实例(uid / 唯一前缀 / 端口号), 再把 instance 换成清单里的值; 或省略 instance 用默认目标。",
 			}
 		return _route_of(hit, "instance=%s" % raw)
-	# 默认目标存的是 **uid**(唯一); 用 instance_id 做键会让"选中 A 窗口"在同项目的 B 窗口也生效。
-	var active: String = str(_hub.active_instance)
-	var def: Dictionary = _hub.find_by_uid(active)
+	# 默认目标: 先按 uid 找; uid 失效(编辑器重启换了进程号)时由 hub 按 instance_id 重解析。
+	var def: Dictionary = _hub.resolve_active()
 	if def.is_empty():
-		# 默认目标记录的实例已经消失(被关掉/重启换了 uid): 就地执行并**清掉这个悬空默认值**,
-		# 否则之后每次调用都会继续指向一个不存在的实例, 表现为"改代码没反应"。
-		if not active.is_empty():
-			LogTool.log("MCP", "默认目标实例 %s 已不在注册表, 恢复为「本实例」" % active)
-			_hub.set_active("")
+		if _hub.has_active():
+			# 设过目标但不在线 ⇒ 必须报错。就地执行等于打到"当前碰巧当中枢的那个项目",
+			# 而这恰恰是中枢刚易主时最坏的一种串味。默认目标**不清空**, 目标回来即可自动接回。
+			return {
+				"error": "默认目标 %s 当前不在线(该编辑器正在重启, 或 MCP 中枢已从它切换到别的项目)。为避免改错项目, 本次调用不执行。\n%s" % [str(_hub.active_label()), _hub.describe()],
+				"recovery": "等目标编辑器启动完成后重试(默认目标不会被清掉, 回来后会按项目身份自动接回); 或先 list_instances 再用 instance 参数指定本次目标。",
+			}
 		return {"port": 0}
-	return _route_of(def, "默认目标 %s" % str(def.get("instance_id", active)))
+	return _route_of(def, "默认目标 %s" % str(def.get("instance_id", "")))
 
 
 ## 把注册表条目翻译成路由结果。指向自己时返回 port=0(就地执行)。
@@ -1774,9 +1778,10 @@ func _call_list_instances(_args: Dictionary) -> Dictionary:
 		"role": "hub" if bool(_hub.hub_mode) else "member",
 		"hub_port": _hub_port,
 		"active_instance": _hub.active_instance,
+		"active_project": _hub.active_label(),
 		"instance_count": instances.size(),
 		"instances": instances,
-		"hint": "用 use_instance 设默认目标, 或在任意工具调用里传 instance 参数单次指定。省略两者时操作落在「本实例」。",
+		"hint": "用 use_instance 设默认目标(跨重启保留), 或在任意工具调用里传 instance 参数单次指定。两者都没有时操作落在「本实例」; 目标不在线时报错, 不会改到别的项目。",
 	}
 	if self_entry.is_empty():
 		data["warning"] = "注册表里没有本实例条目; 若持续出现请重启编辑器(热重载可能清掉了身份)。"
@@ -1789,7 +1794,7 @@ func _call_use_instance(args: Dictionary) -> Dictionary:
 		return _fail("多实例功能未启用(dev_framework/mcp/hub=false)。")
 	var raw := VariantTool.get_string(args, "instance", "").strip_edges()
 	if raw.is_empty():
-		_hub.set_active("")
+		_hub.set_active({})
 		return _ok_json({
 			"active_instance": "",
 			"active_uid": "",
@@ -1805,9 +1810,9 @@ func _call_use_instance(args: Dictionary) -> Dictionary:
 		return _err_validation(
 			"找不到实例 '%s'。当前可用实例:\n%s" % [raw, _hub.describe()],
 			"先调 list_instances 拿准确的 uid / 端口, 再重试; 或传空字符串恢复为「本实例」。")
-	# 绑定键用 **uid**(唯一), 不用 instance_id(同项目多开会撞)。
+	# 同时记 uid(唯一) 与 instance_id(重启不变, 用于恢复), 一并落盘。
 	var uid := str(hit.get("uid", ""))
-	_hub.set_active(uid)
+	_hub.set_active(hit)
 	return _ok_json({
 		"active_instance": str(hit.get("instance_id", "")),
 		"active_uid": uid,
