@@ -72,11 +72,27 @@ C++ 原生能力（ECS）需编译，见 [gdextension/README](../../gdextension/
 1. **改框架代码后必须重启编辑器**：已注册的全局类不会真正 reload，行为与源码不符且无提示。
 2. `await` 已完成的协程句柄会永久挂起 → 用 `AsyncTool.await_coroutine`。
 3. 脚本 reload 后，跨编译代次的类型化赋值可能静默得到 null → 跨边界传对象用无类型变量。
+4. **别把已释放的节点赋给类型化变量**：`var n: Node = arr.pop_back()` 在实例已 `queue_free` 时会抛
+   "Trying to assign invalid previously freed instance"（赋值先于 `is_instance_valid` 检查）。
+   先用 `Variant` 接住再判空。
+5. **注释/提示文本里的 `res://` 不算路径引用**：批量替换路径时若正则太宽，会把提示文案也改坏。
 
 ## 改完必跑
 
 ```
-run_tests test_framework_compile   # 全量编译 + 路径存在性
-run_tests test_tutorial            # 遮罩/气泡回归
-run_tests test_dialogue            # 对话链路
+run_tests  process=editor action=run script=test_framework_compile   # 全量编译 + 路径存在性
+run_tests  process=editor action=run script=test_tutorial            # 遮罩/气泡回归
+run_tests  process=editor action=run script=test_dialogue            # 对话链路
 ```
+
+**`run_tests` 是 job 模型**（长任务标准做法）：
+
+| action | 作用 |
+|---|---|
+| `run` | 启动任务，立即返回 `job_id`；带 `wait_sec`（默认 8）时窗口内跑完就直接给结果 |
+| `status` | 查进度（`progress` 已完成的用例数 / `current` 当前用例 / `elapsed_ms`），**幂等，不重跑** |
+| `result` | 取最终汇总（`text` / `cases` / `failures`） |
+| `cancel` | 请求取消（当前用例结束后生效） |
+
+慢测试（回放类常 100s+）不要反复调 `run` —— 那会重跑。用 `status` 轮询到 `running: false`。
+`job` 状态存在**跑测试的进程**里，所以 `status`/`result` 的 `process` 必须与启动时一致。
