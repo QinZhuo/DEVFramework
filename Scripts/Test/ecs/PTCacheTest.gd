@@ -64,7 +64,7 @@ static func _test_norm_conds_reuse() -> bool:
 	var xa: PackedInt32Array = w.get_column(PTCompA, &"x")
 
 	# 复用同一个查询对象(不 new 新的) —— 这正是对象池的行为
-	var q = load("res://addons/DEVFramework/ECS/ECSQuery.gd").new()
+	var q = load("res://addons/DEVFramework/ECS/System/ECSQuery.gd").new()
 	q._init_rule(w, PTCompA)
 
 	# 第一轮: x < 2

@@ -1,7 +1,7 @@
 [gd_scene load_steps=6 format=3]
 
 [ext_resource type="Script" path="res://Scenes/Tutorial/TutorialDemo.gd" id="1_demo"]
-[ext_resource type="Script" path="res://addons/DEVFramework/View/ButtonView3D.gd" id="2_button3d"]
+[ext_resource type="Script" path="res://addons/DEVFramework/UI/ButtonView3D.gd" id="2_button3d"]
 
 [sub_resource type="SphereMesh" id="SphereMesh_ball"]
 radius = 0.5

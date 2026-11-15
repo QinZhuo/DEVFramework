@@ -1,7 +1,7 @@
 [gd_resource type="Resource" script_class="ChangelogDef" load_steps=7 format=3]
 
-[ext_resource type="Script" path="res://addons/DEVFramework/Changelog/ChangelogDef.gd" id="1"]
-[ext_resource type="Script" path="res://addons/DEVFramework/Changelog/ChangelogEntryDef.gd" id="2"]
+[ext_resource type="Script" path="res://addons/DEVFramework/Changelog/Def/ChangelogDef.gd" id="1"]
+[ext_resource type="Script" path="res://addons/DEVFramework/Changelog/Def/ChangelogEntryDef.gd" id="2"]
 [ext_resource type="Texture2D" path="res://icon.svg" id="3"]
 
 [sub_resource type="Resource" id="ChangelogEntry_1"]

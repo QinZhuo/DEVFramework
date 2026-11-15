@@ -1,7 +1,7 @@
 [gd_scene load_steps=3 format=3]
 
 [ext_resource type="Script" path="res://Scripts/View/PoolDemo.gd" id="1_demo"]
-[ext_resource type="Script" path="res://addons/DEVFramework/View/ArrayView.gd" id="2_list"]
+[ext_resource type="Script" path="res://addons/DEVFramework/ArrayView/ArrayView.gd" id="2_list"]
 
 [node name="PoolDemo" type="Control"]
 layout_mode = 3

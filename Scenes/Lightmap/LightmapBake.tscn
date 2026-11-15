@@ -1,6 +1,6 @@
 [gd_scene format=3 uid="uid://8ehjsmeahdgp"]
 
-[ext_resource type="Script" uid="uid://bsoojnp78rfnk" path="res://addons/DEVFramework/View/Render/Lightmap/AssetLightmapStage.gd" id="1_stage"]
+[ext_resource type="Script" uid="uid://bsoojnp78rfnk" path="res://addons/DEVFramework/Render/Lightmap/AssetLightmapStage.gd" id="1_stage"]
 [ext_resource type="LightmapGIData" uid="uid://dps4nks3pyupq" path="res://Scenes/Lightmap/LightmapBake.lmbake" id="2_022th"]
 [ext_resource type="ArrayMesh" uid="uid://dhu7ug6qxfkh4" path="res://Scenes/Lightmap/Meshes/CubeMatte.tres" id="3_e7tas"]
 [ext_resource type="ArrayMesh" uid="uid://gybsy18mi3y4" path="res://Scenes/Lightmap/Meshes/CubeMetal.tres" id="4_p5lv2"]

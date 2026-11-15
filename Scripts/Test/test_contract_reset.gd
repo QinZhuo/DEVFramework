@@ -4,7 +4,7 @@ extends TestCase
 ## 目的：新增带会话状态的工具忘了登记复位 → 直接红灯，而不是等切场景串味才发现。
 
 const ROOT := "res://addons/DEVFramework/"
-const REGISTRY := "res://addons/DEVFramework/Tool/ResetTool.gd"
+const REGISTRY := "res://addons/DEVFramework/Core/Tool/ResetTool.gd"
 const EXEMPT := "## Reset: 进程级"
 
 var _class_re := RegEx.create_from_string("(?m)^class_name\\s+(\\w+)")
