@@ -52,39 +52,92 @@ func _require_process(args: Dictionary) -> String:
 
 ## ------- run_tests: 双进程 -------
 
-## runtime 侧(服务器位于游戏进程内): process 只能是 game(游戏用例就地跑)。
+## runtime 侧(服务器位于游戏进程内): 只能跑 game 用例。
 func call_run_tests_local(args: Dictionary) -> Dictionary:
-	var process := _require_process(args)
-	if process == "both":
-		return server._fail("导出运行时没有独立的编辑器进程, process=both 无意义; 这里只能跑 process=game")
-	if process != "game":
-		return server._fail("导出运行时没有独立的编辑器进程; run_tests 的 process 只能是 'game'")
-	return await server._runtime_run_game_tests(args)
+	return await _run_tests_job_action(args, TestRunner.MODE_GAME)
 
 
-## editor 侧: process=editor 在编辑器进程同步跑; process=game 转发到游戏进程。
+## run_tests 的 job 语义核心(**跑测试的那个进程**执行)。
+## 状态(job)存在本进程内存, 所以 status/result/cancel 必须打到同一个进程。
+func _run_tests_job_action(args: Dictionary, mode: String) -> Dictionary:
+	var action := VariantTool.get_string(args, "action").strip_edges().to_lower()
+	if action == "":
+		action = "run"
+	var job_id := VariantTool.get_string(args, "job_id").strip_edges()
+	match action:
+		"run":
+			var script := VariantTool.get_string(args, "script").strip_edges()
+			if script.is_empty():
+				return server._fail("action=run 必须指定 script(脚本路径子串如 'test_display_tool', 或 'all', 或内联 GDScript 源码)")
+			# 内联源码先编译预检: 语法错就地拦, 不占用 job
+			if TestRunner.is_inline_source(script):
+				var pre := TestRunner.precheck_inline(script, server._logger)
+				if pre != "":
+					return server._err_validation("内联测试代码预检未通过:\n%s" % pre,
+						"修正内联测试源码后重试; 或改成文件放到 %s 下再用 script 路径跑" % TestRunner.TESTS_DIR)
+			var started: Dictionary = TestRunner.start(script, mode, server._logger)
+			if bool(started.get("already_running", false)):
+				return server._ok_json(started)
+			if str(started.get("status", "")) != "running":
+				return server._ok_json(started)
+			# 等一小段: 快用例一次调用就拿结果, 慢用例转轮询(客户端不必陪跑满几分钟)
+			var wait_sec := clampi(VariantTool.get_int(args, "wait_sec", 8), 0, 25)
+			var snap: Dictionary = await TestRunner.wait(str(started.get("job_id", "")), wait_sec * 1000)
+			if str(snap.get("status", "")) == "running":
+				snap["hint"] = "仍在运行: 用 run_tests(action=status, job_id='%s', process=...) 轮询; 完成后 action=result 取结果" % str(snap.get("job_id", ""))
+			return server._ok_json(snap)
+		"status":
+			return server._ok_json(TestRunner.status(job_id))
+		"result":
+			return server._ok_json(TestRunner.result(job_id))
+		"cancel":
+			return server._ok_json(TestRunner.cancel(job_id))
+		_:
+			return server._fail("action 必须是 run / status / result / cancel, 收到 '%s'" % action)
+
+
+## editor 侧分派: process 决定"在哪个进程跑", action 决定"启动/查询"。
+## 关键: job 状态在跑测试的进程里, 所以 status/result/cancel 必须路由到同一进程。
 func call_run_tests_routed(args: Dictionary) -> Dictionary:
-	var script := VariantTool.get_string(args, "script").strip_edges()
-	var process := _require_process(args)
+	var process := VariantTool.get_string(args, "process").strip_edges()
+	if process == "":
+		process = "editor"
 	if process != "editor" and process != "game" and process != "both":
 		return server._fail("process 必须是 editor / game / both, 收到: '%s'" % process)
+	var action := VariantTool.get_string(args, "action").strip_edges().to_lower()
+	if action == "":
+		action = "run"
 	if process == "both":
-		return await _run_tests_both(script)
+		# both = 编辑器段 + 游戏段合并, 天然是"跑完才有结果"的全量用法, 保持同步执行
+		if action != "run":
+			return server._fail("process=both 只支持 action=run(两段合并的汇总); 查进度请分别跑 editor / game")
+		return await _run_tests_both(VariantTool.get_string(args, "script").strip_edges())
 	if process == "game":
-		# 内联源码先在编辑器内编译预检：语法错就地拦截，不把坏代码转发到游戏进程
-		if TestRunner.is_inline_source(script):
-			var pre := TestRunner.precheck_inline(script, server._logger)
-			if pre != "":
-				return server._err_validation("内联测试代码预检未通过(未转发到游戏进程):\n%s" % pre,
-					"修正内联测试源码后重试; 或改成文件放到 %s 下再用 script 路径跑" % TestRunner.TESTS_DIR)
-		return await _run_tests_in_game(script)
-	if script.is_empty():
-		return server._fail("必须指定测试脚本(script: 脚本路径子串如 'test_display_tool', 或 'all' 全量, 或内联 GDScript 源码); 不支持默认全跑")
-	return server._ok_json(await TestRunner.run_all(script, TestRunner.MODE_EDITOR, server._logger))
+		return await _run_tests_in_game(args)
+	return await _run_tests_job_action(args, TestRunner.MODE_EDITOR)
 
 
-## 转发游戏用例到游戏进程；没有活跃会话时自动启动游戏（理由见下）。
-func _run_tests_in_game(script: String) -> Dictionary:
+## 转发到游戏进程（含自动启动）。args 原样转发: action/script/job_id/wait_sec 都要给到对端。
+func _run_tests_in_game(args: Dictionary) -> Dictionary:
+	var action := VariantTool.get_string(args, "action").strip_edges().to_lower()
+	if action == "":
+		action = "run"
+	var script := VariantTool.get_string(args, "script").strip_edges()
+	var fwd := {"process": "game", "action": action}
+	if script != "":
+		fwd["script"] = script
+	var job_id := VariantTool.get_string(args, "job_id").strip_edges()
+	if job_id != "":
+		fwd["job_id"] = job_id
+	if args.has("wait_sec"):
+		fwd["wait_sec"] = int(args["wait_sec"])
+	# 只有 run 需要"保证游戏在跑"; status/result 是纯查询, 没游戏就没结果
+	if action != "run":
+		if not _has_game_session():
+			return server._err_transient("游戏进程未运行, 无法查询该 job(状态存在跑测试的进程内存里)",
+				"game_control(action=start) 后重试; 或重新用 action=run 启动")
+		var q: Dictionary = await server._call_runtime_proxy("run_tests", fwd)
+		return q
 	var auto_started := false
 	if not _has_game_session():
 		var started: Dictionary = await _call_run_game({})
@@ -99,16 +152,19 @@ func _run_tests_in_game(script: String) -> Dictionary:
 		# 半初始化状态（实测：自动启动后立刻转发，首轮用例常因依赖对象还是 null 而失败）。
 		# ignore_time_scale=true：用例常把 time_scale 调高，等待不能被它缩短。
 		await server.get_tree().create_timer(2.0, true, false, true).timeout
-	var raw: Dictionary = await server._call_runtime_proxy("run_tests", {"process": "game", "script": script})
+	var raw: Dictionary = await server._call_runtime_proxy("run_tests", fwd)
 	if bool(raw.get("is_error", false)):
 		return raw
-	var sum := _summary_of(raw)
-	if sum.is_empty():
-		return raw
+	# job 快照(status/progress/...)与"跑完的汇总(total/passed/failed)"是两种形状:
+	# 只有跑完(或已结束)才做汇总修饰, 运行中直接原样返回给调用方轮询。
+	var payload := _summary_of(raw)
+	if payload.is_empty():
+		payload = raw
 	if auto_started:
-		sum["auto_started_game"] = true
-		sum["text"] = "[已自动启动游戏进程(此前无运行实例)]\n%s" % str(sum.get("text", ""))
-	return server._ok_json(sum)
+		payload["auto_started_game"] = true
+		var keep_text := str(payload.get("text", ""))
+		payload["text"] = "[已自动启动游戏进程(此前无运行实例)]\n%s" % keep_text
+	return server._ok_json(payload)
 
 
 ## process=both: 编辑器段 → 游戏段，合并成一份汇总。
@@ -120,7 +176,7 @@ func _run_tests_both(script: String) -> Dictionary:
 	# 选择器一条都没匹配上(早退结果)：游戏段必然同样为空，不再白起一轮
 	if int(editor_sum.get("total", 0)) == 0 and int(editor_sum.get("failed", 0)) > 0:
 		return server._ok_json(editor_sum)
-	var game_res: Dictionary = await _run_tests_in_game(script)
+	var game_res: Dictionary = await _run_tests_in_game({"process": "game", "action": "run", "script": script})
 	if bool(game_res.get("is_error", false)):
 		return _both_with_game_failure(editor_sum, script, _error_text(game_res))
 	var game_sum := _summary_of(game_res)

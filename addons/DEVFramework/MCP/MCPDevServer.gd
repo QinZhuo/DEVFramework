@@ -1442,10 +1442,13 @@ func _register_game_play_tools() -> void:
 	var tests_schema := {
 		"type": "object",
 		"properties": {
-			"process": {"type": "string", "enum": ["editor", "game", "both"], "description": "在哪个进程跑: editor=编辑器进程(同步跑完才返回; 只跑进程无关用例); game=游戏进程(跑 needs_game_process() 用例; **阻塞到本轮跑完才返回**; 无运行中的游戏时**自动启动**; 导出运行时=本进程); both=先 editor 段再 game 段并合并成一份汇总(跑全量用这个)。必填。"},
+			"action": {"type": "string", "enum": ["run", "status", "result", "cancel"], "description": "默认 run。run=启动任务(立即返回; 带 wait_sec 时在窗口内跑完就直接给结果); status=查进度(轮询用, 幂等, 不会重跑); result=取结果; cancel=请求取消。job 状态存在**跑测试的那个进程**里, 所以 status/result/cancel 的 process 必须与启动时一致。"},
+			"job_id": {"type": "string", "description": "status/result/cancel 用。省略 = 当前正在跑或最近的 job。"},
+			"wait_sec": {"type": "integer", "description": "仅 action=run: 最多等几秒(0-25, 默认 8)。窗口内跑完直接返回结果; 未跑完返回 job 快照, 之后用 action=status 轮询。慢用例(回放类常 100s+)不会重跑。"},
+			"process": {"type": "string", "enum": ["editor", "game", "both"], "description": "在哪个进程跑: editor=编辑器进程(只跑进程无关用例); game=游戏进程(跑 needs_game_process() 用例; 无运行中的游戏时自动启动); both=先 editor 段再 game 段合并(仅 action=run, 同步阻塞)。"},
 			"script": {"type": "string", "description": "必填。二选一(靠内容自动判别): ①测试脚本路径子串(如 'test_game_replay'), 只运行匹配的用例文件; 'all'=全量(**不推荐**: 耗时可能过长)。②**内联 GDScript 源码**——含换行 或 以 'extends ' 开头即判为源码, 需 `extends TestCase` 并定义 test_ 开头的断言方法, 直接编译运行、**不落盘**, 适合临时验证(上限 8192 字符)。单个词(含打错的脚本名)一律按选择器处理。"},
 		},
-		"required": ["process", "script"],
+		"required": ["action", "process"],
 	}
 	_register_game_play_tool("run_tests",
 		"运行**指定**的项目单元测试(Scripts/Test/ 下, extends TestCase, test_ 开头方法自动发现; 支持协程用例)。**script 必填**: 传脚本路径子串(或 'all' 全量, 不推荐)按文件跑; 或**直接传内联 GDScript 源码**(含换行/以 'extends ' 开头即视为源码, `extends TestCase` + test_ 方法, 不落盘, 临时验证用)。process 必填: editor=编辑器进程(同步跑完才返回; 只跑进程无关用例); game=游戏进程(跑 needs_game_process() 用例; **阻塞到本轮跑完才返回**; 无运行中的游戏时自动启动一个; 已有会话不重启); both=先 editor 段再 game 段并合并成一份汇总(**跑全量用它**, 游戏段没跑成会记成一条失败而不是静默省略)。**逐条进度**(每个用例方法的开始/结束、长方法的 15s 心跳)只 print 到宿主控制台 —— 编辑器输出面板 / 游戏窗口 / headless stdout, 工具返回值只有最终汇总, 阻塞期间查不到中途进度。**测试整体硬超时 10 分钟**: 到点判失败并停止等待。",
