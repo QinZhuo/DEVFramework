@@ -1,9 +1,14 @@
 @tool
-## 焦点遮罩 — 全场变暗, 只有被聚焦的目标"亮着", 目标外不可交互。不挖洞。
-## 统一规则: 目标所在 canvas 上, 除目标外全部压暗, 目标画到暗区之上。
-##   · 2D 内容 → 按 modulate 压暗(保留 alpha, 透明/不透明背景都不会露出色块)
-##   · 3D 内容 → 目标挪到 highlight_layer, 用与所在相机逐帧同步的相机单独渲染, 贴图盖在暗区上
-##   · 子视口里的目标 → 贴图面整体提亮, 子视口内部再按上面两条各自处理
+## 焦点遮罩 — 全场变暗, 只有被聚焦的目标"原样显示在最前面".
+##
+## 实现只有一件事: 一次性屏幕空间合成(读已经画好的整帧), 目标区域内取屏幕原样 × 提亮,
+## 区域外压暗。因为读的是"最终画面", 所以:
+##   · 不需要挖洞、不修改任何节点的 z_index / modulate / 父子关系
+##   · 不需要和 CanvasLayer / SubViewport 比层级 —— 嵌套子视口天然正确
+##   · dim_color.a = 1 时目标外就是纯黑(而不是"比别人暗一点")
+##
+## 描边/发光: 3D 目标用"只渲染目标"那张贴图的 alpha 当轮廓(贴合物体的真实形状),
+## 纯 2D 控件没有离屏轮廓, 用控件矩形(圆角 SDF)。
 class_name FocusMask extends Control
 
 ## 空白处按下(仅 click_to_complete 开启时; 供"点任意处继续")
@@ -11,16 +16,16 @@ signal blank_pressed
 ## 气泡完成一次排版(宿主可在这里对气泡做二次布局: 塞模型/改宽度等)
 signal tip_placed
 
-## 绘制层: 暗区 < 点亮内容 < 描边 < 气泡(z_index 上限 4096)
+## 合成层(z_index 上限 4096)
 const DIM_Z := 4088
-const LIFT_Z := 4094
-const OUTLINE_Z := 4095
+const TIP_Z := 4092
+const MAX_RECTS := 8
+const _SPOT_SHADER: Shader = preload("res://addons/DEVFramework/View/FocusMaskSpotlight.gdshader")
 const _NAV_ACTIONS: Array[StringName] = [&"ui_focus_next", &"ui_focus_prev",
 		&"ui_left", &"ui_right", &"ui_up", &"ui_down"]
 const _BACK_ACTIONS: Array[StringName] = [&"ui_focus_prev", &"ui_left", &"ui_up"]
-const _GLOW_SHADER: Shader = preload("res://addons/DEVFramework/View/FocusMaskGlow.gdshader")
 
-## 暗区颜色(alpha = 压暗强度, rgb = 暗色倾向)
+## 暗区颜色(alpha = 压暗强度, rgb = 暗色倾向; alpha=1 → 目标外纯黑)
 @export var dim_color := Color(0.0, 0.0, 0.0, 0.62)
 ## 拦截目标外的一切交互(点击/悬停/焦点导航)
 @export var block_input := true
@@ -28,63 +33,56 @@ const _GLOW_SHADER: Shader = preload("res://addons/DEVFramework/View/FocusMaskGl
 @export var advance_action: StringName = &"ui_accept"
 ## 点/按任意处触发 blank_pressed(展示说明类步骤的"点一下继续")
 @export var click_to_complete := false
-## 3D 目标是否单独重渲染(关闭 = 只提绘制层, 会被其它几何遮挡)
-@export var render_3d := true
-## 点亮用的渲染层(1..20, 需项目未占用)
-@export_range(1, 20) var highlight_layer := 20
-## 点亮渲染抗锯齿
-@export var highlight_msaa := Viewport.MSAA_4X
 ## 拖拽放行(可选): 返回 true 时放行全部指针事件
 var drag_checker: Callable
+
+## 目标自身的提亮倍数(>1 = 比平时更亮, 在暗场里跳出来)
+@export var focus_boost := 1.15
+## 2D 目标的区域圆角(描边/区域形状; 0 = 直角)
+@export var corner_radius := 10.0
+## 外发光颜色 / 半径(像素) / 强度
+@export var glow_color := Color(1.0, 0.86, 0.55, 1.0)
+@export var glow_radius := 22.0
+@export var glow_energy := 0.9
+## 3D 目标是否用"真实轮廓"做区域与发光(需要额外的轮廓渲染通道)
+@export var outline_3d := true
+## 轮廓渲染用的层(1..20, 需项目未占用)
+@export_range(1, 20) var highlight_layer := 20
+## 轮廓渲染抗锯齿
+@export var highlight_msaa := Viewport.MSAA_4X
 
 ## 提示气泡样式(空 = 内置深色圆角; 也可用主题 FocusMask/tip_stylebox)
 @export var tip_style: StyleBox
 @export var tip_font_size := 20
 ## 纯提示气泡的最小高度(0 = 由文本决定)
 @export var tip_min_height := 0.0
-## 纯提示气泡的顶部下限(屏幕 Y, -1 = 不限): 气泡会落在该线以下, 避免压住指定控件
+## 纯提示气泡的顶部下限(屏幕 Y, -1 = 不限)
 var tip_top_limit := -1.0
 
-## 发光颜色
-@export var glow_color := Color(1.0, 0.86, 0.55, 1.0)
-## 发光强度
-@export var glow_energy := 0.9
-## 3D: 发光向外扩散的半径(像素)
-@export var glow_radius := 44.0
-## 3D: 物体内部的自发光抬亮
-@export var inner_boost := 0.05
-## 2D: 发光向外扩散的最大距离(像素); 实际按目标尺寸等比缩放
-@export var glow_width := 34.0
-
+var tip_panel: Panel
+var tip_label: RichTextLabel
 
 var _targets: Array[Node] = []
 var _paddings := PackedFloat32Array()
-## 舞台根(铺暗区/找光源的范围, 避免碰到编辑器或别的场景)
+## 舞台根(收光源用)
 var _host: Node
 ## 目标 → 真正被点亮的节点(子视口里的目标升级为承载它的 SubView3D 面板)
 var _promoted := {}
-## canvas(Viewport) → {view, cam, rect}: 每个 canvas 一套"只渲染目标层"的相机
-var _lights := {}
-var _layers_backup := {}
-var _modulate_backup := {}
-## 根画布上的 2D 目标 → [z_index, z_as_relative]
-var _z_backup := {}
-var _dims: Array[Control] = []
 ## 可交互区域(屏幕坐标)
 var _hit_rects: Array[Rect2] = []
-## 需要 2D 发光(矩形轮廓)的区域: 没有轮廓贴图的 2D 控件 / 提升出来的贴图面
-var _plain_rects: Array[Rect2] = []
-## 走轮廓发光的 3D 目标(它们有真实 alpha, 不再画矩形光)
-var _lit := {}
-## canvas → 是否用轮廓发光(整块贴图面提亮时关掉, 免得整块面板发光)
-var _glow_canvases := {}
-## 2D 光圈的细分层数(越多越平滑)
-const LAYER_COUNT := 24
 var _screen_size := Vector2.ZERO
 var _active := false
-var tip_panel: Panel
-var tip_label: RichTextLabel
 var _tip_layout_key := []
+
+## 屏幕空间合成
+var _spot: ColorRect
+var _spot_mat: ShaderMaterial
+## 3D 轮廓(只渲目标的那张贴图, 仅当 mask 使用)
+var _sil_target: Node3D
+var _sil_view: SubViewport
+var _sil_cam: Camera3D
+var _sil_rect_index := -1
+var _sil_layers_backup := {}
 
 
 func _init() -> void:
@@ -94,10 +92,9 @@ func _init() -> void:
 func _ready() -> void:
 	visible = false
 	set_process_input(true)
-	# 描边画在自己身上: 层级要高于"被点亮内容"的贴图(LIFT_Z), 低于气泡
-	z_as_relative = false
-	z_index = OUTLINE_Z
+	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)  # 合成层要正好铺满屏幕
 	_apply_theme()
+	_build_spot()
 	_build_tip()
 
 
@@ -105,12 +102,12 @@ func _ready() -> void:
 func _apply_theme() -> void:
 	if has_theme_color("dim_color", "FocusMask"):
 		dim_color = get_theme_color("dim_color", "FocusMask")
+	if has_theme_color("glow_color", "FocusMask"):
+		glow_color = get_theme_color("glow_color", "FocusMask")
 	if has_theme_stylebox("tip_stylebox", "FocusMask"):
 		tip_style = get_theme_stylebox("tip_stylebox", "FocusMask")
 	if has_theme_font_size("tip_font_size", "FocusMask"):
 		tip_font_size = get_theme_font_size("tip_font_size", "FocusMask")
-	if has_theme_color("glow_color", "FocusMask"):
-		glow_color = get_theme_color("glow_color", "FocusMask")
 
 
 func _exit_tree() -> void:
@@ -124,7 +121,7 @@ func _exit_tree() -> void:
 ## 聚焦一组目标。items 元素: Node, 或 {node, padding}
 ## opts: dim(Color) / block(bool) / click_to_complete(bool) / advance_action(StringName) /
 ##       drag_checker(Callable) / tip(String)
-## host = 舞台根(铺暗区的范围), 一般传教程/场景根节点
+## host = 舞台根(收光源/兜底范围用)
 func focus(items: Array, opts: Dictionary = {}, host: Node = null) -> void:
 	_apply_opts(opts)
 	_host = host
@@ -150,15 +147,15 @@ func focus(items: Array, opts: Dictionary = {}, host: Node = null) -> void:
 	_grab_target_focus()
 
 
-## 取消聚焦(暗区消失, 目标绘制顺序/亮度还原, 不再拦截任何输入)
+## 取消聚焦(暗区消失, 不再拦截任何输入)
 func clear() -> void:
 	_active = false
 	visible = false
+	_release_presentation()
 	_targets.clear()
 	_paddings = PackedFloat32Array()
 	_hit_rects = []
 	_tip_layout_key = []
-	_release_presentation()
 	if tip_panel:
 		tip_panel.visible = false
 
@@ -201,45 +198,24 @@ func refresh_tip() -> void:
 
 
 # ------------------------------------------------------------
-# 表现
+# 表现: 屏幕空间合成 + 可选 3D 轮廓
 # ------------------------------------------------------------
 
 func _process(_delta: float) -> void:
 	if not _active:
 		return
 	_update_geometry()
-	if not _lights.is_empty():
-		_sync_light_cameras()
+	_sync_silhouette()
 
 
 func _apply_presentation() -> void:
 	_release_presentation()
 	_promote_targets()
-	_dim_2d()
-	_lift_root_2d()
-	_add_dim(_stage_root())  # 3D 世界(以及根画布上的 2D)压暗
-	_light_3d()
-	for canvas in _lights:
-		var entry: Dictionary = _lights[canvas]
-		_apply_glow_params(entry.glow_mat)
-		# 只有"物体本身"走轮廓发光; 提升出来的整块贴图面只提亮, 光画在目标矩形上
-		entry.rect.material = entry.glow_mat if _glow_canvases.get(canvas, false) else null
+	_setup_silhouette()
+	_apply_spot_params()
 
 
-## 轮廓发光参数(3D 重渲染结果的后处理)
-func _apply_glow_params(mat: ShaderMaterial) -> void:
-	if mat == null:
-		return
-	mat.set_shader_parameter("glow_color", glow_color)
-	mat.set_shader_parameter("glow_radius", glow_radius)
-	mat.set_shader_parameter("glow_energy", glow_energy)
-	mat.set_shader_parameter("inner_boost", inner_boost)
-
-
-
-
-
-## 目标 → 真正点亮的节点(子视口里的目标升级为它的 SubView3D 面板)
+## 目标 → 真正要显示的节点(子视口里的目标升级为承载它的 SubView3D 面板)
 func _promote_targets() -> void:
 	for node in _targets:
 		_promoted[node] = _promote(node)
@@ -257,295 +233,136 @@ static func _promote(node: Node) -> Node:
 	return node
 
 
-# --- 2D: modulate 压暗, 保留 alpha ---
-
-func _dim_2d() -> void:
-	var own_canvas := get_canvas_layer_node()
-	var by_layer := {}
-	var by_viewport := {}
-	for node in _targets:
-		if not (node is CanvasItem) or not is_instance_valid(node):
-			continue
-		var item := node as CanvasItem
-		var layer := item.get_canvas_layer_node()
-		if layer and layer != own_canvas:
-			by_layer.get_or_add(layer, []).append(item)
-		elif item.get_viewport() is SubViewport:
-			by_viewport.get_or_add(item.get_viewport(), []).append(item)
-	for canvas_layer in _collect_canvas_layers():
-		if canvas_layer != own_canvas:
-			_dim_canvas(canvas_layer, by_layer.get(canvas_layer, []))
-	for viewport in by_viewport:
-		_dim_canvas(viewport, by_viewport[viewport])
-
-
-## 把一个 canvas 上"目标祖先链"之外的内容压暗(改 modulate, 不动布局与层级)
-func _dim_canvas(canvas: Node, targets: Array) -> void:
-	var keep := {}
-	for target in targets:
-		var cursor: Node = target
-		while cursor and cursor != canvas:
-			keep[cursor] = true
-			cursor = cursor.get_parent()
-	_dim_children(canvas, keep)
-
-
-func _dim_children(node: Node, keep: Dictionary) -> void:
-	for child in node.get_children():
-		if child is Viewport or child is CanvasLayer:
-			continue  # 别的 canvas 自己处理
-		if keep.has(child):
-			_dim_children(child, keep)
-		elif child is CanvasItem:
-			_dim_item(child as CanvasItem)
-		else:
-			_dim_children(child, keep)
-
-
-func _dim_item(item: CanvasItem) -> void:
-	if _modulate_backup.has(item):
+## 建"只渲染目标"的轮廓通道(仅当目标里有 3D 物体时)
+func _setup_silhouette() -> void:
+	if not outline_3d:
 		return
-	_modulate_backup[item] = item.modulate
-	item.modulate = item.modulate * _dim_scale()
-
-
-## 压暗系数: alpha 越大越暗, rgb 决定暗色倾向(黑 → 纯变暗)
-func _dim_scale() -> Color:
-	var a := clampf(dim_color.a, 0.0, 1.0)
-	return Color(1.0 - a * (1.0 - dim_color.r), 1.0 - a * (1.0 - dim_color.g),
-			1.0 - a * (1.0 - dim_color.b), 1.0)
-
-
-## 根画布上的 2D 目标: 上面盖着全屏暗区, 只能靠绘制顺序提到暗区之上
-func _lift_root_2d() -> void:
-	for node in _targets:
-		if not (node is CanvasItem) or not is_instance_valid(node):
-			continue
-		var item := node as CanvasItem
-		if item.get_canvas_layer_node() or item.get_viewport() is SubViewport:
-			continue  # 有独立 canvas, 不需要提层
-		_z_backup[item] = [item.z_index, item.z_as_relative]
-		item.z_as_relative = false
-		item.z_index = LIFT_Z
-
-
-# --- 3D: 层分离 + 同步相机 + 贴图盖在暗区上 ---
-
-func _light_3d() -> void:
-	var by_canvas := {}
-	for node in _targets:
-		# 主画布: 点亮"能被主相机看见的那一层"(3D 物体本身, 或子视口目标的 SubView3D 面板)
+	for i in _targets.size():
+		var node: Node = _targets[i]
 		var promoted: Node = _promoted.get(node)
-		if promoted is Node3D and _is_renderable(promoted):
-			by_canvas.get_or_add(get_viewport(), []).append(promoted)
-			if node is Node3D and promoted == node:
-				_lit[node] = true  # 真·3D 物体: 用它的真实轮廓发光
-				_glow_canvases[get_viewport()] = _glow_canvases.get(get_viewport(), true)
-			else:
-				_glow_canvases[get_viewport()] = false  # 整块贴图面: 只提亮, 不整块发光
-		# 不透明子视口: 里面也要压暗背景, 只留目标(透明子视口没别的可见内容, 不用管)
-		if node is Node3D and node.get_viewport() is SubViewport \
-				and not node.get_viewport().transparent_bg:
-			by_canvas.get_or_add(node.get_viewport(), []).append(node)
-			_glow_canvases[node.get_viewport()] = false
-	for canvas in by_canvas:
-		if canvas != get_viewport():
-			_add_dim(canvas)  # 不透明子视口: 里面也要压暗背景, 只留目标
-		_light_canvas(canvas, by_canvas[canvas])
-
-
-func _is_renderable(node: Node) -> bool:
-	return render_3d and node is Node3D and node.get_viewport() == get_viewport()
-
-
-## 在某个 canvas 里点亮一组 3D 节点: 挪层 → 建同步相机 → 贴图盖上去
-func _light_canvas(canvas: Viewport, nodes: Array) -> void:
-	var light := _ensure_light(canvas)
-	if light.is_empty():
+		# 只用"物体本身就是 3D 且在屏幕上 1:1"的情况做轮廓;
+		# 提升出来的贴图面(子视口目标)在别的世界坐标系里, 轮廓对不上屏幕 → 退回矩形
+		if promoted is Node3D and promoted == node:
+			_sil_target = promoted as Node3D
+			_sil_rect_index = i
+			break
+	if _sil_target == null:
 		return
 	var layer_bit := 1 << (highlight_layer - 1)
-	for node in nodes:
-		for visual in _visuals_of(node):
-			if not _layers_backup.has(visual):
-				_layers_backup[visual] = visual.layers
-			visual.layers = layer_bit
+	for visual in _visuals_of(_sil_target):
+		if not _sil_layers_backup.has(visual):
+			_sil_layers_backup[visual] = visual.layers
+		visual.layers = layer_bit
 	# 相机的 cull_mask 同样筛光源, 光源不进这一层物体就全黑
-	var light_scope: Node = _stage_root() if canvas == get_viewport() else canvas
-	for light_node in _collect_lights(light_scope):
-		if not _layers_backup.has(light_node):
-			_layers_backup[light_node] = light_node.layers
+	for light_node in _collect_lights(_sil_target.get_viewport()):
+		if not _sil_layers_backup.has(light_node):
+			_sil_layers_backup[light_node] = light_node.layers
 		light_node.layers = light_node.layers | layer_bit
-	light.view.render_target_update_mode = SubViewport.UPDATE_ALWAYS
-	light.rect.visible = true
-	_sync_light(canvas)
+
+	var size := Vector2i(_screen_size if _screen_size != Vector2.ZERO else get_viewport_rect().size)
+	_sil_view = SubViewport.new()
+	_sil_view.name = "FocusSilhouette"
+	_sil_view.transparent_bg = true
+	_sil_view.size = size
+	_sil_view.msaa_3d = highlight_msaa
+	_sil_view.gui_disable_input = true
+	_sil_view.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+	# 挂在目标下面 → 和它在同一个 3D 世界里(相机才看得到它)
+	_sil_target.add_child(_sil_view)
+	_sil_cam = Camera3D.new()
+	_sil_cam.name = "SilhouetteCamera"
+	_sil_cam.cull_mask = layer_bit
+	_sil_view.add_child(_sil_cam)
+	_sil_cam.current = true
+	_sync_silhouette()
 
 
-func _ensure_light(canvas: Viewport) -> Dictionary:
-	var entry: Dictionary = _lights.get(canvas, {})
-	if not entry.is_empty() and is_instance_valid(entry.view) and is_instance_valid(entry.rect):
-		return entry
-	var view := SubViewport.new()
-	view.name = "LightView"
-	view.transparent_bg = true
-	view.render_target_update_mode = SubViewport.UPDATE_DISABLED
-	view.msaa_3d = highlight_msaa
-	view.gui_disable_input = true
-	view.size = Vector2i(get_viewport_rect().size) if canvas == get_viewport() else canvas.size
-	var cam := Camera3D.new()
-	cam.name = "LightCamera"
-	cam.cull_mask = 1 << (highlight_layer - 1)
-	view.add_child(cam)
-	cam.current = true
-	var rect := TextureRect.new()
-	rect.name = "LightResult"
-	rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	rect.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-	rect.stretch_mode = TextureRect.STRETCH_SCALE
-	rect.texture = view.get_texture()
-	var mat := ShaderMaterial.new()
-	mat.shader = _GLOW_SHADER
-	_apply_glow_params(mat)
-	rect.material = mat
-	rect.z_as_relative = false
-	rect.z_index = LIFT_Z
-	rect.visible = false
-	if canvas == get_viewport():
-		add_child(view)
-		add_child(rect)
-		if tip_panel:
-			move_child(tip_panel, -1)  # 气泡始终盖在点亮结果之上
-	else:
-		canvas.add_child(view)
-		canvas.add_child(rect)
-	rect.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	entry = {view = view, cam = cam, rect = rect, glow_mat = mat}
-	_lights[canvas] = entry
-	return entry
-
-
-func _sync_light_cameras() -> void:
-	for canvas in _lights:
-		_sync_light(canvas)
-
-
-## 点亮相机与"该 canvas 自己的相机"逐项同步(变换 + 投影), 保证画面对齐
-func _sync_light(canvas: Viewport) -> void:
-	var entry: Dictionary = _lights.get(canvas, {})
-	if entry.is_empty() or not is_instance_valid(entry.cam):
+## 轮廓相机与"目标所在世界的相机"逐项同步(变换 + 投影)
+func _sync_silhouette() -> void:
+	if _sil_cam == null or _sil_target == null or not is_instance_valid(_sil_target):
 		return
-	var main := canvas.get_camera_3d()
-	if main == null:
+	var world_cam := _sil_target.get_viewport().get_camera_3d()
+	if world_cam == null:
 		return
-	var cam: Camera3D = entry.cam
-	var size: Vector2i = Vector2i(get_viewport_rect().size) if canvas == get_viewport() else canvas.size
-	if entry.view.size != size:
-		entry.view.size = size
+	_sil_cam.global_transform = world_cam.global_transform
+	_sil_cam.projection = world_cam.projection
+	_sil_cam.fov = world_cam.fov
+	_sil_cam.size = world_cam.size
+	_sil_cam.near = world_cam.near
+	_sil_cam.far = world_cam.far
+	_sil_cam.keep_aspect = world_cam.keep_aspect
+	_sil_cam.frustum_offset = world_cam.frustum_offset
+	_sil_cam.h_offset = world_cam.h_offset
+	_sil_cam.v_offset = world_cam.v_offset
 
-	cam.global_transform = main.global_transform
-	cam.projection = main.projection
-	cam.fov = main.fov
-	cam.size = main.size
-	cam.near = main.near
-	cam.far = main.far
-	cam.keep_aspect = main.keep_aspect
-	cam.frustum_offset = main.frustum_offset
-	cam.h_offset = main.h_offset
-	cam.v_offset = main.v_offset
+
+func _build_spot() -> void:
+	if _spot:
+		return
+	_spot = ColorRect.new()
+	_spot.name = "FocusSpotlight"
+	_spot.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_spot.color = Color.WHITE
+	_spot.z_as_relative = false
+	_spot.z_index = DIM_Z
+	_spot_mat = ShaderMaterial.new()
+	_spot_mat.shader = _SPOT_SHADER
+	_spot.material = _spot_mat
+	add_child(_spot)
+	_spot.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	if tip_panel:
+		move_child(tip_panel, -1)
+
+
+func _apply_spot_params() -> void:
+	if _spot_mat == null:
+		return
+	var view := _screen_size if _screen_size != Vector2.ZERO else get_viewport_rect().size
+	_spot_mat.set_shader_parameter("screen_size", view)
+	_spot_mat.set_shader_parameter("dim_color", dim_color)
+	_spot_mat.set_shader_parameter("focus_boost", focus_boost)
+	_spot_mat.set_shader_parameter("corner_radius", corner_radius)
+	_spot_mat.set_shader_parameter("glow_color", glow_color)
+	_spot_mat.set_shader_parameter("glow_radius", glow_radius)
+	_spot_mat.set_shader_parameter("glow_energy", glow_energy)
+	var use_sil := _sil_view != null and is_instance_valid(_sil_view)
+	_spot_mat.set_shader_parameter("use_silhouette", use_sil)
+	_spot_mat.set_shader_parameter("sil_rect", _sil_rect_index)
+	if use_sil:
+		_spot_mat.set_shader_parameter("silhouette", _sil_view.get_texture())
+	_push_rects()
+
+
+## 把当前可交互区域写进着色器(最多 8 个)
+func _push_rects() -> void:
+	if _spot == null or _spot_mat == null:
+		return
+	var view := _screen_size if _screen_size != Vector2.ZERO else get_viewport_rect().size
+	_spot_mat.set_shader_parameter("screen_size", view)
+	var packed := PackedVector4Array()
+	for i in mini(_hit_rects.size(), MAX_RECTS):
+		var rect := _hit_rects[i]
+		packed.append(Vector4(rect.position.x, rect.position.y, rect.size.x, rect.size.y))
+	_spot_mat.set_shader_parameter("rects", packed)
+	_spot_mat.set_shader_parameter("rect_count", packed.size())
+	# 有目标却一个都定位不到(还没排版/被裁没): 宁可不压暗, 也不要给玩家一片黑
+	_spot.visible = _active and (not _targets.is_empty() and packed.size() > 0 or _targets.is_empty())
 
 
 func _release_presentation() -> void:
-	for dim in _dims:
-		if is_instance_valid(dim):
-			dim.visible = false  # 立刻消失, 避免下一帧前闪一下
-			dim.queue_free()
-	_dims.clear()
-	for item in _modulate_backup:
-		if is_instance_valid(item):
-			item.modulate = _modulate_backup[item]
-	_modulate_backup.clear()
-	for item in _z_backup:
-		if is_instance_valid(item):
-			item.z_index = _z_backup[item][0]
-			item.z_as_relative = _z_backup[item][1]
-	_z_backup.clear()
-	for visual in _layers_backup:
+	for visual in _sil_layers_backup:
 		if is_instance_valid(visual):
-			visual.layers = _layers_backup[visual]
-	_layers_backup.clear()
-	for canvas in _lights:
-		var entry: Dictionary = _lights[canvas]
-		if is_instance_valid(entry.view):
-			entry.view.queue_free()
-		if is_instance_valid(entry.rect):
-			entry.rect.visible = false
-			entry.rect.queue_free()
-	_lights.clear()
+			visual.layers = _sil_layers_backup[visual]
+	_sil_layers_backup.clear()
+	if is_instance_valid(_sil_view):
+		_sil_view.queue_free()
+	_sil_view = null
+	_sil_cam = null
+	_sil_target = null
+	_sil_rect_index = -1
 	_promoted.clear()
-	_lit.clear()
-	_glow_canvases.clear()
-	_plain_rects = []
-
-
-# --- 暗区块 & 场景范围 ---
-
-func _add_dim(parent: Node) -> void:
-	if parent == null or not is_instance_valid(parent):
-		return
-	var dim := ColorRect.new()
-	dim.name = "FocusDim"
-	dim.color = dim_color
-	dim.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	dim.z_as_relative = false
-	dim.z_index = DIM_Z
-	parent.add_child(dim)
-	dim.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	_dims.append(dim)
-
-
-## 舞台根: 暗区就铺在"遮罩自己所在的那个 canvas 里", 否则暗区会盖住点亮结果。
-## 3D 世界渲染到 SubViewport(再贴到屏幕上)时, 遮罩也在那个 SubViewport 里, 必须跟着进去。
-func _stage_root() -> Node:
-	var my_viewport := get_viewport()
-	if is_instance_valid(_host) and _host.is_inside_tree() and _host.get_viewport() == my_viewport:
-		return _host
-	var scene := get_tree().current_scene
-	if scene and scene.get_viewport() == my_viewport:
-		return scene
-	var cursor: Node = self
-	while cursor.get_parent() and cursor.get_parent() != my_viewport:
-		cursor = cursor.get_parent()
-	return cursor
-
-
-## 需要压暗的 CanvasLayer: 整个场景里的(跨 viewport 都要, 例如贴在 SubViewport 外面的 HUD 层)
-func _collect_canvas_layers() -> Array[CanvasLayer]:
-	var result: Array[CanvasLayer] = []
-	var stack: Array[Node] = [get_tree().current_scene if get_tree().current_scene else _stage_root()]
-	while not stack.is_empty():
-		var node: Node = stack.pop_back()
-		if node is CanvasLayer:
-			result.append(node)
-		stack.append_array(node.get_children())
-	return result
-
-
-static func _collect_lights(node: Node) -> Array[Light3D]:
-	var result: Array[Light3D] = []
-	if node is Light3D:
-		result.append(node)
-	for child in node.get_children():
-		result.append_array(_collect_lights(child))
-	return result
-
-
-## 目标自身及子级里所有真实参与绘制的实例(Area3D 本身不画, 画的是它的 mesh 子节点)
-static func _visuals_of(node: Node) -> Array[VisualInstance3D]:
-	var result: Array[VisualInstance3D] = []
-	if node is VisualInstance3D:
-		result.append(node)
-	for child in node.get_children():
-		result.append_array(_visuals_of(child))
-	return result
+	if _spot:
+		_spot.visible = false
 
 
 # ------------------------------------------------------------
@@ -610,7 +427,7 @@ static func _collect_focusables(node: Node, result: Array[Control]) -> void:
 func _grab_target_focus() -> void:
 	var focusables := _focusables()
 	if focusables.is_empty():
-		# 目标没有可聚焦控件(如 3D 物体): 释放残留焦点, 免得继续键激活背后被变暗的按钮
+		# 目标没有可聚焦控件(如 3D 物体): 释放残留焦点, 免得继续键激活背后被压暗的按钮
 		var owner := get_viewport().gui_get_focus_owner()
 		if owner:
 			owner.release_focus()
@@ -673,7 +490,6 @@ func _contains(pos: Vector2) -> bool:
 func _update_geometry() -> void:
 	var view := get_viewport_rect().size
 	var hit_rects: Array[Rect2] = []
-	var plain_rects: Array[Rect2] = []
 	if view.x > 0.0 and view.y > 0.0:
 		var screen := Rect2(Vector2.ZERO, view)
 		for i in _targets.size():
@@ -682,40 +498,55 @@ func _update_geometry() -> void:
 				continue
 			var rect := screen_rect(node)
 			if rect.size == Vector2.ZERO:
+				# 目标被裁剪/还没排版好: 退到承载它的那块面板(子视口目标), 不能一片黑
+				rect = _panel_rect(node)
+			if rect.size == Vector2.ZERO:
 				continue
 			rect = rect.grow(_paddings[i] if i < _paddings.size() else 0.0).intersection(screen)
 			if rect.size == Vector2.ZERO:
+				rect = _panel_rect(node).intersection(screen)
+			if rect.size == Vector2.ZERO:
 				continue
+			# 兜底退化成"整屏"等于没定位到: 宁可当作没目标, 也别整屏压暗
+			if rect.size.x * rect.size.y > screen.size.x * screen.size.y * 0.9:
+				continue
+			if hit_rects.size() >= MAX_RECTS:
+				break
 			hit_rects.append(rect)
-			if not _lit.has(node):
-				plain_rects.append(rect)  # 走轮廓发光的目标不再叠矩形光
-	if hit_rects == _hit_rects and plain_rects == _plain_rects and view == _screen_size:
+	if hit_rects == _hit_rects and view == _screen_size:
 		return
 	_hit_rects = hit_rects
-	_plain_rects = plain_rects
 	_screen_size = view
-	queue_redraw()  # 目标移动时 2D 光跟着走
+	_push_rects()
 	_place_tip()
 
 
-# ------------------------------------------------------------
-# 描边 + 光晕: 让"亮着"的目标在暗场里一眼看出来
-# ------------------------------------------------------------
+## 目标自己算不出矩形时, 用它所在的 SubView3D 面板(屏幕区域)兜底
+func _panel_rect(node: Node) -> Rect2:
+	var promoted: Node = _promoted.get(node)
+	if promoted == null or promoted == node:
+		return Rect2()
+	return screen_rect(promoted)
 
-func _draw() -> void:
-	if not _active or _plain_rects.is_empty() or glow_color.a <= 0.0:
-		return
-	# 只在矩形外侧叠细密同心圈: 内侧不落笔 ⇒ 本体不会被糊上光, 且没有可见的硬边
-	for rect in _plain_rects:
-		# 扩散距离随目标尺寸缩放: 大按钮和小方块看起来才是同一个强度
-		var spread := clampf(minf(rect.size.x, rect.size.y) * 0.45, 6.0, maxf(glow_width, 6.0))
-		var stroke := spread / float(LAYER_COUNT) + 1.0
-		for i in LAYER_COUNT:
-			var t := float(i) / float(LAYER_COUNT)
-			var alpha := glow_color.a * glow_energy * pow(1.0 - t, 2.5) * 0.16
-			if alpha <= 0.003:
-				continue
-			draw_rect(rect.grow(1.0 + spread * t), Color(glow_color, alpha), false, stroke)
+
+func _merged_rects() -> Rect2:
+	var merged := Rect2()
+	for i in _hit_rects.size():
+		merged = _hit_rects[i] if i == 0 else merged.merge(_hit_rects[i])
+	return merged
+
+
+func _apply_opts(opts: Dictionary) -> void:
+	if opts.has("dim"):
+		dim_color = opts.dim
+	if opts.has("block"):
+		block_input = opts.block
+	if opts.has("click_to_complete"):
+		click_to_complete = opts.click_to_complete
+	if opts.has("advance_action"):
+		advance_action = opts.advance_action
+	if opts.has("drag_checker"):
+		drag_checker = opts.drag_checker
 
 
 # ------------------------------------------------------------
@@ -728,9 +559,9 @@ func _build_tip() -> void:
 	tip_panel = Panel.new()
 	tip_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	tip_panel.visible = false
-	# 气泡永远压在最上层(点亮贴图 LIFT_Z, 描边 OUTLINE_Z, 这里最高)
+	# 气泡永远压在合成层之上
 	tip_panel.z_as_relative = false
-	tip_panel.z_index = OUTLINE_Z + 1
+	tip_panel.z_index = TIP_Z
 	tip_panel.add_theme_stylebox_override("panel", tip_style if tip_style else _default_tip_style())
 	tip_label = RichTextLabel.new()
 	tip_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -794,26 +625,6 @@ func _place_tip() -> void:
 	tip_label.size = Vector2(maxf(panel_size.x - pad_l - pad_r, 1.0),
 			maxf(panel_size.y - pad_t - pad_b, 1.0))
 	tip_placed.emit()
-
-
-func _merged_rects() -> Rect2:
-	var merged := Rect2()
-	for i in _hit_rects.size():
-		merged = _hit_rects[i] if i == 0 else merged.merge(_hit_rects[i])
-	return merged
-
-
-func _apply_opts(opts: Dictionary) -> void:
-	if opts.has("dim"):
-		dim_color = opts.dim
-	if opts.has("block"):
-		block_input = opts.block
-	if opts.has("click_to_complete"):
-		click_to_complete = opts.click_to_complete
-	if opts.has("advance_action"):
-		advance_action = opts.advance_action
-	if opts.has("drag_checker"):
-		drag_checker = opts.drag_checker
 
 
 # ------------------------------------------------------------
@@ -943,3 +754,26 @@ static func _canvas_rect(item: Node2D, local_rect: Rect2) -> Rect2:
 	return Rect2(
 		Vector2(minf(p1.x, p2.x), minf(p1.y, p2.y)),
 		Vector2(absf(p2.x - p1.x), absf(p2.y - p1.y)))
+
+
+# ------------------------------------------------------------
+# 辅助
+# ------------------------------------------------------------
+
+static func _collect_lights(node: Node) -> Array[Light3D]:
+	var result: Array[Light3D] = []
+	if node is Light3D:
+		result.append(node)
+	for child in node.get_children():
+		result.append_array(_collect_lights(child))
+	return result
+
+
+## 目标自身及子级里所有真实参与绘制的实例(Area3D 本身不画, 画的是它的 mesh 子节点)
+static func _visuals_of(node: Node) -> Array[VisualInstance3D]:
+	var result: Array[VisualInstance3D] = []
+	if node is VisualInstance3D:
+		result.append(node)
+	for child in node.get_children():
+		result.append_array(_visuals_of(child))
+	return result

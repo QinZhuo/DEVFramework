@@ -87,6 +87,45 @@ func _build_screens() -> void:
 	cube.add_child(cube_shape)
 	screen3d.viewport.add_child(cube)  # 子树建完再入树, 保证 _ready 时子节点已就位
 
+	# 嵌套子视口: 主窗口 → 外层屏幕(自己的 3D 世界) → 内层面板 → 内层 2D 按钮
+	# 对应"3D 世界本身渲染在 SubViewport 里, 里面还有一块贴图面"的项目结构
+	var nest := TutorialScreen3D.new()
+	nest.name = "ScreenNest"
+	nest.own_world = true
+	nest.background = Color(0.12, 0.14, 0.2)
+	nest.position = Vector3(0, 2.15, 0.2)
+	nest.rotation_degrees = Vector3(-8, 0, 0)
+	add_child(nest)
+	var nest_cam := Camera3D.new()
+	nest_cam.position = Vector3(0, 0, 2.2)
+	nest_cam.current = true
+	nest.viewport.add_child(nest_cam)
+	var nest_light := DirectionalLight3D.new()
+	nest_light.rotation_degrees = Vector3(-40, 25, 0)
+	nest.viewport.add_child(nest_light)
+
+	var inner := SubView3D.new()
+	inner.name = "InnerPanel"
+	var inner_vp := SubViewport.new()
+	inner_vp.name = "InnerViewport"
+	inner_vp.size = Vector2i(320, 200)
+	inner_vp.transparent_bg = false  # 不透明底: 最容易被"整块亮"坑到
+	inner_vp.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+	inner.add_child(inner_vp)
+	var inner_bg := ColorRect.new()
+	inner_bg.name = "InnerBackdrop"
+	inner_bg.color = Color(0.2, 0.16, 0.28)
+	inner_bg.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	inner_vp.add_child(inner_bg)
+	var inner_btn := Button.new()
+	inner_btn.name = "NestedBtn"
+	inner_btn.text = "嵌套按钮"
+	inner_btn.position = Vector2(90, 70)
+	inner_btn.size = Vector2(140, 60)
+	inner_vp.add_child(inner_btn)
+	inner.viewport = inner_vp
+	nest.viewport.add_child(inner)
+
 
 ## 进度变化 → 刷新步骤计数
 func _on_progress_changed() -> void:

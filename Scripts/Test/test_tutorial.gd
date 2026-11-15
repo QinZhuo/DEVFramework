@@ -135,9 +135,10 @@ func test_mask_focuses_multiple_targets() -> void:
 	var rects := mask.get_hit_rects()
 	assert_true(rects[0].has_point(btn1.get_global_rect().get_center()), "第一块可交互区域应覆盖 Btn1")
 	assert_false(rects[0].has_point(Vector2(5, 5)), "Btn1 之外的区域不应可交互")
-	# 2D 目标靠绘制顺序提到暗区之上(不挖洞): 目标 z 必须高于暗区
-	assert_true(btn1.z_index > FocusMask.DIM_Z and btn1.z_index == FocusMask.LIFT_Z,
-			"2D 目标应被提到暗区之上, 实际 z=%d" % btn1.z_index)
+	# 新的实现不碰目标本身(屏幕空间合成), 所以目标节点的 z_index 与布局都不应被改动
+	assert_eq(btn1.z_index, 0, "目标节点不应被提层(合成在屏幕空间完成), 实际 z=%d" % btn1.z_index)
+	assert_true(mask._spot != null and mask._spot.visible, "应有一层屏幕空间合成")
+	assert_true(mask._spot.z_index < FocusMask.TIP_Z, "气泡必须画在合成之上")
 
 	btn2.pressed.emit()
 	await tree.process_frame
