@@ -133,10 +133,17 @@ static func is_cancelled() -> bool:
 	return bool((_jobs.get(_active, {}) as Dictionary).get("cancel_requested", false))
 
 
-## 清空(测试自身用)
+## 复位(ResetTool 会调)。**只清已结束的任务**: 正在跑的那个必须保留,
+## 否则调用方还拿着它的 job_id 轮询时会拿到"未知 job_id"。
 static func clear() -> void:
+	var running: Dictionary = _jobs.get(_active, {})
+	var keep := ""
+	if not running.is_empty() and str(running.get("status", "")) == "running":
+		keep = _active
 	_jobs.clear()
-	_active = ""
+	if keep != "":
+		_jobs[keep] = running
+	_active = keep
 
 
 static func _run(id: String, work: Callable) -> void:
