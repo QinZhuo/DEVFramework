@@ -76,9 +76,12 @@ void fragment() {
 		if (use_silhouette && i == sil_index) {
 			continue;
 		}
-		vec2 center = r.xy + r.zw * 0.5;
+		// rects 是归一化坐标 → 还原成"逻辑像素"再算圆角形状
+		vec2 r_pos = r.xy * screen_size;
+		vec2 r_size = r.zw * screen_size;
+		vec2 center = r_pos + r_size * 0.5;
 		float radius = radii[i] > 0.0 ? radii[i] : corner_radius;
-		float d = sd_round_box(px_pos - center, r.zw * 0.5, min(radius, min(r.z, r.w) * 0.5));
+		float d = sd_round_box(px_pos - center, r_size * 0.5, min(radius, min(r_size.x, r_size.y) * 0.5));
 		cover = max(cover, 1.0 - smoothstep(-0.75, 0.75, d));
 		// 每个矩形各自描边: 不能整体二选一, 否则多目标时只有一个有边
 		float edge = 1.0 - smoothstep(outline_width - 0.75, outline_width + 0.75, abs(d));

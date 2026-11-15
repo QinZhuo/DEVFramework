@@ -461,6 +461,14 @@ func _build_spot() -> void:
 	_spot_mat = ShaderMaterial.new()
 	_spot_mat.shader = _SPOT_SHADER
 	_spot.material = _spot_mat
+	# 画面渲染到 SubViewport(3D 世界在子视口里)时, hint_screen_texture 需要显式拷贝一次 backbuffer,
+	# 否则采样到的是空的 → 整屏变黑
+	var back := BackBufferCopy.new()
+	back.name = "FocusBackBuffer"
+	back.copy_mode = BackBufferCopy.COPY_MODE_VIEWPORT
+	back.z_as_relative = false
+	back.z_index = DIM_Z - 1
+	add_child(back)
 	add_child(_spot)
 	_spot.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	if tip_panel:
@@ -495,11 +503,15 @@ func _push_rects() -> void:
 		return
 	var view := _screen_size if _screen_size != Vector2.ZERO else get_viewport_rect().size
 	_spot_mat.set_shader_parameter("screen_size", view)
+	# 传归一化坐标(0..1): 着色器用 SCREEN_UV 比较,
+	# 这样与"渲染分辨率是否等于逻辑分辨率"无关(3D 渲染到 3x 尺寸的 SubViewport 时也不会错位)
+	var view_size := view if view.x > 0.0 and view.y > 0.0 else Vector2.ONE
 	var packed := PackedVector4Array()
 	var radii := PackedFloat32Array()
 	for i in mini(_hit_rects.size(), MAX_RECTS):
 		var rect := _hit_rects[i]
-		packed.append(Vector4(rect.position.x, rect.position.y, rect.size.x, rect.size.y))
+		packed.append(Vector4(rect.position.x / view_size.x, rect.position.y / view_size.y,
+				rect.size.x / view_size.x, rect.size.y / view_size.y))
 		radii.append(_hit_radii[i] if i < _hit_radii.size() else 0.0)
 	_spot_mat.set_shader_parameter("rects", packed)
 	_spot_mat.set_shader_parameter("radii", radii)
