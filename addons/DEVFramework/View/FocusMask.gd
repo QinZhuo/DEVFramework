@@ -57,30 +57,30 @@ var drag_checker: Callable
 ## 兼容旧 API: 气泡容器(默认实现才有, 项目自定义 presenter 时可能为 null)
 var tip_panel: Panel:
 	get:
-		var p := DialogueTool.get_presenter()
+		var p := DialogueTool.presenter()
 		return (p as BubblePresenter).panel if p is BubblePresenter else null
 ## 兼容旧 API: 文字控件
 var tip_label: RichTextLabel:
 	get:
-		var p := DialogueTool.get_presenter()
+		var p := DialogueTool.presenter()
 		return (p as BubblePresenter).label if p is BubblePresenter else null
 ## 兼容旧 API: 气泡最小高度
 var tip_min_height: float:
 	get:
-		var p := DialogueTool.get_presenter()
-		return p.min_height if p else 0.0
+		var p := DialogueTool.presenter()
+		return (p as BubblePresenter).min_height if p is BubblePresenter else 0.0
 	set(value):
-		var p := DialogueTool.get_presenter()
+		var p := DialogueTool.presenter()
 		if p:
 			p.min_height = value
 			p.refresh()
 ## 兼容旧 API: 气泡顶部下限(屏幕 Y, -1 = 不限)
 var tip_top_limit: float:
 	get:
-		var p := DialogueTool.get_presenter()
+		var p := DialogueTool.presenter()
 		return p.limit_top if p else -1.0
 	set(value):
-		var p := DialogueTool.get_presenter()
+		var p := DialogueTool.presenter()
 		if p:
 			p.limit_top = value
 			p.refresh()
@@ -196,7 +196,7 @@ func set_tip(text: String) -> void:
 		DialogueTool.hide()
 		return
 	var view := _screen_size if _screen_size != Vector2.ZERO else get_viewport_rect().size
-	DialogueTool.show_text(text, _merged_rects(), view)
+	DialogueTool.show(text, _merged_rects(), view)
 
 
 func is_active() -> bool:
@@ -220,14 +220,14 @@ func set_tip_limit(max_y: float) -> void:
 
 ## 作废排版缓存并立即重排(宿主改过气泡尺寸/内容后调用)
 func refresh_tip() -> void:
-	var presenter := DialogueTool.get_presenter()
+	var presenter := DialogueTool.presenter()
 	if presenter:
 		presenter.refresh()
 
 
 ## 当前的表现层(项目换外观/加插槽时用它)
 func get_presenter() -> DialoguePresenter:
-	return DialogueTool.get_presenter()
+	return DialogueTool.presenter()
 
 
 # ------------------------------------------------------------

@@ -1,28 +1,26 @@
-## 对话子系统的统一入口(静态)。
+## 对话子系统入口。三条命令够用：
 ##
-## 分工:
-##   · DialogueTool   —— 谁来播、播哪一段、推进/停止(与 UI 无关)
-##   · DialogueSession—— 运行时游标(只发信号)
-##   · DialoguePresenter —— 表现(项目实现; 框架只带一个默认气泡)
+##     DialogueTool.bind(ui_layer)          # 只需一次（遮罩会自动做）
+##     DialogueTool.show("点这里继续", rect) # 一条提示
+##     DialogueTool.play(script)            # 一段对话
 ##
-## 典型用法:
-##     DialogueTool.bind(layer_control)              # 指定 presenter 挂在哪
-##     DialogueTool.show_text("点这里继续", rect)     # 一条纯提示
-##     DialogueTool.play(script, {"actor": player})  # 播一段对话
-##     DialogueTool.advance()                        # 玩家推进
+## 表现层默认是 `BubblePresenter`；想要自己的样子：
+##     DialogueTool.presenter_scene = preload("res://你的气泡.tscn")
+##     或 DialogueTool.register(MyPresenter.new())
 class_name DialogueTool
+
+## 项目可替换的表现场景（须继承 DialoguePresenter）
+static var presenter_scene: PackedScene
 
 static var _presenter: DialoguePresenter
 static var _session: DialogueSession
-## 项目可在这里注册自己的 presenter 场景(为空 = 默认气泡)
-static var presenter_scene: PackedScene
 
 
 # ------------------------------------------------------------
-# 绑定 / 注册
+# 绑定
 # ------------------------------------------------------------
 
-## 把 presenter 挂到指定父节点(通常是遮罩所在的 UI 层)。重复调用会复用实例。
+## 把表现层挂到某个 UI 父节点（重复调用复用实例）
 static func bind(parent: Control, z_index := 0) -> DialoguePresenter:
 	if _presenter != null and is_instance_valid(_presenter):
 		if parent != null and _presenter.get_parent() != parent:
@@ -30,7 +28,6 @@ static func bind(parent: Control, z_index := 0) -> DialoguePresenter:
 		return _presenter
 	if parent == null:
 		return null
-	_presenter = null
 	if presenter_scene != null:
 		_presenter = presenter_scene.instantiate() as DialoguePresenter
 	if _presenter == null:
@@ -42,54 +39,65 @@ static func bind(parent: Control, z_index := 0) -> DialoguePresenter:
 	return _presenter
 
 
-## 项目可显式塞一个自己的 presenter(它会接管后续所有对话/提示)
+## 直接塞一个自己的表现层
 static func register(presenter: DialoguePresenter) -> void:
 	_presenter = presenter
 
 
-static func get_presenter() -> DialoguePresenter:
-	return _presenter
+static func presenter() -> DialoguePresenter:
+	return _presenter if is_instance_valid(_presenter) else null
 
 
 static func is_bound() -> bool:
-	return _presenter != null and is_instance_valid(_presenter)
+	return presenter() != null
 
 
 # ------------------------------------------------------------
-# 纯提示(一条文本, 无会话)
+# 一条提示
 # ------------------------------------------------------------
 
-## 显示一条提示。anchor 为空 = 纯提示(按 presenter.placement 摆)。
-static func show_text(text: String, anchor: Rect2 = Rect2(), view_size: Vector2 = Vector2.ZERO) -> void:
-	if not is_bound():
+## 显示一条提示；anchor 省略 = 屏幕底部（或 presenter 自己的摆法）
+static func show(text: String, anchor := Rect2(), view_size := Vector2.ZERO) -> void:
+	var p := presenter()
+	if p == null:
 		return
 	if _session != null:
-		_session.cancel()  # 纯提示覆盖正在播放的对话
+		_session.cancel()
 		_session = null
 	if view_size == Vector2.ZERO:
-		view_size = _presenter.get_viewport_rect().size
-	_presenter.set_anchor_rect(anchor, view_size)
-	_presenter.present(null, text)
+		view_size = p.get_viewport_rect().size
+	p.set_anchor_rect(anchor, view_size)
+	p.present(null, text)
 
 
-## 只更新锚点(目标移动时每帧调)
-static func set_anchor(anchor: Rect2, view_size: Vector2) -> void:
-	if is_bound():
-		_presenter.set_anchor_rect(anchor, view_size)
+## 目标移动时每帧调（只更新锚点，不重设文案）
+static func set_anchor(anchor: Rect2, view_size := Vector2.ZERO) -> void:
+	var p := presenter()
+	if p == null:
+		return
+	if view_size == Vector2.ZERO:
+		view_size = p.get_viewport_rect().size
+	p.set_anchor_rect(anchor, view_size)
 
 
 static func hide() -> void:
-	if is_bound():
-		_presenter.dismiss()
+	var p := presenter()
+	if p:
+		p.dismiss()
+
+
+static func text() -> String:
+	var p := presenter()
+	return (p as BubblePresenter).get_text() if p is BubblePresenter else ""
 
 
 # ------------------------------------------------------------
-# 对话段
+# 一段对话
 # ------------------------------------------------------------
 
-## 播放一段对话; ctx 会透传给 presenter(项目可读 player/step 等)
 static func play(script: DialogueScriptDef, ctx: Dictionary = {}) -> DialogueSession:
-	if not is_bound() or script == null or script.is_empty():
+	var p := presenter()
+	if p == null or script == null or script.is_empty():
 		return null
 	if _session != null:
 		_session.cancel()
@@ -97,27 +105,29 @@ static func play(script: DialogueScriptDef, ctx: Dictionary = {}) -> DialogueSes
 	_session.context = ctx
 	_session.line_changed.connect(_on_line_changed)
 	_session.finished.connect(_on_finished)
-	_session.start(ctx)
+	if not _session.start(ctx):
+		_session = null
 	return _session
 
 
 static func _on_line_changed(line: DialogueLineDef, _index: int) -> void:
-	if is_bound():
-		_presenter.present(line, line.get_display_text() if line else "")
+	var p := presenter()
+	if p:
+		p.present(line, line.display_text() if line else "")
 
 
 static func _on_finished() -> void:
-	if is_bound():
-		_presenter.dismiss()
+	var p := presenter()
+	if p:
+		p.dismiss()
 	_session = null
 
 
-## 玩家推进: 有会话→下一行; 无会话→当作"关闭提示"
-static func advance() -> bool:
+## 推进：有对话 → 下一行；没有 → 关闭提示
+static func next() -> bool:
 	if _session != null:
-		return _session.advance()
-	if is_bound():
-		_presenter.dismiss()
+		return _session.next()
+	hide()
 	return false
 
 
@@ -125,18 +135,28 @@ static func stop() -> void:
 	if _session != null:
 		_session.cancel()
 		_session = null
-	if is_bound():
-		_presenter.dismiss()
-
-
-## 会话级复位：停播并丢弃会话（presenter 实例随场景释放）
-static func reset() -> void:
-	stop()
+	hide()
 
 
 static func is_playing() -> bool:
-	return _session != null and _session.is_running
+	return _session != null and _session.running
 
 
-static func get_session() -> DialogueSession:
+static func session() -> DialogueSession:
 	return _session
+
+
+## 一行接入"点击/按键推进"：在项目的 _input 里 `if DialogueTool.handle_input(event): 吞掉`
+static func handle_input(event: InputEvent) -> bool:
+	var p := presenter()
+	if p == null or not p.visible:
+		return false
+	if event.is_action_pressed(&"ui_accept") or event.is_action_pressed(&"ui_cancel"):
+		next()
+		return true
+	if event is InputEventMouseButton:
+		var mb := event as InputEventMouseButton
+		if mb.pressed and mb.button_index == MOUSE_BUTTON_LEFT:
+			next()
+			return true
+	return false

@@ -1,23 +1,22 @@
 @tool
-## **默认**的对话/提示表现: 一条圆角气泡 + 富文本。
-##
-## 这不是"唯一形态"——只为了让框架开箱可用。
-## 项目想要自己的样子(立绘/打字机/全屏字幕/3D 头顶文本)就:
-##   · 继承 DialoguePresenter 自己实现 present()/dismiss()/refresh(), 或
-##   · 继承本类, 只覆盖 `_build_view()` / `_apply_style()` / `_layout_slots()`。
+## 默认表现: 一条圆角气泡 + 富文本 + 左侧插槽竖排。
+## 项目想要别的样子 → 继承 `DialoguePresenter`（或本类只覆盖 `_build_view` / `_apply_style`）。
 class_name BubblePresenter extends DialoguePresenter
 
 @export var style: StyleBox
 @export var font_size := 20
 @export var font_color := Color(1, 1, 1, 1)
-@export var content_padding := Vector4(22.0, 14.0, 22.0, 14.0)
+@export var max_width := 720.0
+@export var min_height := 0.0
+## 内容内边距 left/top/right/bottom
+@export var padding := Vector4(22.0, 14.0, 22.0, 14.0)
 
 var panel: Panel
 var label: RichTextLabel
 
 var _slots := {}
 var _text := ""
-var _layout_key := []
+var _key := []
 
 
 func _ready() -> void:
@@ -34,7 +33,6 @@ func _build_view() -> void:
 	label.name = "Label"
 	label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	label.bbcode_enabled = true
-	label.fit_content = false
 	label.scroll_active = false
 	label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
@@ -59,36 +57,32 @@ func _apply_style() -> void:
 		label.add_theme_color_override("default_color", font_color)
 
 
-# ------------------------------------------------------------
-# 表现实现
-# ------------------------------------------------------------
-
 func present(line: DialogueLineDef, text: String) -> void:
 	var content := text
 	if content.is_empty() and line:
-		content = line.get_display_text()
+		content = line.display_text()
 	set_text(content)
 
 
 func set_text(text: String) -> void:
 	_text = text
-	var should_show := not text.is_empty()
-	if should_show and not visible:
+	var show_it := not text.is_empty()
+	if show_it and not visible:
 		visible = true
 		shown.emit()
-	elif not should_show and visible:
-		visible = false
+	elif not show_it and visible:
 		dismissed.emit()
-	_layout_key = []
+		visible = false
+	_key = []
 	refresh()
-
-
-func dismiss() -> void:
-	set_text("")
 
 
 func get_text() -> String:
 	return _text
+
+
+func dismiss() -> void:
+	set_text("")
 
 
 func attach_slot(slot_name: StringName, node: Control, size: Vector2) -> void:
@@ -101,43 +95,46 @@ func attach_slot(slot_name: StringName, node: Control, size: Vector2) -> void:
 
 
 func detach_slot(slot_name: StringName) -> void:
-	_slots.erase(slot_name)
-	refresh()
+	if _slots.erase(slot_name):
+		refresh()
 
 
 func refresh() -> void:
 	if not visible or label == null:
 		return
-	var view := get_view_size()
+	var view := view_size()
 	if view.x <= 0.0:
 		return
-	var key := [view, _text, get_anchor_rect(), placement, max_width, min_width,
-			min_height, content_padding, gap, limit_top, _slot_height()]
-	if key == _layout_key:
+	var key := [view, _text, anchor(), max_width, min_height, padding, _slot_height()]
+	if key == _key:
 		return
-	_layout_key = key
+	_key = key
 
-	var pad_l := content_padding.x
-	var pad_t := content_padding.y
-	var pad_r := content_padding.z
-	var pad_b := content_padding.w
+	var pad_l := padding.x
+	var pad_t := padding.y
+	var pad_r := padding.z
+	var pad_b := padding.w
 	var slot_w := _slot_width()
-	var slot_h := _slot_height()
 
-	var width := minf(view.x - screen_margin * 2.0, max_width)
-	if min_width > 0.0:
-		width = maxf(width, min_width)
+	var width := minf(view.x - 24.0, max_width)
 	label.size = Vector2(maxf(width - pad_l - pad_r - slot_w, 1.0), 0.0)
-	var height := maxf(label.get_content_height(), slot_h) + pad_t + pad_b
+	var height := maxf(label.get_content_height(), _slot_height()) + pad_t + pad_b
 	height = maxf(height, min_height)
 	var panel_size := Vector2(width, height)
 
-	panel.position = resolve_position(panel_size)
+	panel.position = place_default(panel_size)
 	panel.size = panel_size
 	label.position = Vector2(pad_l + slot_w, pad_t)
 	label.size = Vector2(maxf(panel_size.x - pad_l - pad_r - slot_w, 1.0),
 			maxf(panel_size.y - pad_t - pad_b, 1.0))
-	_layout_slots(pad_l, pad_t)
+
+	var y := pad_t
+	for entry in _slots.values():
+		var node: Control = entry.node
+		if is_instance_valid(node):
+			node.position = Vector2(pad_l, y)
+			node.size = entry.size
+			y += entry.size.y
 	if get_parent():
 		get_parent().move_child(self, -1)
 	placed.emit()
@@ -155,15 +152,3 @@ func _slot_height() -> float:
 	for entry in _slots.values():
 		total += entry.size.y
 	return total
-
-
-## 插槽默认左上竖排, 项目可覆盖
-func _layout_slots(pad_l: float, pad_t: float) -> void:
-	var y := pad_t
-	for entry in _slots.values():
-		var node: Control = entry.node
-		if not is_instance_valid(node):
-			continue
-		node.position = Vector2(pad_l, y)
-		node.size = entry.size
-		y += entry.size.y

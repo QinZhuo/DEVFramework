@@ -1,40 +1,19 @@
 @tool
-## 对话/提示的**表现基类** — 框架只定义"要具备哪些能力", 长什么样由项目实现。
+## 对话/提示的**表现基类** — 只有四个可覆盖的方法 + 一个锚点。
 ##
-## 项目做法(任选):
-##   1. 继承本类, 覆盖 `present()` / `dismiss()`(自己的 Panel/Label/动画);
-##   2. 或在 DialogueTool 里注册一个任意 Control + 实现这几个方法;
-##   3. 框架自带的 `BubblePresenter` 只是"默认实现", 不需要就换成自己的。
+## 想换样子就继承它，实现 `present()` / `dismiss()`（`refresh()` / `attach_slot()` 可选）：
+##     立绘、打字机、多选框、字幕、3D 头顶文字都能做。
+## 框架自带的 `BubblePresenter` 只是默认实现，不需要就用你的。
 class_name DialoguePresenter extends Control
 
-## 玩家要求推进(点击/按键) —— 由 presenter 发出, Session 负责真正换行
+## 玩家要求推进（点击/按键）—— 由 presenter 发出，DialogueTool 负责换行
 signal advance_requested
-## 一次排版完成(项目可在这里做二次布局)
+## 每次排版完成（项目要做二次布局就接这个）
 signal placed
 signal shown
 signal dismissed
 
-## 定位策略: 决定"锚在目标旁边"还是"贴在屏幕某处"
-enum Placement {
-	FOLLOW_BELOW,
-	FOLLOW_ABOVE,
-	SCREEN_BOTTOM,
-	SCREEN_TOP,
-	SCREEN_LEFT_TOP,
-	SCREEN_CENTER,
-}
-
-@export var placement := Placement.SCREEN_BOTTOM
-## 与锚点的间距
-@export var gap := 14.0
-## 与屏幕边缘的安全距离
-@export var screen_margin := 12.0
-## 最大/最小宽度(0 = 不限制)
-@export var max_width := 720.0
-@export var min_width := 0.0
-## 最小高度(装立绘/模型时用)
-@export var min_height := 0.0
-## 排版后顶部不得高于该 Y(-1 = 不限)
+## 排版后气泡顶部不得高于该 Y(-1 = 不限)。用于避开屏幕底部的按钮/物品栏
 @export var limit_top := -1.0
 
 var _anchor := Rect2()
@@ -47,12 +26,12 @@ func _ready() -> void:
 
 
 # ------------------------------------------------------------
-# 需要项目实现的部分(默认空实现, 子系统不会因此崩)
+# 项目实现这四个（都有空实现，不会因为没写而崩）
 # ------------------------------------------------------------
 
-## 显示一行(或一条纯提示)。line 可能为 null(纯提示), 用 text 兜底。
-func present(_line: DialogueLineDef, _text: String) -> void:
-	push_warning("DialoguePresenter.present() 未实现: 请在项目里覆盖")
+## 显示一行；line 可能为 null（纯提示），此时用 text。
+func present(_line: DialogueLineDef, text: String) -> void:
+	visible = not text.is_empty()
 
 
 ## 收起
@@ -61,73 +40,52 @@ func dismiss() -> void:
 	dismissed.emit()
 
 
-## 排版/内容变化后重排(项目实现)
+## 内容/尺寸变化后重排
 func refresh() -> void:
 	pass
 
 
-## 挂一个插槽(立绘/模型/图标), 由项目解释
+## 挂一个插槽（立绘/模型/图标）；框架只负责把锚点给它，排布由项目定
 func attach_slot(_slot_name: StringName, _node: Control, _size: Vector2) -> void:
 	pass
 
 
 # ------------------------------------------------------------
-# 框架提供: 锚点与视图尺寸
+# 框架提供
 # ------------------------------------------------------------
 
-## 调用方(遮罩/教程)每帧喂"锚在哪"
+## 调用方每帧喂"锚在哪"（空 Rect2 = 没有目标）
 func set_anchor_rect(rect: Rect2, view_size: Vector2) -> void:
 	if rect == _anchor and view_size == _view:
 		return
 	_anchor = rect
 	_view = view_size
-	_on_anchor_changed()
 	refresh()
 
 
-func get_anchor_rect() -> Rect2:
+func anchor() -> Rect2:
 	return _anchor
 
 
-func get_view_size() -> Vector2:
+func view_size() -> Vector2:
 	var view := _view
 	if view.x <= 0.0 or view.y <= 0.0:
 		view = get_viewport_rect().size
 	return view
 
 
-## 锚点变化钩子(项目可覆盖做跟随动画)
-func _on_anchor_changed() -> void:
-	pass
-
-
-## 按 placement 算一个位置(项目可直接用, 也可以完全自己排)
-func resolve_position(panel_size: Vector2) -> Vector2:
-	var view := get_view_size()
-	var margin := screen_margin
-	var has_anchor := _anchor.size != Vector2.ZERO
-	var pos := Vector2(view.x * 0.5 - panel_size.x * 0.5, view.y - margin - panel_size.y)
-	match placement:
-		Placement.FOLLOW_BELOW:
-			if has_anchor:
-				pos = Vector2(_anchor.get_center().x - panel_size.x * 0.5, _anchor.end.y + gap)
-				if pos.y + panel_size.y > view.y - margin:
-					pos.y = _anchor.position.y - gap - panel_size.y
-		Placement.FOLLOW_ABOVE:
-			if has_anchor:
-				pos = Vector2(_anchor.get_center().x - panel_size.x * 0.5, _anchor.position.y - gap - panel_size.y)
-				if pos.y < margin:
-					pos.y = _anchor.end.y + gap
-		Placement.SCREEN_TOP:
-			pos.y = margin
-		Placement.SCREEN_LEFT_TOP:
-			pos = Vector2(margin, margin)
-		Placement.SCREEN_CENTER:
-			pos = view * 0.5 - panel_size * 0.5
-		_:
-			pos.y = view.y - margin - panel_size.y
-	pos.x = clampf(pos.x, margin, maxf(margin, view.x - panel_size.x - margin))
-	pos.y = clampf(pos.y, margin, maxf(margin, view.y - panel_size.y - margin))
+## 唯一保留的定位助手：有锚点贴其下方（放不下翻上方），没锚点贴屏幕底部居中。
+## 想要别的摆法，直接在 `refresh()` 里自己算——不需要框架提供枚举。
+func place_default(size: Vector2) -> Vector2:
+	var view := view_size()
+	var margin := 12.0
+	var pos := Vector2(view.x * 0.5 - size.x * 0.5, view.y - margin - size.y)
+	if _anchor.size != Vector2.ZERO:
+		pos = Vector2(_anchor.get_center().x - size.x * 0.5, _anchor.end.y + 14.0)
+		if pos.y + size.y > view.y - margin:
+			pos.y = _anchor.position.y - 14.0 - size.y
+	pos.x = clampf(pos.x, margin, maxf(margin, view.x - size.x - margin))
+	pos.y = clampf(pos.y, margin, maxf(margin, view.y - size.y - margin))
 	if limit_top >= 0.0:
 		pos.y = maxf(pos.y, limit_top)
 	return pos
