@@ -6,8 +6,8 @@ extends RefCounted
 ## 接缝可以存在, 但漏调必须可见; 漏调会静默失效的场合一律不许用接缝。据此各域给了不同答案,
 ## 且都正确, 不要为了"看起来统一"而改:
 ##   - log 域→ 注入 bind_logger: 漏调后果是 get_logs 返回"日志捕获器未就绪", **显式报错**。
-const MCPResult := preload("res://addons/DEVFramework/MCP/MCPResult.gd")
-const MCPToolSchema := preload("res://addons/DEVFramework/MCP/MCPToolSchema.gd")
+const MCPResult := preload("res://addons/DEVFramework/MCP/Def/MCPResult.gd")
+const MCPToolSchema := preload("res://addons/DEVFramework/MCP/Def/MCPToolSchema.gd")
 
 
 ## ======= 域注册入口 =======

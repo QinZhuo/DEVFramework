@@ -4,7 +4,7 @@ extends RefCounted
 ## ======= MCP 资源(静态文档)注册表 =======
 ## 本文件**必须导出安全**(不得出现 EditorInterface 等编辑器引用): resources/list|read 在
 
-const MCPResult := preload("res://addons/DEVFramework/MCP/MCPResult.gd")
+const MCPResult := preload("res://addons/DEVFramework/MCP/Def/MCPResult.gd")
 
 ## 已注册文档(provider 声明顺序 = 稳定顺序, 满足规范"确定性排序"要求)。
 static var _docs: Array = []

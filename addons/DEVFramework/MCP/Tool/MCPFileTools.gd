@@ -6,8 +6,8 @@ extends RefCounted
 ##   - MCPToolSchema  请求 schema 工厂
 ##   - VariantTool    全局 class_name, 入参读取
 ## 删错东西/工程损坏, 且**不报错**。改本文件时不要把它们当冗余检查清理掉。
-const MCPResult := preload("res://addons/DEVFramework/MCP/MCPResult.gd")
-const MCPToolSchema := preload("res://addons/DEVFramework/MCP/MCPToolSchema.gd")
+const MCPResult := preload("res://addons/DEVFramework/MCP/Def/MCPResult.gd")
+const MCPToolSchema := preload("res://addons/DEVFramework/MCP/Def/MCPToolSchema.gd")
 
 
 ## ======= 域注册入口 =======

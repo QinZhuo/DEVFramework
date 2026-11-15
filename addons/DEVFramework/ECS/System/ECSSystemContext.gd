@@ -31,7 +31,7 @@ func for_each(anchor, must: Array = [], without: Array = []) -> ECSQuery:
 		q = _query_pool[_pool_idx]
 		q._reset(world, anchor, must, without)
 	else:
-		q = load("res://addons/DEVFramework/ECS/ECSQuery.gd").new()
+		q = load("res://addons/DEVFramework/ECS/System/ECSQuery.gd").new()
 		q._init_rule(world, anchor, must, without)
 		_query_pool.append(q)
 	_pool_idx += 1

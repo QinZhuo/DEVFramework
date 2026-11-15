@@ -6,8 +6,8 @@ extends RefCounted
 ##   - validate        统一验证入口(kind=script 编译校验 / kind=resource 资源可加载性)
 ##   - classdb_query   查 Godot 原生类 API(写脚本前确认方法/属性/信号签名)
 ##   - MCPResult      响应封装
-const MCPResult := preload("res://addons/DEVFramework/MCP/MCPResult.gd")
-const MCPToolSchema := preload("res://addons/DEVFramework/MCP/MCPToolSchema.gd")
+const MCPResult := preload("res://addons/DEVFramework/MCP/Def/MCPResult.gd")
+const MCPToolSchema := preload("res://addons/DEVFramework/MCP/Def/MCPToolSchema.gd")
 
 ## 本域私有的编译错误捕获器。**刻意不共用 MCPDevServer 的那个**, 理由见下方"编译错误从哪来";
 static var _compile_log: MCPLogger = null

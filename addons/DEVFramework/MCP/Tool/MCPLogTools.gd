@@ -5,8 +5,8 @@ extends RefCounted
 ## 绑定必须发生在**捕获器建好之后**, 两个进程各一次; 漏绑不崩, 只报"日志捕获器未就绪"。
 ## **主文件不得保留同名函数**: MCPToolAudit.func_body 按函数名在全目录找第一个命中, 而
 ## **必须带 @tool 且不声明 class_name**, 详见 MCPDevServer 顶部注释。
-const MCPResult := preload("res://addons/DEVFramework/MCP/MCPResult.gd")
-const MCPToolSchema := preload("res://addons/DEVFramework/MCP/MCPToolSchema.gd")
+const MCPResult := preload("res://addons/DEVFramework/MCP/Def/MCPResult.gd")
+const MCPToolSchema := preload("res://addons/DEVFramework/MCP/Def/MCPToolSchema.gd")
 
 ## 本进程日志捕获器。由 MCPDevServer 建好 _logger 后 bind_logger() 注入; 未注入时报"未就绪"。
 static var _logger: MCPLogger = null

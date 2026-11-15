@@ -5,7 +5,7 @@ extends RefCounted
 ## 由 MCPDevServer 以 preload 常量 `MCPRuntime` 引用。**必须 @tool 且不声明 class_name**
 ## 为什么这些必须集中在一处：它们全都围绕同一条判断"这条请求该在编辑器进程还是游戏进程执行"。
 
-const MCPLogTools := preload("res://addons/DEVFramework/MCP/MCPLogTools.gd")
+const MCPLogTools := preload("res://addons/DEVFramework/MCP/Tool/MCPLogTools.gd")
 
 ## MCPDevServer（Variant：跨编译代次不信任类型标注）
 var server = null

@@ -6,11 +6,11 @@ extends RefCounted
 ##   - 场景编辑(写):       add_node / save_scene / remove_node / duplicate_node / connect_signal
 ## 分组的界线是**副作用**: 前一组以观测为主(唯一的例外是 set_node_property / call_node_method,
 ## 改动能被用户 Ctrl+Z 撤掉 —— 这条"AI 改的东西必须可撤"是本域最重要的设计约束。
-const MCPResult := preload("res://addons/DEVFramework/MCP/MCPResult.gd")
-const MCPToolSchema := preload("res://addons/DEVFramework/MCP/MCPToolSchema.gd")
+const MCPResult := preload("res://addons/DEVFramework/MCP/Def/MCPResult.gd")
+const MCPToolSchema := preload("res://addons/DEVFramework/MCP/Def/MCPToolSchema.gd")
 
 ## 跨域共享的编辑器环境辅助。本域**不持有**取编辑根节点的私有副本 —— 见文件头
-const MCPEditorEnv := preload("res://addons/DEVFramework/MCP/MCPEditorEnv.gd")
+const MCPEditorEnv := preload("res://addons/DEVFramework/MCP/Editor/MCPEditorEnv.gd")
 
 ## 输出给 AI 的核心属性白名单(过滤编辑器内部数百项属性, 控制上下文开销)
 const CORE_PROP_NAMES := ["name", "position", "scale", "rotation", "rotation_degrees", "visible", "modulate", "process_mode", "z_index", "text", "color"]

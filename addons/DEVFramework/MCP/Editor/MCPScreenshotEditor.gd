@@ -3,9 +3,9 @@ extends RefCounted
 
 ## ======= 截图域: 编辑器侧捕获(仅编辑器进程) =======
 
-const MCPResult := preload("res://addons/DEVFramework/MCP/MCPResult.gd")
-const MCPEditorEnv := preload("res://addons/DEVFramework/MCP/MCPEditorEnv.gd")
-const MCPScreenshotTools := preload("res://addons/DEVFramework/MCP/MCPScreenshotTools.gd")
+const MCPResult := preload("res://addons/DEVFramework/MCP/Def/MCPResult.gd")
+const MCPEditorEnv := preload("res://addons/DEVFramework/MCP/Editor/MCPEditorEnv.gd")
+const MCPScreenshotTools := preload("res://addons/DEVFramework/MCP/Tool/MCPScreenshotTools.gd")
 
 
 ## ======= 域入口: 编辑器侧捕获 =======

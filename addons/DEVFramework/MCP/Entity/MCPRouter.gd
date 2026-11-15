@@ -5,7 +5,7 @@ extends RefCounted
 ## 由 MCPDevServer 以 preload 常量 `MCPRouter` 引用。**必须 @tool 且不声明 class_name**
 ## **不做"唯一的其他实例自动选中"**: 那在"开了两个项目、只想改当前这个"时会静默改错项目;
 
-const MCPResult := preload("res://addons/DEVFramework/MCP/MCPResult.gd")
+const MCPResult := preload("res://addons/DEVFramework/MCP/Def/MCPResult.gd")
 
 ## 实例管理工具名。它们**不**注入 `instance` 参数, 也不参与转发 ——
 ## 它们本身就在操作"实例"这个维度, 必须在收到请求的进程上执行。
