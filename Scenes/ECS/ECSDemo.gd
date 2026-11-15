@@ -39,9 +39,9 @@ var _render_on := true                       # 渲染开关
 # 各实现已测结果: 实现名 -> {ms, fps, setup_ms}(切换时写入)
 var _results := {}
 
-# 当前实现滚动平均(最近 WINDOW 帧)
-var _ms_window: Array = []
+# 当前实现的滚动统计(最近 60 帧)
 const WINDOW := 60
+var _win := PerfTool.Rolling.new(WINDOW)
 var _frame := 0
 
 
@@ -72,30 +72,23 @@ func _apply_render(impl) -> void:
 
 
 func _process(delta: float) -> void:
-	var t0 := Time.get_ticks_usec()
+	var t0 := PerfTool.now_us()
 	_impl.tick(delta)
-	var ms := (Time.get_ticks_usec() - t0) / 1000.0
-	_ms_window.append(ms)
-	if _ms_window.size() > WINDOW:
-		_ms_window.pop_front()
+	_win.push(PerfTool.to_ms(PerfTool.now_us() - t0))
 	_frame += 1
 	if _frame % 5 == 0:
 		_refresh_ui()
 
 
 func _avg_ms() -> float:
-	if _ms_window.is_empty():
-		return 0.0
-	var s := 0.0
-	for m in _ms_window:
-		s += m
-	return s / _ms_window.size()
+	return _win.avg()
 
 
 func _on_switch_pressed() -> void:
 	# 把当前实现结果写入表格, 然后销毁它、重建下一个实现(只保留当前, 减少互相影响)
 	_results[IMPL_NAMES[_current]] = {
-		"ms": _avg_ms(), "fps": 1000.0 / maxf(_avg_ms(), 0.001), "setup_ms": _setup_ms,
+		"ms": _avg_ms(), "p95": _win.percentile(0.95),
+		"fps": 1000.0 / maxf(_avg_ms(), 0.001), "setup_ms": _setup_ms,
 	}
 	if _impl.has_method("teardown"):
 		_impl.teardown()
@@ -103,7 +96,7 @@ func _on_switch_pressed() -> void:
 		_impl.queue_free()   # 场景化实现: 删除场景
 	_current = (_current + 1) % IMPL_NAMES.size()
 	_spawn(_current)
-	_ms_window.clear()
+	_win.clear()
 	_refresh_ui()
 
 
@@ -119,20 +112,21 @@ func _on_render_toggled() -> void:
 func _refresh_ui() -> void:
 	var text := "ECS 小球对比测试 ｜ 每路 %d 个小球(真实节点显示)\n" % ball_count
 	text += "生命值 0→100 周期增减, 大小随 hp\n\n"
-	text += "实现                创建      平均耗时   平均帧率\n"
-	text += "──────────────────────────────────────────\n"
+	text += "实现                创建      平均耗时   P95耗时   平均帧率\n"
+	text += "─────────────────────────────────────────────────────\n"
 	for i in IMPL_NAMES.size():
 		var name: String = IMPL_NAMES[i]
 		var cur_ms := _avg_ms() if i == _current else 0.0
+		var cur_p95 := _win.percentile(0.95) if i == _current else 0.0
 		var cur_setup := _setup_ms if i == _current else 0.0
 		var mark := "▶" if i == _current else " "
 		if _results.has(name):
 			var r: Dictionary = _results[name]
-			text += "%s %-14s  %6.1fms  %8.3fms  %5d FPS\n" % [mark, name, r.setup_ms, r.ms, int(r.fps)]
+			text += "%s %-14s  %6.1fms  %8.3fms  %8.3fms  %5d FPS\n" % [mark, name, r.setup_ms, r.ms, r.get("p95", 0.0), int(r.fps)]
 		elif i == _current:
-			text += "%s %-14s  %6.1fms  %8.3fms  %5d FPS  (测中)\n" % [mark, name, cur_setup, cur_ms, int(1000.0 / maxf(cur_ms, 0.001))]
+			text += "%s %-14s  %6.1fms  %8.3fms  %8.3fms  %5d FPS  (测中)\n" % [mark, name, cur_setup, cur_ms, cur_p95, int(1000.0 / maxf(cur_ms, 0.001))]
 		else:
-			text += "%s %-14s      —        —        —\n" % [mark, name]
+			text += "%s %-14s      —        —        —        —\n" % [mark, name]
 	text += "\n渲染: %s  (点击右下按钮切换, 屏蔽位置/显示同步对比纯数值开销)" % ("开 🎨" if _render_on else "关 🚫")
 	text += "\n🖱 点击下方按钮切换实现"
 	stats_label.text = text

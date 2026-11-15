@@ -29,6 +29,10 @@ const MAX_KEPT_JOBS := 16
 const KEEP_FINISHED_MS := 1800000
 ## 单个 job 的硬超时(毫秒): 超过即由看门狗判 timeout, 避免调用方永远看到 running。
 const MAX_JOB_MS := 600000
+## 速率采样窗口(毫秒): 只看最近这段的进度增量 —— 长任务里"当下速度"比全程平均更能反映还要多久。
+const RATE_WINDOW_MS := 3000
+## 每个 job 保留的采样点上限(超出丢最旧)
+const MAX_SAMPLES := 64
 
 static var _jobs: Dictionary = {}
 static var _seq := 0
@@ -52,8 +56,8 @@ static func start(key: String, work: Callable) -> Dictionary:
 	_jobs[id] = {
 		"job_id": id, "key": key, "status": "running",
 		"progress": 0, "total": 0, "current": "", "message": "",
-		"started_at": Time.get_ticks_msec(), "finished_at": 0,
-		"result": {}, "cancel_requested": false,
+		"started_at": Time.get_ticks_msec(), "started_us": Time.get_ticks_usec(), "finished_at": 0,
+		"result": {}, "cancel_requested": false, "samples": [],
 	}
 	_active = id
 	_prune()
@@ -112,7 +116,11 @@ static func report(progress: int, total := -1, current := "", message := "") -> 
 	var job: Dictionary = _jobs.get(_active, {})
 	if job.is_empty():
 		return
-	job["progress"] = maxi(int(job.get("progress", 0)), progress)
+	var before := int(job.get("progress", 0))
+	job["progress"] = maxi(before, progress)
+	# 只在实际推进时记采样点: 速率外推(RATE_WINDOW_MS 窗口)靠这些点
+	if int(job["progress"]) != before:
+		_note_progress(job)
 	if total >= 0:
 		job["total"] = total
 	if current != "":
@@ -152,6 +160,11 @@ static func _run(id: String, work: Callable) -> void:
 	job["result"] = out if out is Dictionary else {"value": out}
 	job["finished_at"] = Time.get_ticks_msec()
 	job["current"] = ""
+	# 历史基线: 同类任务下次启动就有"上次用时"可参考, 也是 ETA 在进度不可用时的兜底。
+	# 用微秒计时: 毫秒取整会让快任务记成 0, 那条基线就永远振不起来。
+	var dur_us := PerfTool.now_us() - int(job.get("started_us", PerfTool.now_us()))
+	PerfTool.record("job:" + str(job.get("key", "")), PerfTool.to_ms(maxi(dur_us, 0)))
+	PerfTool.flush_history()
 	var failed := false
 	if out is Dictionary:
 		failed = int((out as Dictionary).get("failed", 0)) > 0 or bool((out as Dictionary).get("aborted", false))
@@ -182,6 +195,9 @@ static func _snapshot(id: String, job: Dictionary) -> Dictionary:
 	var finished := int(job.get("finished_at", 0))
 	var elapsed := (finished if finished > 0 else Time.get_ticks_msec()) - started
 	var running := str(job.get("status", "")) == "running"
+	# 剩余时间只有"还在跑"才有意义: 结束的 job 给 0, 客户端不必再判 running 才看 ETA
+	var eta := _eta_ms(job, elapsed) if running else 0
+	var rate := _rate(job) if running else 0.0
 	return {
 		"job_id": id,
 		"key": str(job.get("key", "")),
@@ -192,8 +208,52 @@ static func _snapshot(id: String, job: Dictionary) -> Dictionary:
 		"current": str(job.get("current", "")),
 		"message": str(job.get("message", "")),
 		"elapsed_ms": elapsed,
+		"elapsed_text": PerfTool.fmt_ms(float(elapsed)),
+		"rate": snappedf(rate, 0.01),
+		"eta_ms": eta,
+		"eta_text": "未知" if eta < 0 else PerfTool.fmt_ms(float(eta)),
 		"cancel_requested": bool(job.get("cancel_requested", false)),
 	}
+
+
+## 进度速率(项/秒): 优先取 RATE_WINDOW_MS 窗口内的增量(反映"当下速度"),
+## 窗口内没有推进时退化为全程平均 —— 窗口过期但仍在跑的任务不该显示 0。
+static func _rate(job: Dictionary) -> float:
+	var now := Time.get_ticks_msec()
+	var progress := int(job.get("progress", 0))
+	var base_t := int(job.get("started_at", 0))
+	var base_p := 0
+	for s in job.get("samples", []):
+		if now - int(s.get("t", now)) <= RATE_WINDOW_MS:
+			base_t = int(s.get("t", now))
+			base_p = int(s.get("p", 0))
+			break
+	if base_p >= progress:
+		base_t = int(job.get("started_at", 0))
+		base_p = 0
+	var dt := float(now - base_t) / 1000.0
+	return 0.0 if dt <= 0.0 else float(progress - base_p) / dt
+
+
+## 剩余毫秒估算; -1 = 无法预估(既没有确定总数, 也没有同类任务历史)。
+static func _eta_ms(job: Dictionary, elapsed_ms: int) -> int:
+	var total := int(job.get("total", 0))
+	var progress := int(job.get("progress", 0))
+	var rate := _rate(job)
+	if total > progress and progress > 0 and rate > 0.0:
+		return int(ceil(float(total - progress) / rate * 1000.0))
+	var hist: Dictionary = PerfTool.history("job:" + str(job.get("key", "")))
+	if not hist.is_empty():
+		return maxi(0, int(float(hist.get("ms", 0.0))) - elapsed_ms)
+	return -1
+
+
+static func _note_progress(job: Dictionary) -> void:
+	var samples: Array = job.get("samples", [])
+	samples.append({"t": Time.get_ticks_msec(), "p": int(job.get("progress", 0))})
+	while samples.size() > MAX_SAMPLES:
+		samples.pop_front()
+	job["samples"] = samples
 
 
 ## job id 的进程前缀: 编辑器 e / 游戏 g

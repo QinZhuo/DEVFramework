@@ -334,6 +334,41 @@ func call_job_cancel_routed(args: Dictionary) -> Dictionary:
 	return await _route_job("job_cancel", args, call_job_cancel_local)
 
 
+## ------- perf: 帧率 / 引擎指标 -------
+## action=snapshot(即时指标) / fps(采样 N 帧) / history(历史耗时基线) / reset(清基线)。
+## 逻辑微基准**不走这里**: 用 run_tests 传内联 TestCase + assert_under_ms —— 那边才有断言与历史基线。
+
+func call_perf_local(args: Dictionary) -> Dictionary:
+	var action := VariantTool.get_string(args, "action", "snapshot").strip_edges().to_lower()
+	match action:
+		"snapshot":
+			PerfTool.register_monitors()
+			return server._ok_json(PerfTool.snapshot())
+		"fps":
+			var frames := clampi(VariantTool.get_int(args, "frames", 120), 10, 1200)
+			var warmup := clampi(VariantTool.get_int(args, "warmup", 30), 0, 600)
+			var report: Dictionary = await PerfTool.sample_frames(frames, warmup)
+			if report.has("error"):
+				return server._err_transient(str(report["error"]), "改在游戏进程里调用(action=fps 需要真实帧循环)")
+			PerfTool.register_monitors()
+			return server._ok_json(report)
+		"history":
+			return server._ok_json({"items": PerfTool.history_all()})
+		"reset":
+			PerfTool.clear_history()
+			return server._ok_json({"cleared": true})
+	return server._fail("action 必须是 snapshot / fps / history / reset, 收到: '%s'" % action)
+
+
+func call_perf_routed(args: Dictionary) -> Dictionary:
+	var process := _require_process(args)
+	if process == "game":
+		return await server._call_runtime_proxy("perf", args)
+	if process == "" or process == "editor":
+		return await call_perf_local(args)
+	return server._fail("process 必须是 editor / game, 收到: '%s'" % process)
+
+
 ## job 状态存在**跑任务的那个进程**里: 先查本进程, 没有再转发游戏进程。
 ## wait / cancel 的路由逻辑完全相同, 抽在这里避免两份拷贝各自漂移。
 func _route_job(tool: String, args: Dictionary, local: Callable) -> Dictionary:

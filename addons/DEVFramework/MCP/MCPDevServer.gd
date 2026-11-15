@@ -1341,6 +1341,15 @@ func _call_run_tests_routed(args: Dictionary) -> Dictionary:
 	return await _runtime().call_run_tests_routed(args)
 
 
+## perf（帧率/指标采样、历史基线）实现见 MCPRuntime。
+func _call_perf_local(args: Dictionary) -> Dictionary:
+	return await _runtime().call_perf_local(args)
+
+
+func _call_perf_routed(args: Dictionary) -> Dictionary:
+	return await _runtime().call_perf_routed(args)
+
+
 func _call_job_wait_local(args: Dictionary) -> Dictionary:
 	return await _runtime().call_job_wait_local(args)
 
@@ -1496,6 +1505,23 @@ func _register_game_play_tools() -> void:
 		job_cancel_schema,
 		_call_job_cancel_local,
 		_call_job_cancel_routed)
+
+	# 性能采样: 帧率/引擎指标/历史基线。进程必填(编辑器自己的帧率没有参考价值, 游戏才是目标)。
+	var perf_schema := {
+		"type": "object",
+		"properties": {
+			"process": {"type": "string", "enum": ["editor", "game"], "description": "在哪个进程采样: editor=编辑器进程; game=游戏进程(需游戏运行; 导出运行时=本进程)。必填。"},
+			"action": {"type": "string", "enum": ["snapshot", "fps", "history", "reset"], "description": "snapshot=当前即时指标(零等待); fps=采样 N 帧算 p50/p95/卡顿; history=历史耗时基线; reset=清空基线重新积累。"},
+			"frames": {"type": "integer", "description": "action=fps 时采样的帧数, 默认 120(约 2 秒 @60fps), 上限 1200。"},
+			"warmup": {"type": "integer", "description": "action=fps 时先丢弃的预热帧数, 默认 30 —— 首帧的着色器编译/资源加载会让结果高出量级。"},
+		},
+		"required": ["process", "action"],
+	}
+	_register_game_play_tool("perf",
+		"性能采样。action=snapshot: 即时 fps/帧时间/process/physics/绘制调用/节点数/内存(零等待, 适合频繁轮询); action=fps: 等待并采样 N 帧, 返回 avg/p50/p95/p99/卡顿次数与等效帧率(**唯一能反映真实稳定性的方式**, 瞬时 fps 看不出长尾); action=history: 读历史耗时基线(测试用例/长任务各自一条 EMA, 可用来判断'这次是不是变慢了'); action=reset: 清空基线。process 必填: 测游戏帧率必须 process=game。**逻辑微基准不要用本工具**: 用 run_tests 传内联 TestCase(`await assert_fps_at_least(...)` / `assert_under_ms(...)`), 那里的阈值能进 CI。",
+		perf_schema,
+		_call_perf_local,
+		_call_perf_routed)
 
 	# 日志读/清: 统一入口, process 必填(editor|game)。编辑器进程: editor=本进程缓冲, game=转发;
 	var logs_schema := MCPToolSchema.logs("200(log)/100(warning|error)", "条目", {

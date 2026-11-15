@@ -64,7 +64,7 @@ C++ 原生能力（ECS）需编译，见 [gdextension/README](../../gdextension/
 插件启用即监听 `http://127.0.0.1:9988/mcp`（多项目共用一个端口）。
 
 - 多项目并存：`list_instances` → `use_instance` 选默认，或单次调用带 `instance`
-- 常用：`validate` / `get_logs` / `eval_code` / `run_tests` / `game_control` / `restart_editor`
+- 常用：`validate` / `get_logs` / `eval_code` / `run_tests` / `perf` / `game_control` / `restart_editor`
 - 导出包默认不带入口（`dev_framework/mcp/runtime_enabled = false`）
 
 ## 引擎陷阱
@@ -90,9 +90,41 @@ run_tests  process=editor action=run script=test_dialogue            # 对话链
 | action | 作用 |
 |---|---|
 | `run` | 启动任务，立即返回 `job_id`；带 `wait_sec`（默认 8）时窗口内跑完就直接给结果 |
-| `status` | 查进度（`progress` 已完成的用例数 / `current` 当前用例 / `elapsed_ms`），**幂等，不重跑** |
-| `result` | 取最终汇总（`text` / `cases` / `failures`） |
+| `status` | 查进度（`progress` 已完成的用例数 / `total` 本轮总数 / `current` 当前用例 / `elapsed_ms` / `rate` / `eta_ms`），**幂等，不重跑** |
+| `result` | 取最终汇总（`text` / `cases` / `failures` / `elapsed_ms`） |
 | `cancel` | 请求取消（当前用例结束后生效） |
 
 慢测试（回放类常 100s+）不要反复调 `run` —— 那会重跑。用 `status` 轮询到 `running: false`。
 `job` 状态存在**跑测试的进程**里，所以 `status`/`result` 的 `process` 必须与启动时一致。
+
+**进度与 ETA 是内建的**：`total` 在开跑前就按"确认会执行的方法数"算好，`eta_ms` 由最近 3 秒的进度速率外推；
+进度不可用（总数未知/还没推进）时退化到**同类任务的历史用时**（`user://.dev_framework/perf_history.json`）。
+测试轮次还会在正文里给出"用时 X（预估 Y，偏差 Z%）"，预估来自各用例方法的历史 EMA。
+
+## 性能测量
+
+两件事分开做，不要混：
+
+| 目标 | 手段 |
+|---|---|
+| 测一段逻辑多快 | `PerfTool.measure(callable)` / `PerfTool.bench(callable, iters, warmup)` |
+| 测环境帧率/稳定性 | `PerfTool.sample_frames(帧数, 预热帧)` 或 MCP `perf action=fps process=game` |
+
+- `bench` 先跑 `warmup` 次丢弃（首次 load / 着色器编译会高出一个量级），再给 `avg / p50 / p95 / p99 / min / max`。
+  **看分位不看平均**：卡顿来自长尾，平均会把偶发尖峰稀释掉。
+- 用例里直接断言，把阈值写进 CI：
+
+```gdscript
+extends TestCase
+
+func test_query_cost() -> void:
+    assert_under_ms(5.0, func(): world.query(...).count())     # 硬上限
+    measure_ms("ecs/query", func(): world.query(...).count()) # 只记基线, 不判失败
+
+func test_frame_rate() -> void:
+    await assert_fps_at_least(55.0, 120, 30)                  # 需游戏进程
+```
+
+- `PerfTool.Rolling` 是通用定长窗口（O(1) 写入、分位数/峰值/超阈值计数），
+  替代各处手写 `Array + pop_front`（ECS 演示与调试面板已统一到它）。
+- 历史基线进程级共享、跨轮次复用；`perf action=reset` 清空重来，不要写完就删文件。
