@@ -3,10 +3,10 @@
 ##
 ## 想换样子就继承它，实现 `present()` / `dismiss()`（`refresh()` / `attach_slot()` 可选）：
 ##     立绘、打字机、多选框、字幕、3D 头顶文字都能做。
-## 框架自带的 `BubblePresenter` 只是默认实现，不需要就用你的。
-class_name DialoguePresenter extends Control
+## 框架自带的 `BubbleView` 只是默认实现，不需要就用你的。
+class_name DialogueView extends Control
 
-## 玩家要求推进（点击/按键）—— 由 presenter 发出，DialogueTool 负责换行
+## 玩家要求推进（点击/按键）—— 由 view 发出，DialogueTool 负责换行
 signal advance_requested
 ## 每次排版完成（项目要做二次布局就接这个）
 signal placed

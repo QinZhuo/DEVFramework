@@ -10,7 +10,7 @@ class_name DialogueLineDef extends Resource
 @export_multiline var text := ""
 ## >0 = 到点自动推进秒数；0 = 等玩家推进
 @export var hold := 0.0
-## 任意扩展数据（portrait/表情/音效/事件名…由 presenter 自己解释）
+## 任意扩展数据（portrait/表情/音效/事件名…由 view 自己解释）
 @export var meta := {}
 
 

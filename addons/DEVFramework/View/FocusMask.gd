@@ -52,35 +52,35 @@ var drag_checker: Callable
 @export var highlight_msaa := Viewport.MSAA_4X
 
 ## 表现层由 Dialogue 子系统提供(Dialogue/View/*), 遮罩只负责"锚在哪"。
-## 项目要换外观: DialogueTool.presenter_scene = 自己的场景 / DialogueTool.register(...)
+## 项目要换外观: DialogueTool.view_scene = 自己的场景 / DialogueTool.register(...)
 
-## 兼容旧 API: 气泡容器(默认实现才有, 项目自定义 presenter 时可能为 null)
+## 兼容旧 API: 气泡容器(默认实现才有, 项目自定义 view 时可能为 null)
 var tip_panel: Panel:
 	get:
-		var p := DialogueTool.presenter()
-		return (p as BubblePresenter).panel if p is BubblePresenter else null
+		var p := DialogueTool.view()
+		return (p as BubbleView).panel if p is BubbleView else null
 ## 兼容旧 API: 文字控件
 var tip_label: RichTextLabel:
 	get:
-		var p := DialogueTool.presenter()
-		return (p as BubblePresenter).label if p is BubblePresenter else null
+		var p := DialogueTool.view()
+		return (p as BubbleView).label if p is BubbleView else null
 ## 兼容旧 API: 气泡最小高度
 var tip_min_height: float:
 	get:
-		var p := DialogueTool.presenter()
-		return (p as BubblePresenter).min_height if p is BubblePresenter else 0.0
+		var p := DialogueTool.view()
+		return (p as BubbleView).min_height if p is BubbleView else 0.0
 	set(value):
-		var p := DialogueTool.presenter()
+		var p := DialogueTool.view()
 		if p:
 			p.min_height = value
 			p.refresh()
 ## 兼容旧 API: 气泡顶部下限(屏幕 Y, -1 = 不限)
 var tip_top_limit: float:
 	get:
-		var p := DialogueTool.presenter()
+		var p := DialogueTool.view()
 		return p.limit_top if p else -1.0
 	set(value):
-		var p := DialogueTool.presenter()
+		var p := DialogueTool.view()
 		if p:
 			p.limit_top = value
 			p.refresh()
@@ -129,7 +129,7 @@ func _ready() -> void:
 	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)  # 合成层要正好铺满屏幕
 	_apply_theme()
 	_build_spot()
-	_bind_presenter()
+	_bind_view()
 
 
 ## 主题覆盖(项目可只在 theme 里配 FocusMask/* 而不用逐个实例赋值)
@@ -220,14 +220,14 @@ func set_tip_limit(max_y: float) -> void:
 
 ## 作废排版缓存并立即重排(宿主改过气泡尺寸/内容后调用)
 func refresh_tip() -> void:
-	var presenter := DialogueTool.presenter()
-	if presenter:
-		presenter.refresh()
+	var view := DialogueTool.view()
+	if view:
+		view.refresh()
 
 
 ## 当前的表现层(项目换外观/加插槽时用它)
-func get_presenter() -> DialoguePresenter:
-	return DialogueTool.presenter()
+func get_view() -> DialogueView:
+	return DialogueTool.view()
 
 
 # ------------------------------------------------------------
@@ -771,13 +771,13 @@ func _apply_opts(opts: Dictionary) -> void:
 # ------------------------------------------------------------
 
 ## 把对话子系统的表现层挂到自己这一层(遮罩只提供挂载点与 z)
-func _bind_presenter() -> void:
-	var presenter := DialogueTool.bind(self, TIP_Z)
-	if presenter and not presenter.placed.is_connected(_on_presenter_placed):
-		presenter.placed.connect(_on_presenter_placed)
+func _bind_view() -> void:
+	var view := DialogueTool.bind(self, TIP_Z)
+	if view and not view.placed.is_connected(_on_view_placed):
+		view.placed.connect(_on_view_placed)
 
 
-func _on_presenter_placed() -> void:
+func _on_view_placed() -> void:
 	tip_placed.emit()
 
 

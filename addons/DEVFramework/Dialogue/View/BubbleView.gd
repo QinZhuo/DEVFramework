@@ -1,7 +1,7 @@
 @tool
 ## 默认表现: 一条圆角气泡 + 富文本 + 左侧插槽竖排。
-## 项目想要别的样子 → 继承 `DialoguePresenter`（或本类只覆盖 `_build_view` / `_apply_style`）。
-class_name BubblePresenter extends DialoguePresenter
+## 项目想要别的样子 → 继承 `DialogueView`（或本类只覆盖 `_build_view` / `_apply_style`）。
+class_name BubbleView extends DialogueView
 
 @export var style: StyleBox
 @export var font_size := 20
@@ -66,6 +66,8 @@ func present(line: DialogueLineDef, text: String) -> void:
 
 func set_text(text: String) -> void:
 	_text = text
+	if label:
+		label.text = text  # 真正把文案写进控件
 	var show_it := not text.is_empty()
 	if show_it and not visible:
 		visible = true
