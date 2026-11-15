@@ -15,7 +15,7 @@
 | `Dialogue/DialogueDemo.tscn` | **对话子系统**：单行提示、多行脚本、锚点跟随、插槽、定位策略 | 拖动「拖我」方块看气泡跟随并自动翻转；按钮切换插槽/贴底/左上角 |
 | `ECS/ECSDemo.tscn` | ECS 世界、组件、系统调度 | 观察实体按系统批量更新 |
 | `ECS/ECSNodeDemo.tscn` | ECS 与场景节点同步（点云示例） | 组件改动实时反映到节点 |
-| `GameCommandDemo/GameCommandDemo.tscn` | 命令模式 + 输入源（可回放） | 操作后重放，命令历史逐步复现 |
+| `GameCommand/GameCommandDemo.tscn` | 命令模式 + 输入源（可回放） | 操作后重放，命令历史逐步复现 |
 | `Lightmap/LightmapDemo.tscn` | 光照贴图烘焙结果 | 对比烘焙/未烘焙的明暗 |
 | `Nav/NavPlayer.tscn` | 导航：玩家 + 障碍 + 巡逻 NPC | 点击地面移动，观察绕障与巡逻 |
 | `Tutorial/TutorialDemo.tscn` | **教程引导**：遮罩聚焦、气泡、步骤推进 | 按提示点击；ESC 退出教程 |
@@ -27,7 +27,7 @@
 | 场景 | 用途 |
 |---|---|
 | `Lightmap/LightmapBake.tscn` | 批量烘焙光照贴图 |
-| `ECS/Demo/impl_query.tscn` | ECS 查询实现细节验证 |
+| `ECS/impl_query.tscn` | ECS 查询实现细节验证 |
 | `Nav/NavObstacle.tscn` / `NavPatrolNPC.tscn` | `NavPlayer` 引用的子场景 |
 
 ## 命名约定
