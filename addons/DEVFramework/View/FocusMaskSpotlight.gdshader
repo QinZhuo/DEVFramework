@@ -7,9 +7,9 @@ uniform sampler2D silhouette : filter_linear, repeat_disable;
 uniform bool use_silhouette = false;
 uniform int sil_index = 0;
 
-uniform vec4 rects[8];
+uniform vec4 rects[16];
 // 每个目标自己的圆角(取自它自己的 StyleBox): 圆形按钮就是 48, 普通按钮就小
-uniform float radii[8];
+uniform float radii[16];
 uniform int rect_count = 0;
 uniform vec2 screen_size = vec2(1920.0, 1200.0);
 // 轮廓贴图贴在屏幕上的哪块区域(像素): 3D 用整屏, 2D 离屏快照用目标矩形
@@ -68,7 +68,7 @@ void fragment() {
 
 	float cover = 0.0;
 	float ring = 0.0;
-	for (int i = 0; i < 8; i++) {
+	for (int i = 0; i < 16; i++) {
 		if (i >= rect_count) {
 			break;
 		}

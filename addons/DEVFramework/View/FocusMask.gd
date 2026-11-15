@@ -19,7 +19,8 @@ signal tip_placed
 ## 合成层(z_index 上限 4096)
 const DIM_Z := 4088
 const TIP_Z := 4092
-const MAX_RECTS := 8
+## 一次最多处理多少个目标矩形(与 shader 里的数组长度保持一致)
+const MAX_RECTS := 16
 const _SPOT_SHADER: Shader = preload("res://addons/DEVFramework/View/FocusMaskSpotlight.gdshader")
 const _NAV_ACTIONS: Array[StringName] = [&"ui_focus_next", &"ui_focus_prev",
 		&"ui_left", &"ui_right", &"ui_up", &"ui_down"]
@@ -89,6 +90,8 @@ var _sil_layers_backup := {}
 var _sil_ok := true
 ## 建好后等几帧再验证一次(离屏快照需要先渲一帧)
 var _sil_check_frames := 0
+## 目标数超上限是否已提示过(避免每帧刷警告)
+var _warned_overflow := false
 ## 2D 目标的离屏快照(duplicate 一份渲染, 拿它的 alpha 当真实轮廓)
 var _contour_view: SubViewport
 
@@ -250,8 +253,13 @@ func _setup_silhouette() -> void:
 		var node: Node = _targets[i]
 		var promoted: Node = _promoted.get(node)
 		if promoted is Node3D and promoted == node:
-			_build_3d_silhouette(promoted as Node3D, i)
-			return
+			# 只有"有可见网格"的 3D 物体才值得渲染轮廓贴图;
+			# 纯交互体(Area3D 之类)渲出来是空 alpha, 会让目标区域被判成"区域外"⇒ 看着完全不亮。
+			# 多目标时继续往后找: 第一个有网格的物体负责出轮廓。
+			if _visible_mesh_aabb(promoted as Node3D).size != Vector3.ZERO:
+				_build_3d_silhouette(promoted as Node3D, i)
+				return
+			continue
 		# 2D 目标不建轮廓快照: 控件样式盒经常只画边框/贴图未设置, 快照里"控件内部"是空的,
 		# 于是目标内部会被当成区域外(遮罩不透明时只剩一圈框、本体全黑)。
 		# 2D 直接用"矩形 + 样式盒圆角"的 SDF, 形状与区域都可靠。
@@ -693,6 +701,10 @@ func _update_geometry() -> void:
 			if rect.size.x * rect.size.y > screen.size.x * screen.size.y * 0.9:
 				continue
 			if hit_rects.size() >= MAX_RECTS:
+				# 静默截断会表现成"少亮了一个目标", 很难查: 至少报一次
+				if not _warned_overflow:
+					_warned_overflow = true
+					push_warning("FocusMask: 目标超过 %d 个, 超出的不会被点亮/描边" % MAX_RECTS)
 				break
 			hit_rects.append(rect)
 			radii.append(_corner_radius_of(node))
@@ -878,6 +890,8 @@ static func _rect_3d(node: Node3D) -> Rect2:
 	var aabb := _visible_mesh_aabb(node)
 	if aabb.size == Vector3.ZERO:
 		aabb = _global_aabb(node)  # 无可见网格 → 退回整体 AABB
+	if aabb.size == Vector3.ZERO:
+		aabb = _collision_aabb(node)  # 只有碰撞盒的交互体(Area3D 之类): 用碰撞形状估矩形
 	if cam.is_position_behind(aabb.get_center()):
 		return Rect2()
 	var rect := Rect2()
@@ -909,6 +923,46 @@ static func _visible_mesh_aabb(node: Node3D) -> AABB:
 			if aabb.size != Vector3.ZERO:
 				result = result.merge(aabb) if found else aabb
 				found = true
+	return result
+
+
+## 只有碰撞盒、没有可见网格的交互体(Area3D/StaticBody3D 之类):
+## 用它子级 CollisionShape3D 的形状拼出世界 AABB, 否则目标会退化成 1x1 ⇒ 看起来"没高亮"
+static func _collision_aabb(node: Node3D) -> AABB:
+	var result := AABB()
+	var found := false
+	for child in node.find_children("*", "CollisionShape3D", true, false):
+		var box := _shape_aabb(child as CollisionShape3D)
+		if box.size == Vector3.ZERO:
+			continue
+		result = result.merge(box) if found else box
+		found = true
+	return result
+
+
+## 单个 CollisionShape3D 的世界 AABB(按形状尺寸取 8 角投影)
+static func _shape_aabb(shape_node: CollisionShape3D) -> AABB:
+	var shape := shape_node.shape
+	if shape == null:
+		return AABB()
+	var size := Vector3.ZERO
+	if shape is BoxShape3D:
+		size = (shape as BoxShape3D).size
+	elif shape is SphereShape3D:
+		size = Vector3.ONE * (shape as SphereShape3D).radius * 2.0
+	elif shape is CapsuleShape3D:
+		var capsule := shape as CapsuleShape3D
+		size = Vector3(capsule.radius * 2.0, capsule.height, capsule.radius * 2.0)
+	elif shape is CylinderShape3D:
+		var cylinder := shape as CylinderShape3D
+		size = Vector3(cylinder.radius * 2.0, cylinder.height, cylinder.radius * 2.0)
+	if size == Vector3.ZERO:
+		return AABB()
+	var xform := shape_node.global_transform
+	var local := AABB(-size * 0.5, size)
+	var result := AABB(xform * local.position, Vector3.ZERO)
+	for i in 8:
+		result = result.expand(xform * local.get_endpoint(i))
 	return result
 
 
