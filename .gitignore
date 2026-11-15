@@ -20,3 +20,8 @@ addons/VoxelSupport/Native/~*
 
 /.opencode
 *.translation
+
+# Windows Restart Manager / 文件占用产生的临时副本(~xxx.dll~RF123.TMP), 不入库
+*.TMP
+*.tmp
+**/~*
