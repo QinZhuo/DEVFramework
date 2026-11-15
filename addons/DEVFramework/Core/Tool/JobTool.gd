@@ -25,6 +25,8 @@ const DEFAULT_WAIT_MS := 25000
 const MAX_WAIT_MS := 60000
 ## 保留多少个已结束 job(超出淘汰最旧的)
 const MAX_KEPT_JOBS := 16
+## 已结束 job 的保留时长(毫秒): 超期即回收, 长会话不会无限堆积
+const KEEP_FINISHED_MS := 1800000
 ## 单个 job 的硬超时(毫秒): 超过即由看门狗判 timeout, 避免调用方永远看到 running。
 const MAX_JOB_MS := 600000
 
@@ -212,6 +214,18 @@ static func _ids_text() -> String:
 
 
 static func _prune() -> void:
+	# 1) TTL: 已结束且超过保留期的直接回收(长会话里反复跑测试不会无限堆积结果)
+	var now := Time.get_ticks_msec()
+	for k in _jobs.keys():
+		if str(k) == _active:
+			continue
+		var job: Dictionary = _jobs[k]
+		if str(job.get("status", "")) == "running":
+			continue
+		var finished := int(job.get("finished_at", 0))
+		if finished > 0 and now - finished > KEEP_FINISHED_MS:
+			_jobs.erase(k)
+	# 2) 数量上限: 仍超限时淘汰最旧的已结束 job
 	if _jobs.size() <= MAX_KEPT_JOBS:
 		return
 	var keys: Array = _jobs.keys()
