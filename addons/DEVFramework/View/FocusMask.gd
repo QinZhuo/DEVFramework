@@ -555,15 +555,17 @@ func _input(event: InputEvent) -> void:
 		get_viewport().set_input_as_handled()
 
 
-## 键盘/手柄: 拦截返回键, 并把焦点导航限制在目标内, 防止焦点逃到背后的 UI
+## 键盘/手柄: 把焦点导航限制在目标内, 防止焦点逃到背后的 UI。
+## 注意: **不拦 ui_cancel(返回/ESC)** —— 那是全局语义, 由项目的统一返回决策点处理;
+## 遮罩在这里吞掉它, 会让"教程中按 ESC 退出"之类的功能彻底失效。
 func _contain_focus(event: InputEvent) -> bool:
 	var focusables := _focusables()
 	if focusables.is_empty():
-		return _is_nav(event) or event.is_action_pressed(&"ui_cancel")
+		return _is_nav(event)
 	if _is_nav(event):
 		_cycle_focus(-1 if _is_back_nav(event) else 1, focusables)
 		return true
-	return event.is_action_pressed(&"ui_cancel")
+	return false
 
 
 func _cycle_focus(step: int, focusables: Array[Control]) -> void:
