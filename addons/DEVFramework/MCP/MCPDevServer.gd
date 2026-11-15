@@ -1692,24 +1692,6 @@ func _call_simulate_key(args: Dictionary) -> Dictionary:
 var _game_tests_running := false
 
 
-## 运行时: 在**游戏进程**里跑需要游戏进程的用例(`TestRunner` MODE_GAME)。**阻塞至跑完才返回**。
-func _runtime_run_game_tests(args: Dictionary) -> Dictionary:
-	var script := VariantTool.get_string(args, "script").strip_edges()
-	if script.is_empty():
-		return _fail("必须指定测试脚本(script: 脚本路径子串如 'test_game_replay', 或 'all' 全量, 或内联 GDScript 源码; 不支持默认全跑)")
-	if _game_tests_running:
-		return _err_validation("已有测试在运行, 请等待其结束或 game_control(action=stop) 终止后再调用",
-			"等待当前用例结束(running=false)后再试")
-	_game_tests_running = true
-	# 传 _logger: 内联源码在游戏进程编译失败时取回该进程的具体解析错行。
-	var summary: Dictionary = await TestRunner.run_all(script, TestRunner.MODE_GAME, _logger)
-	_game_tests_running = false
-	# run_all 已含 script 标签(内联为 "<inline>")/aborted/text 等; 补 done/running 供调用方判定。
-	summary["running"] = false
-	summary["done"] = true
-	return _ok_json(summary)
-
-
 ## 运行时: 捕获游戏视口真实截图(文件名自动生成)
 func _runtime_take_screenshot(args: Dictionary) -> Dictionary:
 	var filename := ScreenshotTool.make_filename("mcp")

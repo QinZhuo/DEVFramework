@@ -96,10 +96,13 @@ func call_run_tests_routed(args: Dictionary) -> Dictionary:
 	if action == "":
 		action = "run"
 	if process == "both":
-		# both = 编辑器段 + 游戏段合并, 天然是"跑完才有结果"的全量用法, 保持同步执行
-		if action != "run":
-			return server._fail("process=both 只支持 action=run(两段合并的汇总); 查进度请分别跑 editor / game")
-		return await _run_tests_both(VariantTool.get_string(args, "script").strip_edges())
+		# both = 编辑器段 + 游戏段, 天然是长任务 ⇒ 同样走 job: 超窗就交客户端轮询, 不要阻塞到跑完
+		var both_script := VariantTool.get_string(args, "script").strip_edges()
+		var job: Dictionary = JobTool.start("run_tests:both:%s" % both_script,
+			func() -> Dictionary: return await _run_tests_both(both_script))
+		if bool(job.get("running", false)):
+			job = await JobTool.wait(str(job.get("job_id", "")), JobTool.DEFAULT_WAIT_MS)
+		return server._ok_json(_with_job_hint(job))
 	if process == "game":
 		return await _run_tests_in_game(args)
 	return await _run_tests_start(args, TestRunner.MODE_EDITOR)
@@ -144,11 +147,11 @@ func _run_tests_in_game(args: Dictionary) -> Dictionary:
 func _run_tests_both(script: String) -> Dictionary:
 	if TestRunner.is_inline_source(script):
 		# 内联源码只跑一次：它是临时逻辑验证，两段跑同一段代码只是翻倍耗时
-		return server._ok_json(await TestRunner.run_all(script, TestRunner.MODE_EDITOR, server._logger))
+		return await TestRunner.run_all(script, TestRunner.MODE_EDITOR, server._logger)
 	var editor_sum: Dictionary = await TestRunner.run_all(script, TestRunner.MODE_EDITOR, server._logger)
 	# 选择器一条都没匹配上(早退结果)：游戏段必然同样为空，不再白起一轮
 	if int(editor_sum.get("total", 0)) == 0 and int(editor_sum.get("failed", 0)) > 0:
-		return server._ok_json(editor_sum)
+		return editor_sum
 	var game_res: Dictionary = await _run_tests_in_game({"process": "game", "action": "run", "script": script})
 	if bool(game_res.get("is_error", false)):
 		return _both_with_game_failure(editor_sum, script, _error_text(game_res))
@@ -159,7 +162,7 @@ func _run_tests_both(script: String) -> Dictionary:
 	if bool(game_sum.get("auto_started_game", false)):
 		merged["auto_started_game"] = true
 		merged["text"] = "[已自动启动游戏进程(此前无运行实例)]\n%s" % str(merged.get("text", ""))
-	return server._ok_json(merged)
+	return merged
 
 
 ## 游戏段没跑成 = 全量没跑成：记成**一条失败项**而不是静默省略
@@ -171,7 +174,7 @@ func _both_with_game_failure(editor_sum: Dictionary, script: String, reason: Str
 	merged["failures"].append("<游戏段> 未执行: %s" % reason)
 	merged["cases"].append({"case": "<游戏段>", "ok": false, "elapsed_ms": 0})
 	merged["text"] = TestRunner.render_text(merged)
-	return server._ok_json(merged)
+	return merged
 
 
 ## 取回结果里的结构化摘要（ok_json 放 structuredContent；少数路径只有 content[].text 的 JSON）
@@ -320,18 +323,7 @@ func call_job_wait_local(args: Dictionary) -> Dictionary:
 
 
 func call_job_wait_routed(args: Dictionary) -> Dictionary:
-	var job_id := VariantTool.get_string(args, "job_id").strip_edges()
-	var probe := JobTool.status(job_id)
-	if not probe.has("error"):
-		return await call_job_wait_local(args)      # 本进程就有
-	if _has_game_session():
-		var fwd := {"job_id": job_id}
-		if args.has("wait_sec"):
-			fwd["wait_sec"] = int(args["wait_sec"])
-		var r: Dictionary = await server._call_runtime_proxy("job_wait", fwd)
-		if not bool(r.get("is_error", false)):
-			return r
-	return server._ok_json(probe)             # 两边都没有 → 返回本进程的原始错误
+	return await _route_job("job_wait", args, call_job_wait_local)
 
 
 func call_job_cancel_local(args: Dictionary) -> Dictionary:
@@ -339,12 +331,22 @@ func call_job_cancel_local(args: Dictionary) -> Dictionary:
 
 
 func call_job_cancel_routed(args: Dictionary) -> Dictionary:
+	return await _route_job("job_cancel", args, call_job_cancel_local)
+
+
+## job 状态存在**跑任务的那个进程**里: 先查本进程, 没有再转发游戏进程。
+## wait / cancel 的路由逻辑完全相同, 抽在这里避免两份拷贝各自漂移。
+func _route_job(tool: String, args: Dictionary, local: Callable) -> Dictionary:
 	var job_id := VariantTool.get_string(args, "job_id").strip_edges()
 	var probe := JobTool.status(job_id)
 	if not probe.has("error"):
-		return call_job_cancel_local(args)
-	if _has_game_session():
-		var r: Dictionary = await server._call_runtime_proxy("job_cancel", {"job_id": job_id})
-		if not bool(r.get("is_error", false)):
-			return r
-	return server._ok_json(probe)
+		return await local.call(args)
+	if not _has_game_session():
+		return server._ok_json(probe)
+	var fwd := {"job_id": job_id}
+	if args.has("wait_sec"):
+		fwd["wait_sec"] = int(args["wait_sec"])
+	var r: Dictionary = await server._call_runtime_proxy(tool, fwd)
+	if not bool(r.get("is_error", false)):
+		return r
+	return server._ok_json(probe)   # 两边都没有 → 返回本进程的原始错误
