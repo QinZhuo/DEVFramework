@@ -144,6 +144,12 @@ static func _run_one_case(res: Script, label: String, mode: String, acc: Diction
 		return
 	var case_started_at := Time.get_ticks_msec()
 	for mname in _test_methods(res):
+		# 取消请求在用例边界生效: 协程无法中途掐断, 但至少不再启动新的用例方法
+		if JobTool.is_cancelled():
+			acc["failures"].append("%s: 已取消(用户请求)" % label)
+			acc["failed"] = int(acc["failed"]) + 1
+			acc["aborted"] = true
+			return
 		var remaining := deadline - Time.get_ticks_msec()
 		if remaining <= 0:
 			acc["failures"].append("%s | %s: 超过硬超时(%d 分钟), 已中止剩余用例" % [label, mname, HARD_TIMEOUT_MS / 60000])

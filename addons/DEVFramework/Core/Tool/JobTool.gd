@@ -25,6 +25,8 @@ const DEFAULT_WAIT_MS := 25000
 const MAX_WAIT_MS := 60000
 ## 保留多少个已结束 job(超出淘汰最旧的)
 const MAX_KEPT_JOBS := 16
+## 单个 job 的硬超时(毫秒): 超过即由看门狗判 timeout, 避免调用方永远看到 running。
+const MAX_JOB_MS := 600000
 
 static var _jobs: Dictionary = {}
 static var _seq := 0
@@ -66,7 +68,7 @@ static func wait(job_id: String, wait_ms := DEFAULT_WAIT_MS) -> Dictionary:
 		if job.is_empty():
 			return {"error": "未知 job_id: '%s'" % id}
 		if str(job["status"]) != "running":
-			return result(id)
+			return status(id)
 		if Time.get_ticks_msec() >= deadline:
 			return status(id)
 		await Engine.get_main_loop().process_frame
@@ -86,23 +88,6 @@ static func status(job_id := "") -> Dictionary:
 	if str(job["status"]) != "running":
 		snap.merge(job.get("result", {}), true)
 		snap["status"] = str(job["status"])
-	return snap
-
-
-## 取结果。未结束时返回快照 + 提示(不阻塞)。
-static func result(job_id := "") -> Dictionary:
-	var id := job_id if job_id != "" else _pick()
-	if id == "":
-		return {"error": "没有可用的 job(还没启动过任务?)"}
-	var job: Dictionary = _jobs.get(id, {})
-	if job.is_empty():
-		return {"error": "未知 job_id: '%s'(可用: %s)" % [job_id, _ids_text()]}
-	var snap := _snapshot(id, job)
-	if str(job["status"]) == "running":
-		snap["hint"] = "仍在运行, 用 job_wait 继续等"
-		return snap
-	snap.merge(job.get("result", {}), true)
-	snap["status"] = str(job["status"])
 	return snap
 
 
@@ -153,10 +138,13 @@ static func clear() -> void:
 
 
 static func _run(id: String, work: Callable) -> void:
+	_watchdog(id)   # 看门狗: work 卡死时把 job 落成 timeout, 别让调用方永远看到 running
 	var out: Variant = await work.call()
 	var job: Dictionary = _jobs.get(id, {})
 	if job.is_empty():
 		return  # 被 clear 掉了
+	if str(job.get("status", "")) == "timeout":
+		return  # 看门狗已裁决, 保留 timeout 状态(返回值迟到也不再改判)
 	job["result"] = out if out is Dictionary else {"value": out}
 	job["finished_at"] = Time.get_ticks_msec()
 	job["current"] = ""
@@ -166,6 +154,23 @@ static func _run(id: String, work: Callable) -> void:
 	job["status"] = "failed" if failed else "done"
 	if _active == id:
 		_active = ""
+
+
+## work 卡死(纯 await 挂住)时无法从外部掐断协程, 但至少要给调用方一个确定结论:
+## 超过 MAX_JOB_MS 就把 job 标成 timeout 并释放 active, 让后续任务能继续。
+static func _watchdog(id: String) -> void:
+	while true:
+		await Engine.get_main_loop().process_frame
+		var job: Dictionary = _jobs.get(id, {})
+		if job.is_empty() or str(job.get("status", "")) != "running":
+			return
+		if Time.get_ticks_msec() - int(job.get("started_at", 0)) > MAX_JOB_MS:
+			job["status"] = "timeout"
+			job["finished_at"] = Time.get_ticks_msec()
+			job["result"] = {"error": "任务超过 %d 秒未完成, 已判超时(其协程可能仍在后台跑)" % (MAX_JOB_MS / 1000)}
+			if _active == id:
+				_active = ""
+			return
 
 
 static func _snapshot(id: String, job: Dictionary) -> Dictionary:
