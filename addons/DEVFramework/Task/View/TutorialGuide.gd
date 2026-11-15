@@ -12,9 +12,6 @@ signal stopped()
 
 ## 无目标步骤的"继续"动作(键盘/手柄); 空 = 只能点击
 @export var advance_action: StringName = &"ui_accept"
-## 教程中按该动作直接结束教程(留空 = 不接管, 交给项目自己处理)。
-## 遮罩会把 ui_cancel 当作"锁定输入"吞掉, 所以退出入口必须在这里接。
-@export var cancel_action: StringName = &"ui_cancel"
 ## 暗区颜色(全流程统一)
 @export var dim_color := Color(0.0, 0.0, 0.0, 0.62)
 ## 拖拽放行(可选): 返回 true 时放行全部指针事件(目标需要被拖出可交互区域)
@@ -81,14 +78,8 @@ func stop() -> void:
 	stopped.emit()
 
 
-## 教程进行中按 cancel_action(默认 ESC/手柄返回) 直接结束。
-## 用 _input 而不是 _unhandled_input: 遮罩在 _input 阶段就 set_input_as_handled 了。
-func _input(event: InputEvent) -> void:
-	if cancel_action == &"" or not is_instance_valid(_task):
-		return
-	if event.is_action_pressed(cancel_action):
-		stop()
-		get_viewport().set_input_as_handled()
+## 注: 本类不接管任何"退出/跳过"按键 —— 需要的话由项目在自己的 _input 里调 stop()。
+## (遮罩会把 ui_cancel 当锁定输入处理, 所以项目的处理同样要放在 _input 阶段)
 
 
 ## 重新渲染当前步骤(离开子界面返回、目标重新可见时刷新)
