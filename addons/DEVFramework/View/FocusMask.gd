@@ -51,16 +51,39 @@ var drag_checker: Callable
 ## 轮廓渲染抗锯齿
 @export var highlight_msaa := Viewport.MSAA_4X
 
-## 提示气泡样式(空 = 内置深色圆角; 也可用主题 FocusMask/tip_stylebox)
-@export var tip_style: StyleBox
-@export var tip_font_size := 20
-## 纯提示气泡的最小高度(0 = 由文本决定)
-@export var tip_min_height := 0.0
-## 纯提示气泡的顶部下限(屏幕 Y, -1 = 不限)
-var tip_top_limit := -1.0
+## 表现层由 Dialogue 子系统提供(Dialogue/View/*), 遮罩只负责"锚在哪"。
+## 项目要换外观: DialogueTool.presenter_scene = 自己的场景 / DialogueTool.register(...)
 
-var tip_panel: Panel
-var tip_label: RichTextLabel
+## 兼容旧 API: 气泡容器(默认实现才有, 项目自定义 presenter 时可能为 null)
+var tip_panel: Panel:
+	get:
+		var p := DialogueTool.get_presenter()
+		return (p as BubblePresenter).panel if p is BubblePresenter else null
+## 兼容旧 API: 文字控件
+var tip_label: RichTextLabel:
+	get:
+		var p := DialogueTool.get_presenter()
+		return (p as BubblePresenter).label if p is BubblePresenter else null
+## 兼容旧 API: 气泡最小高度
+var tip_min_height: float:
+	get:
+		var p := DialogueTool.get_presenter()
+		return p.min_height if p else 0.0
+	set(value):
+		var p := DialogueTool.get_presenter()
+		if p:
+			p.min_height = value
+			p.refresh()
+## 兼容旧 API: 气泡顶部下限(屏幕 Y, -1 = 不限)
+var tip_top_limit: float:
+	get:
+		var p := DialogueTool.get_presenter()
+		return p.limit_top if p else -1.0
+	set(value):
+		var p := DialogueTool.get_presenter()
+		if p:
+			p.limit_top = value
+			p.refresh()
 
 var _targets: Array[Node] = []
 var _paddings := PackedFloat32Array()
@@ -74,7 +97,7 @@ var _hit_rects: Array[Rect2] = []
 var _hit_radii := PackedFloat32Array()
 var _screen_size := Vector2.ZERO
 var _active := false
-var _tip_layout_key := []
+
 
 ## 屏幕空间合成
 var _spot: ColorRect
@@ -106,7 +129,7 @@ func _ready() -> void:
 	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)  # 合成层要正好铺满屏幕
 	_apply_theme()
 	_build_spot()
-	_build_tip()
+	_bind_presenter()
 
 
 ## 主题覆盖(项目可只在 theme 里配 FocusMask/* 而不用逐个实例赋值)
@@ -115,10 +138,6 @@ func _apply_theme() -> void:
 		dim_color = get_theme_color("dim_color", "FocusMask")
 	if has_theme_color("outline_color", "FocusMask"):
 		outline_color = get_theme_color("outline_color", "FocusMask")
-	if has_theme_stylebox("tip_stylebox", "FocusMask"):
-		tip_style = get_theme_stylebox("tip_stylebox", "FocusMask")
-	if has_theme_font_size("tip_font_size", "FocusMask"):
-		tip_font_size = get_theme_font_size("tip_font_size", "FocusMask")
 
 
 func _exit_tree() -> void:
@@ -166,19 +185,18 @@ func clear() -> void:
 	_targets.clear()
 	_paddings = PackedFloat32Array()
 	_hit_rects = []
-	_tip_layout_key = []
-	if tip_panel:
-		tip_panel.visible = false
+	DialogueTool.hide()
 
 
 ## 设置提示文字(空 = 隐藏气泡; 支持 bbcode)
 func set_tip(text: String) -> void:
-	if tip_label == null:
+	if not DialogueTool.is_bound():
 		return
-	tip_label.text = text
-	tip_panel.visible = _active and not text.is_empty()
-	_tip_layout_key = []
-	_place_tip()
+	if text.is_empty() or not _active:
+		DialogueTool.hide()
+		return
+	var view := _screen_size if _screen_size != Vector2.ZERO else get_viewport_rect().size
+	DialogueTool.show_text(text, _merged_rects(), view)
 
 
 func is_active() -> bool:
@@ -198,14 +216,18 @@ func get_hit_rects() -> Array[Rect2]:
 ## 纯提示气泡的顶部下限(屏幕 Y, -1 = 不限)
 func set_tip_limit(max_y: float) -> void:
 	tip_top_limit = max_y
-	_tip_layout_key = []
-	_place_tip()
 
 
-## 作废气泡排版缓存并立即重排(宿主改过气泡尺寸/内容后调用)
+## 作废排版缓存并立即重排(宿主改过气泡尺寸/内容后调用)
 func refresh_tip() -> void:
-	_tip_layout_key = []
-	_place_tip()
+	var presenter := DialogueTool.get_presenter()
+	if presenter:
+		presenter.refresh()
+
+
+## 当前的表现层(项目换外观/加插槽时用它)
+func get_presenter() -> DialoguePresenter:
+	return DialogueTool.get_presenter()
 
 
 # ------------------------------------------------------------
@@ -487,8 +509,7 @@ func _build_spot() -> void:
 	add_child(back)
 	add_child(_spot)
 	_spot.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	if tip_panel:
-		move_child(tip_panel, -1)
+
 
 
 func _apply_spot_params() -> void:
@@ -714,7 +735,7 @@ func _update_geometry() -> void:
 	_hit_radii = radii
 	_screen_size = view
 	_push_rects()
-	_place_tip()
+	_sync_bubble()
 
 
 ## 目标自己算不出矩形时, 用它所在的 SubView3D 面板(屏幕区域)兜底
@@ -749,78 +770,23 @@ func _apply_opts(opts: Dictionary) -> void:
 # 提示气泡
 # ------------------------------------------------------------
 
-func _build_tip() -> void:
-	if tip_panel:
-		return
-	tip_panel = Panel.new()
-	tip_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	tip_panel.visible = false
-	# 气泡永远压在合成层之上
-	tip_panel.z_as_relative = false
-	tip_panel.z_index = TIP_Z
-	tip_panel.add_theme_stylebox_override("panel", tip_style if tip_style else _default_tip_style())
-	tip_label = RichTextLabel.new()
-	tip_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	tip_label.bbcode_enabled = true
-	tip_label.fit_content = false
-	tip_label.scroll_active = false
-	tip_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	tip_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	tip_label.add_theme_font_size_override("normal_font_size", tip_font_size)
-	tip_panel.add_child(tip_label)
-	add_child(tip_panel)
+## 把对话子系统的表现层挂到自己这一层(遮罩只提供挂载点与 z)
+func _bind_presenter() -> void:
+	var presenter := DialogueTool.bind(self, TIP_Z)
+	if presenter and not presenter.placed.is_connected(_on_presenter_placed):
+		presenter.placed.connect(_on_presenter_placed)
 
 
-static func _default_tip_style() -> StyleBoxFlat:
-	var box := StyleBoxFlat.new()
-	box.bg_color = Color(0.09, 0.1, 0.12, 0.94)
-	box.set_corner_radius_all(10)
-	box.content_margin_left = 22.0
-	box.content_margin_right = 22.0
-	box.content_margin_top = 14.0
-	box.content_margin_bottom = 14.0
-	return box
+func _on_presenter_placed() -> void:
+	tip_placed.emit()
 
 
-## 气泡贴在目标下方(放不下翻到上方); 无目标时贴屏幕底部居中
-func _place_tip() -> void:
-	if tip_panel == null or not tip_panel.visible:
+## 把当前几何交给气泡: 锚点 = 目标包围盒(空 = 纯提示)
+func _sync_bubble() -> void:
+	if not DialogueTool.is_bound():
 		return
 	var view := _screen_size if _screen_size != Vector2.ZERO else get_viewport_rect().size
-	var anchor := _merged_rects()
-	var key := [view, tip_label.text, anchor]
-	if key == _tip_layout_key:
-		return
-	_tip_layout_key = key
-	var box := tip_panel.get_theme_stylebox("panel")
-	var pad_l := box.get_margin(SIDE_LEFT) if box else 0.0
-	var pad_r := box.get_margin(SIDE_RIGHT) if box else 0.0
-	var pad_t := box.get_margin(SIDE_TOP) if box else 0.0
-	var pad_b := box.get_margin(SIDE_BOTTOM) if box else 0.0
-	var margin := 12.0
-	var width := minf(view.x - margin * 2.0, 720.0)
-	tip_label.size = Vector2(maxf(width - pad_l - pad_r, 1.0), 0.0)
-	var height := tip_label.get_content_height() + pad_t + pad_b
-	var pure_tip := anchor.size == Vector2.ZERO
-	if pure_tip:
-		height = maxf(height, tip_min_height)
-	var panel_size := Vector2(width, height)
-	var gap := 14.0
-	var pos := Vector2(view.x * 0.5 - width * 0.5, view.y - margin - panel_size.y)
-	if not pure_tip:
-		pos = Vector2(anchor.get_center().x - width * 0.5, anchor.end.y + gap)
-		if pos.y + panel_size.y > view.y - margin:
-			pos.y = anchor.position.y - gap - panel_size.y
-	elif tip_top_limit >= 0.0:
-		pos.y = maxf(pos.y, tip_top_limit)
-	pos.x = clampf(pos.x, margin, maxf(margin, view.x - panel_size.x - margin))
-	pos.y = clampf(pos.y, margin, maxf(margin, view.y - panel_size.y - margin))
-	tip_panel.position = pos
-	tip_panel.size = panel_size
-	tip_label.position = Vector2(pad_l, pad_t)
-	tip_label.size = Vector2(maxf(panel_size.x - pad_l - pad_r, 1.0),
-			maxf(panel_size.y - pad_t - pad_b, 1.0))
-	tip_placed.emit()
+	DialogueTool.set_anchor(_merged_rects(), view)
 
 
 # ------------------------------------------------------------
