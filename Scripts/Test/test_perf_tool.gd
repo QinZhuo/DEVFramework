@@ -78,6 +78,34 @@ func test_fmt_ms() -> void:
 	assert_eq(PerfTool.fmt_ms(125000.0), "2m05s", "分钟档")
 
 
+## 自适应采样: 极快逻辑既要扩样, 也要靠分批把 per-op 从"1µs 量化成 0"里救回来
+func test_bench_auto_scales_iterations() -> void:
+	var r := PerfTool.bench_auto(func() -> void: pass, 5.0, 0)
+	assert_true(int(r["count"]) >= 10, "应按预算扩样, 实际 count=%d" % int(r["count"]))
+	assert_true(int(r["batch"]) >= 1, "应回传批次大小")
+	assert_approx(float(r["budget_ms"]), 5.0, "应回传预算")
+	assert_true(float(r["total_ms"]) > 0.0, "总耗时应可测")
+
+
+## 基线过滤: 上百条基线全量回传白占 token
+func test_history_filter() -> void:
+	PerfTool.record(MEASURE_KEY, 1.0)
+	PerfTool.record("job:filter_probe", 2.0)
+	assert_true(PerfTool.history_all("test:perf_tool").has(MEASURE_KEY), "子串应能命中")
+	assert_false(PerfTool.history_all("test:perf_tool").has("job:filter_probe"), "不应混入无关 key")
+	assert_true(PerfTool.history_all("no_such_key_xyz").is_empty(), "无命中应为空")
+	PerfTool.forget("job:filter_probe")
+
+
+## 帧采样: 卡顿阈值随中位帧长走, 结果自带 stutter_ms(写死 16.7/33.4 在不同刷新率上都会误判)
+func test_sample_frames_reports_jank_threshold() -> void:
+	var r: Dictionary = await PerfTool.sample_frames(5, 0)
+	assert_false(r.has("error"), "应能采样帧时间")
+	assert_eq(int(r["frames"]), 5, "采样帧数")
+	assert_true(float(r["stutter_ms"]) >= PerfTool.MIN_JANK_MS, "阈值不应低于 1 帧@60fps 下限")
+	assert_true(float(r["stutter_ms"]) >= float(r["p50_ms"]) * 2.0, "阈值应随中位帧长走")
+
+
 func test_measure_ms_records_baseline() -> void:
 	var ms := measure_ms(MEASURE_KEY, func() -> void: pass)
 	assert_true(ms >= 0.0, "耗时非负")

@@ -39,18 +39,28 @@ func assert_ne(got, not_want, msg := "") -> void:
 
 ## 浮点/向量/Rect 的近似相等(引擎默认容差)。用它替代 assert_true(is_equal_approx(..)),
 ## 失败时才会打出两个实际值, 而"期望为 true"什么线索都没有。
+## ⚠ 全局 is_equal_approx() 只收 float —— 传 Vector2 直接抛错, 复合类型必须走各自的同名方法。
 func assert_approx(got, want, msg := "") -> void:
-	# 全局 is_equal_approx 不覆盖 Rect2(它只认数值/向量/颜色), 单独走方法版
-	var ok: bool = got.is_equal_approx(want) if (got is Rect2 and want is Rect2) else is_equal_approx(got, want)
+	var ok: bool
+	if got is float or got is int or want is float or want is int:
+		ok = is_equal_approx(float(got), float(want))
+	else:
+		ok = got.is_equal_approx(want)
 	if not ok:
 		_fail("%s (got=%s want=%s)" % [msg if msg != "" else "值不近似相等", str(got), str(want)])
 
 
 ## 断言一段逻辑的耗时上限(毫秒)。阈值要留足机器差异余量, 否则 CI 上必闪红。
-func assert_under_ms(limit_ms: float, action: Callable, msg := "") -> void:
+## [param robust] true 时用分组采样的中位数判定 —— 亚微秒逻辑单次计时会被量化成 0
+## (断言"<0.001ms"永远通过, 等于没断言), 且单次测量在 CI 上噪声很大。
+func assert_under_ms(limit_ms: float, action: Callable, msg := "", robust := false) -> void:
 	var ms := PerfTool.measure(action)
+	if robust:
+		ms = float(PerfTool.bench_auto(action, 20.0, 1)["p50_ms"])
 	if ms > limit_ms:
-		_fail("%s耗时 %.2fms > 上限 %.2fms" % [_prefix(msg), ms, limit_ms])
+		_fail("%s耗时 %s > 上限 %s%s" % [
+			_prefix(msg), PerfTool.fmt_cost(ms), PerfTool.fmt_cost(limit_ms),
+			" (分组采样中位数)" if robust else ""])
 
 
 ## 测一段逻辑的耗时并写入历史基线(不判失败), 返回毫秒。
@@ -77,9 +87,12 @@ func assert_fps_at_least(min_fps: float, frames := 120, warmup := 30, key := "")
 		PerfTool.record(key, float(r.get("p50_ms", 0.0)))
 	var fps := float(r.get("fps_p50", 0.0))
 	if fps < min_fps:
-		_fail("帧率 %.1f < 下限 %.1f (p95 帧时间 %.1fms, 卡顿 %d 次, 绘制 %d)" % [
-			fps, min_fps, float(r.get("p95_ms", 0.0)),
-			int(r.get("stutter", 0)), int(r.get("draw_calls", 0))])
+		# 采样侧会带回 note(如"在编辑器进程采样"): 帧率低可能根本不是被测逻辑的问题
+		var note := str(r.get("note", ""))
+		_fail("帧率 %.1f < 下限 %.1f (p95 帧时间 %.1fms, 卡顿 %d 次@%.1fms, 绘制 %d)%s" % [
+			fps, min_fps, float(r.get("p95_ms", 0.0)), int(r.get("stutter", 0)),
+			float(r.get("stutter_ms", 0.0)), int(r.get("draw_calls", 0)),
+			"" if note.is_empty() else " —— " + note])
 
 
 func _prefix(msg: String) -> String:

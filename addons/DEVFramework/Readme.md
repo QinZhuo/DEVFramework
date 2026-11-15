@@ -100,6 +100,7 @@ run_tests  process=editor action=run script=test_dialogue            # 对话链
 **进度与 ETA 是内建的**：`total` 在开跑前就按"确认会执行的方法数"算好，`eta_ms` 由最近 3 秒的进度速率外推；
 进度不可用（总数未知/还没推进）时退化到**同类任务的历史用时**（`user://.dev_framework/perf_history.json`）。
 测试轮次还会在正文里给出"用时 X（预估 Y，偏差 Z%）"，预估来自各用例方法的历史 EMA。
+**进程首轮不计入基线**：冷缓存实测能慢一倍，记进去会让以后每轮的预估系统性偏高。
 
 ## 性能测量
 
@@ -107,19 +108,26 @@ run_tests  process=editor action=run script=test_dialogue            # 对话链
 
 | 目标 | 手段 |
 |---|---|
-| 测一段逻辑多快 | `PerfTool.measure(callable)` / `PerfTool.bench(callable, iters, warmup)` |
+| 测一段逻辑多快 | `PerfTool.measure(callable)` / `PerfTool.bench(callable, iters, warmup)` / `bench_auto(callable, 预算ms)` |
 | 测环境帧率/稳定性 | `PerfTool.sample_frames(帧数, 预热帧)` 或 MCP `perf action=fps process=game` |
 
 - `bench` 先跑 `warmup` 次丢弃（首次 load / 着色器编译会高出一个量级），再给 `avg / p50 / p95 / p99 / min / max`。
   **看分位不看平均**：卡顿来自长尾，平均会把偶发尖峰稀释掉。
+- 极快逻辑（亚微秒）用 `bench_auto`：它按预算自动扩样，并**分批后除以批大小**
+  —— 直接单次计时会被 1µs 的精度量化成 0，分批才有 per-op 分辨率。
+- `sample_frames` 的卡顿阈值是 `max(中位帧时间×2, 16.7ms)`，并回传 `stutter_ms` 说明按什么尺子量的
+  —— 写死一个绝对值在 144Hz 或半速场景都会判错。
+- 在编辑器进程采样会带回 `note`：编辑器空闲节流会把帧率压到 10fps 左右，测真实性能必须 `process=game`。
+- 基线条目多了以后用 `perf action=history key=test:` 过滤，别整份拉回来看。
 - 用例里直接断言，把阈值写进 CI：
 
 ```gdscript
 extends TestCase
 
 func test_query_cost() -> void:
-    assert_under_ms(5.0, func(): world.query(...).count())     # 硬上限
-    measure_ms("ecs/query", func(): world.query(...).count()) # 只记基线, 不判失败
+    assert_under_ms(5.0, func(): world.query(...).count())            # 硬上限
+    assert_under_ms(0.01, func(): bitop(...), "", true)               # 亚微秒: 用分组采样中位数
+    measure_ms("ecs/query", func(): world.query(...).count())         # 只记基线, 不判失败
 
 func test_frame_rate() -> void:
     await assert_fps_at_least(55.0, 120, 30)                  # 需游戏进程

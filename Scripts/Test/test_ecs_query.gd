@@ -80,7 +80,7 @@ func test_query_chain() -> void:
 
 	# ---- process 内写列(get_column 改 + set_column 写回) ----
 	var q4 := _q()
-	q4.process(func(rows2: PackedInt32Array, _cr: Dictionary, ww: ECSWorld):
+	q4.process(func(rows2: PackedInt32Array, _cr: Dictionary, ww: ECSWorld) -> void:
 		var xa: PackedInt32Array = ww.get_column(PTCompA, &"x")
 		for r in rows2:
 			xa[r] += 1000

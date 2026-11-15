@@ -59,7 +59,7 @@ func test_rule_layer_dsl() -> void:
 
 	# ---- process fields 模式: 预拉列 + 自动写回(回调内零跨语言) ----
 	var q4 := _q()
-	q4.process(func(rows: PackedInt32Array, data: Dictionary):
+	q4.process(func(rows: PackedInt32Array, data: Dictionary) -> void:
 		var xc: PackedInt32Array = data["PTCompA"]["x"]
 		for r in rows:
 			xc[r] += 1000

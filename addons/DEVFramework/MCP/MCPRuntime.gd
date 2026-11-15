@@ -356,7 +356,7 @@ func call_perf_local(args: Dictionary) -> Dictionary:
 			PerfTool.register_monitors()
 			return server._ok_json(report)
 		"history":
-			return server._ok_json({"items": PerfTool.history_all()})
+			return server._ok_json({"items": PerfTool.history_all(VariantTool.get_string(args, "key").strip_edges())})
 		"reset":
 			PerfTool.clear_history()
 			return server._ok_json({"cleared": true})

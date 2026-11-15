@@ -1517,6 +1517,7 @@ func _register_game_play_tools() -> void:
 			"action": {"type": "string", "enum": ["snapshot", "fps", "history", "reset"], "description": "snapshot=当前即时指标(零等待); fps=采样 N 帧算 p50/p95/卡顿; history=历史耗时基线; reset=清空基线重新积累。"},
 			"frames": {"type": "integer", "description": "action=fps 时采样的帧数, 默认 120(约 2 秒 @60fps), 上限 1200。"},
 			"warmup": {"type": "integer", "description": "action=fps 时先丢弃的预热帧数, 默认 30 —— 首帧的着色器编译/资源加载会让结果高出量级。"},
+			"key": {"type": "string", "description": "action=history 时的 key 子串过滤(如 'test:' 只看测试基线, 'job:run_tests' 只看测试任务); 省略=全部。"},
 		},
 		"required": ["process", "action"],
 	}

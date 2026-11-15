@@ -27,6 +27,9 @@ const HEARTBEAT_MS := 15000
 ## 防重入: 同一进程内不允许两轮 run_all 并发 —— 用例会改共享单例/存档/时间倍率,
 ## 交叉执行时互相污染, 且失败会指向错误的用例。空串 = 空闲, 否则为正在跑的 mode。
 static var _running_mode := ""
+## 本进程已跑过几轮: 首轮是冷缓存(脚本/资源首次加载, 实测能慢一倍),
+## 那一轮的耗时不该进基线, 否则每次重启后"预计总时长"都会系统性地偏高。
+static var _runs_this_process := 0
 
 
 ## [param script] 二选一(靠内容自动判别, 不新增参数):
@@ -46,6 +49,7 @@ static func run_all(script := "", mode := MODE_EDITOR, logger: Object = null) ->
 static func _run_all(script: String, mode: String, logger: Object) -> Dictionary:
 	var started_at := Time.get_ticks_msec()
 	var deadline := started_at + HARD_TIMEOUT_MS
+	_runs_this_process += 1
 	if is_inline_source(script):
 		return await _run_inline(script, mode, logger, deadline)
 
@@ -82,11 +86,12 @@ static func _run_all(script: String, mode: String, logger: Object) -> Dictionary
 		await _run_one_case(item, acc, deadline, planned, logger)
 		if bool(acc.get("aborted", false)):
 			break
-	PerfTool.flush_history()
-
 	var elapsed := Time.get_ticks_msec() - started_at
+	PerfTool.flush_history()
 	var text := _format(int(acc["total"]), int(acc["failed"]), acc["failures"], acc["skipped"], acc["overruns"], mode)
 	text += "\n用时 %s" % PerfTool.fmt_ms(float(elapsed))
+	if _runs_this_process == 1:
+		text += "（进程首轮: 冷缓存耗时不计入基线）"
 	# 全覆盖时才给预估偏差: 只覆盖一半的预估拿来做对比会误导
 	if int(est["count"]) > 0 and int(est["covered"]) == int(est["count"]):
 		text += "（预估 %s, 偏差 %+.0f%%）" % [
@@ -134,6 +139,9 @@ static func _build_plan(case_paths: Array, mode: String, acc: Dictionary) -> Arr
 
 
 ## 历史基线预估: 各方法 EMA 耗时之和。covered < count 时只是参考值。
+## ⚠ 这里**不做** runner 开销补偿: 实测其量级只有 ~0.25% (每方法约 0.25ms),
+## 而同一台机器上整轮耗时会因编辑器状态(重扫/失焦/重导入)漂移好几倍 ——
+## 补一个小常量并不解决"偏差大", 只会让模型看起来更复杂。
 static func _estimate_ms(plan: Array) -> Dictionary:
 	var total := 0.0
 	var covered := 0
@@ -243,8 +251,10 @@ static func _run_one_case(item: Dictionary, acc: Dictionary, deadline: int, plan
 		var err: String = await _run_one(inst, mname, remaining, _make_heartbeat("%s › %s" % [label, mname], started_at))
 		var elapsed := Time.get_ticks_msec() - started_at
 		var perf_key := _perf_key(label, mname)
-		# 基线用微秒: 大量用例是亚毫秒的, 取整到毫秒会全变成 0, 基线永远建不起来
-		PerfTool.record(perf_key, PerfTool.to_ms(PerfTool.now_us() - started_us))
+		# 基线用微秒: 大量用例是亚毫秒的, 取整到毫秒会全变成 0, 基线永远建不起来。
+		# 进程首轮是冷缓存, 不记 —— 否则每次重启都要拿一次偏高的值去污染 EMA。
+		if _runs_this_process > 1:
+			PerfTool.record(perf_key, PerfTool.to_ms(PerfTool.now_us() - started_us))
 		## 兜底收尾：不论成败都跑。手动收尾只覆盖"正常跑完"那条路，中途 return /
 		await _run_cleanup(inst, maxi(1000, remaining - elapsed))
 		## 用例体内的引擎报错(调错方法/空引用)只打一行日志、不进 _failures ⇒ 测试会"假通过"。

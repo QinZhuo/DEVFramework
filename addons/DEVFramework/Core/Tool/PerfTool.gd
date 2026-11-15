@@ -13,8 +13,9 @@ const HISTORY_VERSION := 1
 const HISTORY_MAX := 300
 ## EMA 平滑系数: 单次离群(机器抖动/首次编译)不该主导下一次预估
 const EMA_ALPHA := 0.3
-## 卡顿阈值(毫秒): 约 2 帧 @60fps, 超过即记一次 stutter
-const STUTTER_MS := 33.4
+## 卡顿判定下限(毫秒): 1 帧 @60fps。实际阈值取 max(中位帧时间×2, 本值) ——
+## 写死 33.4ms 在 144Hz 上会把正常帧全判成卡顿, 在半速场景又什么都抓不到。
+const MIN_JANK_MS := 16.7
 
 static var _history: Dictionary = {}
 static var _history_loaded := false
@@ -54,6 +55,34 @@ static func bench(action: Callable, iters := 30, warmup := 5) -> Dictionary:
 	var r := win.stats()
 	r["total_ms"] = to_ms(now_us() - t0)
 	return r
+
+
+## 自适应采样 —— 亚微秒逻辑的唯一可用做法。
+## 两个坑都要绕开: ①固定 30 次只测到计时噪声; ②单次耗时低于 1µs 时会被计时精度量化成 0。
+## 做法: 按粗估成本选出一个"至少 ~0.2ms"的批次, 每批跑 batch 次再除以 batch,
+## 于是每个样本都是 per-op 毫秒, 且分辨率被放大了 batch 倍。
+static func bench_auto(action: Callable, budget_ms := 50.0, warmup := 5) -> Dictionary:
+	var once := maxf(measure(action), 0.0005)          # 单次粗估(不当 0 用)
+	var batch := maxi(1, int(ceil(0.2 / once)))
+	var samples := clampi(int(budget_ms / (once * float(batch))), 10, 10000)
+	for i in maxi(warmup, 1):
+		_batch_run(action, batch)
+	var win := Rolling.new(samples)
+	var t0 := now_us()
+	for i in samples:
+		var s := now_us()
+		_batch_run(action, batch)
+		win.push(to_ms(now_us() - s) / float(batch))
+	var r := win.stats()
+	r["total_ms"] = to_ms(now_us() - t0)
+	r["batch"] = batch
+	r["budget_ms"] = budget_ms
+	return r
+
+
+static func _batch_run(action: Callable, count: int) -> void:
+	for i in count:
+		action.call()
 
 
 ## 对一组耗时值求统计(入参 Array / PackedFloat64Array / PackedFloat32Array)。
@@ -107,7 +136,8 @@ static func snapshot() -> Dictionary:
 
 
 ## 采一段真实帧时间(会 await 若干帧, 只能在主循环里调)。
-## 返回 stats 的全部字段 + {frames, fps, fps_p50, fps_p95, stutter, draw_calls, mem_mb}。
+## 返回 stats 的全部字段 + {frames, fps_p50, fps_p95, stutter, stutter_ms, draw_calls, mem_mb}。
+## 在编辑器进程采样会附带 note: 编辑器空闲节流会把帧率压到 10fps 左右, 那数字只能代表编辑器。
 static func sample_frames(frames := 120, warmup := 30) -> Dictionary:
 	var tree := Engine.get_main_loop() as SceneTree
 	if tree == null:
@@ -122,12 +152,18 @@ static func sample_frames(frames := 120, warmup := 30) -> Dictionary:
 		win.push(to_ms(now - prev))
 		prev = now
 	var r := win.stats()
+	var p50 := float(r["p50_ms"])
+	# 卡顿阈值随实际帧长走(见 MIN_JANK_MS): 结果自带 stutter_ms, 一眼能看出按什么尺子量的
+	var jank_ms := maxf(p50 * 2.0, MIN_JANK_MS)
 	r["frames"] = win.size()
-	# 由 p50/p95 反推的等效帧率: 比瞬时 fps 更能代表稳定性
-	r["fps_p50"] = _ms_to_fps(float(r["p50_ms"]))
+	r["fps_p50"] = _ms_to_fps(p50)
 	r["fps_p95"] = _ms_to_fps(float(r["p95_ms"]))
-	r["stutter"] = win.count_over(STUTTER_MS)
+	r["stutter_ms"] = jank_ms
+	r["stutter"] = win.count_over(jank_ms)
 	r.merge(snapshot(), true)
+	if Engine.is_editor_hint():
+		r["note"] = "编辑器进程的帧率受空闲节流限制(常见 10fps), 测真实性能请 process=game"
+	register_monitors()
 	return r
 
 
@@ -223,9 +259,16 @@ static func history(key: String) -> Dictionary:
 	return (_history.get(key, {}) as Dictionary).duplicate()
 
 
-static func history_all() -> Dictionary:
+## 全部基线; [param filter] 非空时按 key 子串过滤(基线常有上百条, 全量回传白占 token)。
+static func history_all(filter := "") -> Dictionary:
 	_ensure_history()
-	return _history.duplicate(true)
+	if filter.is_empty():
+		return _history.duplicate(true)
+	var out := {}
+	for k in _history:
+		if str(k).contains(filter):
+			out[k] = (_history[k] as Dictionary).duplicate()
+	return out
 
 
 ## 记录一次实测耗时(毫秒)。只更新内存, 落盘由 flush_history() 统一做(逐条 open/close 太贵)。
@@ -299,6 +342,16 @@ static func _prune_history() -> void:
 # ============================================================
 # 格式化
 # ============================================================
+
+## 单次操作耗时的可读文本: 亚毫秒必须换单位 —— "0.000ms" 这种输出等于没有信息。
+## 0.00008 → "80ns"; 0.0035 → "3.5µs"; 2.5 → "2.50ms"。
+static func fmt_cost(ms: float) -> String:
+	if ms >= 1.0:
+		return "%.2fms" % ms
+	if ms >= 0.001:
+		return "%.1fµs" % (ms * 1000.0)
+	return "%.0fns" % (ms * 1000000.0)
+
 
 ## 统一耗时文案: 900 → "900ms"; 12500 → "12.5s"; 125000 → "2m05s"。
 static func fmt_ms(ms: float) -> String:
