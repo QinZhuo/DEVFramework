@@ -132,8 +132,10 @@ func show_step(step: Task) -> void:
 		"advance_action": advance_action,
 		"drag_checker": drag_checker,
 		"dim": dim,
-		"tip": step.get_current_desc() if step else "",
 	}, _host)
+	## 文案直接交给对话子系统 —— 遮罩只负责"锚在哪", 不再当 Task→Dialogue 的传话人
+	if _mask:
+		DialogueTool.show(step.get_current_desc() if step else "", _mask.get_focus_rect())
 	if _mask and not _mask.blank_pressed.is_connected(_on_blank_pressed):
 		_mask.blank_pressed.connect(_on_blank_pressed)
 
