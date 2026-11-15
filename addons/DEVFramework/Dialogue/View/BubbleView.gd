@@ -128,16 +128,28 @@ func refresh() -> void:
 	var pad_b := padding.w
 	var slot_w := _slot_width()
 
-	var width := minf(view.x - 24.0, max_width)
-	label.size = Vector2(maxf(width - pad_l - pad_r - slot_w, 1.0), 0.0)
+	var limit_w := minf(view.x - 24.0, max_width)
+	var pad_w := pad_l + pad_r + slot_w
+
+	## 第一遍: 按上限宽度排版, 量出文案真实需要多宽(短句不要撑成整条)
+	label.size = Vector2(maxf(limit_w - pad_w, 1.0), 0.0)
+	var width := clampf(label.get_content_width() + pad_w, 240.0, limit_w)
+
+	## 第二遍: 用最终宽度重新排版, 拿高度
+	label.size = Vector2(maxf(width - pad_w, 1.0), 0.0)
 	var height := maxf(label.get_content_height(), _slot_height()) + pad_t + pad_b
 	height = maxf(height, min_height)
-	var panel_size := Vector2(width, height)
 
+	## 高度封顶: 超出可用高度时改为内部滚动, 不再顶出屏幕
+	var limit_h := view.y - 24.0
+	label.scroll_active = height > limit_h
+	height = minf(height, limit_h)
+
+	var panel_size := Vector2(width, height)
 	panel.position = place_default(panel_size)
 	panel.size = panel_size
 	label.position = Vector2(pad_l + slot_w, pad_t)
-	label.size = Vector2(maxf(panel_size.x - pad_l - pad_r - slot_w, 1.0),
+	label.size = Vector2(maxf(panel_size.x - pad_w, 1.0),
 			maxf(panel_size.y - pad_t - pad_b, 1.0))
 
 	var y := pad_t
