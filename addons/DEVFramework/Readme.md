@@ -44,6 +44,66 @@ Godot 4.7 数据驱动框架：`Def`（静态配置）→ `Entity`（运行时�
 
 每个基类文件头写三行 `## 契约`：**谁调我 / 我保证 / 我禁止**。归属与形态判定见 [LAYERS.md](LAYERS.md)。
 
+## 目录结构
+
+**一条规则**：目录名 = 能力名。找不到对应能力，就是那个能力还没有名字 —— 先起名，再建目录。
+
+```
+addons/DEVFramework/
+├─ Core/          跨能力复用、无业务语义
+│   ├─ Def/       Def、EntityDef、Tag/（通用数据基类）
+│   ├─ Entity/    Entity、Entity2D/3D、Modifier、ModifierValue、StateMachine
+│   ├─ Tool/      通用无状态工具：Log / Input / Pointer / Math / File / CSV /
+│   │             Save / Time / GameTimer / Tick / Display / NodeTree / Tip /
+│   │             UI / Steam / Prewarm / Reset / Debug / Variant
+│   ├─ Async/     AsyncTool、AsyncScope
+│   ├─ Pool/      Pool、PoolTool
+│   └─ Editor/    仅编辑器/构建期：Setup/、Generate/、DefTable/、EditorScriptMenuTool
+│
+├─ 能力模块（各自内部按需分层）
+│   ├─ Dialogue/  Def Entity View Tool   ← 对话/气泡
+│   ├─ Task/      Def Entity View Tool   ← 任务/教程
+│   ├─ AI/        Def Entity Tool        ← GOAP
+│   ├─ Camera/    Def Editor Tool        ← 相机
+│   ├─ ECS/       Component Def System World
+│   ├─ Tween/     Entity Tool View
+│   ├─ ArrayView/ 流式/槽位/偏移 列表视图
+│   ├─ UI/        UIPanel、OptionSelector、ButtonView、DragView3D…
+│   ├─ Focus/     FocusMask、FocusMaskSpotlight、FocusMaskTool
+│   ├─ Render/    OutlineEffect、GLSLShaderEffect、Trail3D、Lightmap/、Screenshot/
+│   ├─ Value/ Effect/ Signal/            数值表达式 / 效果 / 信号
+│   ├─ Audio/ Translation/ Changelog/ GameCommand/ Test/
+│   └─ MCP/       扁平（见下）
+│
+├─ Native/        原生库与 dev.gdextension（**不要移动**：含二进制，路径被 .gdextension 写死）
+├─ plugin.cfg / plugin.gd / Readme.md / LAYERS.md     插件入口与文档
+```
+
+**内部层名固定五个**：`Def`（数据）/ `Entity`（运行时）/ `View`（展示）/ `Tool`（静态入口）/ `Editor`（仅编辑器）。
+文件少于 3 个就不要建子目录，扁平即可。
+
+### 什么时候独立成目录
+
+| 条件 | 归属 |
+|---|---|
+| ≥2 个脚本，或已有 Def+Entity+Tool 多层 | 独立目录（如 `Focus/`） |
+| 只被一个模块使用 | 放进那个模块内部 |
+| 被 3+ 模块依赖、无业务语义 | `Core/` |
+| 纯视觉控件、无状态逻辑 | 对应能力模块的 `View/` 或 `UI/` |
+
+### 两个例外（都有明确理由）
+
+| 模块 | 形态 | 原因 |
+|---|---|---|
+| `MCP/` | **扁平**，29 个脚本不分层 | 内部是 `preload` 硬编码网 + `autoload`（`project.godot` 里的 `DevMCP`）。分层只会让每次移动都要改多处路径字符串，收益为零 |
+| `Native/` | 保持顶层 | 含 `.dll/.dylib/.so` 与 `dev.gdextension`；`dev.gdextension` 里的库路径是写死的相对路径，移动后原生库直接加载失败 |
+
+### 改目录时必须做的三件事
+
+1. 用 `git mv` 移动（保留历史），`.gd` 与同名 `.uid` 一起移；
+2. **替换所有引用**，注意扩展名不止 `.gd` —— `plugin.gd` 里就有 `.tscn` / `.png`，`.godot` 里还有 autoload 路径；
+3. 跑 `run_tests test_framework_compile`：其中 `test_all_framework_paths_exist` 会扫描所有 `res://addons/DEVFramework/...` 字符串并断言文件存在，漏改会直接红。
+
 ## 安装
 
 1. 复制 `addons/DEVFramework/` 到项目 `addons/`，在插件面板启用。
@@ -108,6 +168,7 @@ func apply(ctx) -> void:
 | ECS（C++ 列存储 + 系统 + 查询链 DSL） | [ECS/Readme.md](ECS/Readme.md) |
 | 3D 镜头（机位竞争 + 混合 + 冲击） | [Camera/Readme.md](Camera/Readme.md) |
 | 任务 / 教程 | [Task/Readme.md](Task/Readme.md) |
+| 对话 / 气泡 | [Dialogue/Readme.md](Dialogue/Readme.md) |
 | GOAP AI | [AI/Readme.md](AI/Readme.md) |
 | 命令回放 | [GameCommand/Readme.md](GameCommand/Readme.md) |
 

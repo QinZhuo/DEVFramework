@@ -47,15 +47,22 @@
 
 口诀：**路径、类型名、策略、注释，四处都不要让框架认识项目。**
 
-## 五、目录双轨制
+## 五、目录组织（目录名 = 能力名）
 
-| 轨道 | 目录 | 放什么 |
-|---|---|---|
-| 分层轴 | `Def/` `Entity/` `View/` `Tool/` 根部 | 被所有功能共用的基类协议、纯数学原语、横切工具 |
-| 功能轴 | `<Module>/{Def,Entity,Tool,View}/` 自包含 | 可拔插功能域：AI、ECS、Task、GameCommand、Tween、Camera |
+| 位置 | 放什么 |
+|---|---|
+| `Core/{Def,Entity,Tool,Async,Pool,Editor}` | 跨能力复用、无业务语义：基类协议、纯数学原语、横切工具、基础设施 |
+| `<能力>/{Def,Entity,View,Tool,Editor}` | 一个能力一个目录，自包含（`Dialogue`、`Task`、`AI`、`Camera`、`ECS`、`Tween`…） |
+| `Native/` | 原生库 + `dev.gdextension`。**禁止移动**：库路径写死在配置里 |
+
+- 内部层名固定五个：`Def` / `Entity` / `View` / `Tool` / `Editor`；**少于 3 个文件就扁平**，不要为 1 个文件建子目录。
+- 不再有 `View/` `Tool/` `Def/` `Entity/` 这类"跨能力层目录" —— 那是旧结构，内容已按能力拆散。
+- 例外只有一个半：`MCP/` 因内部 `preload` 硬编码网 + autoload 保持扁平；`Native/` 因二进制路径保持顶层。
 
 归属三问：**删除测试**（整文件夹删掉还能编译？）→ **API 宽度**（少量入口类，还是被广泛继承）→ **共变率**（是否总一起改）。
 红线：同一功能域的 Def 与 Entity 不许劈到两处。
+
+搬迁纪律（改目录时必做）：`git mv`（含 `.uid`）→ 替换**所有**引用（不止 `.gd`：`plugin.gd` 有 `.tscn`/`.png`，`project.godot` 有 autoload 路径）→ 跑 `test_framework_compile`（内含路径存在性校验）。
 
 跨模块依赖白名单（单向，新增必须先登记）：
 
@@ -64,7 +71,7 @@
 | `Entity → ECS` | `ECSLink` 内建桥接 |
 | `MCP → Camera` | 调试工具读取机位 |
 
-`ECS/` 归**分层轴**：`Entity` / `Entity2D/3D` 以 `ECSLink` 内建桥接，删除测试对它不成立 —— 它是核心能力，不是可拔插件。
+`ECS/` 是**核心能力**而非可拔插件：`Entity` / `Entity2D/3D` 通过 `ECSLink` 与它内建桥接，删除测试对它不成立。
 
 ## 六、命名与标注
 
