@@ -314,7 +314,7 @@ func test_task_tool_registry_and_save_all() -> void:
 	var restored := TaskTool.load_all(saved, {"root": host})
 	assert_eq(restored.size(), 1, "应还原 1 个任务")
 	var rt := restored[0] as GroupTask
-	assert_eq(rt.get_progress(), Vector2i(1, 7), "还原后应保留进度 1/7")
+	assert_eq(rt.get_progress(), Vector2i(1, 8), "还原后应保留进度 1/8")
 	assert_true(TaskTool.get_active().has(rt), "还原的任务应已注册")
 	TaskTool.clear()
 	host.queue_free()

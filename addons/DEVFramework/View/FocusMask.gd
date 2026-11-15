@@ -40,10 +40,9 @@ var drag_checker: Callable
 @export var focus_boost := 1.15
 ## 2D 目标的区域圆角(描边/区域形状; 0 = 直角)
 @export var corner_radius := 10.0
-## 外发光颜色 / 半径(像素) / 强度
-@export var glow_color := Color(1.0, 0.86, 0.55, 1.0)
-@export var glow_radius := 22.0
-@export var glow_energy := 0.9
+## 描边颜色 / 线宽(像素)
+@export var outline_color := Color(1.0, 0.86, 0.55, 1.0)
+@export var outline_width := 2.5
 ## 3D 目标是否用"真实轮廓"做区域与发光(需要额外的轮廓渲染通道)
 @export var outline_3d := true
 ## 轮廓渲染用的层(1..20, 需项目未占用)
@@ -70,6 +69,8 @@ var _host: Node
 var _promoted := {}
 ## 可交互区域(屏幕坐标)
 var _hit_rects: Array[Rect2] = []
+## 与 _hit_rects 一一对应的圆角(取自目标自己的样式盒, 圆形按钮才能画成圆)
+var _hit_radii := PackedFloat32Array()
 var _screen_size := Vector2.ZERO
 var _active := false
 var _tip_layout_key := []
@@ -77,12 +78,19 @@ var _tip_layout_key := []
 ## 屏幕空间合成
 var _spot: ColorRect
 var _spot_mat: ShaderMaterial
-## 3D 轮廓(只渲目标的那张贴图, 仅当 mask 使用)
+## 轮廓(只渲目标的那张贴图: 3D 用层分离重渲, 2D 用离屏快照)
 var _sil_target: Node3D
 var _sil_view: SubViewport
 var _sil_cam: Camera3D
 var _sil_rect_index := -1
+var _sil_rect := Rect2()
 var _sil_layers_backup := {}
+## 轮廓贴图是否可用(离屏快照可能渲出空图 → 自动退回矩形描边)
+var _sil_ok := true
+## 建好后等几帧再验证一次(离屏快照需要先渲一帧)
+var _sil_check_frames := 0
+## 2D 目标的离屏快照(duplicate 一份渲染, 拿它的 alpha 当真实轮廓)
+var _contour_view: SubViewport
 
 
 func _init() -> void:
@@ -102,8 +110,8 @@ func _ready() -> void:
 func _apply_theme() -> void:
 	if has_theme_color("dim_color", "FocusMask"):
 		dim_color = get_theme_color("dim_color", "FocusMask")
-	if has_theme_color("glow_color", "FocusMask"):
-		glow_color = get_theme_color("glow_color", "FocusMask")
+	if has_theme_color("outline_color", "FocusMask"):
+		outline_color = get_theme_color("outline_color", "FocusMask")
 	if has_theme_stylebox("tip_stylebox", "FocusMask"):
 		tip_style = get_theme_stylebox("tip_stylebox", "FocusMask")
 	if has_theme_font_size("tip_font_size", "FocusMask"):
@@ -206,6 +214,7 @@ func _process(_delta: float) -> void:
 		return
 	_update_geometry()
 	_sync_silhouette()
+	_tick_silhouette()
 
 
 func _apply_presentation() -> void:
@@ -233,21 +242,165 @@ static func _promote(node: Node) -> Node:
 	return node
 
 
-## 建"只渲染目标"的轮廓通道(仅当目标里有 3D 物体时)
+## 建"只渲染目标"的轮廓通道: 3D 用层分离重渲, 2D 用离屏快照(子视口里的也算)
 func _setup_silhouette() -> void:
 	if not outline_3d:
 		return
 	for i in _targets.size():
 		var node: Node = _targets[i]
 		var promoted: Node = _promoted.get(node)
-		# 只用"物体本身就是 3D 且在屏幕上 1:1"的情况做轮廓;
-		# 提升出来的贴图面(子视口目标)在别的世界坐标系里, 轮廓对不上屏幕 → 退回矩形
 		if promoted is Node3D and promoted == node:
-			_sil_target = promoted as Node3D
-			_sil_rect_index = i
-			break
-	if _sil_target == null:
+			_build_3d_silhouette(promoted as Node3D, i)
+			return
+		if node is CanvasItem and _build_2d_contour(node as CanvasItem, i):
+			return
 		return
+
+
+## 2D 目标的真实轮廓: 把控件自己的样式盒画进离屏视口。
+## 不走 duplicate —— 复制体脱离主题上下文后经常画不出东西(全透明),
+## 直接取"实际生效的 StyleBox"来画, 圆角/胶囊/带缺口都能贴合。
+func _build_2d_contour(node: CanvasItem, index: int) -> bool:
+	if not (node is Control):
+		return false
+	var control := node as Control
+	var box := _style_box_of(control)
+	if box == null:
+		return false
+	var rect := screen_rect(node)
+	if rect.size == Vector2.ZERO:
+		return false
+	var size := Vector2i(maxi(int(ceil(rect.size.x)), 8), maxi(int(ceil(rect.size.y)), 8))
+	_contour_view = SubViewport.new()
+	_contour_view.name = "FocusContour"
+	_contour_view.transparent_bg = true
+	_contour_view.disable_3d = true
+	_contour_view.size = size
+	_contour_view.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+	_contour_view.gui_disable_input = true
+	add_child(_contour_view)
+	var painter := ContourPainter.new()
+	painter.name = "ContourPainter"
+	painter.box = box
+	painter.size = Vector2(size)
+	_contour_view.add_child(painter)
+	_sil_view = _contour_view
+	_sil_rect = rect
+	_sil_rect_index = index
+	_sil_ok = true
+	_sil_check_frames = 2  # 离屏快照要先渲一帧, 2 帧后再验证是否有内容
+	return true
+
+
+## 目标自己的圆角(取样式盒四角最大值; 不是 StyleBoxFlat 就是 0 = 用全局默认)
+static func _corner_radius_of(node: Node) -> float:
+	var control := node as Control
+	if control == null:
+		return 0.0
+	var box := _style_box_of(control)
+	if box is StyleBoxFlat:
+		var flat := box as StyleBoxFlat
+		return float(maxi(maxi(flat.corner_radius_top_left, flat.corner_radius_top_right),
+				maxi(flat.corner_radius_bottom_left, flat.corner_radius_bottom_right)))
+	return 0.0
+
+
+## 取控件"实际生效"的样式盒(用来还原它的形状)
+static func _style_box_of(control: Control) -> StyleBox:
+	if control is Button:
+		var btn := control as Button
+		for name in ["normal", "pressed", "hover"]:
+			var box := btn.get_theme_stylebox(name)
+			if box:
+				return box
+	elif control is Panel:
+		var panel_box := (control as Panel).get_theme_stylebox("panel")
+		if panel_box:
+			return panel_box
+	var fallback := control.get_theme_stylebox("panel")
+	return fallback
+
+
+## 把样式盒画出来的最小画布(只用来生成轮廓 alpha)
+class ContourPainter extends Control:
+	var box: StyleBox
+
+	func _draw() -> void:
+		if box:
+			draw_style_box(box, Rect2(Vector2.ZERO, size))
+
+
+## 每帧维护轮廓: 验证离屏快照是否真的渲出了内容, 并让轮廓跟随目标移动/缩放
+func _tick_silhouette() -> void:
+	if _sil_view == null or not is_instance_valid(_sil_view) or _sil_rect_index < 0:
+		return
+	if _sil_check_frames > 0:
+		_sil_check_frames -= 1
+		if _sil_check_frames == 0 and not _silhouette_has_content():
+			_drop_silhouette()
+			return
+	# 只有 2D 离屏快照需要跟随目标矩形;
+	# 3D 轮廓是"整屏坐标系"渲染出来的, 绝不能改成目标矩形(否则轮廓整个错位)
+	if _sil_view != _contour_view:
+		return
+	if _sil_rect_index >= _targets.size():
+		return
+	var node: Node = _targets[_sil_rect_index]
+	if not is_instance_valid(node):
+		return
+	var rect := screen_rect(node)  # 不含 padding: 轮廓要贴控件本体
+	if rect.size == Vector2.ZERO or rect == _sil_rect:
+		return
+	if rect.size != _sil_rect.size and _sil_view == _contour_view:
+		# 尺寸变了: 快照要按新尺寸重建
+		var index := _sil_rect_index
+		_drop_silhouette()
+		if node is CanvasItem:
+			_build_2d_contour(node as CanvasItem, index)
+		_apply_spot_params()
+		return
+	_sil_rect = rect
+	if _spot_mat:
+		_spot_mat.set_shader_parameter("sil_rect", rect)
+
+
+## 轮廓贴图里是否有实际内容(抽样即可, 只在建立后验证一次)
+func _silhouette_has_content() -> bool:
+	var tex := _sil_view.get_texture()
+	if tex == null:
+		return false
+	var img := tex.get_image()
+	if img == null:
+		return false
+	for y in range(0, img.get_height(), 3):
+		for x in range(0, img.get_width(), 3):
+			if img.get_pixel(x, y).a > 0.1:
+				return true
+	return false
+
+
+## 轮廓不可用: 释放并退回矩形描边(不能因为拿不到轮廓就什么都不画)
+func _drop_silhouette() -> void:
+	if is_instance_valid(_sil_view):
+		_sil_view.queue_free()
+	_sil_view = null
+	_sil_cam = null
+	_sil_target = null
+	_contour_view = null
+	_sil_rect_index = -1
+	_sil_rect = Rect2()
+	_sil_ok = false
+	_sil_check_frames = 0
+	_apply_spot_params()
+
+
+## 3D 目标: 层分离 + 同相机重渲, 整屏对齐
+func _build_3d_silhouette(target: Node3D, index: int) -> void:
+	_sil_target = target
+	_sil_rect_index = index
+	_sil_rect = Rect2(Vector2.ZERO, _screen_size if _screen_size != Vector2.ZERO else get_viewport_rect().size)
+	_sil_ok = true
+	_sil_check_frames = 0  # 3D 重渲是稳定的, 不需要验证
 	var layer_bit := 1 << (highlight_layer - 1)
 	for visual in _visuals_of(_sil_target):
 		if not _sil_layers_backup.has(visual):
@@ -322,14 +475,17 @@ func _apply_spot_params() -> void:
 	_spot_mat.set_shader_parameter("dim_color", dim_color)
 	_spot_mat.set_shader_parameter("focus_boost", focus_boost)
 	_spot_mat.set_shader_parameter("corner_radius", corner_radius)
-	_spot_mat.set_shader_parameter("glow_color", glow_color)
-	_spot_mat.set_shader_parameter("glow_radius", glow_radius)
-	_spot_mat.set_shader_parameter("glow_energy", glow_energy)
-	var use_sil := _sil_view != null and is_instance_valid(_sil_view)
+	_spot_mat.set_shader_parameter("outline_color", outline_color)
+	_spot_mat.set_shader_parameter("outline_width", outline_width)
+	var use_sil := _sil_ok and _sil_view != null and is_instance_valid(_sil_view)
 	_spot_mat.set_shader_parameter("use_silhouette", use_sil)
-	_spot_mat.set_shader_parameter("sil_rect", _sil_rect_index)
+	_spot_mat.set_shader_parameter("sil_index", _sil_rect_index)
 	if use_sil:
 		_spot_mat.set_shader_parameter("silhouette", _sil_view.get_texture())
+		var rect := _sil_rect
+		if rect.size == Vector2.ZERO:
+			rect = Rect2(Vector2.ZERO, view)
+		_spot_mat.set_shader_parameter("sil_rect", rect)
 	_push_rects()
 
 
@@ -340,10 +496,13 @@ func _push_rects() -> void:
 	var view := _screen_size if _screen_size != Vector2.ZERO else get_viewport_rect().size
 	_spot_mat.set_shader_parameter("screen_size", view)
 	var packed := PackedVector4Array()
+	var radii := PackedFloat32Array()
 	for i in mini(_hit_rects.size(), MAX_RECTS):
 		var rect := _hit_rects[i]
 		packed.append(Vector4(rect.position.x, rect.position.y, rect.size.x, rect.size.y))
+		radii.append(_hit_radii[i] if i < _hit_radii.size() else 0.0)
 	_spot_mat.set_shader_parameter("rects", packed)
+	_spot_mat.set_shader_parameter("radii", radii)
 	_spot_mat.set_shader_parameter("rect_count", packed.size())
 	# 有目标却一个都定位不到(还没排版/被裁没): 宁可不压暗, 也不要给玩家一片黑
 	_spot.visible = _active and (not _targets.is_empty() and packed.size() > 0 or _targets.is_empty())
@@ -360,6 +519,8 @@ func _release_presentation() -> void:
 	_sil_cam = null
 	_sil_target = null
 	_sil_rect_index = -1
+	_sil_rect = Rect2()
+	_contour_view = null
 	_promoted.clear()
 	if _spot:
 		_spot.visible = false
@@ -490,6 +651,7 @@ func _contains(pos: Vector2) -> bool:
 func _update_geometry() -> void:
 	var view := get_viewport_rect().size
 	var hit_rects: Array[Rect2] = []
+	var radii := PackedFloat32Array()
 	if view.x > 0.0 and view.y > 0.0:
 		var screen := Rect2(Vector2.ZERO, view)
 		for i in _targets.size():
@@ -513,9 +675,11 @@ func _update_geometry() -> void:
 			if hit_rects.size() >= MAX_RECTS:
 				break
 			hit_rects.append(rect)
-	if hit_rects == _hit_rects and view == _screen_size:
+			radii.append(_corner_radius_of(node))
+	if hit_rects == _hit_rects and radii == _hit_radii and view == _screen_size:
 		return
 	_hit_rects = hit_rects
+	_hit_radii = radii
 	_screen_size = view
 	_push_rects()
 	_place_tip()
@@ -659,16 +823,31 @@ static func _rect_2d(item: CanvasItem) -> Rect2:
 	return rect
 
 
-## 子视口内的矩形 → 主视口矩形(约定: 承载该视口的 SubView3D 是视口的祖先)
+## 子视口内的矩形 → 屏幕矩形。
+## 逐层往上映射: 子视口 → 承载它的 SubView3D → 该面板所在视口 → … → 主视口。
+## (嵌套子视口只映射一层会得到"外层视口坐标"而不是屏幕坐标, 高亮就会跑到左上角)
 static func _sub_view_screen_rect(viewport: Viewport, rect: Rect2) -> Rect2:
-	if not (viewport is SubViewport):
-		return rect
+	var current := rect
+	var vp: Viewport = viewport
+	var guard := 0
+	while vp is SubViewport and guard < 8:
+		var panel := _find_panel(vp)
+		if panel == null:
+			break
+		current = panel.viewport_rect_to_screen(current)
+		vp = panel.get_viewport()
+		guard += 1
+	return current
+
+
+## 找到承载某个子视口的 SubView3D(沿祖先链)
+static func _find_panel(viewport: Viewport) -> SubView3D:
 	var node := viewport.get_parent()
 	while node:
 		if node is SubView3D and (node as SubView3D).viewport == viewport:
-			return (node as SubView3D).viewport_rect_to_screen(rect)
+			return node as SubView3D
 		node = node.get_parent()
-	return rect
+	return null
 
 
 ## Node3D → 屏幕矩形。统一用"可见 mesh 世界 AABB 合并投影"而非顶点投影

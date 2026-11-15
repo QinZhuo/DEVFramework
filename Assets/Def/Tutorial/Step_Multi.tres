@@ -13,6 +13,15 @@ node_path = NodePath("UI/StartButton")
 script = ExtResource("3_target")
 node_path = NodePath("UI/MovingButton")
 
+[sub_resource type="Resource" id="Resource_target_c"]
+script = ExtResource("3_target")
+node_path = NodePath("UI/CircleButton")
+
+[sub_resource type="Resource" id="Resource_sig_c"]
+script = ExtResource("4_node_sig")
+node_path = NodePath("UI/CircleButton")
+signal_name = &"pressed"
+
 [sub_resource type="Resource" id="Resource_sig_a"]
 script = ExtResource("4_node_sig")
 node_path = NodePath("UI/StartButton")
@@ -26,5 +35,5 @@ signal_name = &"pressed"
 [resource]
 resource_name = "Step_Multi"
 script = ExtResource("1_step")
-targets = Array[ExtResource("3_target")]([SubResource("Resource_target_a"), SubResource("Resource_target_b")])
-signals = Array[ExtResource("2_sig")]([SubResource("Resource_sig_a"), SubResource("Resource_sig_b")])
+targets = Array[ExtResource("3_target")]([SubResource("Resource_target_a"), SubResource("Resource_target_b"), SubResource("Resource_target_c")])
+signals = Array[ExtResource("2_sig")]([SubResource("Resource_sig_a"), SubResource("Resource_sig_b"), SubResource("Resource_sig_c")])

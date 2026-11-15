@@ -252,20 +252,20 @@ func test_save_data_roundtrip() -> void:
 	var flow: GroupTaskDef = load("res://Assets/Def/Tutorial/Tutorial_Start.tres")
 	var task := flow.create_entity() as GroupTask
 	task.activate({"root": host})
-	assert_eq(task.get_progress(), Vector2i(0, 7), "初始进度应为 0/7")
+	assert_eq(task.get_progress(), Vector2i(0, 8), "初始进度应为 0/8")
 
 	task.active_child_entity.complete()  # 完成第一步 → 推进到第二步
 	await tree.process_frame
 	var saved := task.save_data()
 	assert_eq(saved.get("def", ""), "Tutorial/Tutorial_Start.tres", "存档应记录 Def 相对路径")
-	assert_eq(saved.get("children", []).size(), 7, "存档应包含全部步骤")
+	assert_eq(saved.get("children", []).size(), 8, "存档应包含全部步骤")
 	assert_true(saved.children[0].get("is_completed", false), "存档应记录第一步已完成")
-	assert_eq(task.get_progress(), Vector2i(1, 7), "完成一步后进度应为 1/7")
+	assert_eq(task.get_progress(), Vector2i(1, 8), "完成一步后进度应为 1/8")
 
 	var restored := Task.restore(saved, {"root": host}) as GroupTask
 	assert_true(restored != null, "存档应能还原出任务实体")
 	assert_eq(restored.def.resource_path, flow.resource_path, "还原后的 def 应与存档一致")
-	assert_eq(restored.get_progress(), Vector2i(1, 7), "还原后应保留进度 1/7")
+	assert_eq(restored.get_progress(), Vector2i(1, 8), "还原后应保留进度 1/8")
 	assert_true(restored.active_child_entity != null and not restored.active_child_entity.is_completed,
 			"还原后应停在第 2 步, 不重跑已完成的第 1 步")
 	host.queue_free()

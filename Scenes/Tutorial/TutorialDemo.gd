@@ -22,7 +22,11 @@ var _move_time := 0.0
 
 func _ready() -> void:
 	TranslationTool.initialize()  # 加载 Assets/Translation 翻译(task.csv.zh.translation)
+	# 子视口里的目标要靠 3D 拾取才能点到(SubView3D 用 Area3D 转发点击),
+	# 主视口不开物理拾取时, 点屏幕等于点空气
+	get_viewport().physics_object_picking = true
 	_build_screens()
+	_make_circle_button($UI/CircleButton)  # 异形 2D 目标: 圆形(验证真实轮廓, 不是矩形)
 	_moving_origin = _moving.position
 	_guide = TutorialGuide.new()
 	_guide.name = "TutorialGuide"
@@ -30,6 +34,18 @@ func _ready() -> void:
 	_task = _guide.start(TUTORIAL, self)  # 一行启动(步骤推进 → 聚焦表现在 Guide 内部)
 	_task.completed.connect(_on_completed)
 	_task.progress_changed.connect(_on_progress_changed)
+
+
+## 圆形按钮: 用来验证"2D 异形目标"的轮廓(圆角=半径一半 ⇒ 正圆)
+func _make_circle_button(btn: Button) -> void:
+	var box := StyleBoxFlat.new()
+	box.bg_color = Color(0.24, 0.62, 0.42)
+	box.border_color = Color(0.08, 0.26, 0.18)
+	box.set_border_width_all(3)
+	box.set_corner_radius_all(48)
+	for state in ["normal", "hover", "pressed", "focus"]:
+		btn.add_theme_stylebox_override(state, box)
+	btn.add_theme_color_override("font_color", Color.WHITE)
 
 
 ## 演示"高亮跟随移动目标": 按钮在屏幕上来回缓慢移动, 可交互区每帧自动重算
@@ -111,6 +127,8 @@ func _build_screens() -> void:
 	inner_vp.size = Vector2i(320, 200)
 	inner_vp.transparent_bg = false  # 不透明底: 最容易被"整块亮"坑到
 	inner_vp.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+	# 嵌套子视口也要做 3D 拾取, 否则外层面板转发进来的点击到不了内层按钮
+	inner_vp.physics_object_picking = true
 	inner.add_child(inner_vp)
 	var inner_bg := ColorRect.new()
 	inner_bg.name = "InnerBackdrop"
@@ -123,6 +141,16 @@ func _build_screens() -> void:
 	inner_btn.position = Vector2(90, 70)
 	inner_btn.size = Vector2(140, 60)
 	inner_vp.add_child(inner_btn)
+	# 内层面板也需要拾取器(Area3D + 碰撞盒), 否则外层转发进来的点击到不了它的子视口
+	var inner_area := Area3D.new()
+	inner_area.name = "InnerArea"
+	var inner_shape := BoxShape3D.new()
+	inner_shape.size = Vector3(1.0, 0.625, 0.04)
+	var inner_col := CollisionShape3D.new()
+	inner_col.shape = inner_shape
+	inner_area.add_child(inner_col)
+	inner.add_child(inner_area)
+	inner.area = inner_area
 	inner.viewport = inner_vp
 	nest.viewport.add_child(inner)
 

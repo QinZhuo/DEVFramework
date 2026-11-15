@@ -4,5 +4,6 @@ Step_ClickBall_desc,现在点击[color=#ffd140]蓝色球体[/color]！
 Step_MovingButton_desc,点击这个[color=#ffd140]缓慢移动[/color]的按钮，高亮区会跟着它走。
 Step_Screen2D_desc,点击 3D 屏幕里的[color=#ffd140]屏幕按钮[/color]（子视口中的 2D 界面）。
 Step_Screen3D_desc,点击另一块屏幕里的[color=#ffd140]橙色方块[/color]（子视口中的 3D 物体）。
+Step_Nested_desc,点击嵌套屏幕里的[color=#ffd140]嵌套按钮[/color]（子视口里再套子视口）。
 Step_Multi_desc,两个目标都亮着，点[color=#ffd140]任意一个[/color]继续。
 Step_Tip_desc,点击屏幕任意处继续。

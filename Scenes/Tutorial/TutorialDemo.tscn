@@ -57,6 +57,13 @@ offset_right = 270.0
 offset_bottom = 198.0
 text = "缓慢移动"
 
+[node name="CircleButton" type="Button" parent="UI"]
+offset_left = 960.0
+offset_top = 96.0
+offset_right = 1056.0
+offset_bottom = 192.0
+text = "圆"
+
 [node name="Hint" type="Label" parent="UI"]
 anchors_preset = 10
 anchor_right = 1.0
