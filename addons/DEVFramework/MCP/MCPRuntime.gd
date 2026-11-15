@@ -108,7 +108,7 @@ func call_run_tests_routed(args: Dictionary) -> Dictionary:
 	return await _run_tests_start(args, TestRunner.MODE_EDITOR)
 
 
-## 转发到游戏进程（含自动启动）。args 原样转发: action/script/job_id/wait_sec 都要给到对端。
+## 转发到游戏进程（含自动启动）。args 原样转发: process/script 给到对端。
 func _run_tests_in_game(args: Dictionary) -> Dictionary:
 	var script := VariantTool.get_string(args, "script").strip_edges()
 	var fwd := {"process": "game"}
@@ -316,10 +316,10 @@ func _wait_game_ready(timeout_sec: float = 15.0) -> bool:
 # ------------------------------------------------------------
 
 func call_job_wait_local(args: Dictionary) -> Dictionary:
-	var job_id := VariantTool.get_string(args, "job_id").strip_edges()
-	var wait_sec := clampi(VariantTool.get_int(args, "wait_sec", JobTool.DEFAULT_WAIT_MS / 1000), 0, JobTool.MAX_WAIT_MS / 1000)
+	# 等待时长**固定** 28s(JobTool.DEFAULT_WAIT_MS): 不接受调用方指定 ——
+	# 传大值只会把自己卡到 MCP 客户端的 30s 上限, 传小值则无谓地多次往返。
 	# JobTool.wait 内部 await 主循环帧, 是协程 —— 必须 await
-	return server._ok_json(await JobTool.wait(job_id, wait_sec * 1000))
+	return server._ok_json(await JobTool.wait(VariantTool.get_string(args, "job_id").strip_edges()))
 
 
 func call_job_wait_routed(args: Dictionary) -> Dictionary:
@@ -343,10 +343,7 @@ func _route_job(tool: String, args: Dictionary, local: Callable) -> Dictionary:
 		return await local.call(args)
 	if not _has_game_session():
 		return server._ok_json(probe)
-	var fwd := {"job_id": job_id}
-	if args.has("wait_sec"):
-		fwd["wait_sec"] = int(args["wait_sec"])
-	var r: Dictionary = await server._call_runtime_proxy(tool, fwd)
+	var r: Dictionary = await server._call_runtime_proxy(tool, {"job_id": job_id})
 	if not bool(r.get("is_error", false)):
 		return r
 	return server._ok_json(probe)   # 两边都没有 → 返回本进程的原始错误

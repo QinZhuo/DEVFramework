@@ -20,9 +20,9 @@ class_name JobTool extends RefCounted
 ##   return snap                            # 已完成, 直接就是结果
 
 ## 单次调用最多等多久(毫秒)。MCP 客户端超时普遍 30s, 留 5s 余量给传输与序列化。
-const DEFAULT_WAIT_MS := 25000
+const DEFAULT_WAIT_MS := 28000
 ## job_wait 允许客户端指定的上限(毫秒): 再长也会被客户端自己掐断, 没意义。
-const MAX_WAIT_MS := 60000
+
 ## 保留多少个已结束 job(超出淘汰最旧的)
 const MAX_KEPT_JOBS := 16
 ## 已结束 job 的保留时长(毫秒): 超期即回收, 长会话不会无限堆积
@@ -46,7 +46,9 @@ static func start(key: String, work: Callable) -> Dictionary:
 		running["hint"] = "已有任务在跑(%s), 这是它的快照; 用 job_wait 轮询而不是重复启动" % str(running.get("key", ""))
 		return running
 	_seq += 1
-	var id := "job_%d" % _seq
+	# 带进程标识: 编辑器与游戏进程各自独立计数, 都从 job_1 开始 ⇒ 撞号时
+	# job_wait 会在本进程查到"同名但不是同一个"的 job, 静默返回错误结果
+	var id := "%s_job_%d" % [_proc_tag(), _seq]
 	_jobs[id] = {
 		"job_id": id, "key": key, "status": "running",
 		"progress": 0, "total": 0, "current": "", "message": "",
@@ -64,7 +66,7 @@ static func wait(job_id: String, wait_ms := DEFAULT_WAIT_MS) -> Dictionary:
 	var id := job_id if job_id != "" else _active
 	if id == "":
 		return {"error": "没有可等价的 job(还没启动过任务?)"}
-	var deadline := Time.get_ticks_msec() + clampi(wait_ms, 0, MAX_WAIT_MS)
+	var deadline := Time.get_ticks_msec() + mini(wait_ms, DEFAULT_WAIT_MS)
 	while true:
 		var job: Dictionary = _jobs.get(id, {})
 		if job.is_empty():
@@ -194,13 +196,18 @@ static func _snapshot(id: String, job: Dictionary) -> Dictionary:
 	}
 
 
+## job id 的进程前缀: 编辑器 e / 游戏 g
+static func _proc_tag() -> String:
+	return "e" if Engine.is_editor_hint() else "g"
+
+
 static func _pick() -> String:
 	if _active != "":
 		return _active
 	var best := ""
 	var best_seq := -1
 	for k in _jobs.keys():
-		var n := int(str(k).trim_prefix("job_"))
+		var n := str(k).get_slice("_", 2).to_int()   # "<tag>_job_<n>"
 		if n > best_seq:
 			best_seq = n
 			best = str(k)

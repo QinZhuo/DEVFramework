@@ -1474,12 +1474,12 @@ func _register_game_play_tools() -> void:
 		"type": "object",
 		"properties": {
 			"job_id": {"type": "string", "description": "长任务返回体里的 job_id。"},
-			"wait_sec": {"type": "integer", "description": "本次最多等几秒(默认 25, 上限 60)。完成即返回结果; 未完成返回同一 job_id 的新快照。"},
+			"job_id_note": {"type": "string", "description": "等待时长固定 28 秒(不提供参数): 超过 MCP 客户端 30s 上限的等待一定会被客户端掐断, 没有意义。"},
 		},
 		"required": ["job_id"],
 	}
 	_register_game_play_tool("job_wait",
-		"等待长任务结束(**通用**: 任何返回 `job_id + running:true` 的接口都适用, 且不会重跑任务)。完成 → 返回完整结果(status=done/failed); 未完成 → 返回同一 job_id 的进度快照(progress/current/elapsed_ms)。job 在哪个进程不用管, 工具会自动找到(先本地, 再转游戏进程)。典型用法: 拿到 job_id 后循环 `job_wait(job_id)` 直到 `running == false`。",
+		"等待长任务结束(**通用**: 任何返回 `job_id + running:true` 的接口都适用, 且不会重跑任务)。每次调用固定等 28 秒(不超过 MCP 客户端 30s 上限, 调用方无需也不能指定): 完成 → 返回完整结果(status=done/failed); 未完成 → 返回同一 job_id 的进度快照(progress/current/elapsed_ms), 继续调它即可。job 在哪个进程不用管, 工具会自动找到(先本地, 再转游戏进程)。典型用法: 拿到 job_id 后循环 `job_wait(job_id)` 直到 `running == false`。",
 		job_wait_schema,
 		_call_job_wait_local,
 		_call_job_wait_routed)
