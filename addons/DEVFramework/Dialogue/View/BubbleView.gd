@@ -52,8 +52,13 @@ func _apply_style() -> void:
 		flat.set_corner_radius_all(10)
 		box = flat
 	panel.add_theme_stylebox_override("panel", box)
+	# 主题可覆盖字号/字体(项目一般把它放在自己的 theme 里)
+	if has_theme_font_size("font_size", "DialogueBubble"):
+		font_size = get_theme_font_size("font_size", "DialogueBubble")
 	if label:
 		label.add_theme_font_size_override("normal_font_size", font_size)
+		if has_theme_font("font", "DialogueBubble"):
+			label.add_theme_font_override("normal_font", get_theme_font("font", "DialogueBubble"))
 		label.add_theme_color_override("default_color", font_color)
 
 
@@ -90,8 +95,12 @@ func dismiss() -> void:
 func attach_slot(slot_name: StringName, node: Control, size: Vector2) -> void:
 	if node == null:
 		return
+	# 挂到**面板内**(跟着气泡走)。挂到 view 自身的话坐标是全屏的, 插槽会跑到屏幕左上角。
+	var host: Control = panel if panel else self
 	if node.get_parent() == null:
-		add_child(node)
+		host.add_child(node)
+	elif node.get_parent() != host:
+		node.reparent(host)
 	_slots[slot_name] = {"node": node, "size": size}
 	refresh()
 

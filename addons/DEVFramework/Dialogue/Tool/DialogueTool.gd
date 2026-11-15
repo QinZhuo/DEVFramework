@@ -11,6 +11,9 @@ class_name DialogueTool
 
 ## 项目可替换的表现场景（须继承 DialogueView）
 static var view_scene: PackedScene
+## 项目主题。气泡通常挂在 CanvasLayer 下，而 CanvasLayer 不参与 Control 的主题链，
+## 所以这里显式传一份，view 才能读到项目里的样式/字体。
+static var theme: Theme
 
 static var _view: DialogueView
 static var _session: DialogueSession
@@ -28,6 +31,8 @@ static func bind(parent: Control, z_index := 0) -> DialogueView:
 				parent.add_child(_view)  # 项目先 register() 再 bind: 这里补上入树
 			elif _view.get_parent() != parent:
 				_view.reparent(parent)
+		if theme != null:
+			_view.theme = theme
 		return _view
 	if parent == null:
 		return null
