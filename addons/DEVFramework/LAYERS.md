@@ -18,6 +18,17 @@
 | 4 | 含游戏语义（伤害公式、存档字段、联机策略）？ | 项目 |
 | 5 | 纯数学 / 纯结构（状态机、修饰符计算、序列化协议）？ | 框架 |
 
+**形态判定（归属定了，再定它长什么样，命中也即停）**
+
+1. 编辑器可配、要存档 → `Def`（`Assets/Def/*.tres`，必带 `@tool`）
+2. 只有运行时存在、有状态 → `Entity` / `Entity2D` / `Entity3D`
+3. 玩家看得见或要交互 → `View`（一律 `.tscn` 搭，不代码生成）
+4. 横切、无实例状态 → `Tool`（`class_name XxxTool extends RefCounted`，全 static，状态放 `static var`）
+5. 每帧被批量调度 → `XxxSystem`
+6. 以上都不是 → 在造第五种角色，停下重想
+
+同义词禁用：`Service` / `Processor` / `Handler` / `Driver` / `Runner` / `Brain` / `Planner`。
+
 ## 三、三种合法协作
 
 1. **继承扩展**：项目 `extends` 框架基类（`DamageEffectDef extends EffectDef`）。
@@ -43,20 +54,38 @@
 | 功能轴 | `<Module>/{Def,Entity,Tool,View}/` 自包含 | 可拔插功能域：AI、ECS、Task、GameCommand、Tween、Camera |
 
 归属三问：**删除测试**（整文件夹删掉还能编译？）→ **API 宽度**（少量入口类，还是被广泛继承）→ **共变率**（是否总一起改）。
-红线：同一功能域的 Def 与 Entity 不许劈到两处；跨模块依赖单向且显式（现存两条：`Entity → ECS`、`MCP → Camera`）。
+红线：同一功能域的 Def 与 Entity 不许劈到两处。
+
+跨模块依赖白名单（单向，新增必须先登记）：
+
+| 从 → 到 | 理由 |
+|---|---|
+| `Entity → ECS` | `ECSLink` 内建桥接 |
+| `MCP → Camera` | 调试工具读取机位 |
 
 `ECS/` 归**分层轴**：`Entity` / `Entity2D/3D` 以 `ECSLink` 内建桥接，删除测试对它不成立 —— 它是核心能力，不是可拔插件。
 
-## 六、违规自查
+## 六、命名与标注
+
+| # | 规定 |
+|---|---|
+| 1 | 类名占全局命名空间。基类保留短名（`Def` / `Entity` / `UIPanel` / `Pool`），其余带领域前缀（`GoapAgent` / `ECSWorld`）；项目与第三方不得同名，新增前全仓搜一次 |
+| 2 | `@tool` 只在被编辑器调用时加（`EditorScript`、DefTable、gizmo）；运行时工具不加，省编辑器加载开销 |
+| 3 | Hook 签名基线 `game_init()` / `game_ready()` / `save_data() -> Dictionary` / `load_data(data: Dictionary) -> void`；现存多参写法保留，新增与修改归一到基线 |
+| 4 | `LogTool` 标签用固定短词（`存档` / `对象池` / `Def` / `MCP`），新标签先搜已有，不造同义词（设置项 `ignored_tags` 靠它对账） |
+
+## 七、违规自查
 
 ```powershell
 grep -rE "res://(Scripts|Assets|Scenes)/" addons/DEVFramework --include="*.gd"
 grep -rE "\b(damage|card|fight|buff|health|gold|shop)\b" addons/DEVFramework --include="*.gd"
+# 禁用后缀: Service / Processor / Handler / Driver / Runner / Brain / Planner 一律违规
+grep -rnE "class_name \w*(Service|Processor|Handler|Driver|Runner|Brain|Planner)\b" addons/DEVFramework
 ```
 
 改/删共享资源前先查引用（MCP `find_resource_users`）；移动脚本连 `.gd.uid` 一起 `git mv`。
 
-## 七、Def 寻址（路径即身份）
+## 八、Def 寻址（路径即身份）
 
 | # | 纪律 | 违反后果 |
 |---|---|---|

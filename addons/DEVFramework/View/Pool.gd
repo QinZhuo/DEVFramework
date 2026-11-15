@@ -5,7 +5,7 @@ class_name Pool extends RefCounted
 ## 池空时创建新实例；返回 null 视为无法创建（pool_get 返回 null）
 var factory: Callable
 
-## 空闲实例的父节点（由 PoolService 注入）
+## 空闲实例的父节点（由 PoolTool 注入）
 var idle_parent: Node
 
 ## 空闲上限（0 = 不限）。超出上限的归还直接销毁，避免池无限膨胀

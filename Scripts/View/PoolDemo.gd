@@ -56,7 +56,7 @@ func _push() -> void:
 
 
 func _update_stats() -> void:
-	var pool := PoolService.find(KEY)
+	var pool := PoolTool.find(KEY)
 	if pool == null:
 		_stats.text = "池未创建（走编辑器预览？编辑器里一律不池化）"
 		return

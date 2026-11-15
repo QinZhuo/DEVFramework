@@ -9,4 +9,4 @@ static func all() -> void:
 	TickTool.reset()
 	PointerTool.reset()
 	AudioTool.reset()
-	PoolService.clear()
+	PoolTool.clear()

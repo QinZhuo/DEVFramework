@@ -22,7 +22,7 @@ func cleanup() -> void:
 			v.free()
 	_views.clear()
 	for k: String in [KEY, KEY_SIZE, KEY_HIDE]:
-		PoolService.remove(k)
+		PoolTool.remove(k)
 
 
 var _views: Array[Node] = []
@@ -62,7 +62,7 @@ func test_refresh_reuses_the_same_instances() -> void:
 	var first := _ids(view)
 	assert_eq(first.size(), 3, "应建出 3 个视图")
 
-	var pool := PoolService.find(KEY)
+	var pool := PoolTool.find(KEY)
 	assert_true(pool != null, "填了 pool_key 应注册出池")
 	assert_eq(pool.created_count, 3, "首轮现场创建 3 个")
 
@@ -78,7 +78,7 @@ func test_without_pool_key_rebuilds() -> void:
 	var before := view.get_view(0)
 	view.data = [2]
 	assert_true(view.get_view(0) != before, "空 pool_key 时应重建节点")
-	assert_true(PoolService.find("") == null, "空 key 不建池")
+	assert_true(PoolTool.find("") == null, "空 key 不建池")
 
 
 func test_pool_size_prewarms_and_caps_idle() -> void:
@@ -86,7 +86,7 @@ func test_pool_size_prewarms_and_caps_idle() -> void:
 	view.pool_size = 4
 	view.data = [1]
 
-	var pool := PoolService.find(KEY_SIZE)
+	var pool := PoolTool.find(KEY_SIZE)
 	assert_eq(pool.max_idle, 4, "pool_size 应成为空闲上限")
 	assert_eq(pool.created_count, 4, "首次使用前预建 4 个")
 	assert_eq(pool.idle_count(), 3, "用掉一个后剩 3 个空闲")

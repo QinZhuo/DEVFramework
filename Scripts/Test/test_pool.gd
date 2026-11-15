@@ -32,7 +32,7 @@ var _nodes: Array[Node] = []
 
 
 func cleanup() -> void:
-	PoolService.clear()
+	PoolTool.clear()
 	for n in _nodes:
 		if is_instance_valid(n) and not n.is_queued_for_deletion():
 			n.free()
@@ -45,7 +45,7 @@ func _make_view() -> Node:
 	return v
 
 
-## 独立池：idle_parent 用测试自己的空节点，不碰 PoolService 的常驻容器
+## 独立池：idle_parent 用测试自己的空节点，不碰 PoolTool 的常驻容器
 func _new_pool() -> Pool:
 	var idle := Node.new()
 	_nodes.append(idle)
@@ -135,35 +135,35 @@ func test_freed_in_use_is_pruned() -> void:
 
 
 func test_service_isolates_keys() -> void:
-	PoolService.ensure(KEY_A, _make_view)
-	PoolService.ensure(KEY_B, _make_view)
+	PoolTool.ensure(KEY_A, _make_view)
+	PoolTool.ensure(KEY_B, _make_view)
 
-	var a := PoolService.pool_get(KEY_A)
+	var a := PoolTool.pool_get(KEY_A)
 	assert_true(a != null, "KEY_A 应能取到实例")
-	assert_eq(PoolService.find(KEY_B).in_use_count(), 0, "KEY_B 不应被 KEY_A 的借出影响")
+	assert_eq(PoolTool.find(KEY_B).in_use_count(), 0, "KEY_B 不应被 KEY_A 的借出影响")
 
-	PoolService.pool_return(KEY_A, a)
-	assert_eq(PoolService.find(KEY_A).idle_count(), 1, "归还进自己的池")
-	assert_eq(PoolService.find(KEY_B).idle_count(), 0, "不能串到别的池")
+	PoolTool.pool_return(KEY_A, a)
+	assert_eq(PoolTool.find(KEY_A).idle_count(), 1, "归还进自己的池")
+	assert_eq(PoolTool.find(KEY_B).idle_count(), 0, "不能串到别的池")
 
-	assert_true(PoolService.pool_get("test_pool_missing") == null, "没有池时取用返回 null")
+	assert_true(PoolTool.pool_get("test_pool_missing") == null, "没有池时取用返回 null")
 
 
 func test_service_hands_out_after_key_cleanup() -> void:
 	## 场景切换常调 trim()：空闲被清掉、池与 key 保留，再借仍能现场造
-	var pool := PoolService.ensure(KEY_A, _make_view)
+	var pool := PoolTool.ensure(KEY_A, _make_view)
 	var a := pool.pool_get()
 	pool.pool_return(a)
-	PoolService.trim()
+	PoolTool.trim()
 	assert_eq(pool.idle_count(), 0, "trim 应清空空闲实例")
-	assert_true(PoolService.find(KEY_A) == pool, "trim 不移除注册")
+	assert_true(PoolTool.find(KEY_A) == pool, "trim 不移除注册")
 	assert_true(pool.pool_get() != null, "trim 后仍能借到实例")
 
 
 func test_idle_instances_stay_in_tree() -> void:
 	## 池首次创建常常发生在场景 _ready 期间，那时 root 仍在装配子节点：
 	## 容器必须延迟挂载成功，否则所有空闲实例都留在树外（既不渲染也不随场景释放）
-	var pool := PoolService.ensure(KEY_A, _make_view)
+	var pool := PoolTool.ensure(KEY_A, _make_view)
 	var a := pool.pool_get()
 	pool.pool_return(a)
 	await Engine.get_main_loop().process_frame
@@ -175,7 +175,7 @@ func test_idle_instances_stay_in_tree() -> void:
 
 func test_service_accepts_path_like_key() -> void:
 	## 旧实现把 key 当 NodePath 解析，含 / 的 key 会建错容器
-	var pool := PoolService.ensure(KEY_BAD, _make_view)
+	var pool := PoolTool.ensure(KEY_BAD, _make_view)
 	var a := pool.pool_get()
 	pool.pool_return(a)
 	assert_eq(pool.idle_count(), 1, "含 / 与 : 的 key 也要能建出容器并归还成功")
@@ -183,5 +183,5 @@ func test_service_accepts_path_like_key() -> void:
 
 func test_return_without_pool_destroys() -> void:
 	var orphan := _make_view() as Node
-	PoolService.pool_return("test_pool_missing", orphan)
+	PoolTool.pool_return("test_pool_missing", orphan)
 	assert_true(orphan.is_queued_for_deletion(), "没有对应池时应直接销毁")

@@ -161,7 +161,7 @@ static func _class_name_of(item: Object) -> String:
 static func resolve_pool(pool_key: String, view_scene: PackedScene) -> Pool:
 	if pool_key.is_empty() or view_scene == null or Engine.is_editor_hint():
 		return null
-	return PoolService.ensure(pool_key, view_scene.instantiate)
+	return PoolTool.ensure(pool_key, view_scene.instantiate)
 
 ## 惰性解析并写回宿主的 pool（data 可能早于 _ready 赋值），并应用宿主声明的池容量
 static func ensure_pool(host) -> void:

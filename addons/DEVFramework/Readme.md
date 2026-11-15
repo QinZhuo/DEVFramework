@@ -5,6 +5,44 @@ Godot 4.7 数据驱动框架：`Def`（静态配置）→ `Entity`（运行时�
 - **框架 = 机制，项目 = 内容**：换一款游戏仍成立的进框架，玩法语义留在项目。边界规则见 [LAYERS.md](LAYERS.md)。
 - **Def 只描述配置**，不存运行时状态；运行时数据在 Entity / Component / 节点上。
 
+## 设计语言
+
+**四角色**（新代码必属其一，没有第五种）
+
+| 角色 | 是什么 | 判别 |
+|---|---|---|
+| `Def` | 编辑器可配的静态数据，路径即身份 | 策划要在检查器里改？ |
+| `Entity` | 运行时状态载体，不被看见 | 跑起来才有、且有状态？ |
+| `View` | 投影，只读 `data` | 玩家看得见 / 要交互？ |
+| `Tool` | 横切机制，全 static，状态放 `static var` | 换游戏仍成立、不要实例？ |
+
+**两条流向**：`Def → Entity → View` 单向，不回溯；Tool 被调用，不持有调用者。
+
+**四律**
+
+1. **数据不下行**：View 不写 Entity，Entity 不写 Def；要反馈就抛信号或 `Callable`。
+2. **一个角色一个基类**：不为同类问题开第二个基类。
+3. **静态优先**：无实例状态一律 `static`；有状态的在类注释写清谁持有、谁释放。
+4. **删除测试**：删掉整个文件或模块目录，框架仍能编译运行。唯一例外是编辑器面板接线，且只在 `plugin.gd` 出现。
+
+**语法**
+
+| 形 | 义 |
+|---|---|
+| `_foo()` | 宿主 / 引擎回调，我被动被调 |
+| `on_xxx` | 信号，过去式 = 完成态（`on_opened`） |
+| `get_` / `is_` / `has_` | 纯读与谓词，无副作用 |
+| `apply` / `revert` | 可逆效果，必须成对 |
+| `defer` | 延后到本 tick / 帧末 |
+| `await_*` | 协程，返回结果或 `false`，禁止 `void` |
+| `XxxTool` / `XxxDef` / `XxxSystem` | 机制 / 配置 / 被调度逻辑 |
+
+返回约定：`bool` = 是否生效；`void` = 已受理；`Error` = 仅 IO；`null` = 查询未命中。
+
+单例状态一律 `Tool` + `static var`，没有 `XxxService`；真需要多份实例且要 dispose 时才新增该后缀。
+
+每个基类文件头写三行 `## 契约`：**谁调我 / 我保证 / 我禁止**。归属与形态判定见 [LAYERS.md](LAYERS.md)。
+
 ## 安装
 
 1. 复制 `addons/DEVFramework/` 到项目 `addons/`，在插件面板启用。
@@ -56,7 +94,7 @@ func apply(ctx) -> void:
 
 - `UIPanel` / `UIPanel3D`：`open` / `close` / `toggle` / `popup` / `await_closed`，信号 `on_open` / `on_opened` / `on_close` / `on_closed`，可覆写 `_back()` / `_focus_enter()` / `_focus_exit()`。
 - `UITool` 六层：`BACKGROUND` / `HUD` / `PANEL` / `DIALOG`（同层互斥）/ `TOOLTIP`（单实例）/ `TOP`；`back()` 只处理 DIALOG 与 PANEL。
-- 数组视图：`ArrayView`（流式）、`SlotArrayView2D/3D`（固定槽）、`OffsetArrayView2D/3D`（按 offset 排列）。填 `pool_key` + `pool_size` 走对象池（`Pool` / `PoolService`），归还时自己清 `data`、断信号。
+- 数组视图：`ArrayView`（流式）、`SlotArrayView2D/3D`（固定槽）、`OffsetArrayView2D/3D`（按 offset 排列）。填 `pool_key` + `pool_size` 走对象池（`Pool` / `PoolTool`），归还时自己清 `data`、断信号。
 - 焦点遮罩：`FocusMask`（全场变暗，只有目标保持原样可交互；3D 目标单独重渲染到暗区之上，2D 目标提升绘制顺序），入口 `FocusMaskTool`（全局唯一，自动挂最高层 CanvasLayer）。
 - 渲染：`OutlineEffect`、`GLSLShaderEffect`、`Trail3D`、`BakedMeshInstance3D`（资源级光照贴图）、`SubView3D`、`ShaderProgressBar`。
 
