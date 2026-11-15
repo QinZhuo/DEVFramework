@@ -5,7 +5,7 @@
 @tool
 class_name AssetLightmapBinder
 
-const SHADER := preload("res://addons/DEVFramework/View/Render/Lightmap/AssetLightmapPass.gdshader")
+const SHADER := preload("res://addons/DEVFramework/Render/Lightmap/AssetLightmapPass.gdshader")
 
 ## 全局混合强度，1.0 ≈ 与烘焙场景里引擎 LightmapGI 的观感一致（实测平均亮度比 1.00）。
 static var strength := 1.0

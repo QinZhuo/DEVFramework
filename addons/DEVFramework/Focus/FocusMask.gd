@@ -20,7 +20,7 @@ const DIM_Z := 4088
 const TIP_Z := 4092
 ## 一次最多处理多少个目标矩形(与 shader 里的数组长度保持一致)
 const MAX_RECTS := 16
-const _SPOT_SHADER: Shader = preload("res://addons/DEVFramework/View/FocusMaskSpotlight.gdshader")
+const _SPOT_SHADER: Shader = preload("res://addons/DEVFramework/Focus/FocusMaskSpotlight.gdshader")
 const _NAV_ACTIONS: Array[StringName] = [&"ui_focus_next", &"ui_focus_prev",
 		&"ui_left", &"ui_right", &"ui_up", &"ui_down"]
 const _BACK_ACTIONS: Array[StringName] = [&"ui_focus_prev", &"ui_left", &"ui_up"]
