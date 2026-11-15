@@ -64,7 +64,8 @@ C++ 原生能力（ECS）需编译，见 [gdextension/README](../../gdextension/
 插件启用即监听 `http://127.0.0.1:9988/mcp`（多项目共用一个端口）。
 
 - 多项目并存：`list_instances` → `use_instance` 选默认，或单次调用带 `instance`
-- 常用：`validate` / `get_logs` / `eval_code` / `run_tests` / `perf` / `game_control` / `restart_editor`
+- 常用：`validate` / `get_logs` / `eval_code` / `run_tests` / `perf` / `build_native` / `game_control` / `restart_editor`
+- 改 `gdextension/src/**` 后**必须** `build_native`（`action=status` 查过期 → `action=build` 构建 → 重载生效），否则测试跑的是旧库且全绿
 - 导出包默认不带入口（`dev_framework/mcp/runtime_enabled = false`）
 
 ## 引擎陷阱

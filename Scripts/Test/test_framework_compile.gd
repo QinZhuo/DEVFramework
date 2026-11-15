@@ -67,6 +67,16 @@ func test_all_framework_paths_exist() -> void:
 	assert_true(checked > 0, "未扫描到任何框架路径引用, 检查扫描逻辑")
 
 
+## 原生库新鲜度: 改了 gdextension/src 却忘了重编时, 所有原生相关测试都会"跑旧库还全绿"。
+## 这是唯一能自动发现该问题的检查点, 所以归到编译健康检查里。
+func test_native_library_is_fresh() -> void:
+	var st: Dictionary = GDExtensionRebuild.native_status()
+	if not bool(st.get("has_native", false)):
+		return   # 纯 GDScript 项目 / 未部署原生产物: 不适用
+	assert_false(bool(st.get("stale", false)),
+			"原生源码比已编译库新(库=%s): 先 build_native(或菜单 GDExtensionRebuild) 再跑测试, 否则测的是旧代码" % str(st.get("lib", "")))
+
+
 static func _collect_scripts() -> PackedStringArray:
 	var result := PackedStringArray()
 	for root: String in ROOT_DIRS:

@@ -1,7 +1,7 @@
 extends TestCase
 
 ## ECS 缓存正确性回归(对应两处"静默陈旧数据"修复):
-## 1) query_all_rows 行集缓存: 命令缓冲 flush / Prefab 实例化 / 反序列化等结构变更后必须自动失效;
+## 1) 行集缓存: 命令缓冲 flush / Prefab 实例化 / 反序列化等结构变更后必须自动失效;
 ## 2) ECSQuery 规范化条件缓存: 查询对象被池化复用、条件改变时不得跨帧残留。
 ##
 ## 静默性说明: 这两类缺陷都不会报错, 只会让系统遍历到错误的实体集合 —— 故用"内容"而非"数量"断言锁定。
@@ -14,33 +14,40 @@ func test_all_rows_cache_follows_structure() -> void:
 
 	var e0 := w.create_entity()
 	w.add_component(e0, PTCompA)
-	var before := w.query_all_rows(PTCompA).size()   # 建立缓存: 1 行
+	var before := w.query_rows(PTCompA).size()   # 建立缓存: 1 行
 
 	# 经命令缓冲新增一个带 PTCompA 的实体 → flush 后应变新
 	var e1 := w.create_entity()
 	w.cmd_add_component(e1, PTCompA)
 	w.cmd_flush()
-	var after_cmd := w.query_all_rows(PTCompA).size()
+	var after_cmd := w.query_rows(PTCompA).size()
 
 	# prefab 实例化 3 个 → 再增 3
 	var pf := w.create_prefab()
 	w.prefab_add(pf, PTCompA, {"x": 7})
 	w.instantiate(pf, 3)
-	var after_inst := w.query_all_rows(PTCompA).size()
+	var after_inst := w.query_rows(PTCompA).size()
 
 	# 反序列化进一个"已建过缓存"的新世界 → 行集必须变新
 	var snap: Dictionary = w.serialize()
 	var w2 := ECSWorld.new(false)
 	w2.register_component(PTCompA)
-	var warm2 := w2.query_all_rows(PTCompA).size()   # 建缓存(应为 0)
+	var warm2 := w2.query_rows(PTCompA).size()   # 建缓存(应为 0)
 	w2.deserialize(snap)
-	var after_de := w2.query_all_rows(PTCompA).size()
+	var after_de := w2.query_rows(PTCompA).size()
 
 	assert_eq(before, 1, "初始 1 行")
 	assert_eq(after_cmd, before + 1, "命令缓冲 flush 后行集应变新")
 	assert_eq(after_inst, after_cmd + 3, "prefab 实例化 3 个后应再增 3")
 	assert_eq(warm2, 0, "空世界预热为 0")
 	assert_eq(after_de, after_inst, "反序列化后行集必须变新")
+
+	# 值也要原样搬过去(填充路径已改为直接写列, 必须仍按字段对齐)
+	var src_col: PackedInt32Array = w.get_column(PTCompA, &"x")
+	var dst_col: PackedInt32Array = w2.get_column(PTCompA, &"x")
+	assert_eq(dst_col.size(), src_col.size(), "反序列化后列长度应一致")
+	for i in mini(src_col.size(), dst_col.size()):
+		assert_eq(dst_col[i], src_col[i], "第 %d 行的值必须与存档一致" % i)
 
 
 ## 同一查询对象复用(框架 for_each 对象池即如此)且条件改变时, 规范化条件必须跟着变

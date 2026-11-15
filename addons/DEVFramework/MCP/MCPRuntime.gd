@@ -370,6 +370,21 @@ func call_perf_routed(args: Dictionary) -> Dictionary:
 	return server._fail("process 必须是 editor / game, 收到: '%s'" % process)
 
 
+## ------- build_native: 原生扩展构建 -------
+## 构建流程**只存在于 GDExtensionRebuild**(菜单与 MCP 共用同一份), 这里只做 action 分发 + job 包装。
+
+func call_build_native_local(args: Dictionary) -> Dictionary:
+	var action := VariantTool.get_string(args, "action", "status").strip_edges().to_lower()
+	match action:
+		"status":
+			return server._ok_json(GDExtensionRebuild.native_status())
+		"build":
+			var restart := bool(args.get("restart", false))
+			return await _run_as_job("build_native",
+				func() -> Dictionary: return await GDExtensionRebuild.build_now(restart))
+	return server._fail("action 必须是 status / build, 收到: '%s'" % action)
+
+
 ## job 状态存在**跑任务的那个进程**里: 先查本进程, 没有再转发游戏进程。
 ## wait / cancel 的路由逻辑完全相同, 抽在这里避免两份拷贝各自漂移。
 func _route_job(tool: String, args: Dictionary, local: Callable) -> Dictionary:

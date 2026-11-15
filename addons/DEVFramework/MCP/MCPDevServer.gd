@@ -728,6 +728,7 @@ func _register_editor_only_domains() -> void:
 	_mod("MCPResourceTools").register(_add_tool)
 	_register_run_tools()
 	_register_refresh_tool()
+	_register_build_tool()
 	_register_instance_tools()
 
 
@@ -830,6 +831,19 @@ func _register_refresh_tool() -> void:
 		"手动重建 MCP 工具注册表(免重启编辑器), 响应含工具数、schema_fingerprint 与契约自检结果。**判定'是否真的生效': 跨次对比 schema_fingerprint** —— 指纹不变即工具表没变。【客户端不一定同步】本服务器是短连接 HTTP, 发不出 notifications/tools/list_changed(capabilities 已如实报 listChanged:false), 客户端缓存的旧 tools/list 不会自动刷新, 需在 IDE 侧重连 MCP 才更新; 在此之前, 以 tools/list 直查服务器为准, 勿把会话开始时的快照当权威。【重要: 适用范围】改动 **MCP 目录下任一域脚本**(MCPResourceTools / MCPSceneTools 等: 新增或修改工具、注解名单、入参构造、handler)时有效 —— 本工具会先把域脚本缓存换成磁盘版本, 再按路径动态注册, 免重启生效。**唯一例外是 MCPDevServer.gd 自身**: 运行实例的方法体不会被热替换, 必须重建服务器实例(禁用再启用 DEVFramework 插件, 或 restart_editor); 该情况下本工具仍返回成功但注册表原样不变 —— 正是靠 schema_fingerprint 不变来识别这种'假成功'。",
 		MCPToolSchema.no_arg(),
 		_call_refresh_tools)
+
+
+## -- 原生扩展构建 --
+## 为什么要做成工具: 构建入口原先只有编辑器菜单(EditorScript), AI/CI 完全没有可调用面,
+## 于是"改了 gdextension/src 却没重编"变成静默失效(测试跑的是旧 dll, 全绿)。
+func _register_build_tool() -> void:
+	_add_tool("build_native",
+		"构建 GDExtension 原生扩展(gdextension/ → 产物部署到 addons/DEVFramework/Native)。**改动 gdextension/src/** 之后必须调用**, 否则游戏与测试跑的是旧库且不会报任何错。action=status: 只比较\"源码 vs 已编译库\"的时间戳, 零等待, 建议每次改完先查; action=build: 完整流程(CMake 配置 → 增量编译 → 规范命名部署), 是长任务 —— 超出等待窗口后返回 job_id, 用 job_wait 轮询到 running=false。restart=true 时构建完成后自动重载编辑器(Windows 上运行中的编辑器会锁住 dll, 部署会退化为改写 .gdextension 指向新产物, 必须重载才生效)。",
+		{"type": "object", "properties": {
+			"action": {"type": "string", "enum": ["status", "build"], "description": "status=检查是否需要重编(不编译); build=执行构建"},
+			"restart": {"type": "boolean", "description": "action=build 时: 完成后是否自动重载编辑器(默认 false, 由调用方决定何时重启)"},
+		}, "required": ["action"]},
+		_call_build_native_local)
 
 
 ## -- 多实例中枢: 实例管理工具 --
@@ -1351,6 +1365,11 @@ func _call_perf_local(args: Dictionary) -> Dictionary:
 
 func _call_perf_routed(args: Dictionary) -> Dictionary:
 	return await _runtime().call_perf_routed(args)
+
+
+## build_native（原生扩展构建）实现见 MCPRuntime；构建流程本身在 GDExtensionRebuild。
+func _call_build_native_local(args: Dictionary) -> Dictionary:
+	return await _runtime().call_build_native_local(args)
 
 
 func _call_job_wait_local(args: Dictionary) -> Dictionary:

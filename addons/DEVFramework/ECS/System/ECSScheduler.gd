@@ -29,6 +29,7 @@ var _access_target: Dictionary = {}       # 当前任务的访问目标集(读�
 var _access_target_active := false
 var _system_access_declared := {}         # ECSSystem -> {compName:true} 声明的读写组件
 var _access_mutex := Mutex.new()
+var _last_groups: Array = []              # 上一次 tick 的分批结果(系统名), 供回归测试断言
 
 # ---------------- 耗时统计 ----------------
 var _times := {}                          # ECSSystem -> 本帧耗时 ms(并行安全)
@@ -127,6 +128,7 @@ func tick(delta: float) -> void:
 		_parallel_tick(delta)
 		_parallel_batch_active = false
 	else:
+		_last_groups.clear()   # 串行帧没有分批结构, 别让测试读到上一次的
 		for system in _sorted:
 			if system._frame_delta < 0.0:
 				continue
@@ -427,9 +429,26 @@ func _build_parallel_groups() -> Array:
 func _parallel_tick(_delta: float) -> void:
 	_pending_access.clear()
 	var groups: Array = _build_parallel_groups()
+	_record_groups(groups)
 	var max_par := _effective_threads()
 	for group in groups:
 		_run_group(group, max_par)
+
+
+## 并行正确性没法用"跑一遍看结果"验证(线程交错不可断言), 只能断言分批结构:
+## 读写同一组件的系统必须落在不同组。这里把上一次 tick 的分组按系统名留档。
+func _record_groups(groups: Array) -> void:
+	_last_groups.clear()
+	for g in groups:
+		var names: Array = []
+		for s in g:
+			names.append(s.get_system_name() if s.has_method("get_system_name") else str(s))
+		_last_groups.append(names)
+
+
+## 上一次 tick 的并行分批结果: Array[Array[String]](组内并行, 组间串行)。
+func debug_parallel_groups() -> Array:
+	return _last_groups.duplicate(true)
 
 
 ## 执行一组系统。不可并行系统(如访问场景树)必须主线程串行。

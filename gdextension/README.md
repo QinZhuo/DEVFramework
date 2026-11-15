@@ -20,7 +20,18 @@ cmake -S gdextension -B gdextension/build -DGODOTCPP_API_VERSION=4.7 -DCMAKE_BUI
 cmake --build gdextension/build --config Release
 ```
 
-更省事：菜单 **项目 → 工具 → EditorScript → GDExtensionRebuild** 一键配置 + 异步编译 + 按 `[libraries]` 改名部署，构建缓存在 `res://.godot/gdextension_build/`。
+三种入口，构建流程是同一份实现（`GDExtensionRebuild`）：
+
+| 入口 | 用法 | 适合 |
+|---|---|---|
+| MCP 工具 | `build_native`（`action=status` 查过期 / `action=build` 构建，`restart=true` 完成后自动重载） | AI / 自动化；**改完 C++ 的第一选择** |
+| 编辑器菜单 | **项目 → 工具 → EditorScript → GDExtensionRebuild** | 人手点一下 |
+| 原始 CMake | 上面的两行命令 + 手动按 `[libraries]` 改名 | 排查构建问题 |
+
+- 配置在 `项目设置 → dev_framework/gdextension_build/*`（并行度、是否自动同步 godot-cpp、完成后是否自动重载等）。
+- 构建缓存：`res://.godot/gdextension_build/`；日志 `build.log`，摘要 `last_build.txt`，实时阶段 `state.txt`。
+- **过期检测**：`build_native action=status` 比较源码与产物时间戳；`test_framework_compile` 的
+  `test_native_library_is_fresh` 会在"源码比库新"时直接判红 —— 这就是"改了 C++ 忘了重编"的自动兜底。
 
 新增原生类：`src/` 建 `.cpp/.h` → 在 `src/register_types.cpp` 注册 → 加入 `CMakeLists.txt` 的 `add_library(dev SHARED ...)` → 重编译部署。
 

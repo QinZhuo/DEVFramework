@@ -38,7 +38,8 @@ var _core: Object = null                 # ECSCore 原生实例
 
 # ---------------- 组件注册表 ----------------
 var _component_registered := {}          # Script -> bool (避免重复注册)
-var _component_names := {}               # Script -> StringName
+var _component_names := {}               # Script -> StringName (已注册)
+var _name_cache := {}                    # Script -> StringName (解析结果缓存, 含负缓存; 注册时失效)
 var _components: Array[Script] = []
 
 # ---------------- 系统调度(状态全在 ECSScheduler) ----------------
@@ -51,12 +52,14 @@ var parallel_enabled: bool:
 	set(value):
 		scheduler().parallel_enabled = value
 
-## 并行线程数(0=自动; 转发给调度器)。
+## 并行线程数(0=自动)。一处开关管两头: 调度器的分批宽度 + 原生线程池大小 ——
+## 只改前者会出现"设了 4 线程但池子仍按硬件起 8 个"的错觉。
 var parallel_threads: int:
 	get:
 		return scheduler().parallel_threads
 	set(value):
 		scheduler().parallel_threads = value
+		_core.set_thread_count(maxi(value, 0))
 
 
 ## 调度器懒创建(它要回指本世界: 解析组件名、取原生核心、作上下文宿主)。
@@ -92,6 +95,8 @@ var _event_queues := {}                  # type(StringName) -> Array[Variant]
 var _event_subscribers := {}             # type(StringName) -> Array[Callable]
 
 # ---------------- 查询缓存(增量失效) ----------------
+## 行集缓存条数上限: 超出按插入序淘汰一半(不是整表清空, 避免查询种类偏多时每帧重建)
+const QUERY_CACHE_MAX := 64
 var _query_cache := {}
 var _comp_versions := {}                  # 组件名 -> 结构版本(该组件实体集合变化的代数)
 var _world_version := 0                   # 全局结构版本(destroy/批量结构变更时 +1)
@@ -137,6 +142,7 @@ func register_component(component_class: Script) -> bool:
 		return false
 	_component_registered[component_class] = true
 	_component_names[component_class] = name
+	_name_cache.erase(component_class)   # 之前可能是"解析不出"的负缓存, 注册后必须失效
 	_component_by_name[name] = component_class
 	var sch: Array = []
 	for fi in fnames.size():
@@ -289,16 +295,23 @@ func remove_component(entity: int, component) -> void:
 		_fire_component_remove(name, entity)
 
 ## 统一的组件名解析入口(全框架唯一实现): Script -> 注册名 / 反射类名; String(Name) 原样返回。
+## ⚠ 解析结果**必须缓存**(包括"解析不出来"): 这条路径在 destroy_entity → get_parent →
+## has_component(ECSParent) 这类热路径上每实体都会走, 而"未注册"分支要实例化脚本 + 反射 schema。
+## 实测 8000 个实体 destroy: 不缓存 78.5µs/实体, 缓存后约 1µs —— 差 70 倍。
 func resolve_component_name(component) -> StringName:
 	if component is Script:
 		var n: StringName = _component_names.get(component, &"")
 		if n != &"":
 			return n
+		if _name_cache.has(component):
+			return _name_cache[component]   # 含 &"(已知解析不出)"的负缓存
 		# 未注册: 尝试从 resource_path 稳定获取类名(统一走 ECSNative.collect_schema)
 		var probe: Variant = ECSNative.instantiate_script(component)
+		var resolved: StringName = &""
 		if probe != null:
-			return ECSNative.collect_schema(probe).get("name", &"")
-		return &""
+			resolved = ECSNative.collect_schema(probe).get("name", &"")
+		_name_cache[component] = resolved
+		return resolved
 	if component is StringName or component is String:
 		return StringName(component)
 	return &""
@@ -334,46 +347,14 @@ var change_detection: bool:
 	set(v):
 		_core.set_change_detection(v)
 
-## 查询匹配实体, 直接返回实体 ID 数组(archetype 下最直观: 配 get_field/set_field 使用)。
+## 查询匹配实体, 返回**实体 ID**(不是行号)。要按列索引请用 query_rows。
 func query_entities(anchor, must: Array = [], without: Array = []) -> PackedInt32Array:
-	var anchor_name := resolve_component_name(anchor)
-	if anchor_name == &"":
+	var args := _resolve_query_args(anchor, must, without)
+	if args.is_empty():
 		return PackedInt32Array()
-	_record_access(anchor_name)
-	var must_names := PackedStringArray()
-	for m in must:
-		var mn := resolve_component_name(m)
-		if mn == &"":
-			continue
-		must_names.append(mn)
-		_record_access(mn)
-	var without_names := PackedStringArray()
-	for w in without:
-		var wn := resolve_component_name(w)
-		if wn == &"":
-			continue
-		without_names.append(wn)
-		_record_access(wn)
-	return _core.query_entities(anchor_name, must_names, without_names)
+	return _core.query_entities(args[0], args[1], args[2])
 
-## 全量聚合行号(无条件查询): 返回该组件所有实体的聚合行号(0..N-1)。
-var _all_rows_cache := {}
 
-func query_all_rows(anchor) -> PackedInt32Array:
-	var cn: StringName = resolve_component_name(anchor)
-	if cn == &"":
-		return PackedInt32Array()
-	_record_access(cn)
-	# 并行批内主线程可能正在改结构 → 绕过缓存, 避免读到陈旧行集(与 query_rows 一致)
-	if scheduler().is_parallel_active():
-		return _core.query_rows(cn, [], [])
-	var cv: int = _comp_versions.get(cn, 0)
-	var entry: Dictionary = _all_rows_cache.get(cn, {})
-	if not entry.is_empty() and entry.comp_v == cv and entry.world_v == _world_version:
-		return entry.result
-	var rows: PackedInt32Array = _core.query_rows(cn, [], [])
-	_all_rows_cache[cn] = {"result": rows, "comp_v": cv, "world_v": _world_version}
-	return rows
 
 ## 统一解析查询参数: anchor/must/without 的类名解析 + 访问记录(三条查询路径共用)。
 func _resolve_query_args(anchor, must: Array, without: Array) -> Array:
@@ -588,8 +569,12 @@ func _entry_valid(entry: Dictionary) -> bool:
 ## 写入缓存条目(锁内调用)。deps = anchor + must + without 全部组件。
 func _cache_store(key: String, anchor_name: StringName, must_names: PackedStringArray,
 		without_names: PackedStringArray, result) -> void:
-	if _query_cache.size() > 64:
-		_query_cache.clear()  # 缓存过大时清空(防内存膨胀)
+	if _query_cache.size() >= QUERY_CACHE_MAX:
+		# 淘汰最早插入的一半, 而不是整表清空: 全清会让"查询种类略多"的场景每帧重建全部行集。
+		# Dictionary 保持插入序, 所以 keys() 前半就是最旧的那批。
+		var keys: Array = _query_cache.keys()
+		for i in int(keys.size() / 2):
+			_query_cache.erase(keys[i])
 	var deps := PackedStringArray()
 	deps.append(anchor_name)
 	for mn in must_names:
@@ -843,9 +828,7 @@ func get_entity_view(entity: int) -> Dictionary:
 		view[cn] = fields
 	return view
 
-## 调试: 设置实体的组件字段值(查看器改值用)。
-func set_entity_field(entity: int, comp, field: StringName, value) -> void:
-	set_field(entity, comp, field, value)
+
 
 ## 调试: 按 archetype(组件组合)分组枚举实体: [{comps, entities}](查看器分组显示用)。
 func get_archetype_groups() -> Array:

@@ -29,28 +29,27 @@
 #include <functional>
 #include <mutex>
 #include <thread>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace godot {
 
-// ---------------------------------------------------------------------------
-// 稀疏集: 实体 <-> dense 行号 双向映射 (EnTT 风格)
-//   dense[row]  = entity    拥有该组件的实体, 行号连续
-//   sparse[e]   = row       O(1) 判断实体是否拥有该组件
-// ---------------------------------------------------------------------------
-struct ECSSparseSet {
-	std::vector<int32_t> dense;
-	std::vector<int32_t> sparse; // 实体 -> 行号, -1 = 无
+// 实体 ID 打包: 低 20 位 index + 高 11 位版本号(代数)。
+// 最高位必须保持 0 —— GDScript 侧用 `entity >= 0` 判有效/判命令占位句柄(负数)。
+// 上限: 1,048,575 个同时存在的实体; 同一 index 复用 2048 次后版本号回绕(EnTT 同为有限位代数)。
+constexpr int32_t ECS_INDEX_BITS = 20;   // 上限 1,048,575 个实体
+constexpr int32_t ECS_INDEX_MASK = (1 << ECS_INDEX_BITS) - 1;
+constexpr int32_t ECS_VERSION_MASK = (1 << (31 - ECS_INDEX_BITS)) - 1;
 
-	int32_t add(int32_t entity);
-	void remove(int32_t entity);
-	bool has(int32_t entity) const { return int32_t(entity) < int32_t(sparse.size()) && sparse[entity] >= 0; }
-	int32_t row_of(int32_t entity) const {
-		return (int32_t(entity) < int32_t(sparse.size()) && sparse[entity] >= 0) ? sparse[entity] : -1;
-	}
-	inline size_t size() const { return dense.size(); }
-};
+inline int32_t ecs_index_of(int32_t entity) { return entity & ECS_INDEX_MASK; }
+inline int32_t ecs_version_of(int32_t entity) {
+	return (entity >> ECS_INDEX_BITS) & ECS_VERSION_MASK;
+}
 
+// ---------------------------------------------------------------------------
+// 稀疏集已于 2026-11 删除: 存储改用 architectural 原型分块(见下方 Archetype),
+// 该结构只剩实现无调用方, 留着只会误导后续优化。
 // ---------------------------------------------------------------------------
 // SoA 列存储: 每组件每字段一块连续裸内存 (C++ std::vector)。
 // 用自管裸内存而非 Godot PackedArray —— 多线程并行写不同行天然安全(无共享引用计数),
@@ -262,17 +261,6 @@ public:
 			const StringName &max_comp, const StringName &max_field,
 			const Array &conditions);
 
-	// 通用移动原语: pos += vel*delta, 越界回弹(vel 翻转, pos 钳制)。支持 VECTOR2/VECTOR3 位置。
-	// 通用(非特化): 任意 pos/vel 组件字段 + 边界。
-	int64_t batch_move(const StringName &anchor, const PackedStringArray &must,
-			const StringName &pos_comp, const StringName &pos_field,
-			const StringName &vel_comp, const StringName &vel_field,
-			double delta, double x_min, double x_max, double y_min, double y_max);
-	// 通用周期原语: field += dir*rate, 越界(min/max)翻转 dir。支持 INT/FLOAT 字段。
-	int64_t batch_cycle(const StringName &anchor, const PackedStringArray &must,
-			const StringName &comp, const StringName &field,
-			const StringName &dir_comp, const StringName &dir_field,
-			double rate, double min, double max);
 
 
 	// ---- Tier 0 优化: 批量收集 + 行集动作(一次扫描多组条件, 动作复用行集) ----
@@ -322,8 +310,7 @@ public:
 	// overrides: Dictionary {comp_name: {field_name: value}} 字段覆盖(可选)
 	// 返回新实体 ID 数组。
 	Array instantiate(int32_t prefab, int32_t count, const Dictionary &overrides);
-	// 便捷: 直接从 prefab 实体取组件字段值(供校验/调试)
-	Variant prefab_get_field(int32_t prefab, const StringName &comp, const StringName &field) const;
+
 
 	// 供条件过滤解析内部使用
 	const ECSComponentData *find_comp(const StringName &name) const;
@@ -359,9 +346,12 @@ private:
 	void remove_from_archetype(int32_t arch, int32_t index);
 	// 在已排序 comps 中插入 comp(保持升序, 已存在则忽略)。
 	static void sorted_insert(std::vector<int32_t> &comps, int32_t comp);
-	// 收集匹配 archetype(含 anchor+must, 不含 without), 返回 archetype 索引列表。
-	void collect_archs(int32_t ai, const int32_t *mi, int32_t m,
-			const int32_t *wi, int32_t w, std::vector<int32_t> &out) const;
+	// 收集匹配 archetype(含 anchor+must, 不含 without), 返回缓存中的 archetype 索引列表。
+	// archetype 只增不删 ⇒ 缓存按"已扫描到哪"增量补齐, 结构变更时无需整体清空。
+	const std::vector<int32_t> &collect_archs(int32_t ai, const int32_t *mi, int32_t m,
+			const int32_t *wi, int32_t w) const;
+	// 含某组件的全部 archetype(无 must/without 过滤), 供行号聚合/变更检测复用同一缓存。
+	const std::vector<int32_t> &archs_with(int32_t ci) const;
 	// 收集满足 must/without/conditions 的 anchor 聚合行号(batch 用)。
 	void collect_agg(int32_t ai, const int32_t *mi, int32_t m,
 			const int32_t *wi, int32_t w, const Array &conditions,
@@ -387,12 +377,19 @@ private:
 	std::vector<int32_t> free_list_;
 	// 实体 index -> 所属 archetype(-1 = 无组件)
 	std::vector<int32_t> entity_arch_;
-	// 查询缓存: 查询签名(anchor+must+without 组件索引) -> 匹配 archetype 列表(结构变更时清空)
-	mutable std::unordered_map<uint64_t, std::vector<int32_t>> _arch_cache;
+	// 查询缓存: 查询签名(anchor+must+without 组件索引) -> 匹配 archetype 列表。
+	// scanned = 已扫描到的 archetypes_ 下标: archetype 只增不删, 新查询只需补扫新增部分。
+	struct ArchMatch {
+		uint32_t scanned = 0;
+		std::vector<int32_t> ids;
+	};
+	mutable std::unordered_map<uint64_t, ArchMatch> _arch_cache;
 	// 变更检测开关
 	bool change_detection_ = false;
-	// prefab 模板实体 index 集合
-	std::vector<int32_t> prefab_indices_;
+	// prefab 模板标记: 按实体 index 的位图(O(1) 判定, 取代原先的线性扫描)
+	std::vector<uint8_t> prefab_bitmap_;
+	// 组件名 -> components_ 下标(注册时填一次, 之后只读 —— 并行系统里查也安全)
+	std::unordered_map<uint64_t, int32_t> component_index_;
 	// 列借出计数(borrow_columns 增加、return_columns 减少; 并行多个借出时原子累加)
 	std::atomic<int> _borrow_count_{0};
 
@@ -411,6 +408,8 @@ private:
 	std::vector<int32_t> cmd_entities_;      // 实体ID(占位或真实)
 	std::vector<StringName> cmd_comps_;      // 组件名(add/remove 用)
 	std::vector<int32_t> cmd_created_;       // flush 时生成的新实体 ID
+	// 一批命令的第一个操作入队时清空上一批的 cmd_created_(否则占位序号会错位)
+	void ensure_cmd_batch();
 
 	void ensure_workers();
 	void stop_workers();

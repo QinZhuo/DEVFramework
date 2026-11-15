@@ -1,5 +1,64 @@
 #include "ecs_core.h"
 
+#include <algorithm>
+
+// archetype 是否匹配 must(全含)/without(全不含)。原先是 7 处各写一遍的同一段循环,
+// 现在收敛到这里, 与 ECSCore::collect_archs 的缓存配合使用。
+// 把列内某一行的值铺到 [base, base+n): 同类型裸内存直拷, 不经过 Variant 装箱。
+// 供批量实例化(prefab → N 个实体)与后续整块搬复用。
+static void ecs_copy_row_range(godot::ECSColumn &column, size_t src_row, size_t base, int32_t n) {
+	if (n <= 0 || src_row >= column.size()) {
+		return;
+	}
+	switch (column.type) {
+		case godot::Variant::INT:
+			std::fill_n(column.i32.begin() + base, n, column.i32[src_row]);
+			break;
+		case godot::Variant::FLOAT:
+			std::fill_n(column.f32.begin() + base, n, column.f32[src_row]);
+			break;
+		case godot::Variant::BOOL:
+			std::fill_n(column.b.begin() + base, n, column.b[src_row]);
+			break;
+		case godot::Variant::VECTOR2:
+			std::fill_n(column.v2.begin() + base, n, column.v2[src_row]);
+			break;
+		case godot::Variant::VECTOR3:
+			std::fill_n(column.v3.begin() + base, n, column.v3[src_row]);
+			break;
+		case godot::Variant::VECTOR4:
+			std::fill_n(column.v4.begin() + base, n, column.v4[src_row]);
+			break;
+		case godot::Variant::COLOR:
+			std::fill_n(column.col.begin() + base, n, column.col[src_row]);
+			break;
+		case godot::Variant::STRING: {
+			// String 是引用计数类型, 逐个赋值(仍比走 Variant 便宜)
+			const godot::String v = column.s[src_row];
+			for (int32_t i = 0; i < n; ++i) {
+				column.s[base + size_t(i)] = v;
+			}
+		} break;
+		default:
+			break;
+	}
+}
+
+static inline bool arch_matches(const godot::Archetype &a, const int32_t *mi, int32_t m,
+		const int32_t *wi, int32_t w) {
+	for (int32_t i = 0; i < m; ++i) {
+		if (!a.has_comp(mi[i])) {
+			return false;
+		}
+	}
+	for (int32_t i = 0; i < w; ++i) {
+		if (a.has_comp(wi[i])) {
+			return false;
+		}
+	}
+	return true;
+}
+
 #include <godot_cpp/variant/utility_functions.hpp>
 #include <godot_cpp/classes/canvas_item.hpp>
 #include <godot_cpp/classes/rendering_server.hpp>
@@ -333,36 +392,6 @@ bool ECSCore::get_sync_direct() const {
 }
 
 // ---------------------------------------------------------------------------
-// ECSSparseSet
-// ---------------------------------------------------------------------------
-
-int32_t ECSSparseSet::add(int32_t entity) {
-	const int32_t e = entity;
-	if (int32_t(sparse.size()) <= e) {
-		sparse.resize(e + 1, -1);
-	}
-	if (sparse[e] >= 0) {
-		return sparse[e]; // 已存在
-	}
-	const int32_t row = int32_t(dense.size());
-	sparse[e] = row;
-	dense.push_back(e);
-	return row;
-}
-
-void ECSSparseSet::remove(int32_t entity) {
-	if (int32_t(sparse.size()) <= entity || sparse[entity] < 0) {
-		return;
-	}
-	const int32_t row = sparse[entity];
-	const int32_t last_entity = dense.back();
-	dense[row] = last_entity;
-	sparse[last_entity] = row;
-	dense.pop_back();
-	sparse[entity] = -1;
-}
-
-// ---------------------------------------------------------------------------
 // ECSColumn — SoA 列存储 (Packed*Array, 零拷贝)
 // ---------------------------------------------------------------------------
 
@@ -678,6 +707,14 @@ const ECSComponentData *ECSCore::find_comp(const StringName &name) const {
 }
 
 int32_t ECSCore::comp_index(const StringName &name) const {
+	const auto it = component_index_.find(uint64_t(name.hash()));
+	if (it != component_index_.end()) {
+		const int32_t idx = it->second;
+		if (idx >= 0 && idx < int32_t(components_.size()) && components_[idx].name == name) {
+			return idx;
+		}
+	}
+	// 哈希碰撞或未登记: 线性兜底(只读, 并行系统里调用也安全)
 	for (int32_t i = 0; i < int32_t(components_.size()); ++i) {
 		if (components_[i].name == name) {
 			return i;
@@ -801,13 +838,14 @@ void ECSCore::migrate_entity(int32_t index, int32_t src_arch, int32_t dst_arch) 
 	entity_arch_[index] = dst_arch;
 }
 
-// 收集匹配 archetype(含 anchor+must, 不含 without), 返回 archetype 索引
-void ECSCore::collect_archs(int32_t ai, const int32_t *mi, int32_t m,
-		const int32_t *wi, int32_t w, std::vector<int32_t> &out) const {
+// 收集匹配 archetype(含 anchor+must, 不含 without), 返回缓存中的 archetype 索引
+// archetype 只增不删 ⇒ 缓存记"已扫到哪", 每次只补扫新增的块; 不再需要结构变更时整体清空。
+const std::vector<int32_t> &ECSCore::collect_archs(int32_t ai, const int32_t *mi, int32_t m,
+		const int32_t *wi, int32_t w) const {
+	static const std::vector<int32_t> kEmpty;
 	if (ai < 0) {
-		return;
+		return kEmpty;
 	}
-	// 查询缓存: 签名(组件索引组合) -> 匹配 archetype 列表; 结构变更时清空
 	uint64_t key = uint64_t(ai) + 1;
 	for (int32_t i = 0; i < m; ++i) {
 		key = key * 1099511628211ull + uint64_t(mi[i] + 1);
@@ -815,13 +853,13 @@ void ECSCore::collect_archs(int32_t ai, const int32_t *mi, int32_t m,
 	for (int32_t i = 0; i < w; ++i) {
 		key = key * 1099511628211ull + uint64_t(wi[i] + 1) * 97;
 	}
-	auto cit = _arch_cache.find(key);
-	if (cit != _arch_cache.end()) {
-		out = cit->second;
-		return;
+	ArchMatch &entry = _arch_cache[key];
+	if (entry.scanned > uint32_t(archetypes_.size())) {
+		// 防御: archetypes_ 若有收缩(当前不会), 退回全量重扫
+		entry.scanned = 0;
+		entry.ids.clear();
 	}
-	std::vector<int32_t> res;
-	for (int32_t arch = 0; arch < int32_t(archetypes_.size()); ++arch) {
+	for (uint32_t arch = entry.scanned; arch < uint32_t(archetypes_.size()); ++arch) {
 		const auto &a = archetypes_[arch];
 		if (!a.has_comp(ai)) {
 			continue;
@@ -842,11 +880,16 @@ void ECSCore::collect_archs(int32_t ai, const int32_t *mi, int32_t m,
 			}
 		}
 		if (ok) {
-			res.push_back(arch);
+			entry.ids.push_back(int32_t(arch));
 		}
 	}
-	_arch_cache[key] = res;
-	out = std::move(res);
+	entry.scanned = uint32_t(archetypes_.size());
+	return entry.ids;
+}
+
+// 含某组件的全部 archetype(无过滤), 与 collect_archs 共用同一套增量缓存
+const std::vector<int32_t> &ECSCore::archs_with(int32_t ci) const {
+	return collect_archs(ci, nullptr, 0, nullptr, 0);
 }
 
 int32_t ECSCore::allocate_entity_id() {
@@ -856,13 +899,18 @@ int32_t ECSCore::allocate_entity_id() {
 		free_list_.pop_back();
 		return index;
 	}
+	if (int32_t(versions_.size()) > ECS_INDEX_MASK) {
+		return -1; // 实体槽耗尽(上限 1,048,575), 由 create_entity 转成 -1 返回
+	}
 	int32_t index = int32_t(versions_.size());
 	versions_.push_back(0);
 	return index;
 }
 
 void ECSCore::release_entity_id(int32_t index) {
-	versions_[index]++;
+	// 与 id 里的代数位宽同步回绕: 不回绕的话 versions_ 会涨到 256/2048 之外,
+	// 而 id 只存低位, 掩码比较永远不相等 → 活实体被判死。
+	versions_[index] = (versions_[index] + 1) & ECS_VERSION_MASK;
 	free_list_.push_back(index);
 }
 
@@ -885,6 +933,9 @@ int32_t ECSCore::register_component(const StringName &name, const PackedStringAr
 		data.fields[i].type = Variant::Type(int64_t(ftypes[i]));
 		data.defaults[i] = (i < fdefaults.size()) ? fdefaults[i] : Variant();
 	}
+	// 名字 -> 下标索引: 只在注册期写一次, 之后所有线程只读(并行系统里查 comp_index 也安全)。
+	// 哈希碰撞退化到线性扫描(comp_index 会先校验名字), 不会取错组件。
+	component_index_[uint64_t(name.hash())] = int32_t(components_.size());
 	components_.push_back(std::move(data));
 	return int32_t(components_.size());
 }
@@ -894,36 +945,45 @@ int32_t ECSCore::register_component(const StringName &name, const PackedStringAr
 // ---------------------------------------------------------------------------
 
 int32_t ECSCore::create_entity() {
-	int32_t index = allocate_entity_id();
-	uint32_t version = versions_[index];
+	const int32_t index = allocate_entity_id();
+	if (index < 0) {
+		return -1; // 实体槽耗尽(见 ECS_INDEX_MASK)
+	}
+	const int32_t version = int32_t(versions_[index]);
 	if (int32_t(entity_arch_.size()) <= index) {
 		entity_arch_.resize(index + 1, -1);
 	}
 	entity_arch_[index] = -1; // 新实体无组件, 不属于任何 archetype
 	++struct_version_;
-	return (int32_t(version) << 24) | index;
+	return (version << ECS_INDEX_BITS) | index;
 }
 
 bool ECSCore::is_alive(int32_t entity) const {
-	const int32_t index = entity & 0x00FFFFFF;
-	const uint32_t version = uint32_t(entity >> 24) & 0xFF;
-	if (index < 0 || index >= int32_t(versions_.size())) {
+	if (entity < 0) {
+		return false; // 负数是命令缓冲的占位句柄, 不是实体
+	}
+	const int32_t index = ecs_index_of(entity);
+	if (index >= int32_t(versions_.size())) {
 		return false;
 	}
-	return versions_[index] == version;
+	// 比的是"掩码后的代数": versions_ 单调自增, id 里只存低位, 必须同口径比较
+	return (int32_t(versions_[index]) & ECS_VERSION_MASK) == ecs_version_of(entity);
 }
 
 void ECSCore::destroy_entity(int32_t entity) {
-	const int32_t index = entity & 0x00FFFFFF;
-	if (index < 0 || index >= int32_t(versions_.size()) || !is_alive(entity)) {
+	if (!is_alive(entity)) {
 		return;
 	}
+	const int32_t index = ecs_index_of(entity);
 	const int32_t arch = (index < int32_t(entity_arch_.size())) ? entity_arch_[index] : -1;
 	if (arch >= 0) {
 		remove_from_archetype(arch, index);
 	}
 	entity_arch_[index] = -1;
-	_arch_cache.clear();
+	// prefab 标记必须跟着清: 否则 id 被普通实体复用后, 该实体会在所有查询/序列化里永久隐身
+	if (index < int32_t(prefab_bitmap_.size())) {
+		prefab_bitmap_[index] = 0;
+	}
 	++struct_version_;
 	release_entity_id(index);
 }
@@ -933,7 +993,7 @@ void ECSCore::destroy_entity(int32_t entity) {
 // ---------------------------------------------------------------------------
 
 bool ECSCore::add_component(int32_t entity, const StringName &comp) {
-	const int32_t index = entity & 0x00FFFFFF;
+	const int32_t index = ecs_index_of(entity);
 	const int32_t ci = comp_index(comp);
 	if (ci < 0 || !is_alive(entity)) {
 		return false;
@@ -949,13 +1009,12 @@ bool ECSCore::add_component(int32_t entity, const StringName &comp) {
 	sorted_insert(comps_new, ci);
 	const int32_t dst = find_archetype(comps_new);
 	migrate_entity(index, old_arch, dst);
-	_arch_cache.clear();
 	++struct_version_;
 	return true;
 }
 
 bool ECSCore::has_component(int32_t entity, const StringName &comp) const {
-	const int32_t index = entity & 0x00FFFFFF;
+	const int32_t index = ecs_index_of(entity);
 	const int32_t ci = comp_index(comp);
 	if (ci < 0) {
 		return false;
@@ -965,7 +1024,7 @@ bool ECSCore::has_component(int32_t entity, const StringName &comp) const {
 }
 
 void ECSCore::remove_component(int32_t entity, const StringName &comp) {
-	const int32_t index = entity & 0x00FFFFFF;
+	const int32_t index = ecs_index_of(entity);
 	const int32_t ci = comp_index(comp);
 	if (ci < 0) {
 		return;
@@ -986,7 +1045,6 @@ void ECSCore::remove_component(int32_t entity, const StringName &comp) {
 	} else {
 		migrate_entity(index, arch, find_archetype(comps_new));
 	}
-	_arch_cache.clear();
 	++struct_version_;
 }
 
@@ -1024,10 +1082,8 @@ int32_t ECSCore::count_entities(const StringName &comp) const {
 		return 0;
 	}
 	int32_t n = 0;
-	for (const auto &a : archetypes_) {
-		if (!a.has_comp(ci)) {
-			continue;
-		}
+	for (int32_t arch2 : archs_with(ci)) {
+		const auto &a = archetypes_[arch2];
 		for (int32_t e : a.entities) {
 			if (!is_prefab_index(e)) {
 				++n;
@@ -1039,7 +1095,7 @@ int32_t ECSCore::count_entities(const StringName &comp) const {
 
 PackedStringArray ECSCore::get_entity_components(int32_t entity) const {
 	PackedStringArray out;
-	const int32_t index = entity & 0x00FFFFFF;
+	const int32_t index = ecs_index_of(entity);
 	const int32_t arch = (index < int32_t(entity_arch_.size())) ? entity_arch_[index] : -1;
 	if (arch < 0) {
 		return out;
@@ -1074,33 +1130,14 @@ PackedInt32Array ECSCore::query_entities(const StringName &anchor, const PackedS
 	for (int32_t i = 0; i < w; ++i) {
 		wi[i] = comp_index(without[i]);
 	}
-	// 遍历所有含 anchor 的 archetype, 收集满足 must/without 的实体 ID
-	for (const auto &a : archetypes_) {
-		if (!a.has_comp(ai)) {
-			continue;
-		}
-		bool ok = true;
-		for (int32_t i = 0; i < m; ++i) {
-			if (!a.has_comp(mi[i])) {
-				ok = false;
-				break;
+	// 只遍历匹配的 archetype 块(缓存后的列表, 不再全表重扫)
+	for (int32_t arch : collect_archs(ai, mi, m, wi, w)) {
+		const auto &a = archetypes_[arch];
+		for (int32_t row = 0; row < int32_t(a.entities.size()); ++row) {
+			if (is_prefab_index(a.entities[row])) {
+				continue;
 			}
-		}
-		if (ok) {
-			for (int32_t i = 0; i < w; ++i) {
-				if (a.has_comp(wi[i])) {
-					ok = false;
-					break;
-				}
-			}
-		}
-		if (ok) {
-			for (int32_t row = 0; row < int32_t(a.entities.size()); ++row) {
-				if (is_prefab_index(a.entities[row])) {
-					continue;
-				}
-				out.append(a.entities[row]);
-			}
+			out.append(a.entities[row]);
 		}
 	}
 	return out;
@@ -1126,28 +1163,11 @@ PackedInt32Array ECSCore::query_rows(const StringName &anchor, const PackedStrin
 	for (int32_t i = 0; i < w; ++i) {
 		wi[i] = comp_index(without[i]);
 	}
-	// 遍历所有含 anchor 的 archetype, 返回满足 must/without 的实体的聚合行号
-	// (聚合行号 = 该组件 get_column 的索引, 跨块按 archetype 顺序累积)
+	// 偏移必须按"含 anchor 的全部块"累加(聚合行号口径), 匹配与否只影响是否输出
 	int32_t offset = 0;
-	for (const auto &a : archetypes_) {
-		if (!a.has_comp(ai)) {
-			continue;
-		}
-		bool ok = true;
-		for (int32_t i = 0; i < m; ++i) {
-			if (!a.has_comp(mi[i])) {
-				ok = false;
-				break;
-			}
-		}
-		if (ok) {
-			for (int32_t i = 0; i < w; ++i) {
-				if (a.has_comp(wi[i])) {
-					ok = false;
-					break;
-				}
-			}
-		}
+	for (int32_t arch : archs_with(ai)) {
+		const auto &a = archetypes_[arch];
+		const bool ok = arch_matches(a, mi, m, wi, w);
 		int32_t n_nonpref = 0;
 		for (int32_t row = 0; row < int32_t(a.entities.size()); ++row) {
 			if (is_prefab_index(a.entities[row])) {
@@ -1184,10 +1204,8 @@ Array ECSCore::query_rows_aligned(const StringName &anchor, const PackedStringAr
 	out.push_back(anchor_rows);
 	// anchor 聚合行号 -> 实体表(一次 O(N), 避免逐实体 get_entity_at O(N^2))
 	std::vector<int32_t> agg;
-	for (const auto &a : archetypes_) {
-		if (!a.has_comp(ai)) {
-			continue;
-		}
+	for (int32_t arch : archs_with(ai)) {
+		const auto &a = archetypes_[arch];
 		for (int32_t r = 0; r < int32_t(a.entities.size()); ++r) {
 			if (is_prefab_index(a.entities[r])) {
 				continue;
@@ -1203,10 +1221,8 @@ Array ECSCore::query_rows_aligned(const StringName &anchor, const PackedStringAr
 		}
 		std::vector<int32_t> cg; // 实体 index -> 聚合行号(直接索引, 免哈希)
 		int32_t grow = 0;
-		for (const auto &a : archetypes_) {
-			if (!a.has_comp(mi[i])) {
-				continue;
-			}
+		for (int32_t arch2 : archs_with(mi[i])) {
+			const auto &a = archetypes_[arch2];
 			for (int32_t r = 0; r < int32_t(a.entities.size()); ++r) {
 				const int32_t e = a.entities[r];
 				if (is_prefab_index(e)) {
@@ -1233,7 +1249,7 @@ int32_t ECSCore::entity_of_row(const StringName &comp, int32_t row) const {
 
 // 实体 ID -> 聚合行号(该组件 get_column 索引)
 int32_t ECSCore::row_of_entity(const StringName &comp, int32_t entity) const {
-	const int32_t index = entity & 0x00FFFFFF;
+	const int32_t index = ecs_index_of(entity);
 	const int32_t arch = (index < int32_t(entity_arch_.size())) ? entity_arch_[index] : -1;
 	if (arch < 0) {
 		return -1;
@@ -1244,10 +1260,8 @@ int32_t ECSCore::row_of_entity(const StringName &comp, int32_t entity) const {
 	}
 	// 聚合行号 = 前面含 ci 的 archetype 非 prefab 数 + 块内非 prefab 位置(快: O(块数 + 块内))
 	int32_t grow = 0;
-	for (const auto &a : archetypes_) {
-		if (!a.has_comp(ci)) {
-			continue;
-		}
+	for (int32_t arch2 : archs_with(ci)) {
+		const auto &a = archetypes_[arch2];
 		if (&a == &archetypes_[arch]) {
 			for (int32_t r = 0; r < int32_t(a.entities.size()); ++r) {
 				if (is_prefab_index(a.entities[r])) {
@@ -1284,10 +1298,8 @@ PackedInt32Array ECSCore::get_changed(const StringName &comp, uint32_t since) co
 		return out;
 	}
 	int32_t grow = 0;
-	for (const auto &a : archetypes_) {
-		if (!a.has_comp(ci)) {
-			continue;
-		}
+	for (int32_t arch2 : archs_with(ci)) {
+		const auto &a = archetypes_[arch2];
 		for (int32_t r = 0; r < (int32_t)a.entities.size(); ++r) {
 			if (is_prefab_index(a.entities[r])) {
 				continue;
@@ -1308,10 +1320,8 @@ int32_t ECSCore::get_entity_at(const StringName &comp, int32_t row) const {
 		return -1;
 	}
 	int32_t grow = 0;
-	for (const auto &a : archetypes_) {
-		if (!a.has_comp(ci)) {
-			continue;
-		}
+	for (int32_t arch2 : archs_with(ci)) {
+		const auto &a = archetypes_[arch2];
 		for (int32_t r = 0; r < int32_t(a.entities.size()); ++r) {
 			if (is_prefab_index(a.entities[r])) {
 				continue;
@@ -1330,7 +1340,7 @@ int32_t ECSCore::get_entity_at(const StringName &comp, int32_t row) const {
 // ---------------------------------------------------------------------------
 
 Variant ECSCore::get_field(int32_t entity, const StringName &comp, const StringName &field) const {
-	const int32_t index = entity & 0x00FFFFFF;
+	const int32_t index = ecs_index_of(entity);
 	const int32_t arch = (index < int32_t(entity_arch_.size())) ? entity_arch_[index] : -1;
 	if (arch < 0) {
 		return Variant();
@@ -1356,7 +1366,7 @@ Variant ECSCore::get_field(int32_t entity, const StringName &comp, const StringN
 }
 
 void ECSCore::set_field(int32_t entity, const StringName &comp, const StringName &field, const Variant &value) {
-	const int32_t index = entity & 0x00FFFFFF;
+	const int32_t index = ecs_index_of(entity);
 	const int32_t arch = (index < int32_t(entity_arch_.size())) ? entity_arch_[index] : -1;
 	if (arch < 0) {
 		return;
@@ -1396,10 +1406,8 @@ Variant ECSCore::column_aggregate(int32_t ci, int32_t fi) const {
 	};
 	std::vector<Blk> blocks;
 	size_t total = 0;
-	for (const auto &a : archetypes_) {
-		if (!a.has_comp(ci)) {
-			continue;
-		}
+	for (int32_t arch2 : archs_with(ci)) {
+		const auto &a = archetypes_[arch2];
 		const int cp = a.comp_pos(ci);
 		int cnt = 0;
 		for (int32_t r = 0; r < int32_t(a.entities.size()); ++r) {
@@ -2047,38 +2055,41 @@ int parse_conditions(const ECSCore *core, const Array &conds,
 	}
 	return int(out.size());
 }
-// 从聚合 PackedArray(Variant) 取第 k 个值
+// 从聚合 PackedArray(Variant) 取第 k 个值。
+// ⚠ 必须按 **Packed 数组类型** 分支: column_aggregate 返回的是 PackedInt32Array 等,
+// 它的 get_type() 是 PACKED_INT32_ARRAY 而**不是** Variant::INT —— 按字段类型分支会全部落空、
+// 每个值都变成 null(存档只存下行号, 值全丢), 这是本函数此前的真实缺陷。
 static Variant agg_at(const Variant &v, int32_t k) {
 	switch (v.get_type()) {
-		case Variant::INT: {
+		case Variant::PACKED_INT32_ARRAY: {
 			PackedInt32Array p = v;
 			return (k < p.size()) ? Variant(int64_t(p[k])) : Variant();
 		}
-		case Variant::FLOAT: {
+		case Variant::PACKED_FLOAT32_ARRAY: {
 			PackedFloat32Array p = v;
 			return (k < p.size()) ? Variant(double(p[k])) : Variant();
 		}
-		case Variant::BOOL: {
+		case Variant::PACKED_BYTE_ARRAY: {
 			PackedByteArray p = v;
 			return (k < p.size()) ? Variant(bool(p[k])) : Variant();
 		}
-		case Variant::VECTOR2: {
+		case Variant::PACKED_VECTOR2_ARRAY: {
 			PackedVector2Array p = v;
 			return (k < p.size()) ? Variant(Vector2(p[k])) : Variant();
 		}
-		case Variant::VECTOR3: {
+		case Variant::PACKED_VECTOR3_ARRAY: {
 			PackedVector3Array p = v;
 			return (k < p.size()) ? Variant(Vector3(p[k])) : Variant();
 		}
-		case Variant::VECTOR4: {
+		case Variant::PACKED_VECTOR4_ARRAY: {
 			PackedVector4Array p = v;
 			return (k < p.size()) ? Variant(Vector4(p[k])) : Variant();
 		}
-		case Variant::COLOR: {
+		case Variant::PACKED_COLOR_ARRAY: {
 			PackedColorArray p = v;
 			return (k < p.size()) ? Variant(Color(p[k])) : Variant();
 		}
-		case Variant::STRING: {
+		case Variant::PACKED_STRING_ARRAY: {
 			PackedStringArray p = v;
 			return (k < p.size()) ? Variant(p[k]) : Variant();
 		}
@@ -2101,25 +2112,10 @@ void ECSCore::collect_agg(int32_t ai, const int32_t *mi, int32_t m,
 		}
 	}
 	int32_t offset = 0;
-	for (const auto &a : archetypes_) {
-		if (!a.has_comp(ai)) {
-			continue;
-		}
-		bool ok = true;
-		for (int32_t i = 0; i < m; ++i) {
-			if (!a.has_comp(mi[i])) {
-				ok = false;
-				break;
-			}
-		}
-		if (ok) {
-			for (int32_t i = 0; i < w; ++i) {
-				if (a.has_comp(wi[i])) {
-					ok = false;
-					break;
-				}
-			}
-		}
+	const std::vector<int32_t> &archs = archs_with(ai);
+	for (int32_t arch : archs) {
+		const auto &a = archetypes_[arch];
+		const bool ok = arch_matches(a, mi, m, wi, w);
 		int32_t np = 0;
 		for (int32_t row = 0; row < int32_t(a.entities.size()); ++row) {
 			if (is_prefab_index(a.entities[row])) {
@@ -2161,10 +2157,8 @@ int64_t ECSCore::batch_apply_where(const StringName &anchor, const PackedStringA
 	std::vector<int32_t> rows;
 	collect_agg(ai, mi, m > 8 ? 8 : m, nullptr, 0, conditions, rows);
 	std::vector<int32_t> agg;
-	for (const auto &a : archetypes_) {
-		if (!a.has_comp(ai)) {
-			continue;
-		}
+	for (int32_t arch : archs_with(ai)) {
+		const auto &a = archetypes_[arch];
 		for (int32_t r = 0; r < int32_t(a.entities.size()); ++r) {
 			if (is_prefab_index(a.entities[r])) {
 				continue;
@@ -2232,10 +2226,8 @@ int64_t ECSCore::batch_apply_col(const StringName &anchor, const PackedStringArr
 	std::vector<int32_t> rows;
 	collect_agg(ai, mi, m > 8 ? 8 : m, nullptr, 0, conditions, rows);
 	std::vector<int32_t> agg;
-	for (const auto &a : archetypes_) {
-		if (!a.has_comp(ai)) {
-			continue;
-		}
+	for (int32_t arch : archs_with(ai)) {
+		const auto &a = archetypes_[arch];
 		for (int32_t r = 0; r < int32_t(a.entities.size()); ++r) {
 			if (is_prefab_index(a.entities[r])) {
 				continue;
@@ -2274,10 +2266,8 @@ int64_t ECSCore::batch_apply_rows(const StringName &anchor, const PackedInt32Arr
 		return 0;
 	}
 	static thread_local std::vector<int32_t> agg; agg.clear();
-	for (const auto &a : archetypes_) {
-		if (!a.has_comp(ai)) {
-			continue;
-		}
+	for (int32_t arch : archs_with(ai)) {
+		const auto &a = archetypes_[arch];
 		for (int32_t r = 0; r < int32_t(a.entities.size()); ++r) {
 			if (is_prefab_index(a.entities[r])) {
 				continue;
@@ -2572,25 +2562,9 @@ Array ECSCore::batch_collect(const StringName &anchor, const PackedStringArray &
 	}
 	std::vector<PackedInt32Array> results(ng);
 	int32_t offset = 0;
-	for (const auto &a : archetypes_) {
-		if (!a.has_comp(ai)) {
-			continue;
-		}
-		bool ok = true;
-		for (int32_t i = 0; i < m && i < 8; ++i) {
-			if (!a.has_comp(mi[i])) {
-				ok = false;
-				break;
-			}
-		}
-		if (ok) {
-			for (int32_t i = 0; i < w && i < 8; ++i) {
-				if (a.has_comp(wi[i])) {
-					ok = false;
-					break;
-				}
-			}
-		}
+	for (int32_t arch : archs_with(ai)) {
+		const auto &a = archetypes_[arch];
+		const bool ok = arch_matches(a, mi, m > 8 ? 8 : m, wi, w > 8 ? 8 : w);
 		int32_t np = 0;
 		for (int32_t row = 0; row < int32_t(a.entities.size()); ++row) {
 			if (is_prefab_index(a.entities[row])) {
@@ -2641,10 +2615,8 @@ int64_t ECSCore::batch_clamp_where(const StringName &anchor, const PackedStringA
 	std::vector<int32_t> rows;
 	collect_agg(ai, mi, m > 8 ? 8 : m, nullptr, 0, conditions, rows);
 	std::vector<int32_t> agg;
-	for (const auto &a : archetypes_) {
-		if (!a.has_comp(ai)) {
-			continue;
-		}
+	for (int32_t arch : archs_with(ai)) {
+		const auto &a = archetypes_[arch];
 		for (int32_t r = 0; r < int32_t(a.entities.size()); ++r) {
 			if (is_prefab_index(a.entities[r])) {
 				continue;
@@ -2719,10 +2691,8 @@ int64_t ECSCore::batch_vec_add(const StringName &anchor, const PackedStringArray
 	std::vector<int32_t> rows;
 	collect_agg(ai, mi, m > 8 ? 8 : m, nullptr, 0, Array(), rows);
 	std::vector<int32_t> agg;
-	for (const auto &a : archetypes_) {
-		if (!a.has_comp(ai)) {
-			continue;
-		}
+	for (int32_t arch : archs_with(ai)) {
+		const auto &a = archetypes_[arch];
 		for (int32_t r = 0; r < int32_t(a.entities.size()); ++r) {
 			if (is_prefab_index(a.entities[r])) {
 				continue;
@@ -2762,183 +2732,6 @@ int64_t ECSCore::batch_vec_add(const StringName &anchor, const PackedStringArray
 	return int64_t(rows.size());
 }
 
-int64_t ECSCore::batch_move(const StringName &anchor, const PackedStringArray &must,
-		const StringName &pos_comp, const StringName &pos_field,
-		const StringName &vel_comp, const StringName &vel_field,
-		double delta, double x_min, double x_max, double y_min, double y_max) {
-	const int32_t ai = comp_index(anchor);
-	const int32_t pci = comp_index(pos_comp);
-	const int32_t vci = comp_index(vel_comp);
-	if (ai < 0 || pci < 0 || vci < 0) {
-		return 0;
-	}
-	const int pfi = components_[pci].field_index(pos_field);
-	const int vfi = components_[vci].field_index(vel_field);
-	if (pfi < 0 || vfi < 0) {
-		return 0;
-	}
-	const int32_t m = int32_t(must.size());
-	int32_t mi[8];
-	for (int32_t i = 0; i < m && i < 8; ++i) {
-		mi[i] = comp_index(must[i]);
-	}
-	std::vector<int32_t> rows;
-	collect_agg(ai, mi, m > 8 ? 8 : m, nullptr, 0, Array(), rows);
-	std::vector<int32_t> agg;
-	for (const auto &a : archetypes_) {
-		if (!a.has_comp(ai)) {
-			continue;
-		}
-		for (int32_t r = 0; r < int32_t(a.entities.size()); ++r) {
-			if (is_prefab_index(a.entities[r])) {
-				continue;
-			}
-			agg.push_back(a.entities[r]);
-		}
-	}
-	parallel_for(size_t(rows.size()), [&](size_t b, size_t e) {
-		for (size_t i = b; i < e; ++i) {
-			const int32_t grow = rows[i];
-			if (grow < 0 || grow >= (int32_t)agg.size()) {
-				continue;
-			}
-			const int32_t en = agg[grow];
-			const int32_t earch = entity_arch_[en];
-			if (earch < 0) {
-				continue;
-			}
-			const int32_t erow = archetypes_[earch].row_of(en);
-			if (erow < 0) {
-				continue;
-			}
-			const int pcp = archetypes_[earch].comp_pos(pci);
-			const int vcp = archetypes_[earch].comp_pos(vci);
-			if (pcp < 0 || vcp < 0) {
-				continue;
-			}
-			auto &pcol = archetypes_[earch].cols[pcp][pfi];
-			auto &vcol = archetypes_[earch].cols[vcp][vfi];
-			if (pcol.type != Variant::VECTOR2 || vcol.type != Variant::VECTOR2) {
-				continue;
-			}
-			++archetypes_[earch].row_ver[erow];
-			Vector2 &p = pcol.v2[erow];
-			Vector2 &v = vcol.v2[erow];
-			p += v * float(delta);
-			if (p.x < x_min) {
-				p.x = x_min;
-				v.x = -v.x;
-			} else if (p.x > x_max) {
-				p.x = x_max;
-				v.x = -v.x;
-			}
-			if (p.y < y_min) {
-				p.y = y_min;
-				v.y = -v.y;
-			} else if (p.y > y_max) {
-				p.y = y_max;
-				v.y = -v.y;
-			}
-		}
-	}, 3.0);
-	return int64_t(rows.size());
-}
-
-// 通用周期原语: field += dir*rate, 越界(min/max)翻转 dir
-int64_t ECSCore::batch_cycle(const StringName &anchor, const PackedStringArray &must,
-		const StringName &comp, const StringName &field,
-		const StringName &dir_comp, const StringName &dir_field,
-		double rate, double min, double max) {
-	const int32_t ai = comp_index(anchor);
-	const int32_t cci = comp_index(comp);
-	const int32_t dci = comp_index(dir_comp);
-	if (ai < 0 || cci < 0 || dci < 0) {
-		return 0;
-	}
-	const int cfi = components_[cci].field_index(field);
-	const int dfi = components_[dci].field_index(dir_field);
-	if (cfi < 0 || dfi < 0) {
-		return 0;
-	}
-	const int32_t m = int32_t(must.size());
-	int32_t mi[8];
-	for (int32_t i = 0; i < m && i < 8; ++i) {
-		mi[i] = comp_index(must[i]);
-	}
-	std::vector<int32_t> rows;
-	collect_agg(ai, mi, m > 8 ? 8 : m, nullptr, 0, Array(), rows);
-	std::vector<int32_t> agg;
-	for (const auto &a : archetypes_) {
-		if (!a.has_comp(ai)) {
-			continue;
-		}
-		for (int32_t r = 0; r < int32_t(a.entities.size()); ++r) {
-			if (is_prefab_index(a.entities[r])) {
-				continue;
-			}
-			agg.push_back(a.entities[r]);
-		}
-	}
-	parallel_for(size_t(rows.size()), [&](size_t b, size_t e) {
-		for (size_t i = b; i < e; ++i) {
-			const int32_t grow = rows[i];
-			if (grow < 0 || grow >= (int32_t)agg.size()) {
-				continue;
-			}
-			const int32_t en = agg[grow];
-			const int32_t earch = entity_arch_[en];
-			if (earch < 0) {
-				continue;
-			}
-			const int32_t erow = archetypes_[earch].row_of(en);
-			if (erow < 0) {
-				continue;
-			}
-			const int ccp = archetypes_[earch].comp_pos(cci);
-			const int dcp = archetypes_[earch].comp_pos(dci);
-			if (ccp < 0 || dcp < 0) {
-				continue;
-			}
-			auto &fcol = archetypes_[earch].cols[ccp][cfi];
-			auto &dcol = archetypes_[earch].cols[dcp][dfi];
-			if (fcol.type == Variant::FLOAT && dcol.type == Variant::INT) {
-				++archetypes_[earch].row_ver[erow];
-				float &f = fcol.f32[erow];
-				f += float(double(dcol.i32[erow]) * rate);
-				if (f > max) {
-					f = float(max);
-					dcol.i32[erow] = -dcol.i32[erow];
-				} else if (f < min) {
-					f = float(min);
-					dcol.i32[erow] = -dcol.i32[erow];
-				}
-			} else if (fcol.type == Variant::FLOAT && dcol.type == Variant::FLOAT) {
-				float &f = fcol.f32[erow];
-				f += float(double(dcol.f32[erow]) * rate);
-				if (f > max) {
-					f = float(max);
-					dcol.f32[erow] = -dcol.f32[erow];
-				} else if (f < min) {
-					f = float(min);
-					dcol.f32[erow] = -dcol.f32[erow];
-				}
-			} else if (fcol.type == Variant::INT && dcol.type == Variant::INT) {
-				++archetypes_[earch].row_ver[erow];
-				int32_t &f = fcol.i32[erow];
-				f += int32_t(double(dcol.i32[erow]) * rate);
-				if (f > max) {
-					f = int32_t(max);
-					dcol.i32[erow] = -dcol.i32[erow];
-				} else if (f < min) {
-					f = int32_t(min);
-					dcol.i32[erow] = -dcol.i32[erow];
-				}
-			}
-		}
-	}, 1.5);
-	return int64_t(rows.size());
-}
-
 Array ECSCore::query_rows_aligned_where(const StringName &anchor, const PackedStringArray &must,
 		const PackedStringArray &without, const Array &conditions,
 		const PackedStringArray &comps) const {
@@ -2971,10 +2764,8 @@ Array ECSCore::query_rows_aligned_where(const StringName &anchor, const PackedSt
 	out.push_back(anchor_rows);
 	// anchor 聚合行号 -> 实体表(一次 O(N), 避免逐实体 get_entity_at O(N^2))
 	std::vector<int32_t> agg;
-	for (const auto &a : archetypes_) {
-		if (!a.has_comp(ai)) {
-			continue;
-		}
+	for (int32_t arch : archs_with(ai)) {
+		const auto &a = archetypes_[arch];
 		for (int32_t r = 0; r < int32_t(a.entities.size()); ++r) {
 			if (is_prefab_index(a.entities[r])) {
 				continue;
@@ -2990,10 +2781,8 @@ Array ECSCore::query_rows_aligned_where(const StringName &anchor, const PackedSt
 		if (cci >= 0) {
 			std::vector<int32_t> cg; // 实体 index -> 聚合行号(直接索引, 免哈希)
 			int32_t grow = 0;
-			for (const auto &a : archetypes_) {
-				if (!a.has_comp(cci)) {
-					continue;
-				}
+			for (int32_t arch2 : archs_with(cci)) {
+				const auto &a = archetypes_[arch2];
 				for (int32_t r = 0; r < int32_t(a.entities.size()); ++r) {
 					const int32_t e = a.entities[r];
 					if (is_prefab_index(e)) {
@@ -3053,10 +2842,8 @@ Dictionary ECSCore::serialize() const {
 		// 实体数据: 聚合实体(跨块按顺序) + 各字段聚合列值
 		Array entities;
 		std::vector<int32_t> agg_entities;
-		for (const auto &a : archetypes_) {
-			if (!a.has_comp(int32_t(ci))) {
-				continue;
-			}
+		for (int32_t arch : archs_with(int32_t(ci))) {
+			const auto &a = archetypes_[arch];
 			for (int32_t r = 0; r < int32_t(a.entities.size()); ++r) {
 				if (is_prefab_index(a.entities[r])) {
 					continue;
@@ -3091,9 +2878,11 @@ Array ECSCore::deserialize(const Dictionary &data) {
 	if (!data.has("components")) {
 		return result;
 	}
-	// 第一遍: 收集所有需要创建的实体 ID 集合(按出现顺序)
+	// 第一遍: 收集所有需要创建的实体 ID 集合(按出现顺序)。
+	// 去重用哈希集合: 原先对已收集列表做线性查重 → O(E²), 大世界存档会卡住。
 	std::vector<int32_t> entity_ids;
 	{
+		std::unordered_set<int32_t> seen_ids;
 		Array comps = data["components"];
 		for (int32_t i = 0; i < comps.size(); ++i) {
 			Dictionary cd = comps[i];
@@ -3101,14 +2890,7 @@ Array ECSCore::deserialize(const Dictionary &data) {
 			for (int32_t j = 0; j < entities.size(); ++j) {
 				Dictionary ed = entities[j];
 				const int32_t saved_id = int32_t(int64_t(ed["entity"]));
-				bool seen = false;
-				for (int32_t e : entity_ids) {
-					if (e == saved_id) {
-						seen = true;
-						break;
-					}
-				}
-				if (!seen) {
+				if (seen_ids.insert(saved_id).second) {
 					entity_ids.push_back(saved_id);
 				}
 			}
@@ -3123,7 +2905,9 @@ Array ECSCore::deserialize(const Dictionary &data) {
 		result.append(new_id); // 返回真实实体 ID
 	}
 
-	// 第二遍: 填充组件数据(add_component + set_field, archetype 自动迁移)
+	// 第二遍: 填充组件数据。add_component 之后**直接写列**:
+	// set_field 每次都要查组件名 + 字段名(两趟字符串比较), 20k 实体 × 8 字段 = 32 万次;
+	// 这里按组件取出字段表后只做列下标写入, 语义不变(缺字段用默认值)。
 	Array comps = data["components"];
 	for (int32_t i = 0; i < comps.size(); ++i) {
 		Dictionary cd = comps[i];
@@ -3132,23 +2916,32 @@ Array ECSCore::deserialize(const Dictionary &data) {
 		if (ci < 0) {
 			continue;
 		}
+		const int32_t field_count = int32_t(components_[ci].fields.size());
 		Array entities = cd["entities"];
 		for (int32_t j = 0; j < entities.size(); ++j) {
 			Dictionary ed = entities[j];
-			const int32_t saved_id = int32_t(int64_t(ed["entity"]));
-			auto it = id_map.find(saved_id);
+			auto it = id_map.find(int32_t(int64_t(ed["entity"])));
 			if (it == id_map.end()) {
 				continue;
 			}
 			const int32_t e = it->second;
-			add_component(e, name);
+			if (!add_component(e, name)) {
+				continue;
+			}
+			const int32_t idx = ecs_index_of(e);
+			const int32_t arch = entity_arch_[size_t(idx)];
+			const int32_t row = archetypes_[arch].row_of(idx);
+			const int32_t cp = archetypes_[arch].comp_pos(ci);
+			if (row < 0 || cp < 0) {
+				continue;
+			}
 			Array vals = ed["values"];
-			for (size_t fi = 0; fi < components_[ci].fields.size(); ++fi) {
-				if (fi < size_t(vals.size())) {
-					set_field(e, name, components_[ci].fields[fi].name, vals[int32_t(fi)]);
-				} else {
-					set_field(e, name, components_[ci].fields[fi].name, components_[ci].defaults[fi]);
-				}
+			for (int32_t fi = 0; fi < field_count; ++fi) {
+				const Variant v = (fi < vals.size()) ? Variant(vals[fi]) : components_[ci].defaults[fi];
+				archetypes_[arch].cols[size_t(cp)][size_t(fi)].set(size_t(row), v);
+			}
+			if (change_detection_) {
+				++archetypes_[arch].row_ver[size_t(row)];
 			}
 		}
 	}
@@ -3160,18 +2953,20 @@ Array ECSCore::deserialize(const Dictionary &data) {
 // ---------------------------------------------------------------------------
 
 inline bool ECSCore::is_prefab_index(int32_t index) const {
-	for (int32_t p : prefab_indices_) {
-		if (p == index) {
-			return true;
-		}
-	}
-	return false;
+	// 位图 O(1): 原先对 prefab_indices_ 线性扫, 而它在"每一行"上被调用 → O(N×P)
+	return index >= 0 && index < int32_t(prefab_bitmap_.size()) && prefab_bitmap_[index] != 0;
 }
 
 int32_t ECSCore::create_prefab() {
 	const int32_t e = create_entity();
-	const int32_t index = e & 0x00FFFFFF;
-	prefab_indices_.push_back(index);
+	if (e < 0) {
+		return -1;
+	}
+	const int32_t index = ecs_index_of(e);
+	if (int32_t(prefab_bitmap_.size()) <= index) {
+		prefab_bitmap_.resize(index + 1, 0);
+	}
+	prefab_bitmap_[index] = 1;
 	return e;
 }
 
@@ -3179,7 +2974,7 @@ bool ECSCore::is_prefab(int32_t entity) const {
 	if (!is_alive(entity)) {
 		return false;
 	}
-	return is_prefab_index(entity & 0x00FFFFFF);
+	return is_prefab_index(ecs_index_of(entity));
 }
 
 bool ECSCore::prefab_add(int32_t prefab, const StringName &comp, const Dictionary &values) {
@@ -3204,58 +2999,111 @@ Array ECSCore::instantiate(int32_t prefab, int32_t count, const Dictionary &over
 	if (!is_prefab(prefab) || count <= 0) {
 		return result;
 	}
-	const int32_t pindex = prefab & 0x00FFFFFF;
+	const int32_t pindex = ecs_index_of(prefab);
 	const int32_t parch = (pindex < int32_t(entity_arch_.size())) ? entity_arch_[pindex] : -1;
 	if (parch < 0) {
 		return result;
 	}
-	const auto &par = archetypes_[parch];
-	const int32_t prow = par.row_of(pindex);
-	std::vector<int32_t> comps = par.comps;
+	const int32_t prow = archetypes_[parch].row_of(pindex);
+	if (prow < 0) {
+		return result;
+	}
 
+	// 模板与实例组件组合相同 ⇒ 直接往**同一个 archetype 块**批量追加,
+	// 不再"每实体一次 archetype 迁移 + 每字段一次字符串查找 + 每字段一次 Variant 装箱"。
+	// (旧路径 5000 个实体要几万次字符串比较, 是刷怪/弹幕场景的真实瓶颈。)
+	std::vector<int32_t> ids;
+	ids.reserve(size_t(count));
 	for (int32_t n = 0; n < count; ++n) {
 		const int32_t e = create_entity();
-		result.append(e);
-		for (int32_t ci : comps) {
-			const StringName cname = components_[ci].name;
-			add_component(e, cname);
-			const int cp = par.comp_pos(ci);
-			if (cp < 0) {
+		if (e < 0) {
+			break; // 实体槽耗尽
+		}
+		ids.push_back(e);
+	}
+	const int32_t n = int32_t(ids.size());
+	if (n == 0) {
+		return result;
+	}
+
+	Archetype &dst = archetypes_[parch];
+	const int32_t base = int32_t(dst.entities.size());
+	dst.entities.resize(size_t(base + n));
+	dst.row_ver.resize(size_t(base + n), 0);
+	for (auto &comp_cols : dst.cols) {
+		for (auto &col : comp_cols) {
+			col.resize(size_t(base + n));
+		}
+	}
+
+	// 行槽位: 实体索引 + 反向行号 + 所属块
+	for (int32_t i = 0; i < n; ++i) {
+		const int32_t idx = ecs_index_of(ids[i]);
+		dst.entities[size_t(base + i)] = idx;
+		if (int32_t(dst.row_map.size()) <= idx) {
+			dst.row_map.resize(size_t(idx + 1), -1);
+		}
+		dst.row_map[size_t(idx)] = base + i;
+		entity_arch_[size_t(idx)] = parch;
+	}
+
+	// 字段值: 按列整段拷模板行(同类型直拷, 不经过 Variant)
+	for (int32_t cp = 0; cp < int32_t(dst.cols.size()); ++cp) {
+		for (size_t fi = 0; fi < dst.cols[size_t(cp)].size(); ++fi) {
+			ecs_copy_row_range(dst.cols[size_t(cp)][fi], size_t(prow), size_t(base), n);
+		}
+	}
+
+	// overrides: 只改动被点名的列, 且只写这几列(通常 0~2 个)
+	Array comp_keys = overrides.keys();
+	for (int32_t k = 0; k < comp_keys.size(); ++k) {
+		const StringName cname = StringName(comp_keys[k]);
+		const int32_t ci = comp_index(cname);
+		const int32_t cp = (ci >= 0) ? dst.comp_pos(ci) : -1;
+		if (cp < 0) {
+			continue; // 模板没有这个组件: 忽略(与逐实体路径一致)
+		}
+		Dictionary od = overrides[comp_keys[k]];
+		Array field_keys = od.keys();
+		for (int32_t f = 0; f < field_keys.size(); ++f) {
+			const int32_t fi = components_[ci].field_index(StringName(field_keys[f]));
+			if (fi < 0) {
 				continue;
 			}
-			for (size_t fi = 0; fi < components_[ci].fields.size(); ++fi) {
-				Variant v = par.cols[cp][fi].get(prow);
-				if (overrides.has(cname)) {
-					Dictionary od = overrides[cname];
-					if (od.has(components_[ci].fields[fi].name)) {
-						v = od[components_[ci].fields[fi].name];
-					}
-				}
-				set_field(e, cname, components_[ci].fields[fi].name, v);
+			const Variant v = od[field_keys[f]];
+			for (int32_t i = 0; i < n; ++i) {
+				dst.cols[size_t(cp)][size_t(fi)].set(size_t(base + i), v);
 			}
 		}
 	}
+
+	result.resize(n);
+	for (int32_t i = 0; i < n; ++i) {
+		result[i] = ids[i];
+	}
+	++struct_version_;
 	return result;
 }
 
-Variant ECSCore::prefab_get_field(int32_t prefab, const StringName &comp, const StringName &field) const {
-	if (!is_prefab(prefab)) {
-		return Variant();
-	}
-	return get_field(prefab, comp, field);
-}
+
 
 // ---------------------------------------------------------------------------
 // ECSCore — Command Buffer (延迟结构变更)
 // 系统内排队, flush_commands() 帧末统一执行, 避免遍历中改结构。
 // ---------------------------------------------------------------------------
 
-void ECSCore::cmd_create() {
-	cmd_types_.push_back(CMD_CREATE);
-	// 新一批命令开始时重置占位索引(保证占位 = -(create序号+1) 从 1 开始)
-	if (cmd_types_.size() == 1) {
+void ECSCore::ensure_cmd_batch() {
+	// 批次边界 = 队列由空变非空。所有入队操作都必须先过这里:
+	// 原来只在 cmd_create 里按 "size()==1" 判断, 队列首条不是 create 时就不会重置,
+	// cmd_created_ 里残留上一批的实体 → 占位序号错位、created_entity_at 返回旧值。
+	if (cmd_types_.empty()) {
 		cmd_created_.clear();
 	}
+}
+
+void ECSCore::cmd_create() {
+	ensure_cmd_batch();
+	cmd_types_.push_back(CMD_CREATE);
 	// 负句柄 = -(create序号+1), 便于后续 add_component 引用
 	const int32_t idx = int32_t(cmd_created_.size());
 	cmd_entities_.push_back(-(idx + 1));
@@ -3264,18 +3112,21 @@ void ECSCore::cmd_create() {
 }
 
 void ECSCore::cmd_destroy(int32_t entity) {
+	ensure_cmd_batch();
 	cmd_types_.push_back(CMD_DESTROY);
 	cmd_entities_.push_back(entity);
 	cmd_comps_.push_back(StringName());
 }
 
 void ECSCore::cmd_add_component(int32_t entity, const StringName &comp) {
+	ensure_cmd_batch();
 	cmd_types_.push_back(CMD_ADD_COMP);
 	cmd_entities_.push_back(entity);
 	cmd_comps_.push_back(comp);
 }
 
 void ECSCore::cmd_remove_component(int32_t entity, const StringName &comp) {
+	ensure_cmd_batch();
 	cmd_types_.push_back(CMD_REMOVE_COMP);
 	cmd_entities_.push_back(entity);
 	cmd_comps_.push_back(comp);
@@ -3388,8 +3239,7 @@ void ECSCore::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("is_column_borrowed"), &ECSCore::is_column_borrowed);
 	ClassDB::bind_method(D_METHOD("batch_apply_col", "anchor", "must", "op_comp", "op_field", "src_comp", "src_field", "op", "factor", "addend", "conditions"), &ECSCore::batch_apply_col);
 	ClassDB::bind_method(D_METHOD("batch_clamp_where", "anchor", "must", "op_comp", "op_field", "min_comp", "min_field", "max_comp", "max_field", "conditions"), &ECSCore::batch_clamp_where);
-	ClassDB::bind_method(D_METHOD("batch_move", "anchor", "must", "pos_comp", "pos_field", "vel_comp", "vel_field", "delta", "x_min", "x_max", "y_min", "y_max"), &ECSCore::batch_move);
-	ClassDB::bind_method(D_METHOD("batch_cycle", "anchor", "must", "comp", "field", "dir_comp", "dir_field", "rate", "min", "max"), &ECSCore::batch_cycle);
+
 
 	ClassDB::bind_method(D_METHOD("batch_apply", "anchor", "must", "op_comp", "op_field", "op", "factor", "addend"), &ECSCore::batch_apply);
 	ClassDB::bind_method(D_METHOD("batch_apply_where", "anchor", "must", "op_comp", "op_field", "op", "factor", "addend", "conditions"), &ECSCore::batch_apply_where);
@@ -3412,7 +3262,7 @@ void ECSCore::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("is_prefab", "entity"), &ECSCore::is_prefab);
 	ClassDB::bind_method(D_METHOD("prefab_add", "prefab", "comp", "values"), &ECSCore::prefab_add);
 	ClassDB::bind_method(D_METHOD("instantiate", "prefab", "count", "overrides"), &ECSCore::instantiate);
-	ClassDB::bind_method(D_METHOD("prefab_get_field", "prefab", "comp", "field"), &ECSCore::prefab_get_field);
+
 	ClassDB::bind_method(D_METHOD("cmd_create"), &ECSCore::cmd_create);
 	ClassDB::bind_method(D_METHOD("cmd_destroy", "entity"), &ECSCore::cmd_destroy);
 	ClassDB::bind_method(D_METHOD("cmd_add_component", "entity", "comp"), &ECSCore::cmd_add_component);
