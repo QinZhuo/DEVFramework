@@ -5,7 +5,7 @@ extends EditorPlugin
 #   - 插件启用/停用: 决定 autoload 行(project.godot)和编辑器服务器节点的存在
 #   - dev_framework/mcp/enabled: 独立主开关, 可在项目设置里单独控制,
 
-const DEF_TABLE_SCENE := "res://addons/DEVFramework/DefTable/DefTableView.tscn"
+const DEF_TABLE_SCENE := "res://addons/DEVFramework/Core/Editor/DefTable/DefTableView.tscn"
 ## 虚拟机位 3D 视图可视化(仅编辑器加载, 故用路径而非全局类)
 const CAMERA_GIZMO_SCRIPT := "res://addons/DEVFramework/Camera/Editor/VirtualCameraGizmo.gd"
 ## 虚拟机位取景器(底部面板, 预览机位看到的画面)
@@ -161,7 +161,7 @@ func _make_visible(visible: bool) -> void:
 
 func _get_plugin_icon() -> Texture2D:
 	# 直接引用本地白色表格图标, 避免每次动态查找编辑器主题图标
-	var tex := load("res://addons/DEVFramework/DefTable/icon_table.png") as Texture2D
+	var tex := load("res://addons/DEVFramework/Core/Editor/DefTable/icon_table.png") as Texture2D
 	if tex != null:
 		return tex
 	return get_editor_interface().get_base_control().get_theme_icon("Data", "EditorIcons")
