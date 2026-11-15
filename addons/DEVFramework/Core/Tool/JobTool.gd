@@ -80,7 +80,13 @@ static func status(job_id := "") -> Dictionary:
 	var job: Dictionary = _jobs.get(id, {})
 	if job.is_empty():
 		return {"error": "未知 job_id: '%s'(可用: %s)" % [job_id, _ids_text()]}
-	return _snapshot(id, job)
+	var snap := _snapshot(id, job)
+	# 已完成就把结果一并带上: 轮询到 done 的那一次调用就能拿到全部明细,
+	# 不必再补一次 result(否则调用方要写两套分支)
+	if str(job["status"]) != "running":
+		snap.merge(job.get("result", {}), true)
+		snap["status"] = str(job["status"])
+	return snap
 
 
 ## 取结果。未结束时返回快照 + 提示(不阻塞)。
