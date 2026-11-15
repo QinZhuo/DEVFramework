@@ -160,17 +160,5 @@ static func session() -> DialogueSession:
 	return _session
 
 
-## 一行接入"点击/按键推进"：在项目的 _input 里 `if DialogueTool.handle_input(event): 吞掉`
-static func handle_input(event: InputEvent) -> bool:
-	var p := view()
-	if p == null or not p.visible:
-		return false
-	if event.is_action_pressed(&"ui_accept") or event.is_action_pressed(&"ui_cancel"):
-		next()
-		return true
-	if event is InputEventMouseButton:
-		var mb := event as InputEventMouseButton
-		if mb.pressed and mb.button_index == MOUSE_BUTTON_LEFT:
-			next()
-			return true
-	return false
+## 注: 不提供输入接管。推进由项目自己决定(调 next()),
+## 返回/退出等全局按键必须交给项目自己的返回决策点, 框架不吞任何按键。

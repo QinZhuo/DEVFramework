@@ -27,7 +27,7 @@ Dialogue/
 ```gdscript
 DialogueTool.bind(ui_layer)              # 一次（遮罩会自动 bind，通常不用管）
 DialogueTool.show("点这里继续", rect)     # 一条提示（rect 省略 = 屏幕底部）
-DialogueTool.next()                      # 推进；或在 _input 里 DialogueTool.handle_input(event)
+DialogueTool.next()                      # 推进
 ```
 
 一段对话：
