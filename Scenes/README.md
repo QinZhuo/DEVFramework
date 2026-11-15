@@ -35,12 +35,12 @@
 - 目录 = 能力模块名（与 `addons/DEVFramework/` 下的模块同名）
 - `*Demo.tscn` = **可直接运行的演示**
 - 其他 `.tscn` = 演示用的子场景 / 工具场景
-- 演示脚本放 `res://Scripts/Demo/`；演示用的示例业务对象放 `res://Scripts/Entity/`
+- 演示脚本与场景**同目录**（`Scenes/<模块>/<名字>Demo.gd`）；演示用的示例业务对象放 `res://Scripts/Entity/`
 
 ## 新增演示时
 
 1. 场景放 `Scenes/<模块>/<名字>Demo.tscn`
-2. 脚本放 `Scripts/Demo/<名字>Demo.gd`
+2. 脚本与场景同目录：`Scenes/<模块>/<名字>Demo.gd`
 3. 在本文件「演示场景」表格里补一行（说明演示什么 + 怎么操作）
 
 这样任何人不用翻目录就能知道框架有哪些能力、怎么跑起来。
