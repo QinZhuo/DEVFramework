@@ -138,6 +138,14 @@ static func stop() -> void:
 	hide()
 
 
+## 整体重置(停止播放 + 清掉表现层引用)。ResetTool 等"一键回到初始状态"的入口用。
+static func reset() -> void:
+	stop()
+	if is_instance_valid(_presenter):
+		_presenter.queue_free()
+	_presenter = null
+
+
 static func is_playing() -> bool:
 	return _session != null and _session.running
 

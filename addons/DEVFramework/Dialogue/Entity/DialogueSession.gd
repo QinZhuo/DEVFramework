@@ -37,10 +37,10 @@ func next() -> bool:
 	if not running:
 		return false
 	index += 1
-	if script != null and index < dialogue.lines.size():
+	if dialogue != null and index < dialogue.lines.size():
 		line_changed.emit(current(), index)
 		return true
-	if script != null and dialogue.loop and not dialogue.is_empty():
+	if dialogue != null and dialogue.loop and not dialogue.is_empty():
 		index = 0
 		line_changed.emit(current(), index)
 		return true
