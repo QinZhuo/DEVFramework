@@ -25,9 +25,14 @@ static func clear() -> void:
 		_mask.clear()
 
 
+## 更新提示文案(直接交给对话子系统, 锚点用当前遮罩的目标包围盒)
 static func set_tip(text: String) -> void:
-	if is_instance_valid(_mask):
-		_mask.set_tip(text)
+	if not is_instance_valid(_mask):
+		return
+	if text.is_empty():
+		DialogueTool.hide()
+		return
+	DialogueTool.show(text, _mask.get_focus_rect())
 
 
 static func is_active() -> bool:

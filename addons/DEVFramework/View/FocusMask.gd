@@ -14,7 +14,6 @@ class_name FocusMask extends Control
 ## 空白处按下(仅 click_to_complete 开启时; 供"点任意处继续")
 signal blank_pressed
 ## 气泡完成一次排版(宿主可在这里对气泡做二次布局: 塞模型/改宽度等)
-signal tip_placed
 
 ## 合成层(z_index 上限 4096)
 const DIM_Z := 4088
@@ -51,39 +50,9 @@ var drag_checker: Callable
 ## 轮廓渲染抗锯齿
 @export var highlight_msaa := Viewport.MSAA_4X
 
-## 表现层由 Dialogue 子系统提供(Dialogue/View/*), 遮罩只负责"锚在哪"。
+## 气泡/对话的表现层完全由 Dialogue 子系统负责(Dialogue/View/*)。
+## 遮罩只做两件事: 算命中区、把"锚在哪"喂给 DialogueTool —— 不持有任何气泡控件。
 ## 项目要换外观: DialogueTool.view_scene = 自己的场景 / DialogueTool.register(...)
-
-## 兼容旧 API: 气泡容器(默认实现才有, 项目自定义 view 时可能为 null)
-var tip_panel: Panel:
-	get:
-		var p := DialogueTool.view()
-		return (p as BubbleView).panel if p is BubbleView else null
-## 兼容旧 API: 文字控件
-var tip_label: RichTextLabel:
-	get:
-		var p := DialogueTool.view()
-		return (p as BubbleView).label if p is BubbleView else null
-## 兼容旧 API: 气泡最小高度
-var tip_min_height: float:
-	get:
-		var p := DialogueTool.view()
-		return (p as BubbleView).min_height if p is BubbleView else 0.0
-	set(value):
-		var p := DialogueTool.view()
-		if p:
-			p.min_height = value
-			p.refresh()
-## 兼容旧 API: 气泡顶部下限(屏幕 Y, -1 = 不限)
-var tip_top_limit: float:
-	get:
-		var p := DialogueTool.view()
-		return p.limit_top if p else -1.0
-	set(value):
-		var p := DialogueTool.view()
-		if p:
-			p.limit_top = value
-			p.refresh()
 
 var _targets: Array[Node] = []
 var _paddings := PackedFloat32Array()
@@ -173,7 +142,7 @@ func focus(items: Array, opts: Dictionary = {}, host: Node = null) -> void:
 	visible = true
 	_apply_presentation()
 	_update_geometry()
-	set_tip(str(opts.get("tip", "")))
+	_apply_tip(str(opts.get("tip", "")))
 	_grab_target_focus()
 
 
@@ -188,8 +157,9 @@ func clear() -> void:
 	DialogueTool.hide()
 
 
-## 设置提示文字(空 = 隐藏气泡; 支持 bbcode)
-func set_tip(text: String) -> void:
+## 配一句提示(空 = 隐藏)。气泡怎么排由 Dialogue 子系统的 view 决定。
+## 私有: 外部要改文案请用 DialogueTool.show() / TutorialGuide.set_tip()。
+func _apply_tip(text: String) -> void:
 	if not DialogueTool.is_bound():
 		return
 	if text.is_empty() or not _active:
@@ -213,21 +183,9 @@ func get_hit_rects() -> Array[Rect2]:
 	return _hit_rects.duplicate()
 
 
-## 纯提示气泡的顶部下限(屏幕 Y, -1 = 不限)
-func set_tip_limit(max_y: float) -> void:
-	tip_top_limit = max_y
-
-
-## 作废排版缓存并立即重排(宿主改过气泡尺寸/内容后调用)
-func refresh_tip() -> void:
-	var view := DialogueTool.view()
-	if view:
-		view.refresh()
-
-
-## 当前的表现层(项目换外观/加插槽时用它)
-func get_view() -> DialogueView:
-	return DialogueTool.view()
+## 当前目标的包围盒(气泡的锚点)。无目标 = 空矩形 = 纯提示。
+func get_focus_rect() -> Rect2:
+	return _merged_rects()
 
 
 # ------------------------------------------------------------
@@ -773,12 +731,7 @@ func _apply_opts(opts: Dictionary) -> void:
 ## 把对话子系统的表现层挂到自己这一层(遮罩只提供挂载点与 z)
 func _bind_view() -> void:
 	var view := DialogueTool.bind(self, TIP_Z)
-	if view and not view.placed.is_connected(_on_view_placed):
-		view.placed.connect(_on_view_placed)
 
-
-func _on_view_placed() -> void:
-	tip_placed.emit()
 
 
 ## 把当前几何交给气泡: 锚点 = 目标包围盒(空 = 纯提示)

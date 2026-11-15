@@ -89,16 +89,21 @@ func blur() -> void:
 	_clear_mask()
 
 
-## 覆盖气泡文案(步骤内需要换说法时用)
+## 覆盖气泡文案(步骤内需要换说法时用)。直接走对话子系统, 不再经过遮罩。
 func set_tip(text: String) -> void:
-	if _mask:
-		_mask.set_tip(text)
+	if text.is_empty():
+		DialogueTool.hide()
+		return
+	var anchor := _mask.get_focus_rect() if _mask else Rect2()
+	DialogueTool.show(text, anchor)
 
 
 ## 纯提示气泡的顶部下限(屏幕 Y, -1 = 不限)
-func set_tip_top_limit(max_y: float) -> void:
-	if _mask:
-		_mask.set_tip_limit(max_y)
+func set_tip_limit(max_y: float) -> void:
+	var view := DialogueTool.view()
+	if view:
+		view.limit_top = max_y
+		view.refresh()
 
 
 ## 渲染某一步: 解析目标 → 交给焦点遮罩, 提示文字取步骤 desc

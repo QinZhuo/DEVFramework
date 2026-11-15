@@ -89,9 +89,6 @@ static func hide() -> void:
 		p.dismiss()
 
 
-static func text() -> String:
-	var p := view()
-	return (p as BubbleView).get_text() if p is BubbleView else ""
 
 
 # ------------------------------------------------------------
