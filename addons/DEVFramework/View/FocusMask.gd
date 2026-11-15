@@ -252,8 +252,9 @@ func _setup_silhouette() -> void:
 		if promoted is Node3D and promoted == node:
 			_build_3d_silhouette(promoted as Node3D, i)
 			return
-		if node is CanvasItem and _build_2d_contour(node as CanvasItem, i):
-			return
+		# 2D 目标不建轮廓快照: 控件样式盒经常只画边框/贴图未设置, 快照里"控件内部"是空的,
+		# 于是目标内部会被当成区域外(遮罩不透明时只剩一圈框、本体全黑)。
+		# 2D 直接用"矩形 + 样式盒圆角"的 SDF, 形状与区域都可靠。
 		return
 
 
@@ -326,8 +327,15 @@ class ContourPainter extends Control:
 	var box: StyleBox
 
 	func _draw() -> void:
-		if box:
-			draw_style_box(box, Rect2(Vector2.ZERO, size))
+		if box == null:
+			return
+		# 有些按钮样式只画边框(draw_center = false)。这种样式画出来的 alpha 只有一圈,
+		# 轮廓里"控件内部"就是空的 → 目标内部会被当成区域外而保持压暗
+		# (表现出来就是: 遮罩不透明时只剩一个描边框、按钮本体看不见)。
+		# 这种情况补一层实心底, 形状就是整块控件区域。
+		if box is StyleBoxFlat and not (box as StyleBoxFlat).draw_center:
+			draw_rect(Rect2(Vector2.ZERO, size), Color.WHITE)
+		draw_style_box(box, Rect2(Vector2.ZERO, size))
 
 
 ## 每帧维护轮廓: 验证离屏快照是否真的渲出了内容, 并让轮廓跟随目标移动/缩放
