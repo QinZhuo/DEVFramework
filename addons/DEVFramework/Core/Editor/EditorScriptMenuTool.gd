@@ -116,7 +116,10 @@ static func _scan_tool_dirs(dir: DirAccess, dir_path: String, is_tool_root: bool
 		var full := dir_path.path_join(entry)
 		if dir.current_is_dir():
 			if entry != "." and entry != ".." and not entry.begins_with("."):
-				_scan_tool_dirs(DirAccess.open(full), full, entry == "Tool", out)
+				# "在工具目录树内"而不是"目录名恰好是 Tool": 编辑器工具可能在 Tool/ 或 Core/Editor/ 下,
+				# 且会有 Setup/ Generate/ 这类子目录 —— 子目录要继承父级判定
+				var in_tool_tree := is_tool_root or entry == "Tool" or entry == "Editor"
+				_scan_tool_dirs(DirAccess.open(full), full, in_tool_tree, out)
 		elif is_tool_root and entry.ends_with(".gd") and _is_editor_tool_script(full):
 			out.append(full)
 		entry = dir.get_next()
