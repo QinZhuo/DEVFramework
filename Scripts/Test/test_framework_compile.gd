@@ -120,3 +120,52 @@ static func _log_path() -> String:
 	if configured.is_empty():
 		configured = "user://logs/godot.log"
 	return ProjectSettings.globalize_path(configured) if configured.begins_with("user://") else configured
+
+
+## 框架内所有 "res://addons/DEVFramework/..." 字符串都必须指向真实文件。
+## 目录重组最容易漏的是**非 .gd 后缀** —— 例如 plugin.gd 里的 .tscn / .png,
+## 漏掉后编辑器只在启动时报 "Cannot open file", 很难定位到是哪次搬迁造成的。
+func test_all_framework_paths_exist() -> void:
+	# 必须以**文件扩展名**结尾: 这样"前缀字符串"(如 MCP/)、目录名、以及
+	# "dev.gdextension 已加载(…)" 这类提示文本都不会被误判成待校验路径。
+	var re := RegEx.new()
+	# 长扩展名在前 + 负向前瞻: 否则 "dev.gdextension" 会被截成 "dev.gd"
+	re.compile("res://addons/DEVFramework/[^\"\\s]*\\.(gdextension|gdshader|tscn|tres|import|png|svg|gd)(?![a-z])")
+	var missing: Array[String] = []
+	var checked := 0
+	for root in ROOT_DIRS:
+		for path in _collect_scripts_for_paths(root):
+			if path.get_file() == "test_framework_compile.gd":
+				continue  # 自身含注释示例
+			var text := FileAccess.get_file_as_string(path)
+			if text.is_empty():
+				continue
+			for line in text.split("\n"):
+				if line.strip_edges().begins_with("#"):
+					continue  # 注释里的写法示例不校验
+				for m in re.search_all(line):
+					checked += 1
+					var target := m.get_string()
+					if not FileAccess.file_exists(target):
+						missing.append("%s -> %s" % [path.get_file(), target])
+	assert_true(missing.is_empty(), "以下框架路径不存在(搬迁时漏改):\n" + "\n".join(missing))
+	assert_true(checked > 0, "未扫描到任何框架路径引用, 检查扫描逻辑")
+
+
+func _collect_scripts_for_paths(dir_path: String) -> Array[String]:
+	var out: Array[String] = []
+	var dir := DirAccess.open(dir_path)
+	if dir == null:
+		return out
+	dir.list_dir_begin()
+	var entry := dir.get_next()
+	while entry != "":
+		var full := dir_path.path_join(entry)
+		if dir.current_is_dir():
+			if not entry.begins_with("."):
+				out.append_array(_collect_scripts_for_paths(full))
+		elif entry.ends_with(".gd"):
+			out.append(full)
+		entry = dir.get_next()
+	dir.list_dir_end()
+	return out
