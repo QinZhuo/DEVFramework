@@ -15,6 +15,9 @@ signal dismissed
 
 ## 排版后气泡顶部不得高于该 Y(-1 = 不限)。用于避开屏幕底部的按钮/物品栏
 @export var limit_top := -1.0
+## 是否贴着目标跟着走。
+## 默认 false: 气泡固定在屏幕底部 —— 目标一动文字就跟着跳, 很影响阅读。
+@export var follow_anchor := false
 
 var _anchor := Rect2()
 var _view := Vector2.ZERO
@@ -80,7 +83,7 @@ func place_default(size: Vector2) -> Vector2:
 	var view := view_size()
 	var margin := 12.0
 	var pos := Vector2(view.x * 0.5 - size.x * 0.5, view.y - margin - size.y)
-	if _anchor.size != Vector2.ZERO:
+	if follow_anchor and _anchor.size != Vector2.ZERO:
 		pos = Vector2(_anchor.get_center().x - size.x * 0.5, _anchor.end.y + 14.0)
 		if pos.y + size.y > view.y - margin:
 			pos.y = _anchor.position.y - 14.0 - size.y

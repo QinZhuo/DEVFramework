@@ -26,13 +26,16 @@ static var _session: DialogueSession
 ## 把表现层挂到某个 UI 父节点（重复调用复用实例）
 static func bind(parent: Control, z_index := 0) -> DialogueView:
 	if _view != null and is_instance_valid(_view):
+		# 已注册的 view 也要套层级: 否则会被遮罩的合成层盖住(看起来"气泡也被压暗了")
+		_view.z_as_relative = false
+		_view.z_index = z_index
+		if theme != null:
+			_view.theme = theme
 		if parent != null:
 			if _view.get_parent() == null:
 				parent.add_child(_view)  # 项目先 register() 再 bind: 这里补上入树
 			elif _view.get_parent() != parent:
 				_view.reparent(parent)
-		if theme != null:
-			_view.theme = theme
 		return _view
 	if parent == null:
 		return null
@@ -143,12 +146,10 @@ static func stop() -> void:
 	hide()
 
 
-## 整体重置(停止播放 + 清掉表现层引用)。ResetTool 等"一键回到初始状态"的入口用。
+## 整体重置(停止播放)。不清掉表现层:
+## 项目可能 register 过自己的 view, 清掉后下次 bind 会退回默认外观。
 static func reset() -> void:
 	stop()
-	if is_instance_valid(_view):
-		_view.queue_free()
-	_view = null
 
 
 static func is_playing() -> bool:

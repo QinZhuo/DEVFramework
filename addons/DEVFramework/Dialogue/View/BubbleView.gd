@@ -6,7 +6,10 @@ class_name BubbleView extends DialogueView
 @export var style: StyleBox
 @export var font_size := 20
 @export var font_color := Color(1, 1, 1, 1)
-@export var max_width := 720.0
+## 宽度占屏宽的比例(比固定像素更适应不同分辨率; 长文案不会被折成很多行)
+@export var width_ratio := 0.68
+## 宽度上限(像素)
+@export var max_width := 1200.0
 @export var min_height := 0.0
 ## 内容内边距 left/top/right/bottom
 @export var padding := Vector4(22.0, 14.0, 22.0, 14.0)
@@ -127,7 +130,7 @@ func refresh() -> void:
 	var pad_b := padding.w
 	var slot_w := _slot_width()
 
-	var width := minf(view.x - 24.0, max_width)
+	var width := minf(view.x * width_ratio, max_width)
 	label.size = Vector2(maxf(width - pad_l - pad_r - slot_w, 1.0), 0.0)
 	var height := maxf(label.get_content_height(), _slot_height()) + pad_t + pad_b
 	height = maxf(height, min_height)
