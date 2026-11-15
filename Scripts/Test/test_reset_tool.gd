@@ -30,12 +30,12 @@ func test_reset_restores_time() -> void:
 	assert_true(TimeTool.get_current_scale() > 1.0, "先制造一个非 1x 状态")
 
 	ResetTool.all()
-	assert_true(is_equal_approx(Engine.time_scale, 1.0), "Engine.time_scale 应回到 1x")
-	assert_true(is_equal_approx(TimeTool.get_current_scale(), 1.0), "TimeTool 应回到 1x")
+	assert_approx(Engine.time_scale, 1.0, "Engine.time_scale 应回到 1x")
+	assert_approx(TimeTool.get_current_scale(), 1.0, "TimeTool 应回到 1x")
 
 
 func test_reset_is_repeatable() -> void:
 	ResetTool.all()
 	ResetTool.all()
 	assert_eq(UITool.get_stack_size(), 0, "重复复位不应产生副作用")
-	assert_true(is_equal_approx(TimeTool.get_current_scale(), 1.0))
+	assert_approx(TimeTool.get_current_scale(), 1.0)

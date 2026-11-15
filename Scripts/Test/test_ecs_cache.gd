@@ -1,5 +1,4 @@
-class_name PTCacheTest
-extends RefCounted
+extends TestCase
 
 ## ECS 缓存正确性回归(对应两处"静默陈旧数据"修复):
 ## 1) query_all_rows 行集缓存: 命令缓冲 flush / Prefab 实例化 / 反序列化等结构变更后必须自动失效;
@@ -7,15 +6,9 @@ extends RefCounted
 ##
 ## 静默性说明: 这两类缺陷都不会报错, 只会让系统遍历到错误的实体集合 —— 故用"内容"而非"数量"断言锁定。
 
-static func run() -> bool:
-	var all_ok := true
-	all_ok = _test_all_rows_cache() and all_ok
-	all_ok = _test_norm_conds_reuse() and all_ok
-	return all_ok
-
 
 ## 结构变更(命令缓冲 / prefab 实例化 / 反序列化)后无条件行集必须变新
-static func _test_all_rows_cache() -> bool:
+func test_all_rows_cache_follows_structure() -> void:
 	var w := ECSWorld.new(false)
 	w.register_component(PTCompA)
 
@@ -23,7 +16,7 @@ static func _test_all_rows_cache() -> bool:
 	w.add_component(e0, PTCompA)
 	var before := w.query_all_rows(PTCompA).size()   # 建立缓存: 1 行
 
-	# 经命令缓冲新增一个带 PTCompA 的实体 → flush 后应变 new
+	# 经命令缓冲新增一个带 PTCompA 的实体 → flush 后应变新
 	var e1 := w.create_entity()
 	w.cmd_add_component(e1, PTCompA)
 	w.cmd_flush()
@@ -43,17 +36,15 @@ static func _test_all_rows_cache() -> bool:
 	w2.deserialize(snap)
 	var after_de := w2.query_all_rows(PTCompA).size()
 
-	var ok := before == 1 \
-			and after_cmd == before + 1 \
-			and after_inst == after_cmd + 3 \
-			and warm2 == 0 and after_de == after_inst
-	print("[Cache] all_rows before=", before, " after_cmd=", after_cmd,
-			" after_inst=", after_inst, " after_deser=", after_de, " ok=", ok)
-	return ok
+	assert_eq(before, 1, "初始 1 行")
+	assert_eq(after_cmd, before + 1, "命令缓冲 flush 后行集应变新")
+	assert_eq(after_inst, after_cmd + 3, "prefab 实例化 3 个后应再增 3")
+	assert_eq(warm2, 0, "空世界预热为 0")
+	assert_eq(after_de, after_inst, "反序列化后行集必须变新")
 
 
 ## 同一查询对象复用(框架 for_each 对象池即如此)且条件改变时, 规范化条件必须跟着变
-static func _test_norm_conds_reuse() -> bool:
+func test_norm_conds_not_reused_across_queries() -> void:
 	var w := ECSWorld.new(false)
 	w.register_component(PTCompA)
 	for i in 6:
@@ -79,12 +70,12 @@ static func _test_norm_conds_reuse() -> bool:
 	var rows2: PackedInt32Array = w.batch_collect_norm(PTCompA, [], [], [c2])[0]
 
 	# 断言"内容": 第二轮必须只含 x > 3 的行(陈旧条件会返回 x < 2 的行)
-	var content_ok := not rows2.is_empty()
+	var stale_rows: Array[int] = []
 	for r in rows2:
 		if xa[r] <= 3:
-			content_ok = false
-	var op_ok: bool = int(c2[0]["op"]) == ECSWorld.CondOp.GREATER_THAN and int(c2[0]["value"]) == 3
-	var ok := rows1.size() == 2 and content_ok and op_ok
-	print("[Cache] norm_conds rows1=", rows1.size(), " rows2=", rows2.size(),
-			" op_ok=", op_ok, " rows2=", rows2, " ok=", ok)
-	return ok
+			stale_rows.append(xa[r])
+	assert_eq(rows1.size(), 2, "x < 2 应有 2 行")
+	assert_true(not rows2.is_empty(), "x > 3 应有行")
+	assert_true(stale_rows.is_empty(), "第二轮混入了 <= 3 的行: %s (规范化条件残留)" % str(stale_rows))
+	assert_eq(int(c2[0]["op"]), ECSWorld.CondOp.GREATER_THAN, "复用后条件操作符应更新")
+	assert_eq(int(c2[0]["value"]), 3, "复用后条件值应更新")

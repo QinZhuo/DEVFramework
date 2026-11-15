@@ -13,9 +13,8 @@ func test_screen_rect_control() -> void:
 	ctrl.size = Vector2(200, 100)
 	await tree.process_frame
 	var rect := FocusMask.screen_rect(ctrl)
-	assert_true(rect.position.is_equal_approx(Vector2(100, 80)) \
-			and rect.size.is_equal_approx(Vector2(200, 100)),
-			"Control 屏幕矩形应与布局一致, 实际: %s" % rect)
+	assert_approx(rect.position, Vector2(100, 80), "Control 屏幕矩形原点应与布局一致, 实际: %s" % rect)
+	assert_approx(rect.size, Vector2(200, 100), "Control 屏幕矩形尺寸应与布局一致, 实际: %s" % rect)
 	ctrl.queue_free()
 
 
@@ -30,8 +29,8 @@ func test_screen_rect_node2d_sprite() -> void:
 	node2d.add_child(sprite)
 	await tree.process_frame
 	var rect := FocusMask.screen_rect(node2d)
-	assert_true(rect.size.is_equal_approx(Vector2(64, 64)), "Node2D 应取子级精灵体量, 实际: %s" % rect)
-	assert_true(rect.position.is_equal_approx(Vector2(68, 68)), "精灵体量应随节点位置平移, 实际: %s" % rect)
+	assert_approx(rect.size, Vector2(64, 64), "Node2D 应取子级精灵体量, 实际: %s" % rect)
+	assert_approx(rect.position, Vector2(68, 68), "精灵体量应随节点位置平移, 实际: %s" % rect)
 	node2d.queue_free()
 
 
@@ -52,7 +51,7 @@ func test_screen_rect_2d_in_subviewport() -> void:
 	var rect := FocusMask.screen_rect(ctrl)
 	var expected := screen.viewport_rect_to_screen(ctrl.get_global_rect())
 	assert_false(rect.size == Vector2.ZERO, "子视口内的 2D 目标应能算出屏幕矩形")
-	assert_true(rect.is_equal_approx(expected), "应换算到主视口坐标, got=%s want=%s" % [rect, expected])
+	assert_approx(rect, expected, "应换算到主视口坐标, got=%s want=%s" % [rect, expected])
 	assert_false(rect.is_equal_approx(ctrl.get_global_rect()), "不能直接返回子视口坐标, 必须经过贴图面投影")
 	var quad_rect := screen.viewport_rect_to_screen(Rect2(Vector2.ZERO, Vector2(viewport.size)))
 	assert_true(quad_rect.grow(1.0).encloses(rect), "换算结果应落在贴图面内")
@@ -84,7 +83,7 @@ func test_screen_rect_3d_in_subviewport() -> void:
 		sub_rect = sub_rect.expand(p) if i > 0 else Rect2(p, Vector2.ZERO)
 	var expected := screen.viewport_rect_to_screen(sub_rect)
 	assert_false(rect.size == Vector2.ZERO, "子视口内的 3D 目标应能算出屏幕矩形")
-	assert_true(rect.is_equal_approx(expected), "应换算到主视口坐标, got=%s want=%s" % [rect, expected])
+	assert_approx(rect, expected, "应换算到主视口坐标, got=%s want=%s" % [rect, expected])
 	_free_screen(screen)
 
 
@@ -170,7 +169,7 @@ func test_targets_follow_moving_target() -> void:
 	ctrl.position += Vector2(70, 40)
 	await tree.process_frame
 	var after := mask.get_hit_rects()[0]
-	assert_true(after.position.is_equal_approx(before.position + Vector2(70, 40)),
+	assert_approx(after.position, before.position + Vector2(70, 40),
 			"可交互区应跟随目标移动, before=%s after=%s" % [before, after])
 	host.queue_free()
 

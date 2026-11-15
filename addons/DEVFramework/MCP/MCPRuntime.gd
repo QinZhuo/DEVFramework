@@ -69,8 +69,14 @@ func _run_tests_start(args: Dictionary, mode: String) -> Dictionary:
 		if pre != "":
 			return server._err_validation("内联测试代码预检未通过:\n%s" % pre,
 				"修正内联测试源码后重试; 或改成文件放到 %s 下再用 script 路径跑" % TestRunner.TESTS_DIR)
-	var snap: Dictionary = JobTool.start("run_tests:%s" % script,
+	return await _run_as_job("run_tests:%s" % script,
 		func() -> Dictionary: return await TestRunner.run_all(script, mode, server._logger))
+
+
+## 长任务统一收口: 启动 → 等一个窗口(窗口内跑完就直接给结果) → 补"怎么轮询"的提示。
+## 所有返回 job 凭据的工具都走这里, 否则等待时长与提示文案又会各写一份。
+func _run_as_job(key: String, work: Callable) -> Dictionary:
+	var snap: Dictionary = JobTool.start(key, work)
 	if bool(snap.get("running", false)):
 		snap = await JobTool.wait(str(snap.get("job_id", "")), JobTool.DEFAULT_WAIT_MS)
 	return server._ok_json(_with_job_hint(snap))
@@ -98,11 +104,8 @@ func call_run_tests_routed(args: Dictionary) -> Dictionary:
 	if process == "both":
 		# both = 编辑器段 + 游戏段, 天然是长任务 ⇒ 同样走 job: 超窗就交客户端轮询, 不要阻塞到跑完
 		var both_script := VariantTool.get_string(args, "script").strip_edges()
-		var job: Dictionary = JobTool.start("run_tests:both:%s" % both_script,
+		return await _run_as_job("run_tests:both:%s" % both_script,
 			func() -> Dictionary: return await _run_tests_both(both_script))
-		if bool(job.get("running", false)):
-			job = await JobTool.wait(str(job.get("job_id", "")), JobTool.DEFAULT_WAIT_MS)
-		return server._ok_json(_with_job_hint(job))
 	if process == "game":
 		return await _run_tests_in_game(args)
 	return await _run_tests_start(args, TestRunner.MODE_EDITOR)

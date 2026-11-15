@@ -152,6 +152,9 @@ var _next_req_id := 1
 var _game_breaked := false
 ## 断点暂停时仍可安全执行的工具(只读缓冲, 不依赖游戏主循环):
 const _BREAK_SAFE_TOOLS := ["get_logs", "clear_logs"]
+## 游戏用例运行期间仍可用的工具: 用例自己就是长任务, 轮询进度/取消必须放行。
+## job_wait 只等主循环帧(用例本就让出帧), job_cancel 是纯同步操作 —— 都不会被用例拖死。
+const _GAME_TESTS_OPEN_TOOLS := ["run_tests", "job_wait", "job_cancel"]
 
 ## 逐条 JSON-RPC 请求日志的开关(现场可 set, 不必重启编辑器)。
 static var _log_rpc := false
@@ -237,9 +240,9 @@ func _on_debugger_message(message: String, data: Array) -> bool:
 func _call_runtime_tool_async(req_id: int, tool_name: String, args: Dictionary) -> void:
 	var result: Dictionary
 	## 长任务(游戏用例)运行期间: 需要主循环的工具会被用例拖慢, 多数会干等到超时才报错。
-	if _game_tests_running and tool_name != "run_tests" and not _BREAK_SAFE_TOOLS.has(tool_name):
-		result = _err("游戏用例正在运行, 工具 %s 需要主循环, 现在调用既会拖慢用例也大概率超时。\n请先反复调用 run_tests(process=game, script=...) 读进度直到 running=false, 或用 game_control(action=stop) 终止用例。" % tool_name,
-			"busy", true, "run_tests(process=game, script=...)读进度至running=false后再调用; 或game_control(action=stop)终止用例")
+	if _game_tests_running and not _GAME_TESTS_OPEN_TOOLS.has(tool_name) and not _BREAK_SAFE_TOOLS.has(tool_name):
+		result = _err("游戏用例正在运行, 工具 %s 需要主循环, 现在调用既会拖慢用例也大概率超时。\n请用 job_wait(job_id) 或 run_tests(process=game, script=...) 读进度直到 running=false, 再调本工具; 要中断用 job_cancel 或 game_control(action=stop)。" % tool_name,
+			"busy", true, "job_wait(job_id)读进度至running=false后再调用; 或job_cancel/game_control(action=stop)中断用例")
 	elif _tool_handlers.has(tool_name):
 		result = await _tool_handlers[tool_name].call(args)
 	else:

@@ -9,9 +9,10 @@ class_name TestRunner extends RefCounted
 const TESTS_DIR := "res://Scripts/Test/"
 ## 内联源码长度上限(字符)。与 eval_code 的 MAX_EVAL_LENGTH 同量级: 临时用例够用, 又挡住误传巨型文本。
 const MAX_INLINE_LEN := 8192
-## 单次 run_all 的**硬超时**(毫秒): 到点即判失败并停止等待剩余用例 —— 强制测试不超过 10 分钟。
+## 单次 run_all 的**硬超时**(毫秒): 到点即判失败并停止等待剩余用例。
+## 直接取 job 的硬超时 —— 两者必须一致: 比 job 长, 调用方会先拿到 timeout 而看不到测试自己的中止原因。
 ## ⚠️ 只能拦住"会 await(让出主循环)"的用例; 纯死循环(不让出主循环)会冻住整个进程, 硬超时也救不了。
-const HARD_TIMEOUT_MS := 600000
+const HARD_TIMEOUT_MS := JobTool.MAX_JOB_MS
 
 ## 编辑器/进程无关: 跳过需要游戏进程的用例(列出但不算失败)
 const MODE_EDITOR := "editor"
@@ -78,7 +79,7 @@ static func _run_all(script: String, mode: String, logger: Object) -> Dictionary
 		_progress("预计总时长 %s（历史基线覆盖 %d/%d 个方法）" % [
 			PerfTool.fmt_ms(float(est["ms"])), int(est["covered"]), int(est["count"])])
 	for item in plan:
-		await _run_one_case(item, acc, deadline, planned)
+		await _run_one_case(item, acc, deadline, planned, logger)
 		if bool(acc.get("aborted", false)):
 			break
 	PerfTool.flush_history()
@@ -194,7 +195,7 @@ static func _run_inline(source: String, mode: String, logger: Object, deadline: 
 	if skip != "":
 		acc["skipped"].append({case = "<inline>", reason = skip})
 		return _summary(acc, "<inline>", mode, _format(0, 0, [], acc["skipped"], [], mode))
-	await _run_one_case({label = "<inline>", script = res, methods = methods}, acc, deadline, methods.size())
+	await _run_one_case({label = "<inline>", script = res, methods = methods}, acc, deadline, methods.size(), logger)
 	PerfTool.flush_history()
 	var text := _format(int(acc["total"]), int(acc["failed"]), acc["failures"], acc["skipped"], acc["overruns"], mode)
 	return _summary(acc, "<inline>", mode, text)
@@ -206,7 +207,7 @@ static func _new_acc() -> Dictionary:
 
 ## 执行一个用例(计划项 = {label, script, methods}), 把结果累积进 acc(不返回)。
 ## planned 为本轮确认的方法总数: 有总数才能算百分比进度与 ETA。
-static func _run_one_case(item: Dictionary, acc: Dictionary, deadline: int, planned: int) -> void:
+static func _run_one_case(item: Dictionary, acc: Dictionary, deadline: int, planned: int, logger: Object) -> void:
 	# 无类型标注(鸭子式): 规避跨编译代次时类型化赋值静默失败的坑
 	var inst = (item["script"] as Script).new()
 	var label := str(item["label"])
@@ -215,6 +216,8 @@ static func _run_one_case(item: Dictionary, acc: Dictionary, deadline: int, plan
 		acc["failed"] = int(acc["failed"]) + 1
 		return
 	var case_started_at := Time.get_ticks_msec()
+	# 用例级结论不能只看 inst._failures: 运行期错误不走 _fail, 只看它会让该用例显示 ok=true
+	var case_failed := false
 	for mname in item["methods"]:
 		# 取消请求在用例边界生效: 协程无法中途掐断, 但至少不再启动新的用例方法
 		if JobTool.is_cancelled():
@@ -236,6 +239,7 @@ static func _run_one_case(item: Dictionary, acc: Dictionary, deadline: int, plan
 		var before: int = inst._failures.size()
 		var started_at := Time.get_ticks_msec()
 		var started_us := PerfTool.now_us()
+		var err_cursor: int = logger.get_error_cursor() if logger != null and logger.has_method("get_error_cursor") else -1
 		var err: String = await _run_one(inst, mname, remaining, _make_heartbeat("%s › %s" % [label, mname], started_at))
 		var elapsed := Time.get_ticks_msec() - started_at
 		var perf_key := _perf_key(label, mname)
@@ -243,6 +247,9 @@ static func _run_one_case(item: Dictionary, acc: Dictionary, deadline: int, plan
 		PerfTool.record(perf_key, PerfTool.to_ms(PerfTool.now_us() - started_us))
 		## 兜底收尾：不论成败都跑。手动收尾只覆盖"正常跑完"那条路，中途 return /
 		await _run_cleanup(inst, maxi(1000, remaining - elapsed))
+		## 用例体内的引擎报错(调错方法/空引用)只打一行日志、不进 _failures ⇒ 测试会"假通过"。
+		## 按游标把这段区间内的 error 归到本方法; 只读不消费, get_logs 仍能取到同一批。
+		var runtime_errors := _runtime_errors_since(logger, err_cursor)
 		## 用例间复位会话级静态状态：漏清会让下一个用例读到上一个的残留
 		ResetTool.all()
 		var limit := int(inst.max_duration_ms())
@@ -256,7 +263,12 @@ static func _run_one_case(item: Dictionary, acc: Dictionary, deadline: int, plan
 		var new_failures: Array = inst._failures.slice(before)
 		if err != "":
 			new_failures.append("%s: %s" % [mname, err])
+		for i in mini(runtime_errors.size(), 3):
+			new_failures.append("%s: 运行期错误 %s" % [mname, str(runtime_errors[i])])
+		if runtime_errors.size() > 3:
+			new_failures.append("%s: 另有 %d 条运行期错误(见 get_logs kind=error)" % [mname, runtime_errors.size() - 3])
 		if not new_failures.is_empty():
+			case_failed = true
 			acc["failed"] = int(acc["failed"]) + 1
 			for f in new_failures:
 				acc["failures"].append("%s | %s" % [label, str(f)])
@@ -267,10 +279,10 @@ static func _run_one_case(item: Dictionary, acc: Dictionary, deadline: int, plan
 			acc["cases"].append({"case": label, "ok": false, "elapsed_ms": Time.get_ticks_msec() - case_started_at, "failures": inst._failures.duplicate()})
 			return
 	var case_elapsed := Time.get_ticks_msec() - case_started_at
-	if inst._failures.is_empty():
-		acc["cases"].append({"case": label, "ok": true, "elapsed_ms": case_elapsed})
-	else:
+	if case_failed:
 		acc["cases"].append({"case": label, "ok": false, "elapsed_ms": case_elapsed, "failures": inst._failures.duplicate()})
+	else:
+		acc["cases"].append({"case": label, "ok": true, "elapsed_ms": case_elapsed})
 
 
 static func _summary(acc: Dictionary, script_label: String, mode: String, text: String) -> Dictionary:
@@ -344,10 +356,13 @@ static func render_text(summary: Dictionary) -> String:
 
 
 ## 早退结果(选择器无匹配 / 内联编译失败): 直接给出失败摘要, 不走正常执行流程。
+## 字段形状必须与 _summary 一致 —— 少了 elapsed_ms/estimated_ms, 调用方读它会拿到 null。
 static func _error_result(msg: String, script_label: String, mode: String) -> Dictionary:
 	return {
 		"total": 0, "passed": 0, "failed": 1, "failures": [msg],
-		"cases": [], "skipped": [], "overruns": [], "mode": mode, "script": script_label,
+		"cases": [], "skipped": [], "overruns": [], "aborted": false,
+		"elapsed_ms": 0, "estimated_ms": 0,
+		"mode": mode, "script": script_label,
 		"text": "测试结果[v2|%s]: %s" % [_mode_label(mode), msg],
 	}
 
@@ -379,6 +394,24 @@ static func _test_methods(script: Script) -> Array:
 static func _run_one(inst: TestCase, method_name: String, timeout_ms: int, on_tick := Callable()) -> String:
 	var done := await AsyncTool.await_coroutine(inst.call(method_name), timeout_ms, on_tick)
 	return "" if done else "超过硬超时(该用例/方法未在剩余时限内结束)"
+
+
+## 自 cursor 起新增的引擎报错(去重 + 带定位)。只有 MCP 宿主注入了 logger 才生效, headless 下返回空。
+static func _runtime_errors_since(logger: Object, cursor: int) -> Array:
+	if logger == null or cursor < 0 or not logger.has_method("take_errors_since"):
+		return []
+	var entries: Array = logger.take_errors_since(cursor).get("entries", [])
+	var out: Array = []
+	var seen := {}
+	for e in entries:
+		if not (e is Dictionary):
+			continue
+		var msg := str((e as Dictionary).get("message", "")).strip_edges()
+		if msg.is_empty() or seen.has(msg):
+			continue
+		seen[msg] = true
+		out.append("%s @%s:%s" % [msg, str(e.get("file", "?")), str(e.get("line", "?"))])
+	return out
 
 
 ## 心跳回调: 由等待内核每帧调用一次, 这里按 HEARTBEAT_MS 节流成"每 15s 一行"。

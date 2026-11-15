@@ -37,6 +37,15 @@ func assert_ne(got, not_want, msg := "") -> void:
 		_fail("%s (got=%s 不应等于 %s)" % [msg if msg != "" else "值不应相等", str(got), str(not_want)])
 
 
+## 浮点/向量/Rect 的近似相等(引擎默认容差)。用它替代 assert_true(is_equal_approx(..)),
+## 失败时才会打出两个实际值, 而"期望为 true"什么线索都没有。
+func assert_approx(got, want, msg := "") -> void:
+	# 全局 is_equal_approx 不覆盖 Rect2(它只认数值/向量/颜色), 单独走方法版
+	var ok: bool = got.is_equal_approx(want) if (got is Rect2 and want is Rect2) else is_equal_approx(got, want)
+	if not ok:
+		_fail("%s (got=%s want=%s)" % [msg if msg != "" else "值不近似相等", str(got), str(want)])
+
+
 ## 断言一段逻辑的耗时上限(毫秒)。阈值要留足机器差异余量, 否则 CI 上必闪红。
 func assert_under_ms(limit_ms: float, action: Callable, msg := "") -> void:
 	var ms := PerfTool.measure(action)
