@@ -3,12 +3,12 @@ extends RefCounted
 
 ## ======= 项目信息域 =======
 ## 刻意只调用不复制实现。**必须带 @tool 且不声明 class_name**, 详见 MCPDevServer 顶部注释。
-const MCPResult := preload("res://addons/DEVFramework/MCP/Def/MCPResult.gd")
-const MCPToolSchema := preload("res://addons/DEVFramework/MCP/Def/MCPToolSchema.gd")
-const MCPCodeIndex := preload("res://addons/DEVFramework/MCP/Tool/MCPCodeIndex.gd")
+const MCPResult := preload("res://addons/DEVFramework/MCP/MCPResult.gd")
+const MCPToolSchema := preload("res://addons/DEVFramework/MCP/MCPToolSchema.gd")
+const MCPCodeIndex := preload("res://addons/DEVFramework/MCP/MCPCodeIndex.gd")
 
 ## 编辑根节点的读取走**跨域共享件**: 用点跨三个域, 留私有副本等于埋一份会静默分叉的复制粘贴
-const MCPEditorEnv := preload("res://addons/DEVFramework/MCP/Editor/MCPEditorEnv.gd")
+const MCPEditorEnv := preload("res://addons/DEVFramework/MCP/MCPEditorEnv.gd")
 
 ## 会话事实的提供器(无参 Callable)。与 dev 域的 _eval_ctx_provider 同构。
 static var _session_facts_provider: Callable = Callable()

@@ -21,7 +21,7 @@ buses/default_bus_layout="uid://bt4jisu18swhx"
 
 [autoload]
 
-DevMCP="*res://addons/DEVFramework/MCP/Entity/MCPDevServer.gd"
+DevMCP="*res://addons/DEVFramework/MCP/MCPDevServer.gd"
 
 [debug]
 

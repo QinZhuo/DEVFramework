@@ -12,7 +12,7 @@ const CAMERA_GIZMO_SCRIPT := "res://addons/DEVFramework/Camera/Editor/VirtualCam
 const CAMERA_VIEWFINDER_SCRIPT := "res://addons/DEVFramework/Camera/Editor/CameraViewfinder.gd"
 
 const AUTOLOAD_NAME := "DevMCP"
-const AUTOLOAD_PATH := "res://addons/DEVFramework/MCP/Entity/MCPDevServer.gd"
+const AUTOLOAD_PATH := "res://addons/DEVFramework/MCP/MCPDevServer.gd"
 ## 导出血 DevMCP autoload 用的键（导出时临时移除，避免编辑器专用脚本进正式包）
 const EXPORT_AUTOLOAD_KEY := "autoload/DevMCP"
 

@@ -6,8 +6,8 @@ extends RefCounted
 ##   - MCPToolSchema  请求 schema 工厂
 ##   - VariantTool    全局 class_name, 入参读取
 ##    静态函数取到的 get_method() 同样返回函数名(实测 "GDScript::_handle_xxx"), 自检照常工作;
-const MCPResult := preload("res://addons/DEVFramework/MCP/Def/MCPResult.gd")
-const MCPToolSchema := preload("res://addons/DEVFramework/MCP/Def/MCPToolSchema.gd")
+const MCPResult := preload("res://addons/DEVFramework/MCP/MCPResult.gd")
+const MCPToolSchema := preload("res://addons/DEVFramework/MCP/MCPToolSchema.gd")
 
 
 ## ======= 域注册入口 =======

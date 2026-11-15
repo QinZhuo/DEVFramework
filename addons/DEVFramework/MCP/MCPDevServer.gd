@@ -8,14 +8,14 @@ class_name MCPDevServer extends Node
 ## 所以拆出去是安全的。引用方式上的两条硬约束, 都是踩坑换来的:
 ##   1. 三个模块**必须带 @tool**(与本文件一致)。
 ##   2. 引用必须用 preload 而不是 class_name: 本文件既是 autoload 又是被插件 load() 动态
-const MCPResult := preload("res://addons/DEVFramework/MCP/Def/MCPResult.gd")
-const MCPRouter := preload("res://addons/DEVFramework/MCP/Entity/MCPRouter.gd")
-const MCPRuntime := preload("res://addons/DEVFramework/MCP/Entity/MCPRuntime.gd")
-const MCPTransport := preload("res://addons/DEVFramework/MCP/Entity/MCPTransport.gd")
-const MCPToolSchema := preload("res://addons/DEVFramework/MCP/Def/MCPToolSchema.gd")
-const MCPArgCheck := preload("res://addons/DEVFramework/MCP/Editor/MCPArgCheck.gd")
+const MCPResult := preload("res://addons/DEVFramework/MCP/MCPResult.gd")
+const MCPRouter := preload("res://addons/DEVFramework/MCP/MCPRouter.gd")
+const MCPRuntime := preload("res://addons/DEVFramework/MCP/MCPRuntime.gd")
+const MCPTransport := preload("res://addons/DEVFramework/MCP/MCPTransport.gd")
+const MCPToolSchema := preload("res://addons/DEVFramework/MCP/MCPToolSchema.gd")
+const MCPArgCheck := preload("res://addons/DEVFramework/MCP/MCPArgCheck.gd")
 ## 输出整形层(序列化转义兜底 + 统一输出上限截断)。与其它 preload 的区别: 它既不注册工具也不
-const MCPFormat := preload("res://addons/DEVFramework/MCP/Def/MCPFormat.gd")
+const MCPFormat := preload("res://addons/DEVFramework/MCP/MCPFormat.gd")
 
 ## ------- 已拆出的子模块(同样靠 preload 常量引用, 均不声明 class_name) -------
 
@@ -24,11 +24,11 @@ const MCPFormat := preload("res://addons/DEVFramework/MCP/Def/MCPFormat.gd")
 ##   · const preload 只允许**零编辑器引用**的模块(下面这些);
 ##   · 任何含编辑器引用的模块(MCPEditorEnv / MCPDevTools / MCPProjectTools /
 ##   · 判据回归: 对本文件做 `Select-String "Editor[A-Z]"` 不应命中任何**代码行**(注释除外)。
-const MCPCodeIndex := preload("res://addons/DEVFramework/MCP/Tool/MCPCodeIndex.gd")
-const MCPFileTools := preload("res://addons/DEVFramework/MCP/Tool/MCPFileTools.gd")
-const MCPLogTools := preload("res://addons/DEVFramework/MCP/Tool/MCPLogTools.gd")
-const MCPUITools := preload("res://addons/DEVFramework/MCP/Tool/MCPUITools.gd")
-const MCPValidateTools := preload("res://addons/DEVFramework/MCP/Tool/MCPValidateTools.gd")
+const MCPCodeIndex := preload("res://addons/DEVFramework/MCP/MCPCodeIndex.gd")
+const MCPFileTools := preload("res://addons/DEVFramework/MCP/MCPFileTools.gd")
+const MCPLogTools := preload("res://addons/DEVFramework/MCP/MCPLogTools.gd")
+const MCPUITools := preload("res://addons/DEVFramework/MCP/MCPUITools.gd")
+const MCPValidateTools := preload("res://addons/DEVFramework/MCP/MCPValidateTools.gd")
 
 ## MCP 目录(域脚本都在这儿)。供 `_mod()` 按路径动态取用 + refresh 时批量换缓存。
 const MCP_DIR := "res://addons/DEVFramework/MCP"

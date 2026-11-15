@@ -5,7 +5,7 @@ extends RefCounted
 ## 两者差一个 content_scale 系数(项目实测约 0.88) —— 把前者直接当点击坐标, 会稳定点在目标
 ## 依赖: MCPResult + VariantTool。不引用 MCPDevServer。必须带 @tool 且不声明 class_name。
 
-const MCPResult := preload("res://addons/DEVFramework/MCP/Def/MCPResult.gd")
+const MCPResult := preload("res://addons/DEVFramework/MCP/MCPResult.gd")
 
 ## ref -> NodePath。以最后一次 get_interactables 为准: 界面一变(节点重建/动画位移)旧 ref 就该
 static var _ref_paths: Dictionary = {}

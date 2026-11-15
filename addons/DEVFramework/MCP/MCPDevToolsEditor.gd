@@ -3,8 +3,8 @@ extends RefCounted
 
 ## ======= 开发辅助域: 编辑器专属部分 =======
 
-const MCPResult := preload("res://addons/DEVFramework/MCP/Def/MCPResult.gd")
-const MCPScriptSync := preload("res://addons/DEVFramework/MCP/Entity/MCPScriptSync.gd")
+const MCPResult := preload("res://addons/DEVFramework/MCP/MCPResult.gd")
+const MCPScriptSync := preload("res://addons/DEVFramework/MCP/MCPScriptSync.gd")
 
 
 ## 域注册入口。add_tool 是服务器 _add_tool 的 Callable, 签名 (name, desc, schema, handler)。

@@ -6,8 +6,8 @@ extends RefCounted
 ##   · 只留 eval_code(唯一运行时可用的开发辅助工具);
 ##   · restart_editor / script_status 依赖 EditorInterface / MCPScriptSync, 已拆到 MCPDevToolsEditor。
 ##   - MCPResult      响应封装
-const MCPResult := preload("res://addons/DEVFramework/MCP/Def/MCPResult.gd")
-const MCPToolSchema := preload("res://addons/DEVFramework/MCP/Def/MCPToolSchema.gd")
+const MCPResult := preload("res://addons/DEVFramework/MCP/MCPResult.gd")
+const MCPToolSchema := preload("res://addons/DEVFramework/MCP/MCPToolSchema.gd")
 
 ## 模式标识。**本文件必须导出安全**(运行时服务器要注册 eval_code), 故不能 preload 含编辑器引用的
 const MODE_EDITOR := "editor"
@@ -93,7 +93,7 @@ static func _call_eval_code(args: Dictionary, ctx: Dictionary = {}) -> Dictionar
 	# 含编辑器引用不能 preload。故按特征标签分流 —— 非编辑器构建直接跳过守卫(ok=true)。
 	var guard := {"ok": true}
 	if Engine.is_editor_hint() or OS.has_feature("editor"):
-		var sync: Variant = load("res://addons/DEVFramework/MCP/Entity/MCPScriptSync.gd")
+		var sync: Variant = load("res://addons/DEVFramework/MCP/MCPScriptSync.gd")
 		if sync != null:
 			guard = await sync.guard_eval(mode, game_started_at, tree)
 	if not bool(guard.get("ok", true)):

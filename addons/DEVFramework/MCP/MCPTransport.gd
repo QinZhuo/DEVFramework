@@ -4,7 +4,7 @@ extends RefCounted
 ## ======= HTTP / SSE 传输层 =======
 ## 由 MCPDevServer 以 preload 常量 `MCPTransport` 引用。**必须 @tool 且不声明 class_name**
 
-const MCPFormat := preload("res://addons/DEVFramework/MCP/Def/MCPFormat.gd")
+const MCPFormat := preload("res://addons/DEVFramework/MCP/MCPFormat.gd")
 
 const SETTING_TOKEN := "dev_framework/mcp/token"
 const PROTOCOL_VERSION := "2025-03-26"

@@ -3,7 +3,7 @@ extends RefCounted
 
 ## 工具契约自检: 校验"工具注册表(定义)"与"handler 实现"两侧是否自洽。
 ## `MCPToolAudit` 引用。**必须带 @tool 且不声明 class_name**, 理由同那几个文件: 一旦
-const MCPToolMeta := preload("res://addons/DEVFramework/MCP/Def/MCPToolMeta.gd")
+const MCPToolMeta := preload("res://addons/DEVFramework/MCP/MCPToolMeta.gd")
 
 ## 本轮自检读到的源码缓存: 脚本路径 -> 源码文本。仅供入参一致性自检切片用, 每次自检重读一遍。
 static var _source_cache := {}
