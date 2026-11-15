@@ -111,13 +111,24 @@ run_tests  process=editor action=run script=test_dialogue            # 对话链
 | 测一段逻辑多快 | `PerfTool.measure(callable)` / `PerfTool.bench(callable, iters, warmup)` / `bench_auto(callable, 预算ms)` |
 | 测环境帧率/稳定性 | `PerfTool.sample_frames(帧数, 预热帧)` 或 MCP `perf action=fps process=game` |
 
-- `bench` 先跑 `warmup` 次丢弃（首次 load / 着色器编译会高出一个量级），再给 `avg / p50 / p95 / p99 / min / max`。
-  **看分位不看平均**：卡顿来自长尾，平均会把偶发尖峰稀释掉。
-- 极快逻辑（亚微秒）用 `bench_auto`：它按预算自动扩样，并**分批后除以批大小**
-  —— 直接单次计时会被 1µs 的精度量化成 0，分批才有 per-op 分辨率。
-- `sample_frames` 的卡顿阈值是 `max(中位帧时间×2, 16.7ms)`，并回传 `stutter_ms` 说明按什么尺子量的
-  —— 写死一个绝对值在 144Hz 或半速场景都会判错。
+方法论对齐业界微基准库（Google Benchmark / nanobench / Catch2）的四条硬规则：
+
+- **预热丢弃**：`warmup` 次的样本不进统计（首次 load / 着色器编译高出一个量级）。
+- **统计口径**：给 `avg / p50 / p95 / p99 / min / max` + `std_ms` + `cv`。
+  **看分位不看平均**（长尾才是卡顿），**看 cv 判断这次测量是否可信**（>10% 记 `noisy: true`）。
+- **迭代自适应**：`bench_auto` 先把 batch 翻倍到"一批能测得出"，再按预算定样本数。
+  直接单次计时会被 1µs 精度量化成 0（`bench` 会置 `below_resolution: true` 提醒你换它）。
+- **准备与计时分离**：`bench(action, iters, warmup, setup)` 的 `setup` 每次样本前执行但**不计时**
+  —— 造数据/重置状态不能算进被测代码的账上。
+
+帧率侧的额外口径：
+
+- `sample_frames` 给 `fps_p50 / fps_p95 / fps_1pct_low`（1% low = 最差 1% 帧的等效帧率，行业通用的"手感差"指标）。
+- 卡顿阈值是 `max(中位帧时间×2, 16.7ms)` 并回传 `stutter_ms` —— 写死绝对值在 144Hz 或半速场景都会判错。
+- 结果附带 `env`（GPU/CPU/max_fps/vsync/窗口/是否聚焦）：开关 vsync 或改 `max_fps` 后的数字互不可比。
 - 在编辑器进程采样会带回 `note`：编辑器空闲节流会把帧率压到 10fps 左右，测真实性能必须 `process=game`。
+- **不重复造引擎已有的监视器**：FPS / 绘制调用在 Debugger→Monitors 面板里本来就有（`Performance.TIME_FPS`、
+  `RENDER_TOTAL_DRAW_CALLS_IN_FRAME`），框架不再注册同名的 `Perf/*` 自定义监视器。
 - 基线条目多了以后用 `perf action=history key=test:` 过滤，别整份拉回来看。
 - 用例里直接断言，把阈值写进 CI：
 
@@ -126,7 +137,7 @@ extends TestCase
 
 func test_query_cost() -> void:
     assert_under_ms(5.0, func(): world.query(...).count())            # 硬上限
-    assert_under_ms(0.01, func(): bitop(...), "", true)               # 亚微秒: 用分组采样中位数
+    assert_under_ms(0.01, func(): bitop(...))                         # 亚微秒也照写: 测不出来会自动分批
     measure_ms("ecs/query", func(): world.query(...).count())         # 只记基线, 不判失败
 
 func test_frame_rate() -> void:

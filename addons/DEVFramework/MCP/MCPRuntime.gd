@@ -345,7 +345,6 @@ func call_perf_local(args: Dictionary) -> Dictionary:
 	var action := VariantTool.get_string(args, "action", "snapshot").strip_edges().to_lower()
 	match action:
 		"snapshot":
-			PerfTool.register_monitors()
 			return server._ok_json(PerfTool.snapshot())
 		"fps":
 			var frames := clampi(VariantTool.get_int(args, "frames", 120), 10, 1200)
@@ -353,7 +352,6 @@ func call_perf_local(args: Dictionary) -> Dictionary:
 			var report: Dictionary = await PerfTool.sample_frames(frames, warmup)
 			if report.has("error"):
 				return server._err_transient(str(report["error"]), "改在游戏进程里调用(action=fps 需要真实帧循环)")
-			PerfTool.register_monitors()
 			return server._ok_json(report)
 		"history":
 			return server._ok_json({"items": PerfTool.history_all(VariantTool.get_string(args, "key").strip_edges())})

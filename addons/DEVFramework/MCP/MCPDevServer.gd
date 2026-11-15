@@ -1522,7 +1522,7 @@ func _register_game_play_tools() -> void:
 		"required": ["process", "action"],
 	}
 	_register_game_play_tool("perf",
-		"性能采样。action=snapshot: 即时 fps/帧时间/process/physics/绘制调用/节点数/内存(零等待, 适合频繁轮询); action=fps: 等待并采样 N 帧, 返回 avg/p50/p95/p99/卡顿次数与等效帧率(**唯一能反映真实稳定性的方式**, 瞬时 fps 看不出长尾); action=history: 读历史耗时基线(测试用例/长任务各自一条 EMA, 可用来判断'这次是不是变慢了'); action=reset: 清空基线。process 必填: 测游戏帧率必须 process=game。**逻辑微基准不要用本工具**: 用 run_tests 传内联 TestCase(`await assert_fps_at_least(...)` / `assert_under_ms(...)`), 那里的阈值能进 CI。",
+		"性能采样。action=snapshot: 即时 fps/帧时间/process/physics/绘制调用/节点数/内存(零等待, 适合频繁轮询); action=fps: 等待并采样 N 帧, 返回 avg/p50/p95/p99、**fps_1pct_low(最差 1% 帧的等效帧率, 判断手感的标准口径)**、卡顿次数(@stutter_ms 阈值)、CV(>10% 说明测量本身不可信) 与 env(GPU/CPU/max_fps/vsync/窗口/聚焦 —— 这些不同则数字互不可比); action=history: 读历史耗时基线(测试用例/长任务各自一条 EMA, 可用来判断'这次是不是变慢了'); action=reset: 清空基线。process 必填: 测游戏帧率必须 process=game(编辑器进程会被空闲节流压到 10fps)。**逻辑微基准不要用本工具**: 用 run_tests 传内联 TestCase(`await assert_fps_at_least(...)` / `assert_under_ms(...)`), 那里的阈值能进 CI。",
 		perf_schema,
 		_call_perf_local,
 		_call_perf_routed)

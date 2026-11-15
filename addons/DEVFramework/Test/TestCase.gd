@@ -51,48 +51,48 @@ func assert_approx(got, want, msg := "") -> void:
 
 
 ## 断言一段逻辑的耗时上限(毫秒)。阈值要留足机器差异余量, 否则 CI 上必闪红。
-## [param robust] true 时用分组采样的中位数判定 —— 亚微秒逻辑单次计时会被量化成 0
-## (断言"<0.001ms"永远通过, 等于没断言), 且单次测量在 CI 上噪声很大。
-func assert_under_ms(limit_ms: float, action: Callable, msg := "", robust := false) -> void:
-	var ms := PerfTool.measure(action)
-	if robust:
-		ms = float(PerfTool.bench_auto(action, 20.0, 1)["p50_ms"])
+func assert_under_ms(limit_ms: float, action: Callable, msg := "") -> void:
+	var ms := _measure_resolved(action)
 	if ms > limit_ms:
-		_fail("%s耗时 %s > 上限 %s%s" % [
-			_prefix(msg), PerfTool.fmt_cost(ms), PerfTool.fmt_cost(limit_ms),
-			" (分组采样中位数)" if robust else ""])
+		_fail("%s耗时 %s > 上限 %s" % [_prefix(msg), PerfTool.fmt_cost(ms), PerfTool.fmt_cost(limit_ms)])
 
 
 ## 测一段逻辑的耗时并写入历史基线(不判失败), 返回毫秒。
 ## 基线可以在多次运行间对比, 比"打印一行日志"更有用。
 func measure_ms(key: String, action: Callable) -> float:
-	var ms := PerfTool.measure(action)
+	var ms := _measure_resolved(action)
 	PerfTool.record(key, ms)
 	return ms
 
 
-## 采样真实帧率(需游戏进程: 会 await 若干帧)。返回 PerfTool.sample_frames 的结果。
-func measure_fps(frames := 120, warmup := 30) -> Dictionary:
-	return await PerfTool.sample_frames(frames, warmup)
+## 单次测量; 读数低于计时器分辨率时改用分组采样。
+## 不做这个兜底, 亚微秒逻辑的读数会是 0 —— 断言"< 0.001ms"永远通过, 基线也永远是 0。
+func _measure_resolved(action: Callable) -> float:
+	var ms := PerfTool.measure(action)
+	if ms >= PerfTool.to_ms(int(PerfTool.clock_resolution_us())) * 2.0:
+		return ms
+	return float(PerfTool.bench_auto(action, 20.0)["p50_ms"])
 
 
 ## 断言平均帧率下限(p50 反推的等效帧率, 比瞬时 fps 更能代表稳定性)。
 ## [param key] 非空时把 p50 帧时间记入历史基线, 下次运行可直接对比趋势。
-func assert_fps_at_least(min_fps: float, frames := 120, warmup := 30, key := "") -> void:
-	var r: Dictionary = await measure_fps(frames, warmup)
+## 返回采样报告(失败也返回), 便于用例继续核对 1% low / 卡顿次数等其它指标。
+func assert_fps_at_least(min_fps: float, frames := 120, warmup := 30, key := "") -> Dictionary:
+	var r: Dictionary = await PerfTool.sample_frames(frames, warmup)
 	if r.has("error"):
 		_fail(str(r["error"]))
-		return
+		return r
 	if key != "":
 		PerfTool.record(key, float(r.get("p50_ms", 0.0)))
 	var fps := float(r.get("fps_p50", 0.0))
 	if fps < min_fps:
 		# 采样侧会带回 note(如"在编辑器进程采样"): 帧率低可能根本不是被测逻辑的问题
 		var note := str(r.get("note", ""))
-		_fail("帧率 %.1f < 下限 %.1f (p95 帧时间 %.1fms, 卡顿 %d 次@%.1fms, 绘制 %d)%s" % [
-			fps, min_fps, float(r.get("p95_ms", 0.0)), int(r.get("stutter", 0)),
-			float(r.get("stutter_ms", 0.0)), int(r.get("draw_calls", 0)),
+		_fail("帧率 %.1f < 下限 %.1f (1%% low %.1f, p95 帧时间 %.1fms, 卡顿 %d 次@%.1fms, 绘制 %d)%s" % [
+			fps, min_fps, float(r.get("fps_1pct_low", 0.0)), float(r.get("p95_ms", 0.0)),
+			int(r.get("stutter", 0)), float(r.get("stutter_ms", 0.0)), int(r.get("draw_calls", 0)),
 			"" if note.is_empty() else " —— " + note])
+	return r
 
 
 func _prefix(msg: String) -> String:

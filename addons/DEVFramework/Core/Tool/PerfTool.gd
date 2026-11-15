@@ -3,8 +3,11 @@ class_name PerfTool extends RefCounted
 ## 一切"测多快"的地方都走这里, 不要再各处手写 `Time.get_ticks_usec` 差值 + 自己求平均。
 ## Reset: 进程级（历史基线跨场景/跨轮次复用, 不随会话复位；需要重设基线用 clear_history）
 ##
-## 为什么看分位而不是平均: 卡顿来自长尾, 算术平均会把偶发的 200ms 尖峰稀释掉。
-## 为什么要 warmup: 首次 load / 着色器编译 / 缓存填充比稳态高一个量级, 不预热测的是冷启动。
+## 方法论取自业界微基准库(Google Benchmark / nanobench / Catch2)的共识, 四条硬规则:
+##   1) 预热期的样本一律丢弃 —— 首次 load / 着色器编译 / 缓存填充比稳态高一个量级;
+##   2) 迭代数自适应 —— 快的逻辑多跑几轮, 慢的少跑, 由时间预算决定而不是拍一个固定值;
+##   3) 看中位/分位而不是平均值 —— 卡顿来自长尾, 平均会把偶发尖峰稀释掉;
+##   4) 报告可信度(CV) —— 变异系数大说明这次测量本身不可信, 结论不能拿去下判断。
 
 ## 历史基线的落盘位置(跨进程复用: 编辑器跑一轮、游戏跑一轮, 基线是同一份)
 const HISTORY_PATH := "user://.dev_framework/perf_history.json"
@@ -16,11 +19,15 @@ const EMA_ALPHA := 0.3
 ## 卡顿判定下限(毫秒): 1 帧 @60fps。实际阈值取 max(中位帧时间×2, 本值) ——
 ## 写死 33.4ms 在 144Hz 上会把正常帧全判成卡顿, 在半速场景又什么都抓不到。
 const MIN_JANK_MS := 16.7
+## 单个样本批至少跑这么久: 否则耗时低于计时器分辨率, 测出来的数是被量化过的(Catch2 的 clock resolution 检查)
+const MIN_BATCH_MS := 0.1
+## CV(变异系数)超过此值即视为测量不可信 —— 同一指标的多次结果散布过宽
+const MAX_CV := 0.10
 
 static var _history: Dictionary = {}
 static var _history_loaded := false
 static var _history_dirty := false
-static var _monitors_on := false
+static var _clock_res_us := 0.0
 
 
 # ============================================================
@@ -35,57 +42,82 @@ static func to_ms(usec: int) -> float:
 	return float(usec) / 1000.0
 
 
-## 单次耗时(毫秒)。
+## 计时器分辨率(微秒, 进程级缓存一次)。单次耗时低于它时, 读数可能是 0 —— 不是"很快", 是测不出来。
+static func clock_resolution_us() -> float:
+	if _clock_res_us > 0.0:
+		return _clock_res_us
+	var best := 1.0e9
+	for i in 200:
+		var a := now_us()
+		var b := now_us()
+		if b > a:
+			best = minf(best, float(b - a))
+	_clock_res_us = best if best < 1.0e9 else 1.0
+	return _clock_res_us
+
+
+## 单次耗时(毫秒)。⚠ 亚微秒逻辑用 bench_auto, 单次读数会被分辨率量化。
 static func measure(action: Callable) -> float:
 	var t0 := now_us()
 	action.call()
 	return to_ms(now_us() - t0)
 
 
-## 重复采样: 先 warmup 次丢弃, 再 iters 次统计。返回 {count, avg_ms, p50_ms, p95_ms, p99_ms, min_ms, max_ms, total_ms}。
-static func bench(action: Callable, iters := 30, warmup := 5) -> Dictionary:
-	for i in maxi(warmup, 0):
-		action.call()
-	var win := Rolling.new(maxi(iters, 1))
-	var t0 := now_us()
-	for i in maxi(iters, 1):
-		var s := now_us()
-		action.call()
-		win.push(to_ms(now_us() - s))
-	var r := win.stats()
-	r["total_ms"] = to_ms(now_us() - t0)
-	return r
+## 固定迭代采样: 每个样本 = 执行一次 action。
+## [param setup] 每次样本前执行且**不计时** —— 造数据/重置状态不能算进被测代码的账上
+## (对应 Google Benchmark 用 ScopedPauseTiming 把准备工作移出计时区)。
+static func bench(action: Callable, iters := 30, warmup := 5, setup := Callable()) -> Dictionary:
+	return _run_batches(action, 1, maxi(iters, 1), maxi(warmup, 0), setup)
 
 
-## 自适应采样 —— 亚微秒逻辑的唯一可用做法。
-## 两个坑都要绕开: ①固定 30 次只测到计时噪声; ②单次耗时低于 1µs 时会被计时精度量化成 0。
-## 做法: 按粗估成本选出一个"至少 ~0.2ms"的批次, 每批跑 batch 次再除以 batch,
-## 于是每个样本都是 per-op 毫秒, 且分辨率被放大了 batch 倍。
-static func bench_auto(action: Callable, budget_ms := 50.0, warmup := 5) -> Dictionary:
-	var once := maxf(measure(action), 0.0005)          # 单次粗估(不当 0 用)
-	var batch := maxi(1, int(ceil(0.2 / once)))
-	var samples := clampi(int(budget_ms / (once * float(batch))), 10, 10000)
-	for i in maxi(warmup, 1):
-		_batch_run(action, batch)
-	var win := Rolling.new(samples)
-	var t0 := now_us()
-	for i in samples:
-		var s := now_us()
-		_batch_run(action, batch)
-		win.push(to_ms(now_us() - s) / float(batch))
-	var r := win.stats()
-	r["total_ms"] = to_ms(now_us() - t0)
-	r["batch"] = batch
+## 自适应采样 —— 亚微秒逻辑唯一可靠的做法, 也是"不知道跑几次"时的默认选择。
+## ① batch 从 1 起翻倍, 直到一个批次能测到 >= MIN_BATCH_MS(Catch2 的做法: 先确认测得出);
+## ② 样本数按预算反推(Google Benchmark 的 min_time 思路), 预算偏了会被实测纠正, 不会像单次试探那样估偏一个量级。
+static func bench_auto(action: Callable, budget_ms := 50.0, setup := Callable()) -> Dictionary:
+	if setup.is_valid():
+		setup.call()
+	var batch := 1
+	var batch_ms := measure(func() -> void: _run_body(action, batch))
+	while batch_ms < MIN_BATCH_MS and batch < 1048576:
+		batch *= 2
+		batch_ms = measure(func() -> void: _run_body(action, batch))
+	var samples := clampi(int(budget_ms / maxf(batch_ms, 0.001)), 10, 10000)
+	var r := _run_batches(action, batch, samples, 2, setup)
 	r["budget_ms"] = budget_ms
 	return r
 
 
-static func _batch_run(action: Callable, count: int) -> void:
+## 跑 samples 个样本, 每个样本 = 连续执行 batch 次 action 再除以 batch(把亚微秒信号放大到可测)。
+static func _run_batches(action: Callable, batch: int, samples: int, warmup: int, setup: Callable) -> Dictionary:
+	for i in warmup:
+		if setup.is_valid():
+			setup.call()
+		_run_body(action, batch)
+	var win := Rolling.new(samples)
+	var t0 := now_us()
+	for i in samples:
+		if setup.is_valid():
+			setup.call()
+		var s := now_us()
+		_run_body(action, batch)
+		win.push(to_ms(now_us() - s) / float(batch))
+	var r := win.stats()
+	r["total_ms"] = to_ms(now_us() - t0)
+	r["batch"] = batch
+	# batch==1 且中位耗时落在计时器分辨率以内 ⇒ 这个数字是量化出来的, 必须换成 bench_auto
+	# (batch>1 时已经用"多跑几遍再除"把信号放大过, 不再受分辨率限制)
+	r["below_resolution"] = batch == 1 and float(r["p50_ms"]) < to_ms(int(clock_resolution_us())) * 2.0
+	r["noisy"] = float(r["cv"]) > MAX_CV
+	return r
+
+
+static func _run_body(action: Callable, count: int) -> void:
 	for i in count:
 		action.call()
 
 
 ## 对一组耗时值求统计(入参 Array / PackedFloat64Array / PackedFloat32Array)。
+## 除分位外还给 std_ms 与 cv: cv 大说明这次测量不可信, 别拿它下结论。
 static func stats(values: Variant) -> Dictionary:
 	var arr: Array = []
 	if values is Array:
@@ -95,18 +127,26 @@ static func stats(values: Variant) -> Dictionary:
 	arr.sort()
 	var n := arr.size()
 	if n == 0:
-		return {"count": 0, "avg_ms": 0.0, "p50_ms": 0.0, "p95_ms": 0.0, "p99_ms": 0.0, "min_ms": 0.0, "max_ms": 0.0}
+		return {"count": 0, "avg_ms": 0.0, "p50_ms": 0.0, "p95_ms": 0.0, "p99_ms": 0.0,
+			"min_ms": 0.0, "max_ms": 0.0, "std_ms": 0.0, "cv": 0.0}
 	var sum := 0.0
 	for v in arr:
 		sum += float(v)
+	var mean := sum / float(n)
+	var var_sum := 0.0
+	for v in arr:
+		var_sum += pow(float(v) - mean, 2.0)
+	var sd := sqrt(var_sum / float(n))
 	return {
 		"count": n,
-		"avg_ms": sum / float(n),
+		"avg_ms": mean,
 		"p50_ms": _pick(arr, 0.50),
 		"p95_ms": _pick(arr, 0.95),
 		"p99_ms": _pick(arr, 0.99),
 		"min_ms": float(arr[0]),
 		"max_ms": float(arr[n - 1]),
+		"std_ms": sd,
+		"cv": 0.0 if mean <= 0.0 else sd / mean,
 	}
 
 
@@ -120,7 +160,8 @@ static func _pick(sorted: Array, p: float) -> float:
 # 帧率 / 引擎指标
 # ============================================================
 
-## 当前进程的即时指标(不做采样, 零等待)。
+## 当前进程的即时指标(不做采样, 零等待)。单位: 时间类已换算成毫秒, 内存为 MB。
+## ⚠ mem_mb 取自 MEMORY_STATIC, **导出 release 包里读不到(恒为 0)**, 只有编辑器/debug 构建有效。
 static func snapshot() -> Dictionary:
 	var fps := Engine.get_frames_per_second()
 	return {
@@ -136,7 +177,7 @@ static func snapshot() -> Dictionary:
 
 
 ## 采一段真实帧时间(会 await 若干帧, 只能在主循环里调)。
-## 返回 stats 的全部字段 + {frames, fps_p50, fps_p95, stutter, stutter_ms, draw_calls, mem_mb}。
+## 返回 stats 的全部字段 + {frames, fps_p50, fps_p95, fps_1pct_low, stutter, stutter_ms, noisy, env}。
 ## 在编辑器进程采样会附带 note: 编辑器空闲节流会把帧率压到 10fps 左右, 那数字只能代表编辑器。
 static func sample_frames(frames := 120, warmup := 30) -> Dictionary:
 	var tree := Engine.get_main_loop() as SceneTree
@@ -158,31 +199,24 @@ static func sample_frames(frames := 120, warmup := 30) -> Dictionary:
 	r["frames"] = win.size()
 	r["fps_p50"] = _ms_to_fps(p50)
 	r["fps_p95"] = _ms_to_fps(float(r["p95_ms"]))
+	# 1% low(最差 1% 帧的等效帧率)是业界判断卡顿的标准指标: 平均值再高, 1% low 崩了就是手感差
+	r["fps_1pct_low"] = _ms_to_fps(float(r["p99_ms"]))
 	r["stutter_ms"] = jank_ms
 	r["stutter"] = win.count_over(jank_ms)
+	r["noisy"] = float(r["cv"]) > MAX_CV
 	r.merge(snapshot(), true)
+	# 环境必须跟数字一起记: 开关 vsync / 不同 max_fps / 不同窗口大小下的帧率互相不可比
+	r["env"] = {
+		"gpu": RenderingServer.get_video_adapter_name(),
+		"cpu": OS.get_processor_name(),
+		"max_fps": Engine.max_fps,
+		"vsync": DisplayServer.window_get_vsync_mode() if DisplayServer.has_method("window_get_vsync_mode") else -1,
+		"window": DisplayServer.window_get_size(),
+		"focused": DisplayServer.window_is_focused(),
+	}
 	if Engine.is_editor_hint():
 		r["note"] = "编辑器进程的帧率受空闲节流限制(常见 10fps), 测真实性能请 process=game"
-	register_monitors()
 	return r
-
-
-## 把帧时间/绘制调用挂进编辑器 Remote 的 Monitors 面板(游戏进程里调一次即可, 幂等)。
-## 只在游戏进程生效: 编辑器自己的帧率没有参考价值。
-static func register_monitors() -> void:
-	if _monitors_on or Engine.is_editor_hint():
-		return
-	_monitors_on = true
-	Performance.add_custom_monitor("Perf/FrameMs", _mon_frame_ms)
-	Performance.add_custom_monitor("Perf/DrawCalls", _mon_draw_calls)
-
-
-static func _mon_frame_ms() -> float:
-	return 1000.0 / maxf(float(Engine.get_frames_per_second()), 1.0)
-
-
-static func _mon_draw_calls() -> float:
-	return Performance.get_monitor(Performance.RENDER_TOTAL_DRAW_CALLS_IN_FRAME)
 
 
 static func _ms_to_fps(ms: float) -> float:

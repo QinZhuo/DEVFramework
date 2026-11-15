@@ -23,7 +23,10 @@ func max_duration_ms() -> int:
 
 func test_frame_rate() -> void:
 	# 带 key: p50 帧时间同时写进基线, 下次运行能直接看出"慢了多少", 不必翻日志
-	await assert_fps_at_least(MIN_FPS, FRAMES, WARMUP, "test:perf_fps::p50")
+	var r: Dictionary = await assert_fps_at_least(MIN_FPS, FRAMES, WARMUP, "test:perf_fps::p50")
+	# 平均帧率达标还不够: 1% low 才代表"最差的那一下"体感, 也是行业通用口径
+	assert_true(float(r.get("fps_1pct_low", 0.0)) > 0.0, "应给出 1% low 帧率")
+	assert_true(r.has("env"), "采样应附带环境(否则数字跨机器/配置不可比)")
 
 
 func test_snapshot_has_engine_metrics() -> void:

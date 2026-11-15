@@ -42,7 +42,16 @@ func test_stats_percentiles() -> void:
 	assert_eq(s["max_ms"], 5.0, "最大")
 	assert_eq(s["p50_ms"], 3.0, "P50")
 	assert_eq(s["p95_ms"], 5.0, "P95 取第 ceil(0.95*5)=5 个, 不是插值")
+	assert_approx(s["std_ms"], sqrt(2.0), "总体标准差")
+	assert_approx(s["cv"], sqrt(2.0) / 3.0, "变异系数 = 标准差 / 均值")
 	assert_eq(PerfTool.stats([])["count"], 0, "空输入不应崩")
+
+
+func test_stats_flags_identical_samples() -> void:
+	# 完全一致的值 CV 必须为 0: 它是"这次测量稳不稳"的唯一判据
+	var s := PerfTool.stats([2.0, 2.0, 2.0])
+	assert_eq(s["std_ms"], 0.0, "无散布时标准差为 0")
+	assert_eq(s["cv"], 0.0, "无散布时 CV 为 0")
 
 
 func test_bench_excludes_warmup() -> void:
@@ -50,7 +59,20 @@ func test_bench_excludes_warmup() -> void:
 	var r := PerfTool.bench(func() -> void: hits[0] += 1, 4, 2)
 	assert_eq(hits[0], 6, "执行次数 = warmup + iters")
 	assert_eq(r["count"], 4, "统计样本只含正式轮")
+	assert_eq(r["batch"], 1, "固定迭代不分组")
 	assert_true(float(r["total_ms"]) >= 0.0, "总耗时应非负")
+
+
+## setup 在计时区间外执行: 造数据/重置状态不能算进被测代码的账上
+func test_bench_setup_runs_per_sample() -> void:
+	var setup_hits := [0]
+	var r := PerfTool.bench(func() -> void: pass, 3, 2, func() -> void: setup_hits[0] += 1)
+	assert_eq(setup_hits[0], 5, "setup 每个样本(含预热)各一次")
+	assert_eq(int(r["count"]), 3, "正式样本数")
+
+
+func test_clock_resolution_is_positive() -> void:
+	assert_true(PerfTool.clock_resolution_us() > 0.0, "应能测出计时器分辨率")
 
 
 func test_history_ema_and_suggest() -> void:
@@ -80,11 +102,12 @@ func test_fmt_ms() -> void:
 
 ## 自适应采样: 极快逻辑既要扩样, 也要靠分批把 per-op 从"1µs 量化成 0"里救回来
 func test_bench_auto_scales_iterations() -> void:
-	var r := PerfTool.bench_auto(func() -> void: pass, 5.0, 0)
+	var r := PerfTool.bench_auto(func() -> void: pass, 5.0)
 	assert_true(int(r["count"]) >= 10, "应按预算扩样, 实际 count=%d" % int(r["count"]))
-	assert_true(int(r["batch"]) >= 1, "应回传批次大小")
+	assert_true(int(r["batch"]) > 1, "空函数应被分组放大, 实际 batch=%d" % int(r["batch"]))
 	assert_approx(float(r["budget_ms"]), 5.0, "应回传预算")
-	assert_true(float(r["total_ms"]) > 0.0, "总耗时应可测")
+	assert_false(bool(r["below_resolution"]), "分组后不该再判为量化")
+	assert_true(float(r["p50_ms"]) > 0.0, "分组后 per-op 应可测")
 
 
 ## 基线过滤: 上百条基线全量回传白占 token
@@ -104,6 +127,8 @@ func test_sample_frames_reports_jank_threshold() -> void:
 	assert_eq(int(r["frames"]), 5, "采样帧数")
 	assert_true(float(r["stutter_ms"]) >= PerfTool.MIN_JANK_MS, "阈值不应低于 1 帧@60fps 下限")
 	assert_true(float(r["stutter_ms"]) >= float(r["p50_ms"]) * 2.0, "阈值应随中位帧长走")
+	assert_true(float(r["fps_1pct_low"]) > 0.0, "1% low 帧率应可算")
+	assert_true(r.has("env"), "应记录环境(开关 vsync/不同 max_fps 下的帧率不可比)")
 
 
 func test_measure_ms_records_baseline() -> void:
