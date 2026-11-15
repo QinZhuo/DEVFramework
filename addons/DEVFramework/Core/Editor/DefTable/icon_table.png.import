@@ -3,15 +3,15 @@
 importer="texture"
 type="CompressedTexture2D"
 uid="uid://davt2iesddw04"
-path="res://.godot/imported/icon_table.png-c12afad9f2cf89524892f8f088404952.ctex"
+path="res://.godot/imported/icon_table.png-737066c4fd65bda0bf53a405a3a26dae.ctex"
 metadata={
 "vram_texture": false
 }
 
 [deps]
 
-source_file="res://addons/DEVFramework/DefTable/icon_table.png"
-dest_files=["res://.godot/imported/icon_table.png-c12afad9f2cf89524892f8f088404952.ctex"]
+source_file="res://addons/DEVFramework/Core/Editor/DefTable/icon_table.png"
+dest_files=["res://.godot/imported/icon_table.png-737066c4fd65bda0bf53a405a3a26dae.ctex"]
 
 [params]
 

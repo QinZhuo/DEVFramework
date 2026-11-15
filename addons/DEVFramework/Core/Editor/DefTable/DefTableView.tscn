@@ -1,7 +1,7 @@
 [gd_scene format=3 uid="uid://c8y4dtbl0ef1"]
 
-[ext_resource type="Script" path="res://addons/DEVFramework/DefTable/DefTableView.gd" id="1_dock"]
-[ext_resource type="Script" path="res://addons/DEVFramework/DefTable/DefTableGrid.gd" id="2_grid"]
+[ext_resource type="Script" path="res://addons/DEVFramework/Core/Editor/DefTable/DefTableView.gd" id="1_dock"]
+[ext_resource type="Script" path="res://addons/DEVFramework/Core/Editor/DefTable/DefTableGrid.gd" id="2_grid"]
 
 [node name="DefTableView" type="MarginContainer"]
 anchors_preset = 15

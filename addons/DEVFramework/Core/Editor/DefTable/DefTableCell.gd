@@ -89,7 +89,7 @@ static func make_cell(kind: int) -> DefTableCell:
 
 static func _make(kind: int) -> DefTableCell:
 	if _script == null:
-		_script = load("res://addons/DEVFramework/DefTable/DefTableCell.gd") as GDScript
+		_script = load("res://addons/DEVFramework/Core/Editor/DefTable/DefTableCell.gd") as GDScript
 	var cell: DefTableCell = _script.new()
 	cell.kind = kind
 	return cell

@@ -148,7 +148,7 @@ static func update_slot_visibility(slots: Array, views: Array, enabled: bool) ->
 	for i in slots.size():
 		slots[i].visible = i < views.size() and is_instance_valid(views[i])
 
-## 数据项的类名：优先取脚本的 class_name（Card / Equip），没有脚本时退回引擎原生类名
+## 数据项的类名：优先取脚本的 class_name（如 Item / ItemDef），没有脚本时退回引擎原生类名
 static func _class_name_of(item: Object) -> String:
 	var script := item.get_script()
 	if script:

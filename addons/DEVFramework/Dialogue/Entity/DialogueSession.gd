@@ -8,7 +8,7 @@ signal cancelled
 var dialogue: DialogueScriptDef
 var index := -1
 var running := false
-## 透传给 view 的上下文（player / step / shop …）
+## 透传给 view 的上下文（如 actor / step / quest …）
 var context := {}
 
 

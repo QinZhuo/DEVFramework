@@ -3,8 +3,8 @@
 class_name DefTableView
 extends Control
 
-const DefTableGridClass := preload("res://addons/DEVFramework/DefTable/DefTableGrid.gd")
-const DefTableCellClass := preload("res://addons/DEVFramework/DefTable/DefTableCell.gd")
+const DefTableGridClass := preload("res://addons/DEVFramework/Core/Editor/DefTable/DefTableGrid.gd")
+const DefTableCellClass := preload("res://addons/DEVFramework/Core/Editor/DefTable/DefTableCell.gd")
 ## 兜底行高(未进树/未测量时): 与 [DefTableGrid] 的行高下限同源, 避免两处各写一个字面量
 const ROW_HEIGHT := DefTableGrid.MIN_ROW_HEIGHT
 ## Def 根目录: 复用 Def 的唯一常量, 避免多处各写一份字面量而漂移
