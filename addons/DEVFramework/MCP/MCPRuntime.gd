@@ -315,14 +315,15 @@ func _wait_game_ready(timeout_sec: float = 15.0) -> bool:
 func call_job_wait_local(args: Dictionary) -> Dictionary:
 	var job_id := VariantTool.get_string(args, "job_id").strip_edges()
 	var wait_sec := clampi(VariantTool.get_int(args, "wait_sec", JobTool.DEFAULT_WAIT_MS / 1000), 0, JobTool.MAX_WAIT_MS / 1000)
-	return server._ok_json(JobTool.wait(job_id, wait_sec * 1000))
+	# JobTool.wait 内部 await 主循环帧, 是协程 —— 必须 await
+	return server._ok_json(await JobTool.wait(job_id, wait_sec * 1000))
 
 
 func call_job_wait_routed(args: Dictionary) -> Dictionary:
 	var job_id := VariantTool.get_string(args, "job_id").strip_edges()
 	var probe := JobTool.status(job_id)
 	if not probe.has("error"):
-		return call_job_wait_local(args)      # 本进程就有
+		return await call_job_wait_local(args)      # 本进程就有
 	if _has_game_session():
 		var fwd := {"job_id": job_id}
 		if args.has("wait_sec"):
