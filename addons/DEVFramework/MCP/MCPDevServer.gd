@@ -1341,6 +1341,22 @@ func _call_run_tests_routed(args: Dictionary) -> Dictionary:
 	return await _runtime().call_run_tests_routed(args)
 
 
+func _call_job_wait_local(args: Dictionary) -> Dictionary:
+	return await _runtime().call_job_wait_local(args)
+
+
+func _call_job_wait_routed(args: Dictionary) -> Dictionary:
+	return await _runtime().call_job_wait_routed(args)
+
+
+func _call_job_cancel_local(args: Dictionary) -> Dictionary:
+	return await _runtime().call_job_cancel_local(args)
+
+
+func _call_job_cancel_routed(args: Dictionary) -> Dictionary:
+	return await _runtime().call_job_cancel_routed(args)
+
+
 ## 游戏运行控制（start / stop / continue）：实现见 MCPRuntime。
 func _call_game_control(args: Dictionary) -> Dictionary:
 	return await _runtime().call_game_control(args)
@@ -1442,19 +1458,44 @@ func _register_game_play_tools() -> void:
 	var tests_schema := {
 		"type": "object",
 		"properties": {
-			"action": {"type": "string", "enum": ["run", "status", "result", "cancel"], "description": "默认 run。run=启动任务(立即返回; 带 wait_sec 时在窗口内跑完就直接给结果); status=查进度(轮询用, 幂等, 不会重跑); result=取结果; cancel=请求取消。job 状态存在**跑测试的那个进程**里, 所以 status/result/cancel 的 process 必须与启动时一致。"},
-			"job_id": {"type": "string", "description": "status/result/cancel 用。省略 = 当前正在跑或最近的 job。"},
-			"wait_sec": {"type": "integer", "description": "仅 action=run: 最多等几秒(0-25, 默认 8)。窗口内跑完直接返回结果; 未跑完返回 job 快照, 之后用 action=status 轮询。慢用例(回放类常 100s+)不会重跑。"},
-			"process": {"type": "string", "enum": ["editor", "game", "both"], "description": "在哪个进程跑: editor=编辑器进程(只跑进程无关用例); game=游戏进程(跑 needs_game_process() 用例; 无运行中的游戏时自动启动); both=先 editor 段再 game 段合并(仅 action=run, 同步阻塞)。"},
+			"process": {"type": "string", "enum": ["editor", "game", "both"], "description": "在哪个进程跑: editor=编辑器进程(只跑进程无关用例); game=游戏进程(跑 needs_game_process() 用例; 无运行中的游戏时自动启动); both=先 editor 段再 game 段合并(同步阻塞)。"},
 			"script": {"type": "string", "description": "必填。二选一(靠内容自动判别): ①测试脚本路径子串(如 'test_game_replay'), 只运行匹配的用例文件; 'all'=全量(**不推荐**: 耗时可能过长)。②**内联 GDScript 源码**——含换行 或 以 'extends ' 开头即判为源码, 需 `extends TestCase` 并定义 test_ 开头的断言方法, 直接编译运行、**不落盘**, 适合临时验证(上限 8192 字符)。单个词(含打错的脚本名)一律按选择器处理。"},
 		},
-		"required": ["action", "process"],
+		"required": ["process", "script"],
 	}
 	_register_game_play_tool("run_tests",
-		"运行**指定**的项目单元测试(Scripts/Test/ 下, extends TestCase, test_ 开头方法自动发现; 支持协程用例)。**script 必填**: 传脚本路径子串(或 'all' 全量, 不推荐)按文件跑; 或**直接传内联 GDScript 源码**(含换行/以 'extends ' 开头即视为源码, `extends TestCase` + test_ 方法, 不落盘, 临时验证用)。process 必填: editor=编辑器进程(同步跑完才返回; 只跑进程无关用例); game=游戏进程(跑 needs_game_process() 用例; **阻塞到本轮跑完才返回**; 无运行中的游戏时自动启动一个; 已有会话不重启); both=先 editor 段再 game 段并合并成一份汇总(**跑全量用它**, 游戏段没跑成会记成一条失败而不是静默省略)。**逐条进度**(每个用例方法的开始/结束、长方法的 15s 心跳)只 print 到宿主控制台 —— 编辑器输出面板 / 游戏窗口 / headless stdout, 工具返回值只有最终汇总, 阻塞期间查不到中途进度。**测试整体硬超时 10 分钟**: 到点判失败并停止等待。",
+		"运行**指定**的项目单元测试(Scripts/Test/ 下, extends TestCase, test_ 开头方法自动发现; 支持协程用例)。**script 必填**: 传脚本路径子串(或 'all' 全量, 不推荐)按文件跑; 或**直接传内联 GDScript 源码**(含换行/以 'extends ' 开头即视为源码, `extends TestCase` + test_ 方法, 不落盘, 临时验证用)。process 必填: editor=编辑器进程(只跑进程无关用例); game=游戏进程(跑 needs_game_process() 用例; 无运行中的游戏时自动启动一个); both=先 editor 段再 game 段并合并(**同步阻塞**, 跑全量用)。**长任务语义(通用, 不用额外参数)**: 默认最多等 25 秒, 跑完直接返回完整汇总; 超过 25 秒则返回 `{job_id, running:true, progress, current, elapsed_ms}`, 此时用 **`job_wait(job_id)`** 继续等(完成即返回结果, **不会重跑**)。测试整体硬超时 10 分钟。",
 		tests_schema,
 		_call_run_tests_local,
 		_call_run_tests_routed)
+
+	# 通用长任务轮询: 任何返回 `job_id + running` 的接口都走这两个, 与具体工具无关
+	var job_wait_schema := {
+		"type": "object",
+		"properties": {
+			"job_id": {"type": "string", "description": "长任务返回体里的 job_id。"},
+			"wait_sec": {"type": "integer", "description": "本次最多等几秒(默认 25, 上限 60)。完成即返回结果; 未完成返回同一 job_id 的新快照。"},
+		},
+		"required": ["job_id"],
+	}
+	_register_game_play_tool("job_wait",
+		"等待长任务结束(**通用**: 任何返回 `job_id + running:true` 的接口都适用, 且不会重跑任务)。完成 → 返回完整结果(status=done/failed); 未完成 → 返回同一 job_id 的进度快照(progress/current/elapsed_ms)。job 在哪个进程不用管, 工具会自动找到(先本地, 再转游戏进程)。典型用法: 拿到 job_id 后循环 `job_wait(job_id)` 直到 `running == false`。",
+		job_wait_schema,
+		_call_job_wait_local,
+		_call_job_wait_routed)
+
+	var job_cancel_schema := {
+		"type": "object",
+		"properties": {
+			"job_id": {"type": "string", "description": "要取消的 job_id。"},
+		},
+		"required": ["job_id"],
+	}
+	_register_game_play_tool("job_cancel",
+		"请求取消长任务(在任务的下一个检查点生效; 正在 await 的协程无法中途掐断, 所以可能还要等当前用例跑完)。",
+		job_cancel_schema,
+		_call_job_cancel_local,
+		_call_job_cancel_routed)
 
 	# 日志读/清: 统一入口, process 必填(editor|game)。编辑器进程: editor=本进程缓冲, game=转发;
 	var logs_schema := MCPToolSchema.logs("200(log)/100(warning|error)", "条目", {

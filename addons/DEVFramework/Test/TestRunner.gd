@@ -39,7 +39,6 @@ static func run_all(script := "", mode := MODE_EDITOR, logger: Object = null) ->
 	_running_mode = mode
 	var result := await _run_all(script, mode, logger)
 	_running_mode = ""
-	_live_acc = {}
 	return result
 
 
@@ -69,7 +68,6 @@ static func _run_all(script: String, mode: String, logger: Object) -> Dictionary
 		case_paths = matched
 
 	var acc := _new_acc()
-	_live_acc = acc
 	for path in case_paths:
 		var script_res: Script = load(str(path))
 		if script_res == null:
@@ -121,7 +119,6 @@ static func _run_inline(source: String, mode: String, logger: Object, deadline: 
 	if not c.get("ok", false):
 		return _error_result(str(c.get("error", "")), "<inline>", mode)
 	var acc := _new_acc()
-	_live_acc = acc
 	await _run_one_case(c.get("script"), "<inline>", mode, acc, deadline)
 	var text := _format(int(acc["total"]), int(acc["failed"]), acc["failures"], acc["skipped"], acc["overruns"], mode)
 	return _summary(acc, "<inline>", mode, text)
@@ -155,6 +152,8 @@ static func _run_one_case(res: Script, label: String, mode: String, acc: Diction
 			return
 		acc["total"] = int(acc["total"]) + 1
 		_progress("→ %s › %s" % [label, mname])
+		# 进度上报给通用 job 层(长任务由调用方 JobTool 包装): progress = 已开始的用例数
+		JobTool.report(int(acc["total"]), -1, "%s › %s" % [label, mname])
 		inst._current_method = mname
 		var before: int = inst._failures.size()
 		var started_at := Time.get_ticks_msec()
@@ -330,7 +329,6 @@ static func _collect_cases(base: String, out: Array) -> void:
 ## 逐条进度输出: 全量动辄几分钟, 没有进度就分不清"还在跑"还是"卡死"。
 static func _progress(msg: String) -> void:
 	print("[测试] %s" % msg)
-	_sync_progress(msg)   # 同时写回 job, 供 MCP status 轮询(不必再翻日志)
 
 
 static func _fmt_ms(ms: int) -> String:
@@ -383,202 +381,3 @@ static func _next_tool(mode: String) -> String:
 	return "run_tests(process=game)"
 
 
-# ============================================================
-# Job 模型 —— 长任务的标准做法(MCP 规范 + 业界 CI 一致)
-#
-# 为什么不用 notifications/progress: 本服务器是**短连接 HTTP**, 请求结束即断开,
-# 发不出服务端主动通知(capabilities 已如实报 listChanged:false)。官方规范也明确
-# "进度通知是 MAY, 且不能当可靠性信号" ⇒ 主路径必须是"启动即返回 + 轮询"。
-# ============================================================
-
-const MAX_KEPT_JOBS := 16
-
-static var _jobs: Dictionary = {}
-static var _job_seq := 0
-## 当前正在跑的 job id(空串 = 空闲)。同一进程只允许一个: 用例会改共享单例/存档/时间倍率
-static var _active_job := ""
-## 正在跑的 acc(供 _progress 读取实时计数)
-static var _live_acc: Dictionary = {}
-
-
-## 启动任务并**立即返回**。已在跑时不重跑、不报错, 返回当前 job 的快照。
-static func start(script: String, mode: String, logger: Object = null) -> Dictionary:
-	if _active_job != "":
-		var running := status(_active_job)
-		running["already_running"] = true
-		running["hint"] = "已有任务在跑, 这是它的快照; 不要重复 start, 用 status 轮询"
-		return running
-	_job_seq += 1
-	var id := "job_%d" % _job_seq
-	_jobs[id] = {
-		"job_id": id, "script": script, "mode": mode, "status": "running",
-		"progress": 0, "total": 0, "passed": 0, "failed": 0, "current": "",
-		"started_at": Time.get_ticks_msec(), "finished_at": 0,
-		"failures": [], "skipped": [], "overruns": [], "summary": {},
-		"text": "", "cancel_requested": false,
-	}
-	_active_job = id
-	_prune_jobs()
-	_run_job(id, script, mode, logger)   # 有意不 await: 立即返回给调用方
-	return status(id)
-
-
-## 轮询进度。job_id 省略 = 当前/最近的 job。
-static func status(job_id := "") -> Dictionary:
-	var id := _pick_job_id(job_id)
-	if id == "":
-		return {"error": "没有可用的 job(还没跑过测试?)"}
-	var job: Dictionary = _jobs.get(id, {})
-	if job.is_empty():
-		return {"error": "未知 job_id: '%s'(可用: %s)" % [job_id, _job_ids_text()]}
-	return _snapshot(id, job)
-
-
-## 取结果。未结束时返回快照 + 提示(不阻塞)。
-static func result(job_id := "") -> Dictionary:
-	var id := _pick_job_id(job_id)
-	if id == "":
-		return {"error": "没有可用的 job(还没跑过测试?)"}
-	var job: Dictionary = _jobs.get(id, {})
-	if job.is_empty():
-		return {"error": "未知 job_id: '%s'(可用: %s)" % [job_id, _job_ids_text()]}
-	var snap := _snapshot(id, job)
-	if str(job["status"]) == "running":
-		snap["hint"] = "任务仍在运行; 请用 status 轮询, 或 wait 一次等一段时间"
-		return snap
-	snap.merge(job.get("summary", {}), true)
-	snap["status"] = str(job["status"])
-	return snap
-
-
-## 请求取消(在下一个用例边界生效)
-static func cancel(job_id := "") -> Dictionary:
-	var id := _pick_job_id(job_id)
-	if id == "":
-		return {"error": "没有可用的 job"}
-	var job: Dictionary = _jobs.get(id, {})
-	if job.is_empty():
-		return {"error": "未知 job_id: '%s'" % job_id}
-	job["cancel_requested"] = true
-	return {"job_id": id, "cancel_requested": true,
-		"hint": "取消会在当前用例结束后生效(引擎无法中途掐断正在 await 的用例)"}
-
-
-## 等任务结束(最多 wait_ms)。结束 → result; 否则 → status 快照。
-static func wait(job_id: String, wait_ms: int) -> Dictionary:
-	var deadline := Time.get_ticks_msec() + maxi(0, wait_ms)
-	while true:
-		var job: Dictionary = _jobs.get(job_id, {})
-		if job.is_empty():
-			return {"error": "未知 job_id: '%s'" % job_id}
-		if str(job["status"]) != "running":
-			return result(job_id)
-		if Time.get_ticks_msec() >= deadline:
-			return status(job_id)
-		await Engine.get_main_loop().process_frame
-	# 编译器要求显式收尾(while true 内的 return 不算覆盖所有路径)
-	return status(job_id)
-
-
-static func clear_jobs() -> void:
-	_jobs.clear()
-	_active_job = ""
-static func _run_job(id: String, script: String, mode: String, logger: Object) -> void:
-	var summary: Dictionary = await run_all(script, mode, logger)
-	var job: Dictionary = _jobs.get(id, {})
-	if job.is_empty():
-		return
-	job["summary"] = summary
-	job["text"] = str(summary.get("text", ""))
-	job["total"] = int(summary.get("total", 0))
-	job["passed"] = int(summary.get("passed", 0))
-	job["failed"] = int(summary.get("failed", 0))
-	job["progress"] = int(summary.get("total", 0))
-	job["current"] = ""
-	job["finished_at"] = Time.get_ticks_msec()
-	if bool(summary.get("aborted", false)):
-		job["status"] = "aborted"
-	elif int(summary.get("failed", 0)) > 0:
-		job["status"] = "failed"
-	else:
-		job["status"] = "passed"
-	if _active_job == id:
-		_active_job = ""
-
-
-static func _snapshot(id: String, job: Dictionary) -> Dictionary:
-	var started := int(job.get("started_at", 0))
-	var finished := int(job.get("finished_at", 0))
-	var elapsed := (finished if finished > 0 else Time.get_ticks_msec()) - started
-	var running := str(job.get("status", "")) == "running"
-	return {
-		"job_id": id,
-		"status": str(job.get("status", "")),
-		"script": str(job.get("script", "")),
-		"mode": str(job.get("mode", "")),
-		"progress": int(job.get("progress", 0)),
-		"total": int(job.get("total", 0)),
-		"passed": int(job.get("passed", 0)),
-		"failed": int(job.get("failed", 0)),
-		"current": str(job.get("current", "")),
-		"elapsed_ms": elapsed,
-		"running": running,
-		"cancel_requested": bool(job.get("cancel_requested", false)),
-		"failures": job.get("failures", []),
-		"skipped": job.get("skipped", []),
-		"overruns": job.get("overruns", []),
-		"text": str(job.get("text", "")),
-	}
-
-
-static func _pick_job_id(job_id: String) -> String:
-	if job_id != "":
-		return job_id
-	if _active_job != "":
-		return _active_job
-	var best := ""
-	var best_seq := -1
-	for k in _jobs.keys():
-		var n := int(str(k).trim_prefix("job_"))
-		if n > best_seq:
-			best_seq = n
-			best = str(k)
-	return best
-
-
-static func _job_ids_text() -> String:
-	var ids: Array = _jobs.keys()
-	ids.sort()
-	return ", ".join(ids) if not ids.is_empty() else "(无)"
-
-
-## 超出上限时淘汰最旧的已结束 job
-static func _prune_jobs() -> void:
-	if _jobs.size() <= MAX_KEPT_JOBS:
-		return
-	var keys: Array = _jobs.keys()
-	keys.sort()
-	for k in keys:
-		if _jobs.size() <= MAX_KEPT_JOBS:
-			break
-		if str(k) == _active_job:
-			continue
-		if str(_jobs[k].get("status", "")) == "running":
-			continue
-		_jobs.erase(k)
-
-
-## 把实时进度写回当前 job(由 _progress 调用)
-static func _sync_progress(msg: String) -> void:
-	if _active_job == "" or _live_acc.is_empty():
-		return
-	var job: Dictionary = _jobs.get(_active_job, {})
-	if job.is_empty():
-		return
-	job["current"] = msg
-	job["progress"] = int(_live_acc.get("total", 0))
-	job["passed"] = int(_live_acc.get("total", 0)) - int(_live_acc.get("failed", 0))
-	job["failed"] = int(_live_acc.get("failed", 0))
-	job["failures"] = (_live_acc.get("failures", []) as Array).duplicate()
-	job["skipped"] = (_live_acc.get("skipped", []) as Array).duplicate()
-	job["overruns"] = (_live_acc.get("overruns", []) as Array).duplicate()
