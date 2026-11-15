@@ -59,6 +59,10 @@ static func remove(key: String) -> void:
 		pool.clear()
 	_pools.erase(key)
 
+## 会话级复位：清空所有池
+static func reset() -> void:
+	clear()
+
 ## 清空所有池（借出的实例等它归还不受影响）
 static func clear() -> void:
 	for pool in _pools.values():

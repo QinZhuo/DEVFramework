@@ -84,6 +84,12 @@ static var _focus_group: Array[Node] = []
 ## 当前导航焦点索引（仅 3D 用，2D 由 Godot 自动管理）。
 static var _focus_index: int = -1
 
+## 会话级复位：丢掉焦点组登记与索引（节点本身由场景释放）
+static func reset() -> void:
+	_focus_group.clear()
+	_focus_index = -1
+
+
 ## 注册焦点组。2D 控件设为 FOCUS_ALL 启用导航，3D 节点交由 InputTool 手动管理。
 static func register_focus_group(nodes: Array[Node], default_index: int = 0) -> void:
 	_set_group_focus_mode(_focus_group, false)

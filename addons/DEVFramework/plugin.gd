@@ -63,6 +63,8 @@ func _enter_tree() -> void:
 	_setup_def_table()
 	_setup_camera_gizmo()
 	_setup_camera_viewfinder()
+	## 清掉上一轮编辑器会话残留的静态状态（@tool 脚本 reload 后可能留住旧值）
+	ResetTool.all()
 
 
 func _exit_tree() -> void:
@@ -75,6 +77,7 @@ func _exit_tree() -> void:
 		_pack_mcp_filter = null
 	# 停用插件: 最后关闭 MCP
 	_set_mcp_enabled(false)
+	ResetTool.all()
 
 
 ## DefTable: 顶部 Main Screen Tab, 查看/复制/粘贴 Def 静态数据

@@ -1,5 +1,6 @@
 ## 通用日志工具 — 标签标记、自动配色、项目设置集成
 class_name LogTool
+## Reset: 进程级（日志镜像缓冲）
 
 const SETTING_ENABLED := "dev_framework/log/enabled"
 const SETTING_TIMESTAMPS := "dev_framework/log/show_timestamps"

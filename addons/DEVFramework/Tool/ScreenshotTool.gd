@@ -1,4 +1,5 @@
 class_name ScreenshotTool
+## Reset: 进程级（sRGB LUT）
 extends RefCounted
 
 ## 统一截图工具 — 唯一的画面捕获管线。

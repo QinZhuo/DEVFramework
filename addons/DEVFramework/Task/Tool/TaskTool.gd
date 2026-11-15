@@ -65,6 +65,11 @@ static func load_all(saved: Dictionary, data = null) -> Array[Task]:
 	return out
 
 
+## 会话级复位：清空跟踪表
+static func reset() -> void:
+	clear()
+
+
 ## 清空跟踪表(不 touch 任务本身)
 static func clear() -> void:
 	_active.clear()

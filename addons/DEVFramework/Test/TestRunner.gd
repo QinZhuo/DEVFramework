@@ -159,6 +159,8 @@ static func _run_one_case(res: Script, label: String, mode: String, acc: Diction
 		var elapsed := Time.get_ticks_msec() - started_at
 		## 兜底收尾：不论成败都跑。手动收尾只覆盖"正常跑完"那条路，中途 return /
 		await _run_cleanup(inst, maxi(1000, remaining - elapsed))
+		## 用例间复位会话级静态状态：漏清会让下一个用例读到上一个的残留
+		ResetTool.all()
 		var limit := int(inst.max_duration_ms())
 		if limit > 0 and elapsed > limit:
 			## suggested_max_ms: 按实测值向上取整到秒, 供脚本作者直接更新 max_duration_ms。

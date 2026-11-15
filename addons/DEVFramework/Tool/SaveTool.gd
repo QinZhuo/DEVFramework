@@ -18,6 +18,11 @@ const BACKUP_SUFFIX := ".bak"
 static var _save_states: Dictionary = {}
 
 
+## 会话级复位：丢弃未落盘的待处理请求（在途写盘不受影响）
+static func reset() -> void:
+	_save_states.clear()
+
+
 ## 校验版本并补全缺失字段：以 defaults 为底，data 覆盖，缺失字段由 defaults 补齐
 static func check_version(data: Variant, version: String, defaults: Dictionary) -> Dictionary:
 	if not data is Dictionary:

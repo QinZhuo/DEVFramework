@@ -1,5 +1,6 @@
 ## Steam 集成统一入口（纯静态，**不依赖 godotsteam 插件存在**）。
 class_name SteamTool extends RefCounted
+## Reset: 进程级（平台查询缓存）
 
 ## Steam 入口名（引擎单例名 / autoload 节点名）
 const SINGLETON_NAME := &"Steam"

@@ -1,6 +1,7 @@
 @tool
 ## 更新日志工具 —— 只提供版本判定 / 条目过滤 / 已见版本记录，不包含任何 UI。
 class_name ChangelogTool
+## Reset: 进程级（内容缓存）
 
 ## 当前版本号：Godot 内置项目设置（项目设置 → Application → Config → Version）
 const SETTING_VERSION := "application/config/version"

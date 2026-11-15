@@ -1,4 +1,5 @@
 class_name TranslationTool
+## Reset: 进程级（语言表与当前语言）
 
 const TRANSLATION_DIR := "res://Assets/Translation/"
 

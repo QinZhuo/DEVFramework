@@ -1,5 +1,6 @@
 @tool
 class_name EditorTranslationTool
+## Reset: 进程级（CSV 缓存）
 extends RefCounted
 
 ## 独立模块: 编辑器翻译。

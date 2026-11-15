@@ -129,6 +129,11 @@ static func stop() -> void:
 		_presenter.dismiss()
 
 
+## 会话级复位：停播并丢弃会话（presenter 实例随场景释放）
+static func reset() -> void:
+	stop()
+
+
 static func is_playing() -> bool:
 	return _session != null and _session.is_running
 

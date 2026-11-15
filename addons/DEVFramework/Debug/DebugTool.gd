@@ -1,6 +1,7 @@
 @tool
 ## Debug 工具 —— Debug 模式判定 / 调试分支信息的框架级统一入口。
 class_name DebugTool extends RefCounted
+## Reset: 进程级（外部注入与分支缓存）
 
 ## 调试分支名的项目设置键（支持英文逗号分隔多个分支名，未配置则视为正式分支）
 const SETTING_DEBUG_BRANCH := "dev_framework/debug/branch_names"

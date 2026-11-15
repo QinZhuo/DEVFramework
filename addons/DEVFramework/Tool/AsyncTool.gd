@@ -244,6 +244,12 @@ static var _lock_owners: Dictionary = {}
 static var _lock_token := 0
 
 
+## 会话级复位：清空锁登记（在途协程不打断，只是后续申请不再排在旧锁上）
+static func reset() -> void:
+	_lock_owners.clear()
+	_lock_token = 0
+
+
 ## 让同一把锁下的流程**排队串行执行**（协程互斥锁），返回 action 的返回值。
 ## 有些原生/网络调用本身也不允许并发。这类"不能同时跑"的流程，用本方法包一层即可。
 static func with_lock(lock_name: StringName, action: Callable) -> Variant:

@@ -24,6 +24,14 @@ static var _rr_active: VirtualCamera3D = null
 static var viewport: Viewport
 
 
+## 会话级复位：清空冲击与轮转游标（`viewport` 属注入配置，不清）
+static func reset() -> void:
+	_impulses.clear()
+	_shake = {}
+	_rr_index = 0
+	_rr_active = null
+
+
 # ── 查询 ──
 
 ## 当前场景的相机大脑(不在场景树中时返回 null)

@@ -16,6 +16,15 @@ static var _running: Dictionary = {}
 const TIMEOUT_MS := 30000
 
 
+## 会话级复位：清空登记与缓存（在途加载回调自行结束）
+static func reset() -> void:
+	_groups.clear()
+	_loaded.clear()
+	_pending.clear()
+	_ready.clear()
+	_running.clear()
+
+
 static func register(group: StringName, paths: PackedStringArray) -> void:
 	_groups[group] = paths
 	_ready.erase(group)
