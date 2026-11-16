@@ -13,7 +13,8 @@ extends ECSComponent
 ##   TimerSystem.tick(world, delta)             # 每帧一次(或挂到调度器)
 ##   world.on_event(&"timer_expired", cb)       # 或 take_events 取走
 ##
-## 实测(2000 个计时器, 每帧推进, 无到期): 逐对象 GameTimer 0.661ms → 本实现 0.061ms(10.8x)。
+## 实测(2000 个计时器, 每帧推进, 无到期): 旧逐对象 OOP 计时器约 0.4~0.66ms → 本实现 0.061ms。
+## (那个逐对象实现已迁出框架、由需要严格发射顺序的项目自持; 框架只保留这一套。)
 
 ## 重复语义。**这是模块自己拥有的封闭集合**, 所以用 enum(而不是 repeat_count 的 -1 魔法值)。
 ## 枚举在 ECS 里就是 int 列(见 register_component 的反射), 没有额外开销。

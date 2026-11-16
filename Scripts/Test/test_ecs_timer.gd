@@ -142,34 +142,21 @@ func test_multi_archetype_alignment() -> void:
 
 
 
-## OOP(GameTimer) vs ECS(TimerSystem) 同规模对照 —— 既是文档数字, 也是回归闸门。
+## 空闲推进的性能闸门(没有到期项, 但每帧都要付的钱)。
 ##
-## 这条用例只比较**空闲推进**(没有到期), 因为那才是每帧都要付的钱:
-##   旧: 每个 GameTimer 一次 advance(与总数线性, 没有到期也照付)
-##   新: 一次原生列减法 + 一次原生条件过滤
-## 阈值取"ECS 必须 ≤ OOP 的 60%": 实测比值在 0.1~0.2, 留足跨机器余量。
-func test_oop_vs_ecs_speed() -> void:
+## 旧实现(逐对象 GameTimer.advance)已迁出框架, 所以这里只钉**绝对阈值**:
+##   实测 1000 个 ≈ 0.045ms、2000 个 ≈ 0.062ms(次线性);
+##   超过 1ms 说明退化成了"逐实体跨语言"路径(每条 1.4µs 那种)。
+func test_idle_tick_within_budget() -> void:
 	const N := 1000
-	var oop: Array = []
-	for i in N:
-		oop.append(GameTimer.new(100.0))
-	var t_oop := PerfTool.bench(func() -> void:
-		for t in oop:
-			t.advance(0.016)
-	, 5, 2)
-
 	var w := _world()
 	var host := w.create_entity()
 	for i in N:
 		TimerSystem.add(w, host, 100.0, {"mode": TimerComponent.RepeatMode.FOREVER, "tag": i})
 	TimerSystem.tick(w, 0.016)   # 预热(建列/缓存)
-	var t_ecs := PerfTool.bench(func() -> void: TimerSystem.tick(w, 0.016), 10, 3)
-
-	assert_true(t_ecs.p50_ms < t_oop.p50_ms * 0.6,
-			"ECS 计时器应显著快于 OOP: oop=%.3fms ecs=%.3fms(1000 个/帧)" % [t_oop.p50_ms, t_ecs.p50_ms])
-	# 数量级闸门: ECS 侧超 1ms 说明退化成了逐实体路径
-	assert_true(t_ecs.p50_ms < 1.0,
-			"ECS 空闲推进 1000 个不应超过 1ms: %.3fms" % t_ecs.p50_ms)
+	var t := PerfTool.bench(func() -> void: TimerSystem.tick(w, 0.016), 10, 3)
+	assert_true(t.p50_ms < 1.0,
+			"空闲推进 %d 个超预算: %.3fms (阈值 1.0)" % [N, t.p50_ms])
 
 
 ## 规模: 2000 个计时器同时到期, 一次 tick 处理完且不退化(逐对象实现约 0.65ms/帧)。
