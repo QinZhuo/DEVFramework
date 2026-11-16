@@ -1,11 +1,7 @@
 [gd_scene format=3 uid="uid://cey2a7net1v4i"]
 
-[ext_resource type="Script" uid="uid://ck45doidck5qg" path="res://Scripts/Entity/ECS/Demo/impl_query/DemoQueryWorld.gd" id="1_world"]
+[ext_resource type="Script" path="res://Scripts/Entity/ECS/Demo/impl_query/DemoQueryWorld.gd" id="1_world"]
 
-[node name="DemoQueryWorld" type="Node2D" unique_id=1769322138]
+[node name="DemoQueryWorld" type="Node2D"]
 script = ExtResource("1_world")
-ball_count = null
-init_seed = null
-max_ball_size = null
-auto_init = null
 auto_tick = false

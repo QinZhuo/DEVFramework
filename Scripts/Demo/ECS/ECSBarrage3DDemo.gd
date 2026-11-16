@@ -28,6 +28,7 @@ var _prefab := -1
 var _per_wave := 60
 var _waves_on := true
 var _popup_on := true
+var _spawner_enabled := true   # 与 _waves_on 同步, 用于'只在变化时写 enabled'
 
 var _hud: Label
 var _t := 0.0
@@ -117,6 +118,8 @@ func _reset() -> void:
 
 	# 生成器: 每 0.25s 一波, 上限 4000
 	_spawner = SpawnerSystem.add(_world, _prefab, 0.25, _per_wave, 4000, 0)
+	_spawner_enabled = _waves_on
+	SpawnerSystem.set_enabled(_world, _spawner, _waves_on)
 	_world.emit_event(&"spawner_wave", {"count": 0})   # 占位, 无实际作用
 
 	# 波次生成 → 给每个新弹丸一个随机方向(逐条初始化, 一波才几十个)
@@ -159,8 +162,11 @@ func _process(delta: float) -> void:
 		return
 	_t += delta
 
-	# ① 生成波次(受开关控制)
-	SpawnerSystem.set_enabled(_world, _spawner, _waves_on)
+	# ① 生成波次(受开关控制)。只在状态变化时写 enabled: set_field 是跨语言调用, 每帧写同值没意义;
+	#    而且世界被重置(R)后 _spawner 可能指向别的实体, 每帧写等于每帧赌一次。
+	if _waves_on != _spawner_enabled:
+		SpawnerSystem.set_enabled(_world, _spawner, _waves_on)
+		_spawner_enabled = _waves_on
 	var t0 := Time.get_ticks_usec()
 	SpawnerSystem.tick(_world, delta)
 	_spawn_ms = float(Time.get_ticks_usec() - t0) / 1000.0

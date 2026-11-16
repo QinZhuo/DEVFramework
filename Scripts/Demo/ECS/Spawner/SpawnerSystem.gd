@@ -115,6 +115,12 @@ static func add(world: ECSWorld, prefab: int, interval: float, per_wave: int,
 	return e
 
 
+## 开关一个生成器。**只在状态变化时调用**(别每帧调): set_field 是跨语言写, 每帧写同一个值没有意义。
 static func set_enabled(world: ECSWorld, spawner: int, on: bool) -> void:
-	if world != null and world.is_alive(spawner):
-		world.set_field(spawner, SpawnerComponent, &"enabled", on)
+	if world == null or spawner < 0:
+		return
+	# is_alive 只保证"这个 id 还活着"; 同一个 id 可能已不是生成器(被回收复用),
+	# 直接 set_field 会落到没有该组件的实体上。
+	if not world.is_alive(spawner) or not world.has_component(spawner, SpawnerComponent):
+		return
+	world.set_field(spawner, SpawnerComponent, &"enabled", on)

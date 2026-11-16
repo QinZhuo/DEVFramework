@@ -1581,6 +1581,18 @@ void ECSCore::set_field(int32_t entity, const StringName &comp, const StringName
 	if (fi < 0) {
 		return;
 	}
+	// 字段序号可能超出**该块**为该组件分配的列数: 当组件定义在运行时变得更宽(或块是旧布局)时,
+	// 只判 cp/fi 还不够, col_at(cp, fi) 会按 col_off 越界。这里再守一道(纯比较, 无跨语言成本),
+	// 并把"API 误用"报一次而不是每帧刷屏。
+	if (fi >= a.col_count(int32_t(cp))) {
+		static std::unordered_set<uint64_t> warned;
+		const uint64_t key = (uint64_t(uint32_t(ci)) << 32) | uint64_t(uint32_t(fi));
+		if (warned.insert(key).second) {
+			ERR_PRINT(vformat("ECS: set_field 字段超出块列范围 comp=%s field=%s (fi=%d, cols=%d) —— 已忽略",
+					comp, field, fi, a.col_count(int32_t(cp))));
+		}
+		return;
+	}
 	const int32_t row = row_of(index);
 	if (row < 0) {
 		return;
