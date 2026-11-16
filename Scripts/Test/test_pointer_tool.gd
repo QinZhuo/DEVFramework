@@ -38,6 +38,23 @@ func test_drag_begin_end() -> void:
 	n.free()
 
 
+## 回归: 拖拽登记不能因为"读不到 OS 按键状态"被自动清掉。
+## 曾经在 is_dragging() 里按 Input.is_mouse_button_pressed 自愈, 真机拖拽中途登记被清 ⇒
+## DragView3D 立刻认为没在拖(卡片不跟手、drag_ended 不发), 教程的换位判定永远拿不到结果。
+func test_drag_survives_without_os_button_state() -> void:
+	var tree := Engine.get_main_loop() as SceneTree
+	var n := Node3D.new()
+	tree.root.add_child(n)
+	await tree.process_frame
+	PointerTool.begin_drag(n)
+	for i in 3:
+		await tree.process_frame
+	assert_true(PointerTool.is_dragging(), "没有 OS 按键状态时也不能清掉拖拽登记")
+	PointerTool.end_drag()
+	assert_false(PointerTool.is_dragging(), "显式 end_drag 才结束")
+	n.queue_free()
+
+
 func test_reset_clears_all() -> void:
 	var n := Node3D.new()
 	PointerTool.enter(n)

@@ -117,8 +117,8 @@ func test_mask_focuses_multiple_targets() -> void:
 	await tree.process_frame
 
 	var step := TutorialStepDef.new()
-	_add_target(step, "Btn1", 0.0)
-	_add_target(step, "Btn2", 8.0)
+	_add_target(step, "Btn1")
+	_add_target(step, "Btn2")
 	step.signals = [_signal_def("Btn2"), _signal_def("Btn1")]
 
 	var guide := _make_guide(host)
@@ -159,7 +159,7 @@ func test_targets_follow_moving_target() -> void:
 	await tree.process_frame
 
 	var step := TutorialStepDef.new()
-	_add_target(step, "Moving", 0.0)
+	_add_target(step, "Moving")
 	var guide := _make_guide(host)
 	await tree.process_frame
 	guide.start(_make_flow([step]), host)
@@ -175,7 +175,10 @@ func test_targets_follow_moving_target() -> void:
 
 
 func test_pure_tip_modes() -> void:
-	# 无目标步骤的两种语义: 有信号 = 只提示不遮挡; 无信号 = 全屏变暗点任意处继续
+	# 无目标步骤的三种语义:
+	#   · 有信号 + 默认配置 → 拦目标外输入但不压暗(等流程推进, 也不能乱点摇杆)
+	#   · 有信号 + block_input=false → 完全不拦("点空白返回"这类靠空白点击推进的步骤)
+	#   · 无信号 → 全屏变暗, 点任意处继续
 	var tree := Engine.get_main_loop() as SceneTree
 	FocusMaskTool.reset()
 	var host := _make_host(tree, "TutPureTip")
@@ -184,6 +187,9 @@ func test_pure_tip_modes() -> void:
 
 	var step_wait := TutorialStepDef.new()
 	step_wait.signals = [_signal_def("Btn")]
+	var step_open := TutorialStepDef.new()
+	step_open.signals = [_signal_def("Btn")]
+	step_open.block_input = false
 	var step_click := TutorialStepDef.new()
 
 	var guide := _make_guide(host)
@@ -191,14 +197,84 @@ func test_pure_tip_modes() -> void:
 
 	guide.start(_make_flow([step_wait]), host)
 	var mask := FocusMaskTool.get_mask()
-	assert_false(mask.is_blocking(), "无目标有信号: 不遮挡输入")
-	assert_true(is_zero_approx(mask.dim_color.a), "无目标有信号: 不绘制暗区")
+	assert_true(mask.is_blocking(), "无目标+等信号: 默认仍要拦目标外输入(否则摇杆等流程入口可被点)")
+	assert_true(is_zero_approx(mask.dim_color.a), "无目标: 不绘制暗区(只拦不压暗)")
+
+	guide.start(_make_flow([step_open]), host)
+	mask = FocusMaskTool.get_mask()
+	assert_false(mask.is_blocking(), "显式 block_input=false: 必须放行(点空白返回类步骤)")
 
 	var click_task := guide.start(_make_flow([step_click]), host)
 	assert_true(mask.is_active() and mask.is_blocking(), "无目标无信号: 应全屏遮挡")
 	assert_true(mask.dim_color.a > 0.0, "无目标无信号: 应绘制暗区")
 	mask._input(_press(Vector2(10, 10)))
 	assert_true(click_task.is_completed, "点击任意处应完成该步骤")
+	host.queue_free()
+
+
+func test_hit_rect_matches_target_exactly() -> void:
+	# 回归: 命中区必须等于目标自身的屏幕矩形 —— 旧的 padding 外扩会把相邻物体(如摇杆)一起框进来,
+	# 表现就是"高亮的是机台, 摇杆却也能点"
+	var tree := Engine.get_main_loop() as SceneTree
+	FocusMaskTool.reset()
+	var host := _make_host(tree, "TutExactRect")
+	var btn := _add_button(host, "Btn", Rect2(120, 90, 180, 70))
+	await tree.process_frame
+
+	var step := TutorialStepDef.new()
+	_add_target(step, "Btn")
+	assert_false("padding" in TutorialTargetDef.new(), "TutorialTargetDef 不应再有 padding(旧框选逻辑已删除)")
+	var resolved: Array[Node] = step.find_targets(host)
+	assert_eq(resolved.size(), 1, "find_targets 应返回节点数组")
+	assert_true(resolved[0] == btn, "find_targets 应解析出目标节点本身")
+
+	var guide := _make_guide(host)
+	await tree.process_frame
+	guide.start(_make_flow([step]), host)
+	var rects := FocusMaskTool.get_mask().get_hit_rects()
+	assert_eq(rects.size(), 1, "单目标应只有一块命中区")
+	assert_approx(rects[0], btn.get_global_rect(), "命中区必须等于目标矩形(无外扩), got=%s" % rects[0])
+	host.queue_free()
+
+
+func test_drag_passes_move_and_release_only() -> void:
+	# 回归: 拖拽期间只放行"移动/松手/右键取消", 左键按下仍按目标区域拦。
+	# 以前整段放行 ⇒ 拖拽窗口里点摇杆之类的流程入口也会生效(拖拽登记残留时等于遮罩失效)
+	var drag_setup := func(m: FocusMask) -> void:
+		m.drag_checker = func(): return true
+		m.focus([], {"block": true, "click_to_complete": false, "dim": Color(0, 0, 0, 0.5)}, null)
+	assert_true(_swallows(_press(Vector2(10, 10)), drag_setup), "拖拽中左键按下必须仍被拦")
+	assert_false(_swallows(InputEventMouseMotion.new(), drag_setup), "拖拽中移动必须放行(否则拖不动)")
+	assert_false(_swallows(_release(Vector2(10, 10)), drag_setup), "拖拽中松手必须放行(否则拖拽收不了尾)")
+	assert_false(_swallows(_press(Vector2(10, 10), MOUSE_BUTTON_RIGHT), drag_setup), "拖拽中右键取消必须放行")
+
+
+func test_advance_action_needs_target_focus() -> void:
+	# 回归: 3D 导航焦点不在目标上时确认键必须被吞 —— InputTool 会直接激活"焦点所在的可交互物"
+	# (摇杆/确认键), 不拦就等于绕过了目标外拦截
+	var tree := Engine.get_main_loop() as SceneTree
+	var host := _make_host(tree, "TutAdvance")
+	var target := Area3D.new()
+	target.name = "Target"
+	host.add_child(target)
+	var other := Area3D.new()
+	other.name = "Other"
+	host.add_child(other)
+	await tree.process_frame
+
+	var setup := func(m: FocusMask) -> void:
+		m.focus([target], {"block": true, "click_to_complete": false, "advance_action": &"ui_accept", "dim": Color(0, 0, 0, 0.5)}, null)
+
+	InputTool.clear_focus_group()
+	assert_true(_swallows(_accept_event(), setup), "焦点为空时应吞掉确认键")
+
+	InputTool.register_focus_group([other])
+	assert_true(_swallows(_accept_event(), setup), "焦点在非目标物体上时必须吞掉确认键")
+
+	InputTool.register_focus_group([target])
+	assert_false(_swallows(_accept_event(), setup), "焦点在目标上时应放行(让玩家照常操作目标)")
+
+	InputTool.clear_focus_group()
 	host.queue_free()
 
 
@@ -330,10 +406,9 @@ func _signal_def(node_path: String) -> NodeSignalDef:
 	return sig
 
 
-func _add_target(step: TutorialStepDef, node_path: String, padding: float) -> void:
+func _add_target(step: TutorialStepDef, node_path: String) -> void:
 	var target := TutorialTargetDef.new()
 	target.node_path = NodePath(node_path)
-	target.padding = padding
 	step.targets.append(target)
 
 
@@ -345,9 +420,44 @@ func _make_flow(steps: Array) -> GroupTaskDef:
 	return flow
 
 
-func _press(pos: Vector2) -> InputEventMouseButton:
+func _press(pos: Vector2, button := MOUSE_BUTTON_LEFT) -> InputEventMouseButton:
 	var ev := InputEventMouseButton.new()
-	ev.button_index = MOUSE_BUTTON_LEFT
+	ev.button_index = button
 	ev.pressed = true
 	ev.position = pos
 	return ev
+
+
+func _release(pos: Vector2) -> InputEventMouseButton:
+	var ev := InputEventMouseButton.new()
+	ev.button_index = MOUSE_BUTTON_LEFT
+	ev.pressed = false
+	ev.position = pos
+	return ev
+
+
+func _accept_event() -> InputEventAction:
+	var ev := InputEventAction.new()
+	ev.action = &"ui_accept"
+	ev.pressed = true
+	return ev
+
+
+## 一次性遮罩 + 独立子视口: handled 标记的初值为 false, 于是每次断言都从干净状态开始。
+## (直接对同一个遮罩连续断言是不行的: set_input_as_handled 之后没有公开 API 复位)
+func _swallows(ev: InputEvent, setup: Callable) -> bool:
+	var tree := Engine.get_main_loop() as SceneTree
+	var vp := SubViewport.new()
+	vp.size = Vector2i(640, 480)
+	tree.root.add_child(vp)
+	var mask := FocusMask.new()
+	vp.add_child(mask)
+	setup.call(mask)
+	if not mask.is_active():
+		_fail("前置: 遮罩未激活, 本次断言不可信")
+		vp.queue_free()
+		return false
+	mask._input(ev)
+	var swallowed := vp.is_input_handled()
+	vp.queue_free()
+	return swallowed

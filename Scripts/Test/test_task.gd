@@ -18,6 +18,15 @@ class FakeReward extends EffectDef:
 class Emitter extends Node:
 	signal hit()
 
+## 连接即回调的信号源: 模拟"状态兜底"(激活时已在目标状态, 连接瞬间就触发)
+class ImmediateSignal extends SignalDef:
+	var connects := 0
+	func connect_signal(_data, callable: Callable) -> void:
+		connects += 1
+		callable.call()
+	func disconnect_signal(_data, _callable: Callable) -> void:
+		pass
+
 
 func test_status_lifecycle() -> void:
 	# INACTIVE → ACTIVE → COMPLETED; 终态不可再激活, complete 幂等
@@ -169,6 +178,30 @@ func test_count_task_with_condition() -> void:
 	src.hit.emit()
 	assert_true(task.is_completed, "达到目标数量应完成")
 	host.queue_free()
+
+
+func test_immediate_signal_does_not_leak_null_handler() -> void:
+	# 回归: 多信号任务里第一个信号"连接时就触发"(状态兜底) ⇒ 任务已完成并清空 _handler。
+	# 修复前循环继续把空 Callable 传给后续 Def, 报 "null::null (Callable)" 并中断流程
+	var first := ImmediateSignal.new()
+	var second := ImmediateSignal.new()
+	var def := SignalTaskDef.new()
+	def.signals = [first, second]
+	var task := Task.create(def)
+	task.activate({"root": null})
+	assert_true(task.is_completed, "首个信号立即触发应完成任务")
+	assert_eq(first.connects, 1, "首个信号应被连接")
+	assert_eq(second.connects, 0, "完成后不应再连后续信号(会拿到空 Callable)")
+
+
+func test_immediate_signals_still_count() -> void:
+	# 同一场景下的计数任务: 两个立即触发的信号都必须各计 1 次, 达标即完成
+	var def := CountTaskDef.new()
+	def.required = 2
+	def.signals = [ImmediateSignal.new(), ImmediateSignal.new()]
+	var task := Task.create(def) as CountTask
+	task.activate({"root": null})
+	assert_eq(task.get_progress(), Vector2i(2, 2), "两个立即触发的信号应各计 1 次并完成")
 
 
 func test_prerequisite_blocks_activation() -> void:
