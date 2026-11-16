@@ -192,6 +192,22 @@ func destroy_entity(entity: int) -> void:
 		_fire_component_remove(c, entity)
 	_fire_entity_destroyed(entity)
 
+
+## 递归销毁: 先销毁所有子孙(深度优先), 再销毁自己。
+## ⚠ 与 destroy_entity 的区别是刻意保留的两种语义:
+##   destroy_entity   = 只销毁自己, 子实体变成孤儿(父关联被解除) —— 适合"捡起/脱下"这类搬运
+##   destroy_recursive= 连坐销毁 —— 适合"舰船爆炸带走挂载炮塔"这类整体消失
+## 之所以不把级联塞进 destroy_entity: 卸载/搬运是高频操作, 隐式级联会静默删掉不该删的实体。
+func destroy_recursive(entity: int, max_depth := 64) -> int:
+	if not is_alive(entity):
+		return 0
+	var killed := 0
+	if max_depth > 0:
+		for child in get_children(entity):
+			killed += destroy_recursive(child, max_depth - 1)
+	destroy_entity(entity)
+	return killed + 1
+
 # ============================================================
 
 ## 设置 child 的父实体为 parent(自动维护关系索引)。child/parent 需存活。
@@ -645,6 +661,117 @@ func set_columns_of(component, fields: Dictionary) -> void:
 	_core.set_columns({cn: fields})
 	_mark_dirty(cn)
 
+
+# ============================================================
+#  空间索引(统一网格) —— RTS/弹幕的"附近"查询
+# ============================================================
+
+var _spatial_comp: StringName = &""   # 当前索引的位置组件(用于写路径自动失效)
+
+## 启用空间索引: 指定位置组件 + Vector2 位置字段 + 格子边长(建议 ≈ 最大查询半径)。
+## 索引在写入/结构变更后自动失效, 下一次查询时整表重建 —— 没有写入的帧不会重建。
+func spatial_enable(component, field: StringName, cell_size: float) -> bool:
+	var cn := resolve_component_name(component)
+	if cn == &"":
+		return false
+	_core.spatial_enable(cn, field, cell_size)
+	_spatial_comp = cn
+	return bool(_core.spatial_stats().get("enabled", false))
+
+func spatial_disable() -> void:
+	_spatial_comp = &""
+	_core.spatial_disable()
+
+## 矩形范围内的实体 id(升序; 不含 prefab)。min/max 为闭区间。
+func spatial_query_rect(min_pos: Vector2, max_pos: Vector2) -> PackedInt32Array:
+	return _core.spatial_query_rect(min_pos, max_pos)
+
+## 圆形范围内的实体 id(升序; 不含 prefab)。内部先按外接矩形取格子, 再做精确距离过滤。
+func spatial_query_radius(center: Vector2, radius: float) -> PackedInt32Array:
+	return _core.spatial_query_radius(center, radius)
+
+## {enabled, cells, entities, dirty, cell_size}
+func spatial_stats() -> Dictionary:
+	return _core.spatial_stats()
+
+
+# ============================================================
+#  确定性查询 / 快照差分
+# ============================================================
+
+## 按字段值排序的行集(并列时以实体 id 为次键 ⇒ 两端结果一致, 可回放)。
+## 数值字段按值排; Vector2/3 按长度排; 其它类型当作 0(仍保持稳定顺序)。
+func query_rows_sorted(anchor, must: Array = [], without: Array = [], field: StringName = &"",
+		descending := false) -> PackedInt32Array:
+	var args := _resolve_query_args(anchor, must, without)
+	if args.is_empty():
+		return PackedInt32Array()
+	return _core.query_rows_sorted(args[0], args[1], args[2], field, descending)
+
+## 快照差分: 只返回 b 相对 a 变化的字段值, 用于网络同步(带宽)。
+## 返回 {comp: {field: {rows: PackedInt32Array, values: Packed 数组}}}
+## ⚠ 只覆盖**字段值**变化; 实体增删属于结构变化, 需配合存档或上层协议处理。
+func snapshot_diff(a: Dictionary, b: Dictionary) -> Dictionary:
+	var out := {}
+	var ac: Array = a.get("components", [])
+	var bc: Array = b.get("components", [])
+	var bmap := {}
+	for cd in bc:
+		bmap[cd.get("name", &"")] = cd
+	for ca in ac:
+		var cn: StringName = ca.get("name", &"")
+		var cb: Dictionary = bmap.get(cn, {})
+		if cb.is_empty():
+			continue
+		if ca.get("entities") != cb.get("entities"):
+			out[cn] = {"structural": true}   # 行集变了: 值差分没有意义, 标记出来
+			continue
+		var fa: Dictionary = ca.get("columns", {})
+		var fb: Dictionary = cb.get("columns", {})
+		var fields := {}
+		for fname in fa:
+			var va = fa[fname]
+			var vb = fb.get(fname)
+			if vb == null or typeof(va) != typeof(vb):
+				continue
+			var idx := PackedInt32Array()
+			for i in mini((va as Array).size() if va is Array else va.size(), vb.size()):
+				if va[i] != vb[i]:
+					idx.append(i)
+			if not idx.is_empty():
+				var picked = vb.duplicate()
+				fields[fname] = {"rows": idx, "values": picked}
+		if not fields.is_empty():
+			out[cn] = fields
+	return out
+
+## 应用差分: 只把 diff 里点名的行写回(结构变化的那部分跳过, 由调用方决定)。
+func apply_diff(diff: Dictionary) -> int:
+	var written := 0
+	for cn in diff:
+		var spec: Dictionary = diff[cn]
+		if spec.get("structural", false):
+			continue
+		var cn_name: StringName = resolve_component_name(cn)
+		if cn_name == &"":
+			continue
+		var cols := {}
+		for fname in spec:
+			var item: Dictionary = spec[fname]
+			var rows: PackedInt32Array = item.get("rows", PackedInt32Array())
+			var vals = item.get("values")
+			if rows.is_empty() or vals == null:
+				continue
+			var col = vals.duplicate()
+			for r in rows:
+				if r < col.size():
+					col[r] = vals[r]
+			cols[fname] = col
+			written += rows.size()
+		if not cols.is_empty():
+			set_columns_of(cn_name, cols)
+	return written
+
 ## 行号 -> 实体 id(anchor 组件的 dense 行号转实体)。
 func entity_of_row(component, row: int) -> int:
 	return _core.entity_of_row(resolve_component_name(component), row)
@@ -989,6 +1116,10 @@ func _fire_entity_destroyed(entity: int) -> void:
 func _mark_dirty(comp: StringName) -> void:
 	if comp == &"":
 		return
+	# 空间索引靠这里失效: 所有写路径(单字段/整列/批量)最终都会走到 _mark_dirty,
+	# 所以在 C++ 的 set_field 里逐个挂钩反而不如这里一处可靠。
+	if _spatial_comp != &"" and comp == _spatial_comp:
+		_core.spatial_invalidate()
 	_dirty_mutex.lock()
 	_dirty_comps[comp] = _frame_count
 	_dirty_mutex.unlock()

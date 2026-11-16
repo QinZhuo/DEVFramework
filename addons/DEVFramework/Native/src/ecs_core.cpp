@@ -1617,6 +1617,49 @@ Variant ECSCore::column_aggregate(int32_t ci, int32_t fi) const {
 }
 
 // 跨块列拆回: 聚合 PackedArray 按序写回各块(与 column_aggregate 顺序一致)
+// 从 Packed 数组取第 k 个元素。
+// ⚠ 必须按 **Packed 数组类型** 分支: 传进来的是 PackedVector2Array 等, 其 get_type() 是
+// PACKED_*_ARRAY, 不是字段类型 VECTOR2 —— 早先按字段类型分支时永远落空, 值全写成 null,
+// 表现为"set_columns_of 之后整列变 0"(而且不报错)。与 agg_at 之前修的是同一类错误。
+static Variant ecs_value_at(const Variant &v, size_t k) {
+	switch (v.get_type()) {
+		case Variant::PACKED_INT32_ARRAY: {
+			PackedInt32Array p = v;
+			return k < size_t(p.size()) ? Variant(int64_t(p[int32_t(k)])) : Variant();
+		}
+		case Variant::PACKED_FLOAT32_ARRAY: {
+			PackedFloat32Array p = v;
+			return k < size_t(p.size()) ? Variant(double(p[int32_t(k)])) : Variant();
+		}
+		case Variant::PACKED_BYTE_ARRAY: {
+			PackedByteArray p = v;
+			return k < size_t(p.size()) ? Variant(bool(p[int32_t(k)])) : Variant();
+		}
+		case Variant::PACKED_VECTOR2_ARRAY: {
+			PackedVector2Array p = v;
+			return k < size_t(p.size()) ? Variant(p[int32_t(k)]) : Variant();
+		}
+		case Variant::PACKED_VECTOR3_ARRAY: {
+			PackedVector3Array p = v;
+			return k < size_t(p.size()) ? Variant(p[int32_t(k)]) : Variant();
+		}
+		case Variant::PACKED_VECTOR4_ARRAY: {
+			PackedVector4Array p = v;
+			return k < size_t(p.size()) ? Variant(p[int32_t(k)]) : Variant();
+		}
+		case Variant::PACKED_COLOR_ARRAY: {
+			PackedColorArray p = v;
+			return k < size_t(p.size()) ? Variant(p[int32_t(k)]) : Variant();
+		}
+		case Variant::PACKED_STRING_ARRAY: {
+			PackedStringArray p = v;
+			return k < size_t(p.size()) ? Variant(p[int32_t(k)]) : Variant();
+		}
+		default:
+			return Variant();
+	}
+}
+
 void ECSCore::column_scatter(int32_t ci, int32_t fi, const Variant &values) {
 	const Variant::Type t = components_[ci].fields[fi].type;
 	size_t idx = 0;
@@ -1680,43 +1723,21 @@ void ECSCore::column_scatter(int32_t ci, int32_t fi, const Variant &values) {
 				}
 				default: {
 					for (int32_t r = 0; r < int32_t(a.entities.size()); ++r) {
-						Variant v;
-				switch (values.get_type()) {
-					case Variant::INT: { PackedInt32Array p = values; v = Variant(int64_t(p[int32_t(idx)])); break; }
-					case Variant::FLOAT: { PackedFloat32Array p = values; v = Variant(double(p[int32_t(idx)])); break; }
-					case Variant::BOOL: { PackedByteArray p = values; v = Variant(bool(p[int32_t(idx)])); break; }
-					case Variant::VECTOR2: { PackedVector2Array p = values; v = Variant(Vector2(p[int32_t(idx)])); break; }
-					case Variant::VECTOR3: { PackedVector3Array p = values; v = Variant(Vector3(p[int32_t(idx)])); break; }
-					case Variant::VECTOR4: { PackedVector4Array p = values; v = Variant(Vector4(p[int32_t(idx)])); break; }
-					case Variant::COLOR: { PackedColorArray p = values; v = Variant(Color(p[int32_t(idx)])); break; }
-					case Variant::STRING: { PackedStringArray p = values; v = Variant(p[int32_t(idx)]); break; }
-					default: v = Variant();
-				}
-				++idx;
-						col.set(r, v);
+						col.set(r, ecs_value_at(values, idx));
+						++idx;
 					}
 					break;
 				}
 			}
 		} else {
+			// 慢路径: 块内含 prefab(模板与实例同块是**常态**, 因为 instantiate 就追加在模板块里)。
+			// 逐行 set 并跳过 prefab 行; 取值必须用 ecs_value_at(按 Packed 类型)。
 			for (int32_t r = 0; r < int32_t(a.entities.size()); ++r) {
 				if (is_prefab_index(a.entities[r])) {
 					continue;
 				}
-				Variant v;
-				switch (values.get_type()) {
-					case Variant::INT: { PackedInt32Array p = values; v = Variant(int64_t(p[int32_t(idx)])); break; }
-					case Variant::FLOAT: { PackedFloat32Array p = values; v = Variant(double(p[int32_t(idx)])); break; }
-					case Variant::BOOL: { PackedByteArray p = values; v = Variant(bool(p[int32_t(idx)])); break; }
-					case Variant::VECTOR2: { PackedVector2Array p = values; v = Variant(Vector2(p[int32_t(idx)])); break; }
-					case Variant::VECTOR3: { PackedVector3Array p = values; v = Variant(Vector3(p[int32_t(idx)])); break; }
-					case Variant::VECTOR4: { PackedVector4Array p = values; v = Variant(Vector4(p[int32_t(idx)])); break; }
-					case Variant::COLOR: { PackedColorArray p = values; v = Variant(Color(p[int32_t(idx)])); break; }
-					case Variant::STRING: { PackedStringArray p = values; v = Variant(p[int32_t(idx)]); break; }
-					default: v = Variant();
-				}
+				col.set(r, ecs_value_at(values, idx));
 				++idx;
-				col.set(r, v);
 			}
 		}
 	}
@@ -2841,6 +2862,267 @@ Dictionary ECSCore::debug_stats() const {
 // ECSCore — 序列化/反序列化
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// 空间索引(统一网格): 格子 → 实体 id。脏时下一次查询整表重建(20k 约 1~2ms, 无写入的帧不重建)。
+// GDScript 侧在 _mark_dirty(该组件) 时调 spatial_invalidate(), 所以写入与结构变更都能覆盖到。
+// ---------------------------------------------------------------------------
+
+void ECSCore::spatial_mark_dirty() {
+	if (spatial_enabled_) {
+		spatial_dirty_ = true;
+	}
+}
+
+int64_t ECSCore::spatial_key(int32_t cx, int32_t cy) {
+	return (int64_t(uint32_t(cx)) << 32) | int64_t(uint32_t(cy));
+}
+
+void ECSCore::spatial_enable(const StringName &comp, const StringName &field, double cell_size) {
+	const int32_t ci = comp_index(comp);
+	if (ci < 0) {
+		return;
+	}
+	const int32_t fi = components_[ci].field_index(field);
+	if (fi < 0 || components_[ci].fields[fi].type != Variant::VECTOR2) {
+		return; // 只支持 2D 位置字段(3D 需要另一套键)
+	}
+	spatial_comp_ = ci;
+	spatial_field_ = fi;
+	spatial_cell_ = float(cell_size > 0.0 ? cell_size : 1.0);
+	spatial_enabled_ = true;
+	spatial_dirty_ = true;
+}
+
+void ECSCore::spatial_disable() {
+	spatial_enabled_ = false;
+	spatial_dirty_ = true;
+	spatial_cells_.clear();
+	spatial_built_entities_ = 0;
+}
+
+void ECSCore::spatial_rebuild() {
+	spatial_dirty_ = false;
+	spatial_cells_.clear();
+	spatial_built_entities_ = 0;
+	if (!spatial_enabled_) {
+		return;
+	}
+	const float cs = spatial_cell_ > 0.0f ? spatial_cell_ : 1.0f;
+	for (int32_t arch : archs_with(spatial_comp_)) {
+		Archetype &a = archetypes_[size_t(arch)];
+		const int32_t cp = a.comp_pos(spatial_comp_);
+		if (cp < 0) {
+			continue;
+		}
+		const ECSColumn &col = a.cols[size_t(cp)][size_t(spatial_field_)];
+		if (col.type != Variant::VECTOR2) {
+			continue;
+		}
+		const size_t n = a.entities.size();
+		for (size_t r = 0; r < n; ++r) {
+			const int32_t id = a.entities[r];
+			if (is_prefab_index(id)) {
+				continue;
+			}
+			const Vector2 p = col.v2[r];
+			const int32_t cx = int32_t(Math::floor(p.x / cs));
+			const int32_t cy = int32_t(Math::floor(p.y / cs));
+			spatial_cells_[spatial_key(cx, cy)].push_back(id);
+			++spatial_built_entities_;
+		}
+	}
+}
+
+PackedInt32Array ECSCore::spatial_query_rect(const Vector2 &min_pos, const Vector2 &max_pos) {
+	PackedInt32Array out;
+	if (!spatial_enabled_) {
+		return out;
+	}
+	if (spatial_dirty_) {
+		spatial_rebuild();
+	}
+	const float cs = spatial_cell_ > 0.0f ? spatial_cell_ : 1.0f;
+	const int32_t x0 = int32_t(Math::floor(min_pos.x / cs));
+	const int32_t x1 = int32_t(Math::floor(max_pos.x / cs));
+	const int32_t y0 = int32_t(Math::floor(min_pos.y / cs));
+	const int32_t y1 = int32_t(Math::floor(max_pos.y / cs));
+	std::vector<int32_t> hits;
+	for (int32_t cx = x0; cx <= x1; ++cx) {
+		for (int32_t cy = y0; cy <= y1; ++cy) {
+			auto it = spatial_cells_.find(spatial_key(cx, cy));
+			if (it == spatial_cells_.end()) {
+				continue;
+			}
+			for (int32_t id : it->second) {
+				const int32_t idx = ecs_index_of(id);
+				if (idx < 0 || idx >= int32_t(entity_arch_.size())) {
+					continue;
+				}
+				const int32_t arch = entity_arch_[size_t(idx)];
+				if (arch < 0) {
+					continue; // 已被移除(索引陈旧的那一格)
+				}
+				const int32_t cp = archetypes_[size_t(arch)].comp_pos(spatial_comp_);
+				const int32_t row = archetypes_[size_t(arch)].row_of(idx);
+				if (cp < 0 || row < 0) {
+					continue;
+				}
+				const Vector2 p = archetypes_[size_t(arch)].cols[size_t(cp)][size_t(spatial_field_)]
+										  .v2[size_t(row)];
+				if (p.x < min_pos.x || p.x > max_pos.x || p.y < min_pos.y || p.y > max_pos.y) {
+					continue;      // 格子命中但点在矩形外
+				}
+				hits.push_back(id);
+			}
+		}
+	}
+	std::sort(hits.begin(), hits.end());   // 确定性: 同一帧同一查询必须同序
+	out.resize(int32_t(hits.size()));
+	int32_t *w = out.ptrw();
+	for (size_t i = 0; i < hits.size(); ++i) {
+		w[i] = hits[i];
+	}
+	return out;
+}
+
+PackedInt32Array ECSCore::spatial_query_radius(const Vector2 &center, double radius) {
+	PackedInt32Array out;
+	if (!spatial_enabled_ || radius <= 0.0) {
+		return out;
+	}
+	const float r = float(radius);
+	const Vector2 mn(center.x - r, center.y - r);
+	const Vector2 mx(center.x + r, center.y + r);
+	PackedInt32Array bbox = spatial_query_rect(mn, mx);
+	const float r2 = r * r;
+	std::vector<int32_t> hits;
+	hits.reserve(size_t(bbox.size()));
+	for (int32_t i = 0; i < bbox.size(); ++i) {
+		const int32_t id = bbox[i];
+		const int32_t idx = ecs_index_of(id);
+		if (idx < 0 || idx >= int32_t(entity_arch_.size())) {
+			continue;
+		}
+		const int32_t arch = entity_arch_[size_t(idx)];
+		if (arch < 0) {
+			continue;
+		}
+		const int32_t cp = archetypes_[size_t(arch)].comp_pos(spatial_comp_);
+		const int32_t row = archetypes_[size_t(arch)].row_of(idx);
+		if (cp < 0 || row < 0) {
+			continue;
+		}
+		const Vector2 p = archetypes_[size_t(arch)].cols[size_t(cp)][size_t(spatial_field_)]
+								  .v2[size_t(row)];
+		if (p.distance_squared_to(center) <= r2) {
+			hits.push_back(id);
+		}
+	}
+	out.resize(int32_t(hits.size()));
+	int32_t *w = out.ptrw();
+	for (size_t i = 0; i < hits.size(); ++i) {
+		w[i] = hits[i];
+	}
+	return out;
+}
+
+Dictionary ECSCore::spatial_stats() {
+	Dictionary d;
+	d["enabled"] = spatial_enabled_;
+	d["cells"] = int64_t(spatial_cells_.size());
+	d["entities"] = int64_t(spatial_built_entities_);
+	d["dirty"] = spatial_dirty_;
+	d["cell_size"] = double(spatial_cell_);
+	return d;
+}
+
+// 统一取"用于排序的数值键": 数值直接取, 向量取长度, 其它 = 0(保持稳定而非报错)。
+double ecs_sort_key(const godot::ECSColumn &col, size_t row) {
+	switch (col.type) {
+		case godot::Variant::INT:
+			return double(col.i32[row]);
+		case godot::Variant::FLOAT:
+			return double(col.f32[row]);
+		case godot::Variant::BOOL:
+			return col.b[row] ? 1.0 : 0.0;
+		case godot::Variant::VECTOR2:
+			return double(col.v2[row].length());
+		case godot::Variant::VECTOR3:
+			return double(col.v3[row].length());
+		default:
+			return 0.0;
+	}
+}
+
+PackedInt32Array ECSCore::query_rows_sorted(const StringName &anchor, const PackedStringArray &must,
+		const PackedStringArray &without, const StringName &field, bool descending) {
+	PackedInt32Array rows = query_rows(anchor, must, without);
+	const int32_t ci = comp_index(anchor);
+	if (ci < 0 || rows.is_empty()) {
+		return rows;
+	}
+	const int32_t fi = components_[ci].field_index(field);
+	if (fi < 0) {
+		return rows; // 字段不存在: 退化为按块内行号(仍然是确定的)
+	}
+	// 一次扫描建立 聚合行 → (排序键, 实体 id), 与 get_column 的行序完全一致
+	std::vector<double> keys;
+	std::vector<int32_t> ids;
+	for (int32_t arch : archs_with(ci)) {
+		Archetype &a = archetypes_[size_t(arch)];
+		const int32_t cp = a.comp_pos(ci);
+		if (cp < 0) {
+			continue;
+		}
+		const ECSColumn &col = a.cols[size_t(cp)][size_t(fi)];
+		for (size_t r = 0; r < a.entities.size(); ++r) {
+			const int32_t id = a.entities[r];
+			if (is_prefab_index(id)) {
+				continue;
+			}
+			keys.push_back(ecs_sort_key(col, r));
+			ids.push_back(id);
+		}
+	}
+	struct RowKey {
+		double key;
+		int32_t row;
+		int32_t id;
+	};
+	std::vector<RowKey> order;
+	order.reserve(size_t(rows.size()));
+	for (int32_t i = 0; i < rows.size(); ++i) {
+		const int32_t row = rows[i];
+		if (row < 0 || row >= int32_t(keys.size())) {
+			continue;
+		}
+		order.push_back({ keys[size_t(row)], row, ids[size_t(row)] });
+	}
+	// 次键用实体 id: 同值时也必须是确定顺序(否则联机两端遍历顺序可能不同)
+	if (descending) {
+		std::sort(order.begin(), order.end(), [](const RowKey &a, const RowKey &b) {
+			if (a.key != b.key) {
+				return a.key > b.key;
+			}
+			return a.id < b.id;
+		});
+	} else {
+		std::sort(order.begin(), order.end(), [](const RowKey &a, const RowKey &b) {
+			if (a.key != b.key) {
+				return a.key < b.key;
+			}
+			return a.id < b.id;
+		});
+	}
+	PackedInt32Array out;
+	out.resize(int32_t(order.size()));
+	int32_t *w = out.ptrw();
+	for (size_t i = 0; i < order.size(); ++i) {
+		w[i] = order[i].row;
+	}
+	return out;
+}
+
 int32_t ECSCore::archetype_count() const {
 	return int32_t(archetypes_.size());
 }
@@ -3384,6 +3666,13 @@ void ECSCore::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("cmd_destroy_many", "entities"), &ECSCore::cmd_destroy_many);
 	ClassDB::bind_method(D_METHOD("archetype_count"), &ECSCore::archetype_count);
 	ClassDB::bind_method(D_METHOD("compact_archetypes"), &ECSCore::compact_archetypes);
+	ClassDB::bind_method(D_METHOD("spatial_enable", "comp", "field", "cell_size"), &ECSCore::spatial_enable);
+	ClassDB::bind_method(D_METHOD("spatial_disable"), &ECSCore::spatial_disable);
+	ClassDB::bind_method(D_METHOD("spatial_invalidate"), &ECSCore::spatial_invalidate);
+	ClassDB::bind_method(D_METHOD("spatial_query_rect", "min_pos", "max_pos"), &ECSCore::spatial_query_rect);
+	ClassDB::bind_method(D_METHOD("spatial_query_radius", "center", "radius"), &ECSCore::spatial_query_radius);
+	ClassDB::bind_method(D_METHOD("spatial_stats"), &ECSCore::spatial_stats);
+	ClassDB::bind_method(D_METHOD("query_rows_sorted", "anchor", "must", "without", "field", "descending"), &ECSCore::query_rows_sorted, DEFVAL(false));
 	ClassDB::bind_method(D_METHOD("flush_commands"), &ECSCore::flush_commands);
 	ClassDB::bind_method(D_METHOD("pending_command_count"), &ECSCore::pending_command_count);
 	ClassDB::bind_method(D_METHOD("created_entity_at", "index"), &ECSCore::created_entity_at);

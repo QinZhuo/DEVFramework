@@ -220,6 +220,27 @@ public:
 	// (与 get_columns 返回结构一致), 一次跨语言替代 N 次 set_column。
 	void set_columns(const Dictionary &values);
 
+	// ---- 空间索引(统一网格): RTS/弹幕的"附近"查询, 避免每帧全表扫 ----
+	// 业界做法(flecs 无内置, 常见是格子哈希/四叉树; Bevy 靠 avian 等插件): 网格最省事且 O(1) 插删。
+	// 启用: 指定"位置组件 + 位置字段(必须是 VECTOR2) + 格子边长"。
+	// 维护: 结构变更/该列写入时标脏, 下一次查询时**整表重建**(O(n), 20k 约 100µs) ——
+	// 比"每次 set_field 增量更新"简单且不会漏; 无写入的帧不会重建。
+	void spatial_enable(const StringName &comp, const StringName &field, double cell_size);
+	void spatial_disable();
+	// 标脏(由 GDScript 在 _mark_dirty(该组件) 时调用): 值变化/结构变化都走这一条。
+	void spatial_invalidate() { spatial_mark_dirty(); }
+	// 返回落在矩形/圆内的**实体 id**(升序, 保证确定性; 不含 prefab)。
+	PackedInt32Array spatial_query_rect(const Vector2 &min_pos, const Vector2 &max_pos);
+	PackedInt32Array spatial_query_radius(const Vector2 &center, double radius);
+	// {enabled, cells, entities, rebuilt, cell_size}
+	Dictionary spatial_stats();
+
+	// ---- 确定性查询: 按字段值排序的行集 ----
+	// 联机/回放要求"同样的输入 → 同样的遍历顺序"。行集本身按块内行号稳定,
+	// 但需要按业务键(如距离/血量)排序时必须有确定性的并列规则 → 这里以实体 id 作次键。
+	PackedInt32Array query_rows_sorted(const StringName &anchor, const PackedStringArray &must,
+			const PackedStringArray &without, const StringName &field, bool descending = false);
+
 	// ---- Tier 0: 原生批量运算 (纯 C++ 循环, 无 GDScript 解释开销) ----
 	enum BatchOp { BATCH_ADD = 0, BATCH_MUL_ADD = 1, BATCH_SET = 2, BATCH_CLAMP = 3 };
 	// 条件比较符
@@ -394,6 +415,18 @@ private:
 	std::vector<uint8_t> prefab_bitmap_;
 	// 组件名 -> components_ 下标(注册时填一次, 之后只读 —— 并行系统里查也安全)
 	std::unordered_map<uint64_t, int32_t> component_index_;
+	// 空间索引状态: 统一网格(格子 → 实体 id 列表)。dirty 时下次查询整表重建。
+	int32_t spatial_comp_ = -1;
+	int32_t spatial_field_ = -1;
+	float spatial_cell_ = 0.0f;
+	bool spatial_dirty_ = true;
+	bool spatial_enabled_ = false;
+	std::unordered_map<int64_t, std::vector<int32_t>> spatial_cells_;
+	int32_t spatial_built_entities_ = 0;
+	void spatial_mark_dirty();
+	void spatial_rebuild();
+	static int64_t spatial_key(int32_t cx, int32_t cy);
+
 	// archetype 迁移图(flecs 的 "edge" 缓存): (源块, 组件) → 目标块。
 	// find_archetype 是线性扫全部块, 每次 add/remove 都扫一遍; 组件组合一多(100+ 块)会退化。
 	// 块只增不删 ⇒ 边一旦算出永远有效, 无需失效。
