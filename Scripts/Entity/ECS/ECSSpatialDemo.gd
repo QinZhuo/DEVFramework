@@ -103,6 +103,11 @@ func _process(dt: float) -> void:
 		points[q] = Vector2(
 			fposmod(float(q) * 137.5, world_size.x),
 			fposmod(float(q) * 73.3, world_size.y))
+	# ⚠ 第 0 个查询点必须 = 英雄(鼠标)位置:
+	#   它是唯一被画成圆圈、并计入 HUD"命中"的那个查询。
+	#   早先两者不是同一个点(圆圈画在 _hero, 而查询中心是 points[0]=(0,0)),
+	#   于是出现"圆圈在中间、红点全在左上角"的假 bug —— 查询其实是对的, 只是画错了位置。
+	points[0] = _hero
 
 	var t1 := Time.get_ticks_usec()
 	for q in n_q:
