@@ -40,12 +40,8 @@ target_link_libraries(devframework PRIVATE godot-cpp)
 
 set_target_properties(devframework PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
 
-# Windows 去掉 lib 前缀: MinGW 默认直出 libdevframework.dll, 而规范名与 .gdextension
-# 都是 devframework.windows.<类型>.<架构>.dll —— 直出名与规范名必须一致, 否则部署要靠改名兜底。
-# macOS/Linux 保留 lib 前缀(规范名里就有 lib)。
-if(WIN32)
-    set_target_properties(devframework PROPERTIES PREFIX "")
-endif()
+# 不设 PREFIX: 全平台统一 lib 前缀(与 godot-cpp 官方模板、CMake SHLIBPREFIX 默认值一致),
+# 直出名 libdevframework.dll 与规范名同前缀, 部署只需补平台/类型/架构后缀。
 
 # 性能优化: 本机全部 SIMD 指令集(自动向量化)。
 # 注意: -march=native 生成的二进制依赖本机 CPU, 仅用于"目标架构=本机架构"的构建。

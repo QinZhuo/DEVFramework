@@ -103,6 +103,28 @@ func test_ensure_is_idempotent() -> void:
 	_clean_probe()
 
 
+## 库名规则(与 godot-cpp 官方模板一致): 全平台统一 lib 前缀 + <名>.<平台>.<类型>.<架构>.<ext>。
+## 这样 CMake/MinGW 的默认 SHLIBPREFIX 与规范名同前缀, 不需要 PREFIX "" 平台特例;
+## 唯一硬约束是 规范名 与 .gdextension 的 [libraries] 一字不差(否则扩展静默加载失败)。
+func test_library_name_prefix_per_platform() -> void:
+	var rb = REBUILD.new()
+	var name: String = rb._canonical_file("probe", "release", "x86_64")
+	assert_true(name.begins_with("lib"), "规范名应带 lib 前缀: %s" % name)
+	assert_true(name.contains(".release.x86_64"), "应含 类型+架构: %s" % name)
+	match rb._os_label():
+		"windows":
+			assert_true(name.ends_with(".dll"), "Windows 后缀: %s" % name)
+		"macos":
+			assert_true(name.ends_with(".dylib"), "macOS 后缀: %s" % name)
+		"linux":
+			assert_true(name.ends_with(".so"), "Linux 后缀: %s" % name)
+	# 直出名(CMake 默认)与规范名同前缀, 部署才不需要靠改名兜底
+	assert_true(rb._default_out_file("probe").begins_with("lib"), "CMake 直出名也应带 lib")
+	# macOS universal 名字与平台无关
+	var uni: String = rb._universal_file("probe", "release")
+	assert_true(uni.begins_with("lib") and uni.contains(".macos."), "universal 名: %s" % uni)
+
+
 ## CMakeLists 多 target 解析: 每个 add_library 之后的 *_OUTPUT_DIRECTORY 归到它名下。
 ## 这是多插件部署的地基 —— 解析错就会把产物部署/清理到别的插件目录。
 func test_parse_target_outputs_multi() -> void:
