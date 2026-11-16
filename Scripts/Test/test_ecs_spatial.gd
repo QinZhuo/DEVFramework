@@ -11,6 +11,49 @@ extends TestCase
 const Move := preload("res://Scripts/Entity/ECS/ECSDemoMoveComponent.gd")
 
 
+## 回归: set_columns_of 写 Vector2 列必须能原样读回(两个场景: 纯实例 / prefab 与实例同块)。
+##
+## 曾经的 bug(实测把 demo 的空间查询打成 0 命中): 当块内**含 prefab**时 column_scatter 走慢路径,
+## 按 `Variant::VECTOR2` 这类**字段类型**分支, 而传入的是 `PackedVector2Array`(类型是 PACKED_*_ARRAY)
+## → 永远落 default 写 null → **整列变 0, 且不报错**。而 instantiate 生成的实例与模板同块是常态,
+## 所以这条路径覆盖面很大, 必须钉住 —— 之前所有测试的组件字段都是 int/float, 完全没碰到。
+func test_set_columns_vector2_roundtrip() -> void:
+	# 场景 A: 纯实例(块内无 prefab) → 走 memcpy 快路径
+	var w := ECSWorld.new(false)
+	w.register_component(Move)
+	for i in 4:
+		var e := w.create_entity()
+		w.add_component(e, Move)
+	var want := PackedVector2Array([Vector2(1.5, 2.5), Vector2(-3.0, 4.0), Vector2(0, 0), Vector2(7.5, -8.25)])
+	w.set_columns_of(Move, {&"pos": want})
+	var got: PackedVector2Array = w.get_column(Move, &"pos")
+	assert_eq(got.size(), 4, "列长度应等于实体数")
+	for i in 4:
+		assert_approx(got[i].x, want[i].x, "场景A 第 %d 行 x" % i)
+		assert_approx(got[i].y, want[i].y, "场景A 第 %d 行 y" % i)
+
+	# 场景 B: prefab 与实例同块(instantiate 的常态) → 走慢路径, 必须跳过 prefab 行且值不错位
+	var w2 := ECSWorld.new(false)
+	w2.register_component(Move)
+	var pf := w2.create_prefab()
+	w2.prefab_add(pf, Move, {})
+	w2.instantiate(pf, 3)
+	var want2 := PackedVector2Array([Vector2(10, 11), Vector2(20, 21), Vector2(30, 31)])
+	w2.set_columns_of(Move, {&"pos": want2})
+	var got2: PackedVector2Array = w2.get_column(Move, &"pos")
+	assert_eq(got2.size(), 3, "prefab 行不应计入聚合列")
+	for i in 3:
+		assert_approx(got2[i].x, want2[i].x, "场景B 第 %d 行 x(prefab 同块)" % i)
+		assert_approx(got2[i].y, want2[i].y, "场景B 第 %d 行 y(prefab 同块)" % i)
+
+	# 单列 API 走同一条 scatter 路径, 一并钉住
+	var one := PackedVector2Array([Vector2(99, 98), Vector2(97, 96), Vector2(95, 94)])
+	w2.set_column(Move, &"pos", one)
+	var got3: PackedVector2Array = w2.get_column(Move, &"pos")
+	assert_approx(got3[0].x, 99.0, "set_column 单列也应写入")
+	assert_approx(got3[2].y, 94.0, "set_column 末行也要正确")
+
+
 ## 10×10 网格(间距 2)。矩形取整格、圆取精确距离; 移动后索引自动失效。
 func test_spatial_rect_and_radius() -> void:
 	var w := ECSWorld.new(false)
@@ -98,6 +141,38 @@ func test_snapshot_diff_and_apply() -> void:
 	assert_eq(int(w.get_field(ids[5], PTCompA, &"x")), 5, "回滚后第二处也恢复")
 
 	assert_true(w.snapshot_diff(a, a).is_empty(), "无变化时差分应为空")
+
+
+## 源数组比块行数短时不得越界读: 有值的写值, 缺的行写字段默认值。
+func test_short_source_array_is_safe() -> void:
+	var w := ECSWorld.new(false)
+	w.register_component(Move)
+	for i in 4:
+		var e := w.create_entity()
+		w.add_component(e, Move)
+	w.set_columns_of(Move, {&"pos": PackedVector2Array([Vector2(5, 6)])})   # 只有 1 个值
+	var back: PackedVector2Array = w.get_column(Move, &"pos")
+	assert_eq(back.size(), 4, "列长度不应变化")
+	assert_approx(back[0].x, 5.0, "首个值应写入")
+	assert_approx(back[3].x, 0.0, "缺失的行应写默认值而不是脏内存")
+
+
+## 空字段排序 = 按实体 id 升序(规范顺序): 不依赖块创建历史, 联机两端必然一致。
+func test_canonical_order_by_entity_id() -> void:
+	var w := ECSWorld.new(false)
+	w.register_component(PTCompA)
+	for i in 5:
+		var e := w.create_entity()
+		w.add_component(e, PTCompA)
+		w.set_field(e, PTCompA, &"x", 5 - i)   # 故意让字段值与 id 反序
+	var ents := w.query_entities(PTCompA)
+	var rows := w.query_rows_sorted(PTCompA, [], [], &"")
+	assert_eq(rows.size(), 5, "行集大小")
+	var prev := -1
+	for r in rows:
+		var e := ents[r]
+		assert_true(e > prev, "应按实体 id 升序(而不是字段值序)")
+		prev = e
 
 
 ## 层级: destroy_entity 只解除关联(子变孤儿), destroy_recursive 连坐销毁。

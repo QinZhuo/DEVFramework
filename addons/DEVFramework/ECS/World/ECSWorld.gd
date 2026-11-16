@@ -345,6 +345,9 @@ func set_field(entity: int, component, field: StringName, value) -> void:
 	var cn := resolve_component_name(component)
 	_record_access(cn)
 	_core.set_field(entity, cn, field, value)
+	# 逐帧"每个单位都动"的场景走单实体增量: 只挪一格, 不触发整表重建
+	if _spatial_comp == cn and _spatial_field == field:
+		_core.spatial_update_entity(entity)
 	_mark_dirty(cn)
 
 
@@ -667,6 +670,7 @@ func set_columns_of(component, fields: Dictionary) -> void:
 # ============================================================
 
 var _spatial_comp: StringName = &""   # 当前索引的位置组件(用于写路径自动失效)
+var _spatial_field: StringName = &""  # 位置字段(单字段 set_field 时走增量更新)
 
 ## 启用空间索引: 指定位置组件 + Vector2 位置字段 + 格子边长(建议 ≈ 最大查询半径)。
 ## 索引在写入/结构变更后自动失效, 下一次查询时整表重建 —— 没有写入的帧不会重建。
@@ -676,6 +680,7 @@ func spatial_enable(component, field: StringName, cell_size: float) -> bool:
 		return false
 	_core.spatial_enable(cn, field, cell_size)
 	_spatial_comp = cn
+	_spatial_field = field
 	return bool(_core.spatial_stats().get("enabled", false))
 
 func spatial_disable() -> void:
@@ -723,8 +728,25 @@ func snapshot_diff(a: Dictionary, b: Dictionary) -> Dictionary:
 		var cb: Dictionary = bmap.get(cn, {})
 		if cb.is_empty():
 			continue
-		if ca.get("entities") != cb.get("entities"):
-			out[cn] = {"structural": true}   # 行集变了: 值差分没有意义, 标记出来
+		var ea = ca.get("entities", PackedInt32Array())
+		var eb = cb.get("entities", PackedInt32Array())
+		if ea != eb:
+			# 结构变化: 记录"新增/消失"的实体 id(值差分行号已不对齐, 不能混在一起)
+			var in_a := {}
+			for e in ea:
+				in_a[e] = true
+			var in_b := {}
+			for e in eb:
+				in_b[e] = true
+			var created := PackedInt32Array()
+			for e in eb:
+				if not in_a.has(e):
+					created.append(e)
+			var destroyed := PackedInt32Array()
+			for e in ea:
+				if not in_b.has(e):
+					destroyed.append(e)
+			out[cn] = {"created": created, "destroyed": destroyed}
 			continue
 		var fa: Dictionary = ca.get("columns", {})
 		var fb: Dictionary = cb.get("columns", {})
@@ -750,7 +772,19 @@ func apply_diff(diff: Dictionary) -> int:
 	var written := 0
 	for cn in diff:
 		var spec: Dictionary = diff[cn]
-		if spec.get("structural", false):
+		# 结构差分: 该组件上的实体增删。删除可直接执行; 新增只能建出实体(字段值为默认),
+		# 因为差分格式不带新实体的字段值 —— 需要保留新实体数据时请用全量存档对齐。
+		if spec.has("created") or spec.has("destroyed"):
+			var cn_s: StringName = resolve_component_name(cn)
+			for e in (spec.get("destroyed", PackedInt32Array()) as PackedInt32Array):
+				if is_alive(e):
+					destroy_entity(e)
+					written += 1
+			for _e in (spec.get("created", PackedInt32Array()) as PackedInt32Array):
+				var ne := create_entity()
+				if cn_s != &"":
+					add_component(ne, cn_s)
+					written += 1
 			continue
 		var cn_name: StringName = resolve_component_name(cn)
 		if cn_name == &"":

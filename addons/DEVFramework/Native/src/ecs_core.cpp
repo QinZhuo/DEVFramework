@@ -1660,6 +1660,31 @@ static Variant ecs_value_at(const Variant &v, size_t k) {
 	}
 }
 
+// Packed 数组元素个数(长度校验用): 不校验就会越界读 —— memcpy 拿 col.size() 当源长度,
+// 调用方传短数组时读到堆外。这里只做"够不够"的判断, 不做类型转换。
+static int32_t ecs_value_count(const Variant &v) {
+	switch (v.get_type()) {
+		case Variant::PACKED_INT32_ARRAY:
+			return PackedInt32Array(v).size();
+		case Variant::PACKED_FLOAT32_ARRAY:
+			return PackedFloat32Array(v).size();
+		case Variant::PACKED_BYTE_ARRAY:
+			return PackedByteArray(v).size();
+		case Variant::PACKED_VECTOR2_ARRAY:
+			return PackedVector2Array(v).size();
+		case Variant::PACKED_VECTOR3_ARRAY:
+			return PackedVector3Array(v).size();
+		case Variant::PACKED_VECTOR4_ARRAY:
+			return PackedVector4Array(v).size();
+		case Variant::PACKED_COLOR_ARRAY:
+			return PackedColorArray(v).size();
+		case Variant::PACKED_STRING_ARRAY:
+			return PackedStringArray(v).size();
+		default:
+			return 0;
+	}
+}
+
 void ECSCore::column_scatter(int32_t ci, int32_t fi, const Variant &values) {
 	const Variant::Type t = components_[ci].fields[fi].type;
 	size_t idx = 0;
@@ -1677,6 +1702,21 @@ void ECSCore::column_scatter(int32_t ci, int32_t fi, const Variant &values) {
 		}
 		const int cp = a.comp_pos(ci);
 		auto &col = a.cols[cp][fi];
+		// 源数组不够长 → 不 memcpy(会越界读), 逐行写: 有值的写值, 缺的写字段默认值。
+		// 静默越界比"写默认值"危险得多: 前者读脏内存且不报错。
+		if (idx + col.size() > size_t(ecs_value_count(values))) {
+			for (int32_t r = 0; r < int32_t(a.entities.size()); ++r) {
+				if (is_prefab_index(a.entities[r])) {
+					continue;
+				}
+				const Variant v = idx < size_t(ecs_value_count(values))
+						? ecs_value_at(values, idx)
+						: components_[ci].defaults[fi];
+				col.set(r, v);
+				++idx;
+			}
+			continue;
+		}
 		if (!has_pref(a)) {
 			switch (t) {
 				case Variant::INT: {
@@ -2903,6 +2943,7 @@ void ECSCore::spatial_disable() {
 void ECSCore::spatial_rebuild() {
 	spatial_dirty_ = false;
 	spatial_cells_.clear();
+	spatial_owner_.clear();
 	spatial_built_entities_ = 0;
 	if (!spatial_enabled_) {
 		return;
@@ -2927,10 +2968,50 @@ void ECSCore::spatial_rebuild() {
 			const Vector2 p = col.v2[r];
 			const int32_t cx = int32_t(Math::floor(p.x / cs));
 			const int32_t cy = int32_t(Math::floor(p.y / cs));
-			spatial_cells_[spatial_key(cx, cy)].push_back(id);
+			const int64_t key = spatial_key(cx, cy);
+			spatial_cells_[key].push_back(id);
+			spatial_owner_[id] = key;
 			++spatial_built_entities_;
 		}
 	}
+}
+
+void ECSCore::spatial_update_entity(int32_t id) {
+	if (!spatial_enabled_ || spatial_dirty_) {
+		return;   // 已脏: 下一次查询反正会整表重建, 单条增量没有意义
+	}
+	const int32_t idx = ecs_index_of(id);
+	if (idx < 0 || idx >= int32_t(entity_arch_.size())) {
+		return;
+	}
+	auto it = spatial_owner_.find(id);
+	const int32_t arch = entity_arch_[size_t(idx)];
+	if (arch < 0) {
+		// 实体已不属于任何块: 从旧格子摘掉
+		if (it != spatial_owner_.end()) {
+			auto &vec = spatial_cells_[it->second];
+			vec.erase(std::remove(vec.begin(), vec.end(), id), vec.end());
+			spatial_owner_.erase(it);
+		}
+		return;
+	}
+	const int32_t cp = archetypes_[size_t(arch)].comp_pos(spatial_comp_);
+	const int32_t row = archetypes_[size_t(arch)].row_of(idx);
+	if (cp < 0 || row < 0) {
+		return;
+	}
+	const float cs = spatial_cell_ > 0.0f ? spatial_cell_ : 1.0f;
+	const Vector2 p = archetypes_[size_t(arch)].cols[size_t(cp)][size_t(spatial_field_)].v2[size_t(row)];
+	const int64_t nk = spatial_key(int32_t(Math::floor(p.x / cs)), int32_t(Math::floor(p.y / cs)));
+	if (it != spatial_owner_.end() && it->second == nk) {
+		return;   // 同一格: 什么都不用做(绝大多数"小步移动"都是这种)
+	}
+	if (it != spatial_owner_.end()) {
+		auto &vec = spatial_cells_[it->second];
+		vec.erase(std::remove(vec.begin(), vec.end(), id), vec.end());
+	}
+	spatial_cells_[nk].push_back(id);
+	spatial_owner_[id] = nk;
 }
 
 PackedInt32Array ECSCore::spatial_query_rect(const Vector2 &min_pos, const Vector2 &max_pos) {
@@ -3061,8 +3142,12 @@ PackedInt32Array ECSCore::query_rows_sorted(const StringName &anchor, const Pack
 	if (ci < 0 || rows.is_empty()) {
 		return rows;
 	}
-	const int32_t fi = components_[ci].field_index(field);
-	if (fi < 0) {
+	// field 为空 = "按实体 id 排序" —— 规范顺序: 不依赖块创建历史, 两端必然一致。
+	// (块内行号虽然稳定, 但"先加后删过哪些组件"会影响块序, 跨端不可复现。)
+	const int32_t fi = field.is_empty() ? -1 : components_[ci].field_index(field);
+	if (field.is_empty()) {
+		// 走下面的通用排序, 键统一取 0 → 等价于按 id 升序
+	} else if (fi < 0) {
 		return rows; // 字段不存在: 退化为按块内行号(仍然是确定的)
 	}
 	// 一次扫描建立 聚合行 → (排序键, 实体 id), 与 get_column 的行序完全一致
@@ -3074,13 +3159,12 @@ PackedInt32Array ECSCore::query_rows_sorted(const StringName &anchor, const Pack
 		if (cp < 0) {
 			continue;
 		}
-		const ECSColumn &col = a.cols[size_t(cp)][size_t(fi)];
 		for (size_t r = 0; r < a.entities.size(); ++r) {
 			const int32_t id = a.entities[r];
 			if (is_prefab_index(id)) {
 				continue;
 			}
-			keys.push_back(ecs_sort_key(col, r));
+			keys.push_back(fi < 0 ? 0.0 : ecs_sort_key(a.cols[size_t(cp)][size_t(fi)], r));
 			ids.push_back(id);
 		}
 	}
@@ -3669,6 +3753,7 @@ void ECSCore::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("spatial_enable", "comp", "field", "cell_size"), &ECSCore::spatial_enable);
 	ClassDB::bind_method(D_METHOD("spatial_disable"), &ECSCore::spatial_disable);
 	ClassDB::bind_method(D_METHOD("spatial_invalidate"), &ECSCore::spatial_invalidate);
+	ClassDB::bind_method(D_METHOD("spatial_update_entity", "id"), &ECSCore::spatial_update_entity);
 	ClassDB::bind_method(D_METHOD("spatial_query_rect", "min_pos", "max_pos"), &ECSCore::spatial_query_rect);
 	ClassDB::bind_method(D_METHOD("spatial_query_radius", "center", "radius"), &ECSCore::spatial_query_radius);
 	ClassDB::bind_method(D_METHOD("spatial_stats"), &ECSCore::spatial_stats);
