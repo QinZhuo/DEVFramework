@@ -236,11 +236,7 @@ public:
 	// 返回落在矩形/圆内的**实体 id**(升序, 保证确定性; 不含 prefab)。
 	PackedInt32Array spatial_query_rect(const Vector2 &min_pos, const Vector2 &max_pos);
 	PackedInt32Array spatial_query_radius(const Vector2 &center, double radius);
-	// 3D: spatial_enable 传 VECTOR3 位置字段即切到三维网格(AABB / 球)。
-	// 走整表重建(不做逐实体增量) —— 3D 大世界通常是"少写多查", 增量的收益不如 2D 弹幕明显。
-	PackedInt32Array spatial_query_box(const Vector3 &min_pos, const Vector3 &max_pos);
-	PackedInt32Array spatial_query_sphere(const Vector3 &center, double radius);
-	// {enabled, cells, entities, dirty, cell_size, dims}
+	// {enabled, cells, entities, dirty, cell_size}
 	Dictionary spatial_stats();
 
 	// ---- 确定性查询: 按字段值排序的行集 ----
@@ -432,7 +428,6 @@ private:
 	std::unordered_map<int64_t, std::vector<int32_t>> spatial_cells_;
 	// 实体 id → 所在格子。增量更新时用它 O(1) 找到旧格子, 避免全表扫描。
 	std::unordered_map<int32_t, int64_t> spatial_owner_;
-	bool spatial_3d_ = false;   // 位置字段是 VECTOR3 时为 true(格子键换成三维)
 	int32_t spatial_built_entities_ = 0;
 	void spatial_mark_dirty();
 	void spatial_rebuild();

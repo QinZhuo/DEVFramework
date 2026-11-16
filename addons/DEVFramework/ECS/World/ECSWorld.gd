@@ -669,6 +669,7 @@ func set_columns_of(component, fields: Dictionary) -> void:
 #  空间索引(统一网格) —— RTS/弹幕的"附近"查询
 # ============================================================
 
+var _last_events := {}                # 本帧派发过的事件类型 → 快照(供 take_events 轮询)
 var _spatial_comp: StringName = &""   # 当前索引的位置组件(用于写路径自动失效)
 var _spatial_field: StringName = &""  # 位置字段(单字段 set_field 时走增量更新)
 
@@ -1224,6 +1225,21 @@ func off_event(type: StringName, handler: Callable) -> void:
 	var arr: Array = _event_subscribers.get(type, [])
 	arr.erase(handler)
 
+## 取走本帧某类事件(取一次即清空, 再取返回空)。
+## 与 on_event 订阅是**两种并存**的消费方式:
+##   on_event    = 广播, 所有订阅者都看到本帧全部事件(适合"通知多方")
+##   take_events = 抢占, 第一个取的拿到并从队列移除(适合"只应由一个系统处理")
+func take_events(type: StringName) -> Array:
+	var out: Array = _last_events.get(type, [])
+	_last_events.erase(type)
+	return out
+
+
+## 本帧某类事件是否还存在(不清空)。
+func has_last_events(type: StringName) -> bool:
+	return not (_last_events.get(type, []) as Array).is_empty()
+
+
 func has_pending_events(type: StringName) -> bool:
 	_event_mutex.lock()
 	var b: bool = _event_queues.has(type) and not (_event_queues[type] as Array).is_empty()
@@ -1286,6 +1302,9 @@ func _dispatch_events() -> void:
 		snapshot[type] = queue.duplicate()
 		queue.clear()
 	_event_mutex.unlock()
+	# 轮询副本: 给"只消费一次"的调用方(take_events)用, 与既有订阅者(广播)并存互不影响。
+	# 这样不需要改现有事件契约(帧末广播), 也能支持"谁处理了别人就别再拿到"的语义。
+	_last_events = snapshot
 	for type in snapshot:
 		var handlers: Array = _event_subscribers.get(type, [])
 		for payload in snapshot[type]:
