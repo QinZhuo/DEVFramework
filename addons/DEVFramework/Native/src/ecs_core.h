@@ -59,14 +59,31 @@ inline int32_t ecs_version_of(int32_t entity) {
 // ---------------------------------------------------------------------------
 struct ECSColumn {
 	Variant::Type type = Variant::NIL;
-	std::vector<int32_t> i32;   // INT
-	std::vector<float> f32;     // FLOAT
-	std::vector<uint8_t> b;     // BOOL (bool 位打包不利多线程写, 用 uint8)
-	std::vector<Vector2> v2;    // VECTOR2
-	std::vector<Vector3> v3;    // VECTOR3
-	std::vector<Vector4> v4;    // VECTOR4
-	std::vector<Color> col;     // COLOR
-	std::vector<String> s;      // STRING (引用计数, 列并行写不适用; 低频字段用)
+	// 单块字节缓冲: 元素按 type 紧排(stride 由 type 决定)。
+	// 早先是 8 个 std::vector 的联合体 —— 每个列常驻 8×24B 的空头部, 8 个字段的组件就是 1.5KB
+	// 纯空转, 且访问要过 8 个分支。现在只剩一个指针 + 长度, 访问器按类型 reinterpret。
+	std::vector<uint8_t> bytes;
+	// STRING 是非平凡类型(String 有构造/析构), 不能塞进字节缓冲, 单独一列。
+	std::vector<String> s;
+
+	static size_t stride(Variant::Type t);
+
+	template <typename T>
+	T *ptr() {
+		return reinterpret_cast<T *>(bytes.data());
+	}
+	template <typename T>
+	const T *ptr() const {
+		return reinterpret_cast<const T *>(bytes.data());
+	}
+	template <typename T>
+	T &at(size_t row) {
+		return ptr<T>()[row];
+	}
+	template <typename T>
+	const T &at(size_t row) const {
+		return ptr<T>()[row];
+	}
 
 	void resize(size_t n);
 	void push_default(const Variant &value);
@@ -155,6 +172,12 @@ public:
 	// name: 组件类名; fnames: 字段名; ftypes: 字段 Variant::Type; fdefaults: 默认值
 	int32_t register_component(const StringName &name, const PackedStringArray &fnames,
 			const PackedInt32Array &ftypes, const Array &fdefaults);
+
+	// 内部标记组件(名字以 "__" 开头, 对 GDScript 隐藏, 不进存档)。
+	// 用途: 让 prefab 实体落在**独立 archetype 块**里 —— 否则模板与实例同块, 每次聚合/批量写
+	// 都会因为"块内有 prefab"退化到逐行 Variant 装箱(实测 20k 单列 30µs → 块内纯 memcpy 2µs)。
+	int32_t prefab_tag();
+	bool is_internal_comp(int32_t ci) const;
 
 	// ---- 实体 ----
 	int32_t create_entity();
@@ -417,8 +440,18 @@ private:
 	bool change_detection_ = false;
 	// prefab 模板标记: 按实体 index 的位图(O(1) 判定, 取代原先的线性扫描)
 	std::vector<uint8_t> prefab_bitmap_;
+	// 内部 prefab 标记组件(注册索引; -1 = 尚未注册)
+	int32_t prefab_tag_comp_ = -1;
+	// 块内"是否含 prefab 行"的缓存(按 struct_version_ 失效)。
+	// 聚合/散射是**每列**调用一次, 若每次都扫一遍块(20k 行), 5 列就要扫 10 万次 ——
+	// 实测 5 列 128µs vs 1 列 15µs, 多出来的全是这个扫描。
+	mutable std::vector<int8_t> prefab_flag_;   // -1 未知 / 0 无 / 1 有
+	mutable uint64_t prefab_flag_ver_ = ~uint64_t(0);
 	// 组件名 -> components_ 下标(注册时填一次, 之后只读 —— 并行系统里查也安全)
 	std::unordered_map<uint64_t, int32_t> component_index_;
+	// 块内是否含 prefab 行(带 struct_version_ 缓存): 聚合/散射按列调用, 不能每列都扫全块。
+	bool arch_has_prefab(int32_t arch, const Archetype &a) const;
+
 	// 空间索引状态: 统一网格(格子 → 实体 id 列表)。dirty 时下次查询整表重建。
 	int32_t spatial_comp_ = -1;
 	int32_t spatial_field_ = -1;

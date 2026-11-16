@@ -12,25 +12,25 @@ static void ecs_copy_row_range(godot::ECSColumn &column, size_t src_row, size_t 
 	}
 	switch (column.type) {
 		case godot::Variant::INT:
-			std::fill_n(column.i32.begin() + base, n, column.i32[src_row]);
+			std::fill_n(column.ptr<int32_t>() + base, n, column.at<int32_t>(src_row));
 			break;
 		case godot::Variant::FLOAT:
-			std::fill_n(column.f32.begin() + base, n, column.f32[src_row]);
+			std::fill_n(column.ptr<float>() + base, n, column.at<float>(src_row));
 			break;
 		case godot::Variant::BOOL:
-			std::fill_n(column.b.begin() + base, n, column.b[src_row]);
+			std::fill_n(column.ptr<uint8_t>() + base, n, column.at<uint8_t>(src_row));
 			break;
 		case godot::Variant::VECTOR2:
-			std::fill_n(column.v2.begin() + base, n, column.v2[src_row]);
+			std::fill_n(column.ptr<godot::Vector2>() + base, n, column.at<godot::Vector2>(src_row));
 			break;
 		case godot::Variant::VECTOR3:
-			std::fill_n(column.v3.begin() + base, n, column.v3[src_row]);
+			std::fill_n(column.ptr<godot::Vector3>() + base, n, column.at<godot::Vector3>(src_row));
 			break;
 		case godot::Variant::VECTOR4:
-			std::fill_n(column.v4.begin() + base, n, column.v4[src_row]);
+			std::fill_n(column.ptr<godot::Vector4>() + base, n, column.at<godot::Vector4>(src_row));
 			break;
 		case godot::Variant::COLOR:
-			std::fill_n(column.col.begin() + base, n, column.col[src_row]);
+			std::fill_n(column.ptr<godot::Color>() + base, n, column.at<godot::Color>(src_row));
 			break;
 		case godot::Variant::STRING: {
 			// String 是引用计数类型, 逐个赋值(仍比走 Variant 便宜)
@@ -395,117 +395,122 @@ bool ECSCore::get_sync_direct() const {
 // ECSColumn — SoA 列存储 (Packed*Array, 零拷贝)
 // ---------------------------------------------------------------------------
 
-void ECSColumn::resize(size_t n) {
-	switch (type) {
-		case Variant::INT: i32.resize(int32_t(n)); break;
-		case Variant::FLOAT: f32.resize(int32_t(n)); break;
-		case Variant::BOOL: b.resize(int32_t(n)); break;
-		case Variant::VECTOR2: v2.resize(int32_t(n)); break;
-		case Variant::VECTOR3: v3.resize(int32_t(n)); break;
-		case Variant::VECTOR4: v4.resize(int32_t(n)); break;
-		case Variant::COLOR: col.resize(int32_t(n)); break;
-		case Variant::STRING: s.resize(int32_t(n)); break;
-		default: break;
+size_t ECSColumn::stride(Variant::Type t) {
+	switch (t) {
+		case Variant::INT:
+			return sizeof(int32_t);
+		case Variant::FLOAT:
+			return sizeof(float);
+		case Variant::BOOL:
+			return sizeof(uint8_t);
+		case Variant::VECTOR2:
+			return sizeof(Vector2);
+		case Variant::VECTOR3:
+			return sizeof(Vector3);
+		case Variant::VECTOR4:
+			return sizeof(Vector4);
+		case Variant::COLOR:
+			return sizeof(Color);
+		default:
+			return 0;   // STRING 用独立的 s 列(非平凡类型)
 	}
+}
+
+void ECSColumn::resize(size_t n) {
+	if (type == Variant::STRING) {
+		s.resize(n);
+		return;
+	}
+	bytes.resize(n * stride(type));   // resize 会零初始化新增部分
 }
 
 void ECSColumn::push_default(const Variant &value) {
-	switch (type) {
-		case Variant::INT: i32.push_back(int32_t(value)); break;
-		case Variant::FLOAT: f32.push_back(float(value)); break;
-		case Variant::BOOL: b.push_back(bool(value) ? 1 : 0); break;
-		case Variant::VECTOR2: v2.push_back(Vector2(value)); break;
-		case Variant::VECTOR3: v3.push_back(Vector3(value)); break;
-		case Variant::VECTOR4: v4.push_back(Vector4(value)); break;
-		case Variant::COLOR: col.push_back(Color(value)); break;
-		case Variant::STRING: s.push_back(String(value)); break;
-		default: break;
-	}
+	const size_t n = size();
+	resize(n + 1);
+	set(n, value);
 }
 
 void *ECSColumn::write_ptr() {
-	switch (type) {
-		case Variant::INT: return i32.empty() ? nullptr : i32.data();
-		case Variant::FLOAT: return f32.empty() ? nullptr : f32.data();
-		case Variant::BOOL: return b.empty() ? nullptr : b.data();
-		case Variant::VECTOR2: return v2.empty() ? nullptr : v2.data();
-		case Variant::VECTOR3: return v3.empty() ? nullptr : v3.data();
-		case Variant::VECTOR4: return v4.empty() ? nullptr : v4.data();
-		case Variant::COLOR: return col.empty() ? nullptr : col.data();
-		case Variant::STRING: return s.empty() ? nullptr : s.data();
-		default: return nullptr;
+	if (type == Variant::STRING) {
+		return s.empty() ? nullptr : static_cast<void *>(s.data());
 	}
+	return bytes.empty() ? nullptr : static_cast<void *>(bytes.data());
 }
 
 const void *ECSColumn::read_ptr() const {
-	switch (type) {
-		case Variant::INT: return i32.empty() ? nullptr : i32.data();
-		case Variant::FLOAT: return f32.empty() ? nullptr : f32.data();
-		case Variant::BOOL: return b.empty() ? nullptr : b.data();
-		case Variant::VECTOR2: return v2.empty() ? nullptr : v2.data();
-		case Variant::VECTOR3: return v3.empty() ? nullptr : v3.data();
-		case Variant::VECTOR4: return v4.empty() ? nullptr : v4.data();
-		case Variant::COLOR: return col.empty() ? nullptr : col.data();
-		case Variant::STRING: return s.empty() ? nullptr : s.data();
-		default: return nullptr;
+	if (type == Variant::STRING) {
+		return s.empty() ? nullptr : static_cast<const void *>(s.data());
 	}
+	return bytes.empty() ? nullptr : static_cast<const void *>(bytes.data());
 }
 
 void ECSColumn::pop() {
-	switch (type) {
-		case Variant::INT: i32.resize(i32.size() - 1); break;
-		case Variant::FLOAT: f32.resize(f32.size() - 1); break;
-		case Variant::BOOL: b.resize(b.size() - 1); break;
-		case Variant::VECTOR2: v2.resize(v2.size() - 1); break;
-		case Variant::VECTOR3: v3.resize(v3.size() - 1); break;
-		case Variant::VECTOR4: v4.resize(v4.size() - 1); break;
-		case Variant::COLOR: col.resize(col.size() - 1); break;
-		case Variant::STRING: s.resize(s.size() - 1); break;
-		default: break;
+	const size_t n = size();
+	if (n > 0) {
+		resize(n - 1);
 	}
 }
 
 Variant ECSColumn::get(size_t row) const {
 	switch (type) {
-		case Variant::INT: return int64_t(i32[int32_t(row)]);
-		case Variant::FLOAT: return double(f32[int32_t(row)]);
-		case Variant::BOOL: return bool(b[int32_t(row)]);
-		case Variant::VECTOR2: return v2[int32_t(row)];
-		case Variant::VECTOR3: return v3[int32_t(row)];
-		case Variant::VECTOR4: return v4[int32_t(row)];
-		case Variant::COLOR: return col[int32_t(row)];
-		case Variant::STRING: return s[int32_t(row)];
-		default: return Variant();
+		case Variant::INT:
+			return int64_t(at<int32_t>(row));
+		case Variant::FLOAT:
+			return double(at<float>(row));
+		case Variant::BOOL:
+			return bool(at<uint8_t>(row));
+		case Variant::VECTOR2:
+			return at<Vector2>(row);
+		case Variant::VECTOR3:
+			return at<Vector3>(row);
+		case Variant::VECTOR4:
+			return at<Vector4>(row);
+		case Variant::COLOR:
+			return at<Color>(row);
+		case Variant::STRING:
+			return s[row];
+		default:
+			return Variant();
 	}
 }
 
 void ECSColumn::set(size_t row, const Variant &value) {
-	const int32_t r = int32_t(row);
 	switch (type) {
-		case Variant::INT: i32[r] = int32_t(int64_t(value)); break;
-		case Variant::FLOAT: f32[r] = float(double(value)); break;
-		case Variant::BOOL: b[r] = uint8_t(bool(value)); break;
-		case Variant::VECTOR2: v2[r] = Vector2(value); break;
-		case Variant::VECTOR3: v3[r] = Vector3(value); break;
-		case Variant::VECTOR4: v4[r] = Vector4(value); break;
-		case Variant::COLOR: col[r] = Color(value); break;
-		case Variant::STRING: s[r] = String(value); break;
-		default: break;
+		case Variant::INT:
+			at<int32_t>(row) = int32_t(int64_t(value));
+			break;
+		case Variant::FLOAT:
+			at<float>(row) = float(double(value));
+			break;
+		case Variant::BOOL:
+			at<uint8_t>(row) = uint8_t(bool(value) ? 1 : 0);
+			break;
+		case Variant::VECTOR2:
+			at<Vector2>(row) = Vector2(value);
+			break;
+		case Variant::VECTOR3:
+			at<Vector3>(row) = Vector3(value);
+			break;
+		case Variant::VECTOR4:
+			at<Vector4>(row) = Vector4(value);
+			break;
+		case Variant::COLOR:
+			at<Color>(row) = Color(value);
+			break;
+		case Variant::STRING:
+			s[row] = String(value);
+			break;
+		default:
+			break;
 	}
 }
 
 size_t ECSColumn::size() const {
-	switch (type) {
-		case Variant::INT: return size_t(i32.size());
-		case Variant::FLOAT: return size_t(f32.size());
-		case Variant::BOOL: return size_t(b.size());
-		case Variant::VECTOR2: return size_t(v2.size());
-		case Variant::VECTOR3: return size_t(v3.size());
-		case Variant::VECTOR4: return size_t(v4.size());
-		case Variant::COLOR: return size_t(col.size());
-		case Variant::STRING: return size_t(s.size());
-		default: return 0;
+	if (type == Variant::STRING) {
+		return s.size();
 	}
+	const size_t st = stride(type);
+	return st == 0 ? 0 : bytes.size() / st;
 }
 
 // ---------------------------------------------------------------------------
@@ -516,57 +521,57 @@ static Variant col_to_packed(const ECSColumn &col) {
 	switch (col.type) {
 		case Variant::INT: {
 			PackedInt32Array a;
-			a.resize(int32_t(col.i32.size()));
-			if (!col.i32.empty()) {
-				memcpy(a.ptrw(), col.i32.data(), col.i32.size() * sizeof(int32_t));
+			a.resize(int32_t(col.size()));
+			if (!col.bytes.empty()) {
+				memcpy(a.ptrw(), col.ptr<int32_t>(), col.size() * sizeof(int32_t));
 			}
 			return a;
 		}
 		case Variant::FLOAT: {
 			PackedFloat32Array a;
-			a.resize(int32_t(col.f32.size()));
-			if (!col.f32.empty()) {
-				memcpy(a.ptrw(), col.f32.data(), col.f32.size() * sizeof(float));
+			a.resize(int32_t(col.size()));
+			if (!col.bytes.empty()) {
+				memcpy(a.ptrw(), col.ptr<float>(), col.size() * sizeof(float));
 			}
 			return a;
 		}
 		case Variant::BOOL: {
 			PackedByteArray a;
-			a.resize(int32_t(col.b.size()));
-			if (!col.b.empty()) {
-				memcpy(a.ptrw(), col.b.data(), col.b.size());
+			a.resize(int32_t(col.size()));
+			if (!col.bytes.empty()) {
+				memcpy(a.ptrw(), col.ptr<uint8_t>(), col.size());
 			}
 			return a;
 		}
 		case Variant::VECTOR2: {
 			PackedVector2Array a;
-			a.resize(int32_t(col.v2.size()));
-			if (!col.v2.empty()) {
-				memcpy(a.ptrw(), col.v2.data(), col.v2.size() * sizeof(Vector2));
+			a.resize(int32_t(col.size()));
+			if (!col.bytes.empty()) {
+				memcpy(a.ptrw(), col.ptr<Vector2>(), col.size() * sizeof(Vector2));
 			}
 			return a;
 		}
 		case Variant::VECTOR3: {
 			PackedVector3Array a;
-			a.resize(int32_t(col.v3.size()));
-			if (!col.v3.empty()) {
-				memcpy(a.ptrw(), col.v3.data(), col.v3.size() * sizeof(Vector3));
+			a.resize(int32_t(col.size()));
+			if (!col.bytes.empty()) {
+				memcpy(a.ptrw(), col.ptr<Vector3>(), col.size() * sizeof(Vector3));
 			}
 			return a;
 		}
 		case Variant::VECTOR4: {
 			PackedVector4Array a;
-			a.resize(int32_t(col.v4.size()));
-			if (!col.v4.empty()) {
-				memcpy(a.ptrw(), col.v4.data(), col.v4.size() * sizeof(Vector4));
+			a.resize(int32_t(col.size()));
+			if (!col.bytes.empty()) {
+				memcpy(a.ptrw(), col.ptr<Vector4>(), col.size() * sizeof(Vector4));
 			}
 			return a;
 		}
 		case Variant::COLOR: {
 			PackedColorArray a;
-			a.resize(int32_t(col.col.size()));
-			if (!col.col.empty()) {
-				memcpy(a.ptrw(), col.col.data(), col.col.size() * sizeof(Color));
+			a.resize(int32_t(col.size()));
+			if (!col.bytes.empty()) {
+				memcpy(a.ptrw(), col.ptr<Color>(), col.size() * sizeof(Color));
 			}
 			return a;
 		}
@@ -587,57 +592,57 @@ static void col_from_packed(ECSColumn &col, const Variant &v) {
 	switch (col.type) {
 		case Variant::INT: {
 			PackedInt32Array a = v;
-			col.i32.resize(int32_t(a.size()));
+			col.resize(a.size());
 			if (a.size() > 0) {
-				memcpy(col.i32.data(), a.ptr(), a.size() * sizeof(int32_t));
+				memcpy(col.ptr<int32_t>(), a.ptr(), a.size() * sizeof(int32_t));
 			}
 			break;
 		}
 		case Variant::FLOAT: {
 			PackedFloat32Array a = v;
-			col.f32.resize(int32_t(a.size()));
+			col.resize(a.size());
 			if (a.size() > 0) {
-				memcpy(col.f32.data(), a.ptr(), a.size() * sizeof(float));
+				memcpy(col.ptr<float>(), a.ptr(), a.size() * sizeof(float));
 			}
 			break;
 		}
 		case Variant::BOOL: {
 			PackedByteArray a = v;
-			col.b.resize(int32_t(a.size()));
+			col.resize(a.size());
 			if (a.size() > 0) {
-				memcpy(col.b.data(), a.ptr(), a.size());
+				memcpy(col.ptr<uint8_t>(), a.ptr(), a.size());
 			}
 			break;
 		}
 		case Variant::VECTOR2: {
 			PackedVector2Array a = v;
-			col.v2.resize(int32_t(a.size()));
+			col.resize(a.size());
 			if (a.size() > 0) {
-				memcpy(col.v2.data(), a.ptr(), a.size() * sizeof(Vector2));
+				memcpy(col.ptr<Vector2>(), a.ptr(), a.size() * sizeof(Vector2));
 			}
 			break;
 		}
 		case Variant::VECTOR3: {
 			PackedVector3Array a = v;
-			col.v3.resize(int32_t(a.size()));
+			col.resize(a.size());
 			if (a.size() > 0) {
-				memcpy(col.v3.data(), a.ptr(), a.size() * sizeof(Vector3));
+				memcpy(col.ptr<Vector3>(), a.ptr(), a.size() * sizeof(Vector3));
 			}
 			break;
 		}
 		case Variant::VECTOR4: {
 			PackedVector4Array a = v;
-			col.v4.resize(int32_t(a.size()));
+			col.resize(a.size());
 			if (a.size() > 0) {
-				memcpy(col.v4.data(), a.ptr(), a.size() * sizeof(Vector4));
+				memcpy(col.ptr<Vector4>(), a.ptr(), a.size() * sizeof(Vector4));
 			}
 			break;
 		}
 		case Variant::COLOR: {
 			PackedColorArray a = v;
-			col.col.resize(int32_t(a.size()));
+			col.resize(a.size());
 			if (a.size() > 0) {
-				memcpy(col.col.data(), a.ptr(), a.size() * sizeof(Color));
+				memcpy(col.ptr<Color>(), a.ptr(), a.size() * sizeof(Color));
 			}
 			break;
 		}
@@ -658,13 +663,13 @@ static void col_from_packed(ECSColumn &col, const Variant &v) {
 static Variant col_borrow_out(ECSColumn &col) {
 	Variant p = col_to_packed(col);
 	switch (col.type) {
-		case Variant::INT: col.i32.clear(); break;
-		case Variant::FLOAT: col.f32.clear(); break;
-		case Variant::BOOL: col.b.clear(); break;
-		case Variant::VECTOR2: col.v2.clear(); break;
-		case Variant::VECTOR3: col.v3.clear(); break;
-		case Variant::VECTOR4: col.v4.clear(); break;
-		case Variant::COLOR: col.col.clear(); break;
+		case Variant::INT: col.bytes.clear(); break;
+		case Variant::FLOAT: col.bytes.clear(); break;
+		case Variant::BOOL: col.bytes.clear(); break;
+		case Variant::VECTOR2: col.bytes.clear(); break;
+		case Variant::VECTOR3: col.bytes.clear(); break;
+		case Variant::VECTOR4: col.bytes.clear(); break;
+		case Variant::COLOR: col.bytes.clear(); break;
 		case Variant::STRING: col.s.clear(); break;
 		default: break;
 	}
@@ -1120,6 +1125,9 @@ PackedStringArray ECSCore::get_entity_components(int32_t entity) const {
 		return out;
 	}
 	for (int32_t ci : archetypes_[arch].comps) {
+		if (is_internal_comp(ci)) {
+			continue;   // 内部标记组件不出现在 GDScript 视图里
+		}
 		out.append(components_[ci].name);
 	}
 	return out;
@@ -1416,12 +1424,55 @@ void ECSCore::set_field(int32_t entity, const StringName &comp, const StringName
 // ---------------------------------------------------------------------------
 
 // 跨块列聚合: 含 ci 的 archetype 块按序拼接非 prefab 实体值(get_column 索引 = 聚合顺序)
+// 把"跳过 prefab 行"的那些**连续段**整段 memcpy 出来(O(段数) 次拷贝)。
+// prefab 通常只有 1 个实体 ⇒ 段数≈2; 逐个取值则是每行一次类型分支 + Variant 装箱。
+// 这是"模板与实例同块"唯一代价的可接受解法: 不引入额外标记组件(那会在编辑器启动期注册, 实测不稳)。
+template <typename IsPref>
+static size_t ecs_copy_runs(uint8_t *dst, const uint8_t *src, size_t elem_size, size_t n, IsPref is_pref) {
+	size_t r = 0;
+	size_t out = 0;
+	while (r < n) {
+		if (is_pref(r)) {
+			++r;
+			continue;
+		}
+		size_t run = 0;
+		while (r + run < n && !is_pref(r + run)) {
+			++run;
+		}
+		memcpy(dst + out * elem_size, src + r * elem_size, run * elem_size);
+		out += run;
+		r += run;
+	}
+	return out;
+}
+
+// 块内是否含 prefab 行(带缓存): 每列聚合都会问一次, 无缓存时退化成 O(行数)/列。
+bool ECSCore::arch_has_prefab(int32_t arch, const Archetype &a) const {
+	if (prefab_flag_ver_ != struct_version_ || prefab_flag_.size() != archetypes_.size()) {
+		prefab_flag_.assign(archetypes_.size(), -1);
+		prefab_flag_ver_ = struct_version_;
+	}
+	int8_t &f = prefab_flag_[size_t(arch)];
+	if (f < 0) {
+		f = 0;
+		for (int32_t r = 0; r < int32_t(a.entities.size()); ++r) {
+			if (is_prefab_index(a.entities[r])) {
+				f = 1;
+				break;
+			}
+		}
+	}
+	return f == 1;
+}
+
 // 跨块列聚合: 含 ci 的 archetype 块按序拼接非 prefab 实体值(get_column 索引 = 聚合顺序)
 Variant ECSCore::column_aggregate(int32_t ci, int32_t fi) const {
 	const Variant::Type t = components_[ci].fields[fi].type;
 	struct Blk {
 		const Archetype *a;
 		int cp;
+		int32_t arch;
 	};
 	std::vector<Blk> blocks;
 	size_t total = 0;
@@ -1435,7 +1486,7 @@ Variant ECSCore::column_aggregate(int32_t ci, int32_t fi) const {
 			}
 		}
 		if (cnt > 0) {
-			blocks.push_back({&a, cp});
+			blocks.push_back({&a, cp, arch2});
 			total += size_t(cnt);
 		}
 	}
@@ -1455,17 +1506,14 @@ Variant ECSCore::column_aggregate(int32_t ci, int32_t fi) const {
 			int32_t *dst = a.ptrw();
 			size_t idx = 0;
 			for (const auto &b : blocks) {
-				const auto &col = b.a->cols[b.cp][fi].i32;
-				if (!has_pref(*b.a)) {
-					memcpy(dst + idx, col.data(), col.size() * sizeof(int32_t));
-					idx += col.size();
+				const int32_t *col = b.a->cols[b.cp][fi].ptr<int32_t>(); const size_t cn = b.a->cols[b.cp][fi].size();
+				if (!arch_has_prefab(b.arch, *b.a)) {
+					memcpy(dst + idx, col, cn * sizeof(int32_t));
+					idx += cn;
 				} else {
-					for (int32_t r = 0; r < int32_t(b.a->entities.size()); ++r) {
-						if (is_prefab_index(b.a->entities[r])) {
-							continue;
-						}
-						dst[idx++] = col[r];
-					}
+					idx += ecs_copy_runs(reinterpret_cast<uint8_t *>(dst) + idx * sizeof(*col),
+							reinterpret_cast<const uint8_t *>(col), sizeof(*col), cn,
+							[this, &b](size_t row) { return is_prefab_index(b.a->entities[row]); });
 				}
 			}
 			return a;
@@ -1476,17 +1524,14 @@ Variant ECSCore::column_aggregate(int32_t ci, int32_t fi) const {
 			float *dst = a.ptrw();
 			size_t idx = 0;
 			for (const auto &b : blocks) {
-				const auto &col = b.a->cols[b.cp][fi].f32;
-				if (!has_pref(*b.a)) {
-					memcpy(dst + idx, col.data(), col.size() * sizeof(float));
-					idx += col.size();
+				const float *col = b.a->cols[b.cp][fi].ptr<float>(); const size_t cn = b.a->cols[b.cp][fi].size();
+				if (!arch_has_prefab(b.arch, *b.a)) {
+					memcpy(dst + idx, col, cn * sizeof(float));
+					idx += cn;
 				} else {
-					for (int32_t r = 0; r < int32_t(b.a->entities.size()); ++r) {
-						if (is_prefab_index(b.a->entities[r])) {
-							continue;
-						}
-						dst[idx++] = col[r];
-					}
+					idx += ecs_copy_runs(reinterpret_cast<uint8_t *>(dst) + idx * sizeof(*col),
+							reinterpret_cast<const uint8_t *>(col), sizeof(*col), cn,
+							[this, &b](size_t row) { return is_prefab_index(b.a->entities[row]); });
 				}
 			}
 			return a;
@@ -1497,17 +1542,14 @@ Variant ECSCore::column_aggregate(int32_t ci, int32_t fi) const {
 			uint8_t *dst = a.ptrw();
 			size_t idx = 0;
 			for (const auto &b : blocks) {
-				const auto &col = b.a->cols[b.cp][fi].b;
-				if (!has_pref(*b.a)) {
-					memcpy(dst + idx, col.data(), col.size());
-					idx += col.size();
+				const uint8_t *col = b.a->cols[b.cp][fi].ptr<uint8_t>(); const size_t cn = b.a->cols[b.cp][fi].size();
+				if (!arch_has_prefab(b.arch, *b.a)) {
+					memcpy(dst + idx, col, cn);
+					idx += cn;
 				} else {
-					for (int32_t r = 0; r < int32_t(b.a->entities.size()); ++r) {
-						if (is_prefab_index(b.a->entities[r])) {
-							continue;
-						}
-						dst[idx++] = col[r];
-					}
+					idx += ecs_copy_runs(reinterpret_cast<uint8_t *>(dst) + idx * sizeof(*col),
+							reinterpret_cast<const uint8_t *>(col), sizeof(*col), cn,
+							[this, &b](size_t row) { return is_prefab_index(b.a->entities[row]); });
 				}
 			}
 			return a;
@@ -1518,17 +1560,14 @@ Variant ECSCore::column_aggregate(int32_t ci, int32_t fi) const {
 			Vector2 *dst = a.ptrw();
 			size_t idx = 0;
 			for (const auto &b : blocks) {
-				const auto &col = b.a->cols[b.cp][fi].v2;
-				if (!has_pref(*b.a)) {
-					memcpy(dst + idx, col.data(), col.size() * sizeof(Vector2));
-					idx += col.size();
+				const Vector2 *col = b.a->cols[b.cp][fi].ptr<Vector2>(); const size_t cn = b.a->cols[b.cp][fi].size();
+				if (!arch_has_prefab(b.arch, *b.a)) {
+					memcpy(dst + idx, col, cn * sizeof(Vector2));
+					idx += cn;
 				} else {
-					for (int32_t r = 0; r < int32_t(b.a->entities.size()); ++r) {
-						if (is_prefab_index(b.a->entities[r])) {
-							continue;
-						}
-						dst[idx++] = col[r];
-					}
+					idx += ecs_copy_runs(reinterpret_cast<uint8_t *>(dst) + idx * sizeof(*col),
+							reinterpret_cast<const uint8_t *>(col), sizeof(*col), cn,
+							[this, &b](size_t row) { return is_prefab_index(b.a->entities[row]); });
 				}
 			}
 			return a;
@@ -1539,17 +1578,14 @@ Variant ECSCore::column_aggregate(int32_t ci, int32_t fi) const {
 			Vector3 *dst = a.ptrw();
 			size_t idx = 0;
 			for (const auto &b : blocks) {
-				const auto &col = b.a->cols[b.cp][fi].v3;
-				if (!has_pref(*b.a)) {
-					memcpy(dst + idx, col.data(), col.size() * sizeof(Vector3));
-					idx += col.size();
+				const Vector3 *col = b.a->cols[b.cp][fi].ptr<Vector3>(); const size_t cn = b.a->cols[b.cp][fi].size();
+				if (!arch_has_prefab(b.arch, *b.a)) {
+					memcpy(dst + idx, col, cn * sizeof(Vector3));
+					idx += cn;
 				} else {
-					for (int32_t r = 0; r < int32_t(b.a->entities.size()); ++r) {
-						if (is_prefab_index(b.a->entities[r])) {
-							continue;
-						}
-						dst[idx++] = col[r];
-					}
+					idx += ecs_copy_runs(reinterpret_cast<uint8_t *>(dst) + idx * sizeof(*col),
+							reinterpret_cast<const uint8_t *>(col), sizeof(*col), cn,
+							[this, &b](size_t row) { return is_prefab_index(b.a->entities[row]); });
 				}
 			}
 			return a;
@@ -1560,17 +1596,14 @@ Variant ECSCore::column_aggregate(int32_t ci, int32_t fi) const {
 			Vector4 *dst = a.ptrw();
 			size_t idx = 0;
 			for (const auto &b : blocks) {
-				const auto &col = b.a->cols[b.cp][fi].v4;
-				if (!has_pref(*b.a)) {
-					memcpy(dst + idx, col.data(), col.size() * sizeof(Vector4));
-					idx += col.size();
+				const Vector4 *col = b.a->cols[b.cp][fi].ptr<Vector4>(); const size_t cn = b.a->cols[b.cp][fi].size();
+				if (!arch_has_prefab(b.arch, *b.a)) {
+					memcpy(dst + idx, col, cn * sizeof(Vector4));
+					idx += cn;
 				} else {
-					for (int32_t r = 0; r < int32_t(b.a->entities.size()); ++r) {
-						if (is_prefab_index(b.a->entities[r])) {
-							continue;
-						}
-						dst[idx++] = col[r];
-					}
+					idx += ecs_copy_runs(reinterpret_cast<uint8_t *>(dst) + idx * sizeof(*col),
+							reinterpret_cast<const uint8_t *>(col), sizeof(*col), cn,
+							[this, &b](size_t row) { return is_prefab_index(b.a->entities[row]); });
 				}
 			}
 			return a;
@@ -1581,17 +1614,14 @@ Variant ECSCore::column_aggregate(int32_t ci, int32_t fi) const {
 			Color *dst = a.ptrw();
 			size_t idx = 0;
 			for (const auto &b : blocks) {
-				const auto &col = b.a->cols[b.cp][fi].col;
-				if (!has_pref(*b.a)) {
-					memcpy(dst + idx, col.data(), col.size() * sizeof(Color));
-					idx += col.size();
+				const Color *col = b.a->cols[b.cp][fi].ptr<Color>(); const size_t cn = b.a->cols[b.cp][fi].size();
+				if (!arch_has_prefab(b.arch, *b.a)) {
+					memcpy(dst + idx, col, cn * sizeof(Color));
+					idx += cn;
 				} else {
-					for (int32_t r = 0; r < int32_t(b.a->entities.size()); ++r) {
-						if (is_prefab_index(b.a->entities[r])) {
-							continue;
-						}
-						dst[idx++] = col[r];
-					}
+					idx += ecs_copy_runs(reinterpret_cast<uint8_t *>(dst) + idx * sizeof(*col),
+							reinterpret_cast<const uint8_t *>(col), sizeof(*col), cn,
+							[this, &b](size_t row) { return is_prefab_index(b.a->entities[row]); });
 				}
 			}
 			return a;
@@ -1702,6 +1732,7 @@ void ECSCore::column_scatter(int32_t ci, int32_t fi, const Variant &values) {
 		}
 		const int cp = a.comp_pos(ci);
 		auto &col = a.cols[cp][fi];
+		const size_t cn = col.size();   // 本块行数(memcpy 的目标长度)
 		// 源数组不够长 → 不 memcpy(会越界读), 逐行写: 有值的写值, 缺的写字段默认值。
 		// 静默越界比"写默认值"危险得多: 前者读脏内存且不报错。
 		if (idx + col.size() > size_t(ecs_value_count(values))) {
@@ -1721,44 +1752,44 @@ void ECSCore::column_scatter(int32_t ci, int32_t fi, const Variant &values) {
 			switch (t) {
 				case Variant::INT: {
 					PackedInt32Array p = values;
-					memcpy(col.i32.data(), p.ptr() + idx, col.i32.size() * sizeof(int32_t));
-					idx += col.i32.size();
+					memcpy(col.ptr<int32_t>(), p.ptr() + idx, col.size() * sizeof(int32_t));
+					idx += cn;
 					break;
 				}
 				case Variant::FLOAT: {
 					PackedFloat32Array p = values;
-					memcpy(col.f32.data(), p.ptr() + idx, col.f32.size() * sizeof(float));
-					idx += col.f32.size();
+					memcpy(col.ptr<float>(), p.ptr() + idx, col.size() * sizeof(float));
+					idx += cn;
 					break;
 				}
 				case Variant::BOOL: {
 					PackedByteArray p = values;
-					memcpy(col.b.data(), p.ptr() + idx, col.b.size());
-					idx += col.b.size();
+					memcpy(col.ptr<uint8_t>(), p.ptr() + idx, col.size());
+					idx += cn;
 					break;
 				}
 				case Variant::VECTOR2: {
 					PackedVector2Array p = values;
-					memcpy(col.v2.data(), p.ptr() + idx, col.v2.size() * sizeof(Vector2));
-					idx += col.v2.size();
+					memcpy(col.ptr<Vector2>(), p.ptr() + idx, col.size() * sizeof(Vector2));
+					idx += cn;
 					break;
 				}
 				case Variant::VECTOR3: {
 					PackedVector3Array p = values;
-					memcpy(col.v3.data(), p.ptr() + idx, col.v3.size() * sizeof(Vector3));
-					idx += col.v3.size();
+					memcpy(col.ptr<Vector3>(), p.ptr() + idx, col.size() * sizeof(Vector3));
+					idx += cn;
 					break;
 				}
 				case Variant::VECTOR4: {
 					PackedVector4Array p = values;
-					memcpy(col.v4.data(), p.ptr() + idx, col.v4.size() * sizeof(Vector4));
-					idx += col.v4.size();
+					memcpy(col.ptr<Vector4>(), p.ptr() + idx, col.size() * sizeof(Vector4));
+					idx += cn;
 					break;
 				}
 				case Variant::COLOR: {
 					PackedColorArray p = values;
-					memcpy(col.col.data(), p.ptr() + idx, col.col.size() * sizeof(Color));
-					idx += col.col.size();
+					memcpy(col.ptr<Color>(), p.ptr() + idx, col.size() * sizeof(Color));
+					idx += cn;
 					break;
 				}
 				default: {
@@ -1869,7 +1900,7 @@ bool ECSCore::batch_apply_entity(int32_t entity, int32_t oci, int32_t ofi, int32
 	auto &col = archetypes_[earch].cols[cp][ofi];
 	switch (col.type) {
 		case Variant::INT: {
-			int32_t &w = col.i32[erow];
+			int32_t &w = col.at<int32_t>(erow);
 			switch (op) {
 				case BATCH_ADD: w += int32_t(addend); break;
 				case BATCH_MUL_ADD: w = int32_t(double(w) * factor + addend); break;
@@ -1879,7 +1910,7 @@ bool ECSCore::batch_apply_entity(int32_t entity, int32_t oci, int32_t ofi, int32
 			break;
 		}
 		case Variant::FLOAT: {
-			float &w = col.f32[erow];
+			float &w = col.at<float>(erow);
 			switch (op) {
 				case BATCH_ADD: w += float(addend); break;
 				case BATCH_MUL_ADD: w = float(double(w) * factor + addend); break;
@@ -1890,7 +1921,7 @@ bool ECSCore::batch_apply_entity(int32_t entity, int32_t oci, int32_t ofi, int32
 		}
 		case Variant::VECTOR2: {
 			if (op_axis >= 0 && op_axis < 2) {
-				float &w = col.v2[erow][op_axis];
+				float &w = col.at<Vector2>(erow)[op_axis];
 				switch (op) {
 					case BATCH_ADD: w += float(addend); break;
 					case BATCH_MUL_ADD: w = float(double(w) * factor + addend); break;
@@ -1902,7 +1933,7 @@ bool ECSCore::batch_apply_entity(int32_t entity, int32_t oci, int32_t ofi, int32
 		}
 		case Variant::VECTOR3: {
 			if (op_axis >= 0 && op_axis < 3) {
-				float &w = col.v3[erow][op_axis];
+				float &w = col.at<Vector3>(erow)[op_axis];
 				switch (op) {
 					case BATCH_ADD: w += float(addend); break;
 					case BATCH_MUL_ADD: w = float(double(w) * factor + addend); break;
@@ -1938,9 +1969,9 @@ bool ECSCore::batch_apply_entity_col(int32_t entity, int32_t oci, int32_t ofi, i
 	auto &ocol = archetypes_[earch].cols[cp][ofi];
 	const auto &scol = archetypes_[earch].cols[scp][sfi];
 	if (ocol.type == Variant::FLOAT && (scol.type == Variant::FLOAT || scol.type == Variant::INT)) {
-		const double sv = (scol.type == Variant::INT) ? double(scol.i32[erow]) : double(scol.f32[erow]);
+		const double sv = (scol.type == Variant::INT) ? double(scol.at<int32_t>(erow)) : double(scol.at<float>(erow));
 		const float v = float(sv * factor + addend);
-		float &w = ocol.f32[erow];
+		float &w = ocol.at<float>(erow);
 		switch (op) {
 			case COL_ADD: w += v; break;
 			case COL_SUB: w -= v; break;
@@ -1952,8 +1983,8 @@ bool ECSCore::batch_apply_entity_col(int32_t entity, int32_t oci, int32_t ofi, i
 		return true;
 	}
 	if (ocol.type == Variant::INT && scol.type == Variant::INT) {
-		const int32_t v = int32_t(double(scol.i32[erow]) * factor + addend);
-		int32_t &w = ocol.i32[erow];
+		const int32_t v = int32_t(double(scol.at<int32_t>(erow)) * factor + addend);
+		int32_t &w = ocol.at<int32_t>(erow);
 		switch (op) {
 			case COL_ADD: w += v; break;
 			case COL_SUB: w -= v; break;
@@ -1966,8 +1997,8 @@ bool ECSCore::batch_apply_entity_col(int32_t entity, int32_t oci, int32_t ofi, i
 	}
 	if (ocol.type == Variant::VECTOR2 && scol.type == Variant::VECTOR2) {
 		const float f = float(factor);
-		Vector2 v = scol.v2[erow] * f;
-		Vector2 &w = ocol.v2[erow];
+		Vector2 v = scol.at<Vector2>(erow) * f;
+		Vector2 &w = ocol.at<Vector2>(erow);
 		switch (op) {
 			case COL_ADD: w += v; break;
 			case COL_SUB: w -= v; break;
@@ -1980,8 +2011,8 @@ bool ECSCore::batch_apply_entity_col(int32_t entity, int32_t oci, int32_t ofi, i
 	}
 	if (ocol.type == Variant::VECTOR3 && scol.type == Variant::VECTOR3) {
 		const float f = float(factor);
-		Vector3 v = scol.v3[erow] * f;
-		Vector3 &w = ocol.v3[erow];
+		Vector3 v = scol.at<Vector3>(erow) * f;
+		Vector3 &w = ocol.at<Vector3>(erow);
 		switch (op) {
 			case COL_ADD: w += v; break;
 			case COL_SUB: w -= v; break;
@@ -2020,14 +2051,14 @@ bool ECSCore::cond_matches_entity(int32_t entity, const std::vector<ECSFilterCon
 		const auto &col = archetypes_[arch].cols[cp][c.field_idx];
 		double val = 0.0;
 		switch (col.type) {
-			case Variant::INT: val = double(col.i32[row]); break;
-			case Variant::FLOAT: val = double(col.f32[row]); break;
+			case Variant::INT: val = double(col.at<int32_t>(row)); break;
+			case Variant::FLOAT: val = double(col.at<float>(row)); break;
 			case Variant::VECTOR2:
-				if (c.axis >= 0 && c.axis < 2) val = double(col.v2[row][c.axis]);
+				if (c.axis >= 0 && c.axis < 2) val = double(col.at<Vector2>(row)[c.axis]);
 				else return false;
 				break;
 			case Variant::VECTOR3:
-				if (c.axis >= 0 && c.axis < 3) val = double(col.v3[row][c.axis]);
+				if (c.axis >= 0 && c.axis < 3) val = double(col.at<Vector3>(row)[c.axis]);
 				else return false;
 				break;
 			default: return false;
@@ -2143,7 +2174,7 @@ static void ecs_write_rows(std::vector<godot::Archetype> &archs,
 	}
 	const godot::Variant::Type want =
 			archs[size_t(tgt_arch[0])].cols[size_t(tgt_cp[0])][size_t(fi)].type;
-#define ECS_WRITE_CASE(ENUM, TYPE, WANT, MEMBER)                                                \
+#define ECS_WRITE_CASE(ENUM, TYPE, WANT, ELEM)                                                \
 	case godot::Variant::ENUM: {                                                                \
 		if (want == godot::Variant::WANT) {                                                     \
 			const godot::TYPE p = src;                                                          \
@@ -2153,20 +2184,20 @@ static void ecs_write_rows(std::vector<godot::Archetype> &archs,
 				const int32_t k = int32_t(r);                                                   \
 				if (k < sn) {                                                                   \
 					archs[size_t(tgt_arch[r])].cols[size_t(tgt_cp[r])][size_t(fi)]              \
-							.MEMBER[size_t(tgt_row[r])] = sp[r];                                \
+							.at<ELEM>(size_t(tgt_row[r])) = sp[r];                                \
 				}                                                                               \
 			}                                                                                   \
 			return;                                                                             \
 		}                                                                                       \
 	} break;
 	switch (src.get_type()) {
-		ECS_WRITE_CASE(PACKED_INT32_ARRAY, PackedInt32Array, INT, i32)
-		ECS_WRITE_CASE(PACKED_FLOAT32_ARRAY, PackedFloat32Array, FLOAT, f32)
-		ECS_WRITE_CASE(PACKED_BYTE_ARRAY, PackedByteArray, BOOL, b)
-		ECS_WRITE_CASE(PACKED_VECTOR2_ARRAY, PackedVector2Array, VECTOR2, v2)
-		ECS_WRITE_CASE(PACKED_VECTOR3_ARRAY, PackedVector3Array, VECTOR3, v3)
-		ECS_WRITE_CASE(PACKED_VECTOR4_ARRAY, PackedVector4Array, VECTOR4, v4)
-		ECS_WRITE_CASE(PACKED_COLOR_ARRAY, PackedColorArray, COLOR, col)
+		ECS_WRITE_CASE(PACKED_INT32_ARRAY, PackedInt32Array, INT, int32_t)
+		ECS_WRITE_CASE(PACKED_FLOAT32_ARRAY, PackedFloat32Array, FLOAT, float)
+		ECS_WRITE_CASE(PACKED_BYTE_ARRAY, PackedByteArray, BOOL, uint8_t)
+		ECS_WRITE_CASE(PACKED_VECTOR2_ARRAY, PackedVector2Array, VECTOR2, Vector2)
+		ECS_WRITE_CASE(PACKED_VECTOR3_ARRAY, PackedVector3Array, VECTOR3, Vector3)
+		ECS_WRITE_CASE(PACKED_VECTOR4_ARRAY, PackedVector4Array, VECTOR4, Vector4)
+		ECS_WRITE_CASE(PACKED_COLOR_ARRAY, PackedColorArray, COLOR, Color)
 		default:
 			break;
 	}
@@ -2417,8 +2448,8 @@ int64_t ECSCore::batch_apply_col_rows(const StringName &anchor, const PackedInt3
 				auto &ocol = a.cols[cp][ofi];
 				auto &scol = a.cols[scp][sfi];
 				if (ocol.type == Variant::VECTOR2 && scol.type == Variant::VECTOR2 && op == COL_ADD) {
-					float *w = reinterpret_cast<float *>(ocol.v2.data());
-					const float *s = reinterpret_cast<const float *>(scol.v2.data());
+					float *w = reinterpret_cast<float *>(ocol.ptr<Vector2>());
+					const float *s = reinterpret_cast<const float *>(scol.ptr<Vector2>());
 					const float f = float(factor);
 					const __m128 fv = _mm_set1_ps(f);
 					parallel_for(size_t(cnt), [&](size_t b, size_t e) {
@@ -2429,15 +2460,15 @@ int64_t ECSCore::batch_apply_col_rows(const StringName &anchor, const PackedInt3
 							_mm_storeu_ps(w + i * 2, _mm_add_ps(pv, _mm_mul_ps(sv, fv)));
 						}
 						for (; i < e; ++i) {
-							ocol.v2[i] += scol.v2[i] * f;
+							ocol.at<Vector2>(i) += scol.at<Vector2>(i) * f;
 						}
 					}, 3.0);
 					return cnt;
 				}
 				if (ocol.type == Variant::FLOAT && scol.type == Variant::FLOAT
 						&& (op == COL_ADD || op == COL_SET)) {
-					float *w = ocol.f32.data();
-					const float *s = scol.f32.data();
+					float *w = ocol.ptr<float>();
+					const float *s = scol.ptr<float>();
 					const float f = float(factor);
 					const float av = float(addend);
 					const __m128 fv = _mm_set1_ps(f);
@@ -2466,8 +2497,8 @@ int64_t ECSCore::batch_apply_col_rows(const StringName &anchor, const PackedInt3
 					return cnt;
 				}
 				if (ocol.type == Variant::FLOAT && scol.type == Variant::INT && op == COL_ADD) {
-					float *w = ocol.f32.data();
-					const int32_t *s = scol.i32.data();
+					float *w = ocol.ptr<float>();
+					const int32_t *s = scol.ptr<int32_t>();
 					const float f = float(factor);
 					const float av = float(addend);
 					const __m128 fv = _mm_set1_ps(f);
@@ -2538,9 +2569,9 @@ int64_t ECSCore::batch_apply_col_rows(const StringName &anchor, const PackedInt3
 				if (change_detection_) ++a.row_ver[erow];
 				// 直接列间操作(参考 batch_apply_entity_col, 无 entity_arch_/row_of 间接)
 				if (ocol.type == Variant::FLOAT && (scol.type == Variant::FLOAT || scol.type == Variant::INT)) {
-					const double sv = (scol.type == Variant::INT) ? double(scol.i32[erow]) : double(scol.f32[erow]);
+					const double sv = (scol.type == Variant::INT) ? double(scol.at<int32_t>(erow)) : double(scol.at<float>(erow));
 					const float v = float(sv * factor + addend);
-					float &w = ocol.f32[erow];
+					float &w = ocol.at<float>(erow);
 					switch (op) {
 						case COL_ADD: w += v; break;
 						case COL_SUB: w -= v; break;
@@ -2550,8 +2581,8 @@ int64_t ECSCore::batch_apply_col_rows(const StringName &anchor, const PackedInt3
 						default: break;
 					}
 				} else if (ocol.type == Variant::INT && scol.type == Variant::INT) {
-					const int32_t v = int32_t(double(scol.i32[erow]) * factor + addend);
-					int32_t &w = ocol.i32[erow];
+					const int32_t v = int32_t(double(scol.at<int32_t>(erow)) * factor + addend);
+					int32_t &w = ocol.at<int32_t>(erow);
 					switch (op) {
 						case COL_ADD: w += v; break;
 						case COL_SUB: w -= v; break;
@@ -2562,8 +2593,8 @@ int64_t ECSCore::batch_apply_col_rows(const StringName &anchor, const PackedInt3
 					}
 				} else if (ocol.type == Variant::VECTOR2 && scol.type == Variant::VECTOR2) {
 					const float f = float(factor);
-					Vector2 v = scol.v2[erow] * f;
-					Vector2 &w = ocol.v2[erow];
+					Vector2 v = scol.at<Vector2>(erow) * f;
+					Vector2 &w = ocol.at<Vector2>(erow);
 					switch (op) {
 						case COL_ADD: w += v; break;
 						case COL_SUB: w -= v; break;
@@ -2574,8 +2605,8 @@ int64_t ECSCore::batch_apply_col_rows(const StringName &anchor, const PackedInt3
 					}
 				} else if (ocol.type == Variant::VECTOR3 && scol.type == Variant::VECTOR3) {
 					const float f = float(factor);
-					Vector3 v = scol.v3[erow] * f;
-					Vector3 &w = ocol.v3[erow];
+					Vector3 v = scol.at<Vector3>(erow) * f;
+					Vector3 &w = ocol.at<Vector3>(erow);
 					switch (op) {
 						case COL_ADD: w += v; break;
 						case COL_SUB: w -= v; break;
@@ -2732,9 +2763,9 @@ int64_t ECSCore::batch_clamp_where(const StringName &anchor, const PackedStringA
 			const auto &minc = archetypes_[earch].cols[ncp][nfi];
 			const auto &maxc = archetypes_[earch].cols[xcp][xfi];
 			if (ocol.type == Variant::FLOAT && minc.type == Variant::FLOAT && maxc.type == Variant::FLOAT) {
-				ocol.f32[erow] = std::clamp(ocol.f32[erow], minc.f32[erow], maxc.f32[erow]);
+				ocol.at<float>(erow) = std::clamp(ocol.at<float>(erow), minc.at<float>(erow), maxc.at<float>(erow));
 			} else if (ocol.type == Variant::INT && minc.type == Variant::INT && maxc.type == Variant::INT) {
-				ocol.i32[erow] = std::clamp(ocol.i32[erow], minc.i32[erow], maxc.i32[erow]);
+				ocol.at<int32_t>(erow) = std::clamp(ocol.at<int32_t>(erow), minc.at<int32_t>(erow), maxc.at<int32_t>(erow));
 			}
 			cnt.fetch_add(1, std::memory_order_relaxed);
 		}
@@ -2805,9 +2836,9 @@ int64_t ECSCore::batch_vec_add(const StringName &anchor, const PackedStringArray
 			auto &pcol = archetypes_[earch].cols[pcp][pfi];
 			const auto &vcol = archetypes_[earch].cols[vcp][vfi];
 			if (pcol.type == Variant::VECTOR2 && vcol.type == Variant::VECTOR2) {
-				pcol.v2[erow] += vcol.v2[erow] * float(delta);
+				pcol.at<Vector2>(erow) += vcol.at<Vector2>(erow) * float(delta);
 			} else if (pcol.type == Variant::VECTOR3 && vcol.type == Variant::VECTOR3) {
-				pcol.v3[erow] += vcol.v3[erow] * float(delta);
+				pcol.at<Vector3>(erow) += vcol.at<Vector3>(erow) * float(delta);
 			}
 		}
 	}, 3.0);
@@ -2965,7 +2996,7 @@ void ECSCore::spatial_rebuild() {
 			if (is_prefab_index(id)) {
 				continue;
 			}
-			const Vector2 p = col.v2[r];
+			const Vector2 p = col.at<Vector2>(r);
 			const int32_t cx = int32_t(Math::floor(p.x / cs));
 			const int32_t cy = int32_t(Math::floor(p.y / cs));
 			const int64_t key = spatial_key(cx, cy);
@@ -3001,7 +3032,7 @@ void ECSCore::spatial_update_entity(int32_t id) {
 		return;
 	}
 	const float cs = spatial_cell_ > 0.0f ? spatial_cell_ : 1.0f;
-	const Vector2 p = archetypes_[size_t(arch)].cols[size_t(cp)][size_t(spatial_field_)].v2[size_t(row)];
+	const Vector2 p = archetypes_[size_t(arch)].cols[size_t(cp)][size_t(spatial_field_)].at<Vector2>(size_t(row));
 	const int64_t nk = spatial_key(int32_t(Math::floor(p.x / cs)), int32_t(Math::floor(p.y / cs)));
 	if (it != spatial_owner_.end() && it->second == nk) {
 		return;   // 同一格: 什么都不用做(绝大多数"小步移动"都是这种)
@@ -3049,7 +3080,7 @@ PackedInt32Array ECSCore::spatial_query_rect(const Vector2 &min_pos, const Vecto
 					continue;
 				}
 				const Vector2 p = archetypes_[size_t(arch)].cols[size_t(cp)][size_t(spatial_field_)]
-										  .v2[size_t(row)];
+										  .at<Vector2>(size_t(row));
 				if (p.x < min_pos.x || p.x > max_pos.x || p.y < min_pos.y || p.y > max_pos.y) {
 					continue;      // 格子命中但点在矩形外
 				}
@@ -3094,7 +3125,7 @@ PackedInt32Array ECSCore::spatial_query_radius(const Vector2 &center, double rad
 			continue;
 		}
 		const Vector2 p = archetypes_[size_t(arch)].cols[size_t(cp)][size_t(spatial_field_)]
-								  .v2[size_t(row)];
+								  .at<Vector2>(size_t(row));
 		if (p.distance_squared_to(center) <= r2) {
 			hits.push_back(id);
 		}
@@ -3121,15 +3152,15 @@ Dictionary ECSCore::spatial_stats() {
 double ecs_sort_key(const godot::ECSColumn &col, size_t row) {
 	switch (col.type) {
 		case godot::Variant::INT:
-			return double(col.i32[row]);
+			return double(col.at<int32_t>(row));
 		case godot::Variant::FLOAT:
-			return double(col.f32[row]);
+			return double(col.at<float>(row));
 		case godot::Variant::BOOL:
-			return col.b[row] ? 1.0 : 0.0;
+			return col.at<uint8_t>(row) ? 1.0 : 0.0;
 		case godot::Variant::VECTOR2:
-			return double(col.v2[row].length());
+			return double(col.at<Vector2>(row).length());
 		case godot::Variant::VECTOR3:
-			return double(col.v3[row].length());
+			return double(col.at<Vector3>(row).length());
 		default:
 			return 0.0;
 	}
@@ -3248,6 +3279,9 @@ Dictionary ECSCore::serialize() const {
 	root["version"] = int64_t(1);
 	Array comps;
 	for (size_t ci = 0; ci < components_.size(); ++ci) {
+		if (is_internal_comp(int32_t(ci))) {
+			continue;   // 内部标记组件不进存档
+		}
 		const auto &c = components_[ci];
 		Dictionary cd;
 		cd["name"] = c.name;
@@ -3377,9 +3411,29 @@ Array ECSCore::deserialize(const Dictionary &data) {
 // ECSCore — Prefab 预制体
 // ---------------------------------------------------------------------------
 
-inline bool ECSCore::is_prefab_index(int32_t index) const {
+inline bool ECSCore::is_prefab_index(int32_t id) const {
 	// 位图 O(1): 原先对 prefab_indices_ 线性扫, 而它在"每一行"上被调用 → O(N×P)
-	return index >= 0 && index < int32_t(prefab_bitmap_.size()) && prefab_bitmap_[index] != 0;
+	// ⚠ 入参可能是**完整 id**(块内 entities 存的就是 id), 必须掩出 index;
+	// 早先直接拿 id 当下标, 槽位复用后(version>0)判定就错了。
+	const int32_t idx = ecs_index_of(id);
+	return idx >= 0 && idx < int32_t(prefab_bitmap_.size()) && prefab_bitmap_[idx] != 0;
+}
+
+int32_t ECSCore::prefab_tag() {
+	if (prefab_tag_comp_ < 0) {
+		PackedStringArray fnames;
+		fnames.push_back("on");
+		PackedInt32Array ftypes;
+		ftypes.push_back(int32_t(Variant::BOOL));
+		Array fdefaults;
+		fdefaults.append(false);
+		prefab_tag_comp_ = register_component("__ecs_prefab", fnames, ftypes, fdefaults);
+	}
+	return prefab_tag_comp_;
+}
+
+bool ECSCore::is_internal_comp(int32_t ci) const {
+	return ci >= 0 && ci < int32_t(components_.size()) && components_[ci].name.begins_with("__");
 }
 
 int32_t ECSCore::create_prefab() {
@@ -3392,6 +3446,9 @@ int32_t ECSCore::create_prefab() {
 		prefab_bitmap_.resize(index + 1, 0);
 	}
 	prefab_bitmap_[index] = 1;
+	// 注: 曾尝试给模板挂内部标记组件, 让模板独占一个 archetype 块, 从而让聚合/批量写走纯 memcpy。
+	// 但"在 create_prefab 里临时注册新组件"会在编辑器启动期(插件初始化就建 prefab)触发不稳定,
+	// 实测两次导致编辑器退出, 因此回退。性能问题改用"块内按 prefab 行分段 memcpy"解决(见 column_aggregate)。
 	return e;
 }
 

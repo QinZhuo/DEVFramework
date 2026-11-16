@@ -137,11 +137,14 @@ func test_ensure_project_idempotent_and_respects_handwritten() -> void:
 	assert_true((r2.get("created", []) as Array).is_empty(), "第二次运行不应再写任何文件(幂等)")
 	assert_false(FileAccess.file_exists(abs.path_join("gdextension/generated/P_register_types.cpp")),
 			"插件自带 register_types.cpp 时不应再生成入口")
-	# 手写 CMakeLists(去掉生成标记) → 不接管, 也不产生 generated/*
-	_write(abs.path_join("gdextension/CMakeLists.txt"), "# my own build\nadd_library(P SHARED x)\n")
-	var r3: Dictionary = SCAFFOLD.ensure_project(abs, "4.7", false)
-	assert_true((r3.get("created", []) as Array).is_empty(), "手写构建文件不应被改写")
-	assert_eq(FileAccess.get_file_as_string(abs.path_join("gdextension/CMakeLists.txt")), "# my own build\nadd_library(P SHARED x)\n", "内容必须原样保留")
+	# 手写 CMakeLists(无生成标记) → **接管并备份**(统一构建规则的代价, 也是这轮的核心目的)
+	var hand := "# my own build\nadd_library(P SHARED x)\n"
+	_write(abs.path_join("gdextension/CMakeLists.txt"), hand)
+	SCAFFOLD.ensure_project(abs, "4.7", false)
+	assert_eq(FileAccess.get_file_as_string(abs.path_join("gdextension/CMakeLists.handwritten.bak")), hand,
+			"手写配置必须先备份成 CMakeLists.handwritten.bak")
+	assert_true(FileAccess.get_file_as_string(abs.path_join("gdextension/CMakeLists.txt")).contains("DEVFramework 生成"),
+			"接管后应换成统一生成的构建文件")
 	_clean_probe()
 
 

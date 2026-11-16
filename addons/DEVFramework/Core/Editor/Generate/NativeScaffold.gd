@@ -227,6 +227,26 @@ static func _header_for(root_abs: String, rel: String) -> String:
 # 落地(只补缺失项)
 # ============================================================
 
+## 该目录是不是"共享过来的"(junction / symlink)。
+## 共享插件 = 别的项目的 addons/<插件>(通过 junction 挂进来), 只应由宿主项目构建。
+## 用 OS 层判定, **不在插件目录里落任何标记文件**(addon 目录要能原样分发)。
+static func is_shared_dir(abs_path: String) -> bool:
+	if abs_path == "":
+		return false
+	if OS.get_name() != "Windows":
+		var o: Array = []
+		return OS.execute("sh", PackedStringArray(["-c", "test -L '%s'" % abs_path]), o) == 0
+	var out: Array = []
+	if OS.execute("cmd", PackedStringArray(["/c", "dir", "/AL", abs_path.get_base_dir()]), out, true) != 0:
+		return false
+	var leaf := abs_path.get_file()
+	for line in out:
+		var s := String(line)
+		if s.contains(leaf) and (s.contains("<JUNCTION>") or s.contains("<SYMLINKD>")):
+			return true
+	return false
+
+
 static func discover_plugins(project_abs: String) -> Array:
 	var out: Array = []
 	var d := DirAccess.open(project_abs.path_join("addons"))
@@ -239,6 +259,11 @@ static func discover_plugins(project_abs: String) -> Array:
 			var native_abs := project_abs.path_join("addons").path_join(name).path_join("Native")
 			var src_abs := native_abs.path_join("src")
 			if DirAccess.dir_exists_absolute(src_abs) and not scan_sources(src_abs).is_empty():
+				# 归属过滤: junction 挂进来的插件只由宿主项目构建。
+				# 否则消费方项目会用**自己的**构建规则重编同一批源码(实测产物互相覆盖、还多出 debug)。
+				if is_shared_dir(project_abs.path_join("addons").path_join(name)):
+					name = d.get_next()
+					continue
 				out.append({
 					"plugin": name,
 					"target": _plugin_target(native_abs, name),
@@ -280,11 +305,22 @@ static func ensure_project(project_abs: String, api_default: String, fetch_deps 
 	if fetch_deps and not FileAccess.file_exists(build_abs.path_join("godot-cpp/SConstruct")):
 		if _fetch_godot_cpp(build_abs, log_fn):
 			created.append("gdextension/godot-cpp")
-	# CMakeLists 只接管"我们自己生成的"那一份: 手写的构建配置一律不动(也就不生成配套的 generated/*)
+	# 构建规则统一: 所有项目的 CMakeLists 都由这里生成(带 MARKER)。
+	# 手写的那份先备份成 CMakeLists.handwritten.bak(只备份一次)再接管 —— 各项目各编各的规则,
+	# 会导致同一批源码被不同优化参数/构建类型重编(实测: debug 版 12MB 覆盖掉 1.7MB 优化版, 帧耗 10×)。
 	var cmake_path := build_abs.path_join("CMakeLists.txt")
 	var own := true
 	if FileAccess.file_exists(cmake_path):
-		own = FileAccess.get_file_as_string(cmake_path).contains(MARKER)
+		var cur := FileAccess.get_file_as_string(cmake_path)
+		if not cur.contains(MARKER):
+			var bak := build_abs.path_join("CMakeLists.handwritten.bak")
+			if not FileAccess.file_exists(bak):
+				var bf := FileAccess.open(bak, FileAccess.WRITE)
+				if bf != null:
+					bf.store_string(cur)
+					bf.close()
+					if log_fn.is_valid():
+						log_fn.call("已备份手写 CMakeLists → gdextension/CMakeLists.handwritten.bak, 之后统一由本工具生成")
 	var gen_abs := build_abs.path_join(GEN_DIR)
 	if own:
 		DirAccess.make_dir_recursive_absolute(gen_abs)

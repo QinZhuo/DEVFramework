@@ -315,6 +315,10 @@ func _locate() -> Dictionary:
 	var names: Array = outputs.keys()
 	if names.is_empty():
 		names = [String(info.get("target", ""))]
+	# 共享插件(junction)的产物目录带**其它项目**的归属标记 → 本项目不构建。
+	# 否则消费方会用自己 CMakeLists 里的规则重编同一批源码: 产物互相覆盖, 还会多出 debug 版本
+	# (实测 SoL 构建把 DEVFramework 的 release 库换成了非优化版本, 帧耗涨 10 倍)。
+	# 不做"谁才能构建"的限制: 任何项目触发构建, 都按同一套规则产出同名同规格的库。
 	for tgt in names:
 		var od: String = String(outputs.get(tgt, ""))
 		for t in types:
@@ -335,6 +339,10 @@ func _locate() -> Dictionary:
 				String(tg.get("arch")), String(tg.get("artifact"))])
 	return {"source": source_dir, "targets": targets, "info": info,
 			"gdext": gdext_by_target.get(names[0], ""), "gdext_by_target": gdext_by_target}
+
+
+## 不做"谁能构建"的限制: 任何项目触发构建都产出同名同规格的库。
+## 一致性靠"所有项目的 CMakeLists 都由 NativeScaffold 统一生成"来保证, 而不是靠归属白名单。
 
 
 ## 由 CMake 信息推导指定构建类型/架构的预期产物: {file(文件名), res(res://落点), abs(绝对路径)}。
@@ -1870,9 +1878,12 @@ func _cleanup_native(native_dir: String, keep: PackedStringArray) -> void:
 	var entry := dir.get_next()
 	while entry != "":
 		var low := entry.to_lower()
-		# .old = 被占用旧库的旁置文件(见 _rename_lib): 当次删不掉, 下次构建时已随重启释放
+		# 垃圾文件统一规则(不限于动态库后缀):
+		#   ~*            = Windows ReplaceFile 的临时残留(~xxxx.TMP), 与 ~libdev.dll 这类旁置副本
+		#   *.old.*       = 被占用旧库的旁置文件(见 _rename_lib), 下次构建时已随重启释放
+		#   *.dll.a       = MinGW 导入库(构建副产物, 运行时不需要)
 		var is_tmp := entry.begins_with("~") or low.ends_with(".tmp") or low.ends_with(".temp") \
-				or low.contains(".old.")
+				or low.contains(".old.") or low.ends_with(".dll.a")
 		var is_lib := low.ends_with(".dll") or low.ends_with(".so") or low.ends_with(".dylib") \
 				or low.ends_with(".a") or low.ends_with(".lib")
 		if not dir.current_is_dir() and not keep_set.has(entry) and (is_tmp or is_lib):
@@ -1925,10 +1936,10 @@ func _plan_build_types() -> Array[String]:
 		if (s == "debug" or s == "release") and not out.has(s):
 			out.append(s)
 	if out.is_empty():
-		out = [_build_type()]
-		for t in ["debug", "release"]:
-			if not out.has(t):
-				out.append(t)
+		# 统一规则: 一律 release —— 与"哪个项目触发构建"无关。
+		# 曾按"当前编辑器类型"取, 于是 debug 版编辑器(如 SoL)会产出 12MB 未优化库,
+		# 覆盖掉宿主项目的 1.7MB 优化库(实测帧耗涨 10 倍)。需要 debug 请显式配 build_types。
+		out = ["release"]
 	_build_types = out
 	_log("构建类型清单: ", " ".join(out))
 	return out
