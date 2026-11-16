@@ -9,7 +9,8 @@ cmake_minimum_required(VERSION 3.17)
 #   cmake --build build --config Release
 # 平台支持: macOS(arm64/x86_64) / Windows(x86_64) / Linux(x86_64)
 
-project(dev LANGUAGES CXX)
+# 目标名 = 插件名(小写, 无 _native 后缀): 产物/入口符号/声明文件都由它派生
+project(devframework LANGUAGES CXX)
 
 if(NOT DEFINED GODOTCPP_API_VERSION)
     set(GODOTCPP_API_VERSION "4.7")
@@ -30,14 +31,21 @@ add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/godot-cpp ${CMAKE_CURRENT_BINARY_DI
 # 构建区/第三方(godot-cpp)留在项目根 gdextension/。本文件只做"编排"。
 set(DEV_SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../addons/DEVFramework/Native/src)
 
-add_library(dev SHARED
+add_library(devframework SHARED
     ${DEV_SRC_DIR}/register_types.cpp
     ${DEV_SRC_DIR}/ecs_core.cpp
 )
 
-target_link_libraries(dev PRIVATE godot-cpp)
+target_link_libraries(devframework PRIVATE godot-cpp)
 
-set_target_properties(dev PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+set_target_properties(devframework PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+
+# Windows 去掉 lib 前缀: MinGW 默认直出 libdevframework.dll, 而规范名与 .gdextension
+# 都是 devframework.windows.<类型>.<架构>.dll —— 直出名与规范名必须一致, 否则部署要靠改名兜底。
+# macOS/Linux 保留 lib 前缀(规范名里就有 lib)。
+if(WIN32)
+    set_target_properties(devframework PROPERTIES PREFIX "")
+endif()
 
 # 性能优化: 本机全部 SIMD 指令集(自动向量化)。
 # 注意: -march=native 生成的二进制依赖本机 CPU, 仅用于"目标架构=本机架构"的构建。
@@ -59,25 +67,25 @@ if(NOT MSVC)
         endif()
     endif()
     if(_dev_native)
-        target_compile_options(dev PRIVATE -march=native)
+        target_compile_options(devframework PRIVATE -march=native)
     elseif(_dev_target STREQUAL "x86_64")
-        target_compile_options(dev PRIVATE -march=x86-64-v2)
+        target_compile_options(devframework PRIVATE -march=x86-64-v2)
     endif()
     # 禁用 FMA 融合: 使浮点运算与 Godot 引擎语义一致(引擎构建未开 FMA),
     # 保证 C++ 端结果与 GDScript 侧 bit 级一致。
-    target_compile_options(dev PRIVATE -ffp-contract=off)
+    target_compile_options(devframework PRIVATE -ffp-contract=off)
 endif()
 
 if(APPLE)
-    set_target_properties(dev PROPERTIES MACOSX_RPATH ON)
+    set_target_properties(devframework PROPERTIES MACOSX_RPATH ON)
 endif()
 
 # 产物命名无需在此钉 OUTPUT_NAME —— GDExtensionRebuild 会把直出产物统一改名为规范名
-# (libdev.macos.debug.arm64.dylib 等, 与 addons/DEVFramework/Native/dev.gdextension [libraries] 对应)。
+# (devframework.windows.release.x86_64.dll 等, 与 addons/DEVFramework/Native/devframework.gdextension 对应)。
 # 可选: 若希望 CMake 直出名即规范名(零改名), 可加各平台条件块 OUTPUT_NAME, 工具自动兼容。
 
-# 编译产物直接输出到框架级共享原生库目录 addons/DEVFramework/Native/
-set_target_properties(dev PROPERTIES
+# 编译产物直接输出到插件自己的产物目录(声明就在旁边, 引擎直接加载)
+set_target_properties(devframework PROPERTIES
     LIBRARY_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/../addons/DEVFramework/Native
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/../addons/DEVFramework/Native
     ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/../addons/DEVFramework/Native

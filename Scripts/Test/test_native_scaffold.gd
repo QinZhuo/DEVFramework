@@ -6,6 +6,7 @@ extends TestCase
 ## 单独测渲染函数 + 临时目录落地(不碰真实工程), 因为这层一旦出错会写坏别人的仓库。
 
 const SCAFFOLD := preload("res://addons/DEVFramework/Core/Editor/Generate/NativeScaffold.gd")
+const REBUILD := preload("res://addons/DEVFramework/Core/Editor/Generate/GDExtensionRebuild.gd")
 const PROBE := "user://scaffold_probe"
 
 
@@ -100,6 +101,39 @@ func test_ensure_is_idempotent() -> void:
 	assert_false((r3.get("created", []) as Array).has("CMakeLists.txt"), "手写文件不能被覆盖")
 	assert_eq(FileAccess.get_file_as_string(abs.path_join("CMakeLists.txt")), "# my own build\nadd_library(probe SHARED ${DEV_SOURCES})\n", "内容必须原样保留")
 	_clean_probe()
+
+
+## CMakeLists 多 target 解析: 每个 add_library 之后的 *_OUTPUT_DIRECTORY 归到它名下。
+## 这是多插件部署的地基 —— 解析错就会把产物部署/清理到别的插件目录。
+func test_parse_target_outputs_multi() -> void:
+	var text := """
+project(plugins LANGUAGES CXX)
+add_library(alpha SHARED ${ALPHA_SOURCES})
+target_link_libraries(alpha PRIVATE godot-cpp)
+set_target_properties(alpha PROPERTIES
+    LIBRARY_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/../addons/A/Native
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/../addons/A/Native)
+
+add_library(beta SHARED ${BETA_SOURCES})
+set_target_properties(beta PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/../addons/B/Native)
+"""
+	var base := "C:/proj/gdextension"
+	var out: Dictionary = REBUILD.parse_target_outputs(text, base)
+	assert_eq(out.size(), 2, "应解析出两个 target 的输出目录")
+	assert_eq(String(out.get("alpha", "")), "C:/proj/addons/A/Native", "alpha 的目录")
+	assert_eq(String(out.get("beta", "")), "C:/proj/addons/B/Native", "beta 的目录(不能串到 alpha)")
+
+
+## build 的插件选择: "all" 全建; 指定名字只留该 target(大小写不敏感); 名字不存在则空。
+func test_filter_targets_by_plugin() -> void:
+	var targets := [{"target": "dev"}, {"target": "voxelnative"}]
+	assert_eq(REBUILD.filter_targets(targets, "all").size(), 2, "all = 全部")
+	assert_eq(REBUILD.filter_targets(targets, "").size(), 2, "空串 = 全部")
+	var one: Array = REBUILD.filter_targets(targets, "VOXELNATIVE")
+	assert_eq(one.size(), 1, "按名字只留一个(大小写不敏感)")
+	assert_eq(String(one[0]["target"]), "voxelnative", "留下的是被点名的那个")
+	assert_eq(REBUILD.filter_targets(targets, "nope").size(), 0, "不存在的名字 → 空(调用方据此报错)")
 
 
 ## 多插件: 一个 CMakeLists 里每插件一个 target, godot-cpp 只引入一次。

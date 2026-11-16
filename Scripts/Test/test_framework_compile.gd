@@ -67,6 +67,27 @@ func test_all_framework_paths_exist() -> void:
 	assert_true(checked > 0, "未扫描到任何框架路径引用, 检查扫描逻辑")
 
 
+## 声明里的 entry_symbol 必须与 C++ 源码里导出的入口函数一致。
+## 重命名插件(dev → devframework)时最容易漏这一处, 症状是扩展**静默加载失败**
+## (引擎只打"找不到入口符号", 看不出是命名不一致), 所以钉成闸门。
+func test_gdextension_entry_symbol_matches_source() -> void:
+	var gd := "res://addons/DEVFramework/Native/devframework.gdextension"
+	if not FileAccess.file_exists(gd):
+		return   # 没有声明(纯 GDScript 工程/未部署): 不适用
+	var re := RegEx.new()
+	re.compile("entry_symbol\\s*=\\s*\"([A-Za-z0-9_]+)\"")
+	var m := re.search(FileAccess.get_file_as_string(gd))
+	assert_true(m != null, "%s 缺少 entry_symbol" % gd)
+	if m == null:
+		return
+	var sym := m.get_string(1)
+	var found := false
+	for f in FileTool.list_files("res://addons/DEVFramework/Native/src", PackedStringArray([".cpp", ".cc"])):
+		if FileAccess.get_file_as_string(f).contains("GDE_EXPORT " + sym + "("):
+			found = true
+	assert_true(found, "C++ 源码里找不到导出的 %s: .gdextension 的 entry_symbol 与实现不一致(扩展会加载失败)" % sym)
+
+
 ## 原生库新鲜度: 改了 gdextension/src 却忘了重编时, 所有原生相关测试都会"跑旧库还全绿"。
 ## 这是唯一能自动发现该问题的检查点, 所以归到编译健康检查里。
 func test_native_library_is_fresh() -> void:
