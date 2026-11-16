@@ -13,8 +13,9 @@ func _run(ctx: ECSSystemContext, delta: float) -> void:
 
 
 func _move_cb(rows: PackedInt32Array, _comp_rows: Dictionary, w: ECSWorld, delta: float) -> void:
-	var pos: PackedVector2Array = w.get_column(ECSDemoMoveComponent, &"pos")
-	var vel: PackedVector2Array = w.get_column(ECSDemoMoveComponent, &"vel")
+	var c: Dictionary = w.columns_of(ECSDemoMoveComponent, [&"pos", &"vel"])
+	var pos: PackedVector2Array = c[&"pos"]
+	var vel: PackedVector2Array = c[&"vel"]
 	for r in rows:
 		pos[r] += vel[r] * delta
-	w.set_column(ECSDemoMoveComponent, &"pos", pos)
+	w.set_columns_of(ECSDemoMoveComponent, {&"pos": pos})

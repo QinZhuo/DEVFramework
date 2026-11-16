@@ -203,7 +203,8 @@ public:
 	Variant get_field(int32_t entity, const StringName &comp, const StringName &field) const;
 	void set_field(int32_t entity, const StringName &comp, const StringName &field, const Variant &value);
 
-	// ---- 批量列访问 (零拷贝: 返回内部 Packed*Array 引用) ----
+	// ---- 列访问: 读用 get_columns(一次跨语言取多列), 写用 set_columns ----
+	// 单列版保留为便捷封装(内部同一条聚合路径), 逐帧多列请用 get_columns。
 	Variant get_column(const StringName &comp, const StringName &field) const;
 	void set_column(const StringName &comp, const StringName &field, const Variant &values);
 	// 一次取多组件多列, 减少跨语言调用次数。
@@ -213,14 +214,6 @@ public:
 	// 一次写回多组件多列: values = {compName: {fieldName: PackedArray}}
 	// (与 get_columns 返回结构一致), 一次跨语言替代 N 次 set_column。
 	void set_columns(const Dictionary &values);
-	// 借出列(写路径消除 COW): 把内部列移出(内部置空), 返回 {compName: {field: PackedArray}}
-	// 独占引用 —— 回调内写列 O(1) 无深拷贝。借出期间内部该列为空, 不得被其他路径读取,
-	// 且必须 return_columns() 归还(否则内部列永久为空)。借出期间不得改结构。
-	Dictionary borrow_columns(const Array &comps_fields);
-	// 归还列: 内部列 = 返回数组(指针交换 O(1))。
-	void return_columns(const Dictionary &borrowed);
-	// 是否有未归还的借出列(调试/防御)。
-	bool is_column_borrowed() const;
 
 	// ---- Tier 0: 原生批量运算 (纯 C++ 循环, 无 GDScript 解释开销) ----
 	enum BatchOp { BATCH_ADD = 0, BATCH_MUL_ADD = 1, BATCH_SET = 2, BATCH_CLAMP = 3 };
@@ -390,8 +383,11 @@ private:
 	std::vector<uint8_t> prefab_bitmap_;
 	// 组件名 -> components_ 下标(注册时填一次, 之后只读 —— 并行系统里查也安全)
 	std::unordered_map<uint64_t, int32_t> component_index_;
-	// 列借出计数(borrow_columns 增加、return_columns 减少; 并行多个借出时原子累加)
-	std::atomic<int> _borrow_count_{0};
+	// archetype 迁移图(flecs 的 "edge" 缓存): (源块, 组件) → 目标块。
+	// find_archetype 是线性扫全部块, 每次 add/remove 都扫一遍; 组件组合一多(100+ 块)会退化。
+	// 块只增不删 ⇒ 边一旦算出永远有效, 无需失效。
+	std::unordered_map<uint64_t, int32_t> arch_edge_add_;
+	std::unordered_map<uint64_t, int32_t> arch_edge_remove_;
 
 	// ---- 并行线程池 (batch 分片并行) ----
 	mutable std::vector<std::thread> workers_;

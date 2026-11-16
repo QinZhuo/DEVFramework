@@ -465,28 +465,6 @@ func set_columns(values: Dictionary) -> void:
 		norm[cn] = values[comp]
 	_core.set_columns(norm)
 
-## 借出列(写路径消除 COW): 把内部列移出返回独占引用, 回调内写列 O(1) 无深拷贝。
-## 借出期间内部该列为空, 不得被其他路径读取; 必须配 return_columns() 归还。
-func borrow_columns(comps_fields: Array) -> Dictionary:
-	var norm := []
-	for cf in comps_fields:
-		var cn := resolve_component_name(cf.get("comp", &""))
-		if cn == &"":
-			continue
-		_record_access(cn)
-		norm.append({"comp": cn, "fields": cf.get("fields", [])})
-	return _core.borrow_columns(norm)
-
-## 归还借出列(内部列 = 返回数组, 指针交换 O(1))。
-func return_columns(borrowed: Dictionary) -> void:
-	_core.return_columns(borrowed)
-	for comp in borrowed:
-		_mark_dirty(resolve_component_name(comp))
-
-## 是否有未归还的借出列(调试/防御)。
-func is_column_borrowed() -> bool:
-	return _core.is_column_borrowed()
-
 ## 列间运算: 对满足条件的实体, 用 src 组件字段列对目标字段做运算。
 func batch_apply_col(anchor, must: Array, op_comp, op_field: StringName,
 		src_comp, src_field: StringName, op: int, factor: float = 1.0,
@@ -613,6 +591,26 @@ func get_columns(comps_fields: Array) -> Dictionary:
 		_record_access(cn)
 		norm.append({"comp": cn, "fields": cf.get("fields", [])})
 	return _core.get_columns(norm)
+
+## **逐帧读多列就走这里**: 一个组件的 N 个字段 = 1 次跨语言调用 + 1 份返回字典。
+## 返回 {字段: Packed 数组}(键与传入的字段同名)。
+## 对应业界的批量访问器(flecs `field<T>(i)` / EnTT `view.get<T>()` 都是"按组件整批取"),
+## 而不是逐字段 get_column —— 后者是 N 次跨语言 + N 次整列拷贝。
+func columns_of(component, fields: Array) -> Dictionary:
+	var cn := resolve_component_name(component)
+	if cn == &"":
+		return {}
+	_record_access(cn)
+	return _core.get_columns([{"comp": cn, "fields": fields}]).get(cn, {})
+
+## 与 columns_of 配对: 回写一个组件的多列(一次跨语言 + 一次脏标记)。
+func set_columns_of(component, fields: Dictionary) -> void:
+	var cn := resolve_component_name(component)
+	if cn == &"" or fields.is_empty():
+		return
+	_record_access(cn)
+	_core.set_columns({cn: fields})
+	_mark_dirty(cn)
 
 ## 行号 -> 实体 id(anchor 组件的 dense 行号转实体)。
 func entity_of_row(component, row: int) -> int:

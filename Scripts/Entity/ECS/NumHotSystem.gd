@@ -17,9 +17,10 @@ func _run(ctx: ECSSystemContext, _delta: float) -> void:
 
 
 func _numhot_cb(rows: PackedInt32Array, _comp_rows: Dictionary, w: ECSWorld) -> void:
-	var hp_col: PackedFloat32Array = w.get_column(BattleCell, &"hp")
-	var max_col: PackedFloat32Array = w.get_column(BattleCell, &"max_hp")
-	var dmg_col: PackedFloat32Array = w.get_column(BattleCell, &"dmg")
+	var c: Dictionary = w.columns_of(BattleCell, [&"hp", &"max_hp", &"dmg"])
+	var hp_col: PackedFloat32Array = c[&"hp"]
+	var max_col: PackedFloat32Array = c[&"max_hp"]
+	var dmg_col: PackedFloat32Array = c[&"dmg"]
 	# GDScript 循环: 每实体多次数值运算(手写脚本层)
 	for r in rows:
 		# 回血(与伤害平衡, 保持血量随机分布以显示状态差异)
@@ -33,4 +34,4 @@ func _numhot_cb(rows: PackedInt32Array, _comp_rows: Dictionary, w: ECSWorld) -> 
 		h -= atk * 0.2
 		h -= atk * 0.1
 		hp_col[r] = maxf(h, 0.0)
-	w.set_column(BattleCell, &"hp", hp_col)
+	w.set_columns_of(BattleCell, {&"hp": hp_col})

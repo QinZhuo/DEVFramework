@@ -28,9 +28,10 @@ func refresh() -> void:
 		cloud.set_sizes(PackedFloat32Array())
 		cloud.set_colors(PackedColorArray())
 		return
-	var pos_col: PackedVector2Array = world.get_column(BattleCell, &"pos")
-	var hp_col: PackedFloat32Array = world.get_column(BattleCell, &"hp")
-	var max_col: PackedFloat32Array = world.get_column(BattleCell, &"max_hp")
+	var c: Dictionary = world.columns_of(BattleCell, [&"pos", &"hp", &"max_hp"])
+	var pos_col: PackedVector2Array = c[&"pos"]
+	var hp_col: PackedFloat32Array = c[&"hp"]
+	var max_col: PackedFloat32Array = c[&"max_hp"]
 
 	var pts := PackedVector2Array()
 	var sizes := PackedFloat32Array()

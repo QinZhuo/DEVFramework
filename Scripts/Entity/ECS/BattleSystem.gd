@@ -37,12 +37,14 @@ func _battle_cb(rows: PackedInt32Array, _comp_rows: Dictionary, w: ECSWorld, del
 	if _frame % 8 == 1:
 		spatial.rebuild()
 
-	var pos_col: PackedVector2Array = w.get_column(BattleCell, &"pos")
-	var vel_col: PackedVector2Array = w.get_column(BattleCell, &"vel")
-	var hp_col: PackedFloat32Array = w.get_column(BattleCell, &"hp")
-	var max_col: PackedFloat32Array = w.get_column(BattleCell, &"max_hp")
-	var dmg_col: PackedFloat32Array = w.get_column(BattleCell, &"dmg")
-	var size_col: PackedFloat32Array = w.get_column(BattleCell, &"size")
+	# 6 列一次取(1 次跨语言调用); 逐字段 get_column 是 6 次调用 + 6 次整列拷贝
+	var c: Dictionary = w.columns_of(BattleCell, [&"pos", &"vel", &"hp", &"max_hp", &"dmg", &"size"])
+	var pos_col: PackedVector2Array = c[&"pos"]
+	var vel_col: PackedVector2Array = c[&"vel"]
+	var hp_col: PackedFloat32Array = c[&"hp"]
+	var max_col: PackedFloat32Array = c[&"max_hp"]
+	var dmg_col: PackedFloat32Array = c[&"dmg"]
+	var size_col: PackedFloat32Array = c[&"size"]
 
 	var dmg_frame := 60.0 * delta
 	_dead.clear()
@@ -80,10 +82,8 @@ func _battle_cb(rows: PackedInt32Array, _comp_rows: Dictionary, w: ECSWorld, del
 		if absorber >= 0 and hp_col[absorber] > 0 and hp_col[e] <= 0:
 			hp_col[absorber] = minf(hp_col[absorber] + max_col[e] * 0.5, max_col[absorber] * 1.5)
 
-	# 写回(COW 副本 → 原生存储)
-	w.set_column(BattleCell, &"pos", pos_col)
-	w.set_column(BattleCell, &"vel", vel_col)
-	w.set_column(BattleCell, &"hp", hp_col)
+	# 写回(COW 副本 → 原生存储): 一次调用写回 3 列
+	w.set_columns_of(BattleCell, {&"pos": pos_col, &"vel": vel_col, &"hp": hp_col})
 
 	# 击杀销毁: 用 Command Buffer 排队(行号 -> 实体ID), 帧末统一删除,
 	# 避免在系统遍历中直接改结构(迭代失效/重入问题)

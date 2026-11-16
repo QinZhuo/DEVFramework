@@ -1002,12 +1002,21 @@ bool ECSCore::add_component(int32_t entity, const StringName &comp) {
 	if (old_arch >= 0 && archetypes_[old_arch].has_comp(ci)) {
 		return true; // 幂等
 	}
-	std::vector<int32_t> comps_new;
-	if (old_arch >= 0) {
-		comps_new = archetypes_[old_arch].comps;
+	// 迁移图边缓存(flecs "edge"): (源块, 组件) → 目标块, 命中就不必再扫全部块
+	const uint64_t edge = (uint64_t(uint32_t(old_arch + 1)) << 32) | uint32_t(ci);
+	int32_t dst;
+	auto eit = arch_edge_add_.find(edge);
+	if (eit != arch_edge_add_.end()) {
+		dst = eit->second;
+	} else {
+		std::vector<int32_t> comps_new;
+		if (old_arch >= 0) {
+			comps_new = archetypes_[old_arch].comps;
+		}
+		sorted_insert(comps_new, ci);
+		dst = find_archetype(comps_new);
+		arch_edge_add_[edge] = dst;
 	}
-	sorted_insert(comps_new, ci);
-	const int32_t dst = find_archetype(comps_new);
 	migrate_entity(index, old_arch, dst);
 	++struct_version_;
 	return true;
@@ -1033,17 +1042,27 @@ void ECSCore::remove_component(int32_t entity, const StringName &comp) {
 	if (arch < 0 || !archetypes_[arch].has_comp(ci)) {
 		return;
 	}
-	std::vector<int32_t> comps_new;
-	for (int32_t c : archetypes_[arch].comps) {
-		if (c != ci) {
-			comps_new.push_back(c);
+	// 迁移图边缓存: 删除组件的目标块同样记住(-1 = 该组件组合为空, 直接出块)
+	const uint64_t edge = (uint64_t(uint32_t(arch + 1)) << 32) | uint32_t(ci);
+	int32_t dst;
+	auto eit = arch_edge_remove_.find(edge);
+	if (eit != arch_edge_remove_.end()) {
+		dst = eit->second;
+	} else {
+		std::vector<int32_t> comps_new;
+		for (int32_t c : archetypes_[arch].comps) {
+			if (c != ci) {
+				comps_new.push_back(c);
+			}
 		}
+		dst = comps_new.empty() ? -1 : find_archetype(comps_new);
+		arch_edge_remove_[edge] = dst;
 	}
-	if (comps_new.empty()) {
+	if (dst < 0) {
 		remove_from_archetype(arch, index);
 		entity_arch_[index] = -1;
 	} else {
-		migrate_entity(index, arch, find_archetype(comps_new));
+		migrate_entity(index, arch, dst);
 	}
 	++struct_version_;
 }
@@ -1758,55 +1777,6 @@ Dictionary ECSCore::get_columns(const Array &comps_fields) const {
 	return out;
 }
 
-Dictionary ECSCore::borrow_columns(const Array &comps_fields) {
-	_borrow_count_.fetch_add(1);
-	Dictionary out;
-	for (int32_t i = 0; i < comps_fields.size(); ++i) {
-		Dictionary cf = comps_fields[i];
-		const int32_t ci = comp_index(StringName(cf["comp"]));
-		if (ci < 0) {
-			continue;
-		}
-		Dictionary fields_dict;
-		Array fields = cf["fields"];
-		for (int32_t j = 0; j < fields.size(); ++j) {
-			const StringName fname = StringName(fields[j]);
-			const int32_t fi = components_[ci].field_index(fname);
-			if (fi < 0) {
-				continue;
-			}
-			fields_dict[fname] = column_aggregate(ci, fi);
-		}
-		out[components_[ci].name] = fields_dict;
-	}
-	return out;
-}
-
-void ECSCore::return_columns(const Dictionary &borrowed) {
-	_borrow_count_.fetch_sub(1);
-	Array keys = borrowed.keys();
-	for (int32_t i = 0; i < keys.size(); ++i) {
-		const int32_t ci = comp_index(StringName(keys[i]));
-		if (ci < 0) {
-			continue;
-		}
-		Dictionary fields = borrowed[keys[i]];
-		Array fkeys = fields.keys();
-		for (int32_t j = 0; j < fkeys.size(); ++j) {
-			const StringName fname = StringName(fkeys[j]);
-			const int32_t fi = components_[ci].field_index(fname);
-			if (fi < 0) {
-				continue;
-			}
-			column_scatter(ci, fi, fields[fname]);
-		}
-	}
-}
-
-bool ECSCore::is_column_borrowed() const {
-	return _borrow_count_.load() > 0;
-}
-
 void ECSCore::set_column(const StringName &comp, const StringName &field, const Variant &values) {
 	const int32_t ci = comp_index(comp);
 	if (ci < 0) {
@@ -2095,6 +2065,57 @@ static Variant agg_at(const Variant &v, int32_t k) {
 		}
 		default:
 			return Variant();
+	}
+}
+
+// 把一条 Packed 列按 (块, 行, 组件位置) 批量写进目标列。
+// 每字段只做**一次**类型分支并取到裸指针, 行内是纯下标写入 —— 逐行调用 agg_at 会因为
+// 每次都要做 Variant→PackedArray 转换(引用计数)而慢 4 倍(实测 5.05µs/实体 → 目标 <1.5µs)。
+// 源类型与目标列不符时不猜(写错 vector = 内存踩踏), 退化为写默认值。
+static void ecs_write_rows(std::vector<godot::Archetype> &archs,
+		const std::vector<int32_t> &tgt_arch, const std::vector<int32_t> &tgt_row,
+		const std::vector<int32_t> &tgt_cp, int32_t fi, const godot::Variant &src,
+		const godot::Variant &fallback) {
+	const size_t n = tgt_arch.size();
+	if (n == 0) {
+		return;
+	}
+	const godot::Variant::Type want =
+			archs[size_t(tgt_arch[0])].cols[size_t(tgt_cp[0])][size_t(fi)].type;
+#define ECS_WRITE_CASE(ENUM, TYPE, WANT, MEMBER)                                                \
+	case godot::Variant::ENUM: {                                                                \
+		if (want == godot::Variant::WANT) {                                                     \
+			const godot::TYPE p = src;                                                          \
+			const auto *sp = p.ptr();                                                           \
+			const int32_t sn = p.size();                                                        \
+			for (size_t r = 0; r < n; ++r) {                                                    \
+				const int32_t k = int32_t(r);                                                   \
+				if (k < sn) {                                                                   \
+					archs[size_t(tgt_arch[r])].cols[size_t(tgt_cp[r])][size_t(fi)]              \
+							.MEMBER[size_t(tgt_row[r])] = sp[r];                                \
+				}                                                                               \
+			}                                                                                   \
+			return;                                                                             \
+		}                                                                                       \
+	} break;
+	switch (src.get_type()) {
+		ECS_WRITE_CASE(PACKED_INT32_ARRAY, PackedInt32Array, INT, i32)
+		ECS_WRITE_CASE(PACKED_FLOAT32_ARRAY, PackedFloat32Array, FLOAT, f32)
+		ECS_WRITE_CASE(PACKED_BYTE_ARRAY, PackedByteArray, BOOL, b)
+		ECS_WRITE_CASE(PACKED_VECTOR2_ARRAY, PackedVector2Array, VECTOR2, v2)
+		ECS_WRITE_CASE(PACKED_VECTOR3_ARRAY, PackedVector3Array, VECTOR3, v3)
+		ECS_WRITE_CASE(PACKED_VECTOR4_ARRAY, PackedVector4Array, VECTOR4, v4)
+		ECS_WRITE_CASE(PACKED_COLOR_ARRAY, PackedColorArray, COLOR, col)
+		default:
+			break;
+	}
+#undef ECS_WRITE_CASE
+	// 兜底: 字符串列 / 类型不符 / 缺列 → 逐行 set(默认值或源值), 不猜内存布局
+	const bool from_src = src.get_type() == godot::Variant::PACKED_STRING_ARRAY;
+	for (size_t r = 0; r < n; ++r) {
+		const godot::Variant v = from_src ? agg_at(src, int32_t(r)) : fallback;
+		archs[size_t(tgt_arch[r])].cols[size_t(tgt_cp[r])][size_t(fi)].set(size_t(tgt_row[r]),
+				v.get_type() == godot::Variant::NIL ? fallback : v);
 	}
 }
 } // namespace
@@ -2822,6 +2843,8 @@ Dictionary ECSCore::debug_stats() const {
 
 Dictionary ECSCore::serialize() const {
 	Dictionary root;
+	// 列式: entities = PackedInt32Array, columns = {字段: Packed 数组}。
+	// 版本号恒为 1 —— 这套 ECS 未投产, 没有历史存档需要区分格式; 加版本只会让读档多一个分支。
 	root["version"] = int64_t(1);
 	Array comps;
 	for (size_t ci = 0; ci < components_.size(); ++ci) {
@@ -2839,37 +2862,30 @@ Dictionary ECSCore::serialize() const {
 		cd["field_names"] = fnames_arr;
 		cd["field_types"] = ftypes_arr;
 		cd["defaults"] = fdefaults_arr;
-		// 实体数据: 聚合实体(跨块按顺序) + 各字段聚合列值
-		Array entities;
-		std::vector<int32_t> agg_entities;
+		// 列式: 实体 id 一条 + 每字段一条 Packed 数组(同一顺序, 下标即行)。
+		// 旧格式是"每实体一个 Dictionary + 一个 Variant 数组": 8000 实体要 1.6 万次分配 + 4 万次装箱,
+		// 实测 55.8ms(6.97µs/实体); 列式直接把聚合列搬进存档, 零 per-entity 分配。
+		PackedInt32Array ids;
 		for (int32_t arch : archs_with(int32_t(ci))) {
 			const auto &a = archetypes_[arch];
 			for (int32_t r = 0; r < int32_t(a.entities.size()); ++r) {
-				if (is_prefab_index(a.entities[r])) {
-					continue;
+				if (!is_prefab_index(a.entities[r])) {
+					ids.append(a.entities[r]);
 				}
-				agg_entities.push_back(a.entities[r]);
 			}
 		}
-		std::vector<Variant> agg_cols(c.fields.size());
+		if (ids.is_empty()) {
+			continue; // 没有实例的组件不必写进存档
+		}
+		Dictionary columns;
 		for (size_t fi = 0; fi < c.fields.size(); ++fi) {
-			agg_cols[fi] = column_aggregate(int32_t(ci), int32_t(fi));
+			columns[c.fields[fi].name] = column_aggregate(int32_t(ci), int32_t(fi));
 		}
-		for (size_t k = 0; k < agg_entities.size(); ++k) {
-			Dictionary ed;
-			ed["entity"] = int64_t(agg_entities[k]);
-			Array vals;
-			for (size_t fi = 0; fi < c.fields.size(); ++fi) {
-				vals.append(agg_at(agg_cols[fi], int32_t(k)));
-			}
-			ed["values"] = vals;
-			entities.append(ed);
-		}
-		cd["entities"] = entities;
+		cd["entities"] = ids;
+		cd["columns"] = columns;
 		comps.append(cd);
 	}
 	root["components"] = comps;
-	root["pool_size"] = int64_t(versions_.size());
 	return root;
 }
 
@@ -2878,20 +2894,17 @@ Array ECSCore::deserialize(const Dictionary &data) {
 	if (!data.has("components")) {
 		return result;
 	}
-	// 第一遍: 收集所有需要创建的实体 ID 集合(按出现顺序)。
-	// 去重用哈希集合: 原先对已收集列表做线性查重 → O(E²), 大世界存档会卡住。
+	// 第一遍: 收集所有需要创建的实体 ID 集合(按出现顺序, 跨组件去重)。
 	std::vector<int32_t> entity_ids;
 	{
 		std::unordered_set<int32_t> seen_ids;
 		Array comps = data["components"];
 		for (int32_t i = 0; i < comps.size(); ++i) {
 			Dictionary cd = comps[i];
-			Array entities = cd["entities"];
-			for (int32_t j = 0; j < entities.size(); ++j) {
-				Dictionary ed = entities[j];
-				const int32_t saved_id = int32_t(int64_t(ed["entity"]));
-				if (seen_ids.insert(saved_id).second) {
-					entity_ids.push_back(saved_id);
+			PackedInt32Array ids = cd["entities"];
+			for (int32_t j = 0; j < ids.size(); ++j) {
+				if (seen_ids.insert(ids[j]).second) {
+					entity_ids.push_back(ids[j]);
 				}
 			}
 		}
@@ -2905,9 +2918,9 @@ Array ECSCore::deserialize(const Dictionary &data) {
 		result.append(new_id); // 返回真实实体 ID
 	}
 
-	// 第二遍: 填充组件数据。add_component 之后**直接写列**:
-	// set_field 每次都要查组件名 + 字段名(两趟字符串比较), 20k 实体 × 8 字段 = 32 万次;
-	// 这里按组件取出字段表后只做列下标写入, 语义不变(缺字段用默认值)。
+	// 第二遍: 填充组件数据。分两步走, 避免"每字段每行一次 Variant 转换":
+	//   A) 结构: 逐实体 add_component, 记下 (块, 行, 组件位置);
+	//   B) 值: 每字段只做**一次**类型分支并取到 Packed 裸指针, 行内是纯下标写入。
 	Array comps = data["components"];
 	for (int32_t i = 0; i < comps.size(); ++i) {
 		Dictionary cd = comps[i];
@@ -2917,10 +2930,17 @@ Array ECSCore::deserialize(const Dictionary &data) {
 			continue;
 		}
 		const int32_t field_count = int32_t(components_[ci].fields.size());
-		Array entities = cd["entities"];
-		for (int32_t j = 0; j < entities.size(); ++j) {
-			Dictionary ed = entities[j];
-			auto it = id_map.find(int32_t(int64_t(ed["entity"])));
+		PackedInt32Array ids = cd["entities"];
+		Dictionary columns = cd["columns"];
+
+		std::vector<int32_t> tgt_arch;
+		std::vector<int32_t> tgt_row;
+		std::vector<int32_t> tgt_cp;
+		tgt_arch.reserve(size_t(ids.size()));
+		tgt_row.reserve(size_t(ids.size()));
+		tgt_cp.reserve(size_t(ids.size()));
+		for (int32_t j = 0; j < ids.size(); ++j) {
+			auto it = id_map.find(ids[j]);
 			if (it == id_map.end()) {
 				continue;
 			}
@@ -2935,14 +2955,19 @@ Array ECSCore::deserialize(const Dictionary &data) {
 			if (row < 0 || cp < 0) {
 				continue;
 			}
-			Array vals = ed["values"];
-			for (int32_t fi = 0; fi < field_count; ++fi) {
-				const Variant v = (fi < vals.size()) ? Variant(vals[fi]) : components_[ci].defaults[fi];
-				archetypes_[arch].cols[size_t(cp)][size_t(fi)].set(size_t(row), v);
-			}
 			if (change_detection_) {
 				++archetypes_[arch].row_ver[size_t(row)];
 			}
+			tgt_arch.push_back(arch);
+			tgt_row.push_back(row);
+			tgt_cp.push_back(cp);
+		}
+
+		// B) 值: 每字段一次类型分支 + 裸指针, 行内纯下标写入
+		for (int32_t fi = 0; fi < field_count; ++fi) {
+			const Variant colv = columns.get(components_[ci].fields[size_t(fi)].name, Variant());
+			ecs_write_rows(archetypes_, tgt_arch, tgt_row, tgt_cp, fi, colv,
+					components_[ci].defaults[size_t(fi)]);
 		}
 	}
 	return result;
@@ -3234,9 +3259,6 @@ void ECSCore::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_column", "comp", "field", "values"), &ECSCore::set_column);
 	ClassDB::bind_method(D_METHOD("get_columns", "comps_fields"), &ECSCore::get_columns);
 	ClassDB::bind_method(D_METHOD("set_columns", "values"), &ECSCore::set_columns);
-	ClassDB::bind_method(D_METHOD("borrow_columns", "comps_fields"), &ECSCore::borrow_columns);
-	ClassDB::bind_method(D_METHOD("return_columns", "borrowed"), &ECSCore::return_columns);
-	ClassDB::bind_method(D_METHOD("is_column_borrowed"), &ECSCore::is_column_borrowed);
 	ClassDB::bind_method(D_METHOD("batch_apply_col", "anchor", "must", "op_comp", "op_field", "src_comp", "src_field", "op", "factor", "addend", "conditions"), &ECSCore::batch_apply_col);
 	ClassDB::bind_method(D_METHOD("batch_clamp_where", "anchor", "must", "op_comp", "op_field", "min_comp", "min_field", "max_comp", "max_field", "conditions"), &ECSCore::batch_clamp_where);
 
