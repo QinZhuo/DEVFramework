@@ -774,7 +774,7 @@ void ECSCore::sorted_insert(std::vector<int32_t> &comps, int32_t comp) {
 // 从 archetype 移除实体(swap-remove + 列同步)
 void ECSCore::remove_from_archetype(int32_t arch, int32_t index) {
 	Archetype &a = archetypes_[arch];
-	const int32_t row = a.row_of(index);
+	const int32_t row = row_of(index);
 	if (row < 0) {
 		return;
 	}
@@ -782,7 +782,7 @@ void ECSCore::remove_from_archetype(int32_t arch, int32_t index) {
 	const int32_t last_e = a.entities[last];
 	if (row != last) {
 		a.entities[row] = last_e;
-		a.row_map[last_e] = row;
+		entity_row_[size_t(last_e)] = row;
 		a.row_ver[row] = a.row_ver[last];
 		for (size_t cp = 0; cp < a.comps.size(); ++cp) {
 			const int32_t ci = a.comps[cp];
@@ -801,7 +801,7 @@ void ECSCore::remove_from_archetype(int32_t arch, int32_t index) {
 		}
 	}
 	a.entities.pop_back();
-	a.row_map[index] = -1;
+	entity_row_[size_t(index)] = -1;
 	a.row_ver.pop_back();
 }
 
@@ -809,15 +809,13 @@ void ECSCore::remove_from_archetype(int32_t arch, int32_t index) {
 void ECSCore::migrate_entity(int32_t index, int32_t src_arch, int32_t dst_arch) {
 	Archetype &dst = archetypes_[dst_arch];
 	const int32_t row = int32_t(dst.entities.size());
+	// ⚠ 必须**先**取源行号再改 entity_row_: 它是"当前块内的行", 一旦写成目标行,
+	// 后面的拷贝与 remove_from_archetype 都会用错行号(实测: 迁移后旧组件值变 Nil)。
+	const int32_t src_row = (src_arch >= 0) ? row_of(index) : -1;
 	dst.entities.push_back(index);
-	if (int32_t(dst.row_map.size()) <= index) {
-		dst.row_map.resize(index + 1, -1);
-	}
-	dst.row_map[index] = row;
 	dst.row_ver.push_back(0);
 	if (src_arch >= 0) {
 		Archetype &src = archetypes_[src_arch];
-		const int32_t src_row = src.row_of(index);
 		if (src_row >= 0) {
 			for (size_t cp = 0; cp < src.comps.size(); ++cp) {
 				const int32_t ci = src.comps[cp];
@@ -846,8 +844,11 @@ void ECSCore::migrate_entity(int32_t index, int32_t src_arch, int32_t dst_arch) 
 		}
 	}
 	if (src_arch >= 0) {
+		// remove 内部会用 row_of(index) 找行, 此时 entity_row_ 仍是源行号 → 正确;
+		// 它结束时把该实体的行号清成 -1, 所以新行号必须在它之后才写。
 		remove_from_archetype(src_arch, index);
 	}
+	entity_row_[size_t(index)] = row;
 	entity_arch_[index] = dst_arch;
 }
 
@@ -969,7 +970,11 @@ int32_t ECSCore::create_entity() {
 	if (int32_t(entity_arch_.size()) <= index) {
 		entity_arch_.resize(index + 1, -1);
 	}
+	if (int32_t(entity_row_.size()) <= index) {
+		entity_row_.resize(index + 1, -1);
+	}
 	entity_arch_[index] = -1; // 新实体无组件, 不属于任何 archetype
+	entity_row_[index] = -1;
 	++struct_version_;
 	return (version << ECS_INDEX_BITS) | index;
 }
@@ -996,6 +1001,7 @@ void ECSCore::destroy_entity(int32_t entity) {
 		remove_from_archetype(arch, index);
 	}
 	entity_arch_[index] = -1;
+	entity_row_[index] = -1;
 	// prefab 标记必须跟着清: 否则 id 被普通实体复用后, 该实体会在所有查询/序列化里永久隐身
 	if (index < int32_t(prefab_bitmap_.size())) {
 		prefab_bitmap_[index] = 0;
@@ -1329,7 +1335,7 @@ bool ECSCore::is_change_detection() const {
 }
 
 // 变更检测: 返回该组件所有"行版本 > since"的聚合行号
-PackedInt32Array ECSCore::get_changed(const StringName &comp, uint32_t since) const {
+PackedInt32Array ECSCore::get_changed(const StringName &comp, int64_t since) const {
 	PackedInt32Array out;
 	const int32_t ci = comp_index(comp);
 	if (ci < 0) {
@@ -1396,7 +1402,7 @@ Variant ECSCore::get_field(int32_t entity, const StringName &comp, const StringN
 	if (fi < 0) {
 		return Variant();
 	}
-	const int32_t row = a.row_of(index);
+	const int32_t row = row_of(index);
 	if (row < 0) {
 		return Variant();
 	}
@@ -1422,11 +1428,11 @@ void ECSCore::set_field(int32_t entity, const StringName &comp, const StringName
 	if (fi < 0) {
 		return;
 	}
-	const int32_t row = a.row_of(index);
+	const int32_t row = row_of(index);
 	if (row < 0) {
 		return;
 	}
-	if (change_detection_) ++a.row_ver[row];
+	if (change_detection_) a.row_ver[size_t(row)] = ++write_tick_;
 	a.col_at(cp, fi).set(row, value);
 }
 
@@ -1984,7 +1990,7 @@ bool ECSCore::batch_apply_entity(int32_t entity, int32_t oci, int32_t ofi, int32
 	if (earch < 0) {
 		return false;
 	}
-	const int32_t erow = archetypes_[earch].row_of(entity);
+	const int32_t erow = row_of(entity);
 	if (erow < 0) {
 		return false;
 	}
@@ -1992,7 +1998,7 @@ bool ECSCore::batch_apply_entity(int32_t entity, int32_t oci, int32_t ofi, int32
 	if (cp < 0) {
 		return false;
 	}
-	++archetypes_[earch].row_ver[erow];
+	archetypes_[earch].row_ver[size_t(erow)] = ++write_tick_;
 	auto &col = archetypes_[earch].col_at(cp, ofi);
 	switch (col.type) {
 		case Variant::INT: {
@@ -2052,7 +2058,7 @@ bool ECSCore::batch_apply_entity_col(int32_t entity, int32_t oci, int32_t ofi, i
 	if (earch < 0) {
 		return false;
 	}
-	const int32_t erow = archetypes_[earch].row_of(entity);
+	const int32_t erow = row_of(entity);
 	if (erow < 0) {
 		return false;
 	}
@@ -2061,7 +2067,7 @@ bool ECSCore::batch_apply_entity_col(int32_t entity, int32_t oci, int32_t ofi, i
 	if (cp < 0 || scp < 0) {
 		return false;
 	}
-	++archetypes_[earch].row_ver[erow];
+	archetypes_[earch].row_ver[size_t(erow)] = ++write_tick_;
 	auto &ocol = archetypes_[earch].col_at(cp, ofi);
 	const auto &scol = archetypes_[earch].col_at(scp, sfi);
 	if (ocol.type == Variant::FLOAT && (scol.type == Variant::FLOAT || scol.type == Variant::INT)) {
@@ -2136,7 +2142,7 @@ bool ECSCore::cond_matches_entity(int32_t entity, const std::vector<ECSFilterCon
 		if (ci < 0 || !archetypes_[arch].has_comp(ci)) {
 			return false;
 		}
-		const int32_t row = archetypes_[arch].row_of(entity);
+		const int32_t row = row_of(entity);
 		if (row < 0) {
 			return false;
 		}
@@ -2662,7 +2668,7 @@ int64_t ECSCore::batch_apply_col_rows(const StringName &anchor, const PackedInt3
 					break;
 				}
 				const int32_t erow = grow - base; // 块内行(无 prefab 时 == agg[grow].second)
-				if (change_detection_) ++a.row_ver[erow];
+				if (change_detection_) a.row_ver[size_t(erow)] = ++write_tick_;
 				// 直接列间操作(参考 batch_apply_entity_col, 无 entity_arch_/row_of 间接)
 				if (ocol.type == Variant::FLOAT && (scol.type == Variant::FLOAT || scol.type == Variant::INT)) {
 					const double sv = (scol.type == Variant::INT) ? double(scol.at<int32_t>(erow)) : double(scol.at<float>(erow));
@@ -2845,7 +2851,7 @@ int64_t ECSCore::batch_clamp_where(const StringName &anchor, const PackedStringA
 			if (earch < 0) {
 				continue;
 			}
-			const int32_t erow = archetypes_[earch].row_of(en);
+			const int32_t erow = row_of(en);
 			if (erow < 0) {
 				continue;
 			}
@@ -2920,7 +2926,7 @@ int64_t ECSCore::batch_vec_add(const StringName &anchor, const PackedStringArray
 			if (earch < 0) {
 				continue;
 			}
-			const int32_t erow = archetypes_[earch].row_of(en);
+			const int32_t erow = row_of(en);
 			if (erow < 0) {
 				continue;
 			}
@@ -3123,7 +3129,7 @@ void ECSCore::spatial_update_entity(int32_t id) {
 		return;
 	}
 	const int32_t cp = archetypes_[size_t(arch)].comp_pos(spatial_comp_);
-	const int32_t row = archetypes_[size_t(arch)].row_of(idx);
+	const int32_t row = row_of(idx);
 	if (cp < 0 || row < 0) {
 		return;
 	}
@@ -3171,7 +3177,7 @@ PackedInt32Array ECSCore::spatial_query_rect(const Vector2 &min_pos, const Vecto
 					continue; // 已被移除(索引陈旧的那一格)
 				}
 				const int32_t cp = archetypes_[size_t(arch)].comp_pos(spatial_comp_);
-				const int32_t row = archetypes_[size_t(arch)].row_of(idx);
+				const int32_t row = row_of(idx);
 				if (cp < 0 || row < 0) {
 					continue;
 				}
@@ -3216,7 +3222,7 @@ PackedInt32Array ECSCore::spatial_query_radius(const Vector2 &center, double rad
 			continue;
 		}
 		const int32_t cp = archetypes_[size_t(arch)].comp_pos(spatial_comp_);
-		const int32_t row = archetypes_[size_t(arch)].row_of(idx);
+		const int32_t row = row_of(idx);
 		if (cp < 0 || row < 0) {
 			continue;
 		}
@@ -3480,13 +3486,13 @@ Array ECSCore::deserialize(const Dictionary &data) {
 			}
 			const int32_t idx = ecs_index_of(e);
 			const int32_t arch = entity_arch_[size_t(idx)];
-			const int32_t row = archetypes_[arch].row_of(idx);
+			const int32_t row = row_of(idx);
 			const int32_t cp = archetypes_[arch].comp_pos(ci);
 			if (row < 0 || cp < 0) {
 				continue;
 			}
 			if (change_detection_) {
-				++archetypes_[arch].row_ver[size_t(row)];
+				archetypes_[arch].row_ver[size_t(row)] = ++write_tick_;
 			}
 			tgt_arch.push_back(arch);
 			tgt_row.push_back(row);
@@ -3677,7 +3683,7 @@ Array ECSCore::instantiate(int32_t prefab, int32_t count, const Dictionary &over
 	if (parch < 0) {
 		return result;
 	}
-	const int32_t prow = archetypes_[parch].row_of(pindex);
+	const int32_t prow = row_of(pindex);
 	if (prow < 0) {
 		return result;
 	}
@@ -3719,10 +3725,10 @@ Array ECSCore::instantiate(int32_t prefab, int32_t count, const Dictionary &over
 	for (int32_t i = 0; i < n; ++i) {
 		const int32_t idx = ecs_index_of(ids[i]);
 		dst.entities[size_t(base + i)] = idx;
-		if (int32_t(dst.row_map.size()) <= idx) {
-			dst.row_map.resize(size_t(idx + 1), -1);
+		if (int32_t(entity_row_.size()) <= idx) {
+			entity_row_.resize(size_t(idx + 1), -1);
 		}
-		dst.row_map[size_t(idx)] = base + i;
+		entity_row_[size_t(idx)] = base + i;
 		entity_arch_[size_t(idx)] = darch;
 	}
 
@@ -3968,6 +3974,7 @@ void ECSCore::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("entity_of_row", "comp", "row"), &ECSCore::entity_of_row);
 	ClassDB::bind_method(D_METHOD("get_entity_at", "comp", "row"), &ECSCore::get_entity_at);
 	ClassDB::bind_method(D_METHOD("get_changed", "comp", "since"), &ECSCore::get_changed);
+	ClassDB::bind_method(D_METHOD("write_tick"), &ECSCore::write_tick);
 	ClassDB::bind_method(D_METHOD("set_change_detection", "enabled"), &ECSCore::set_change_detection);
 	ClassDB::bind_method(D_METHOD("is_change_detection"), &ECSCore::is_change_detection);
 	ClassDB::bind_method(D_METHOD("get_field", "entity", "comp", "field"), &ECSCore::get_field);

@@ -238,6 +238,30 @@ func get_parent(entity: int) -> int:
 		return -1
 	return int(get_field(entity, ECSParent, &"target"))
 
+# ============================================================
+#  查询级变更过滤(等价 Bevy 的 Changed<T> / flecs 的 changed 过滤器)
+# ============================================================
+
+## 当前全局写入序号。记下它, 下一帧把它传给 query_changed_rows 就得到"这期间被写过的行"。
+func write_tick() -> int:
+	return int(_core.write_tick())
+
+
+## 返回 since 之后被写过的**聚合行号**(行序与 columns_of 完全一致)。
+## 用法:
+##   var t := w.write_tick()
+##   ... 本帧系统跑完 ...
+##   var rows := w.query_changed_rows(Move, t)   # 只处理这些行(渲染/UI 增量)
+## ⚠ 需要 world.set_change_detection(true) 才会记录单个 set_field 的写;
+##   批量写(batch_*/set_columns_of)始终会打戳。
+func query_changed_rows(component, since: int = 0) -> PackedInt32Array:
+	var cn := resolve_component_name(component)
+	if cn == &"":
+		return PackedInt32Array()
+	_record_access(cn)
+	return _core.get_changed(cn, since)
+
+
 ## 批量挂父: 组件 target 与反向索引都在原生侧一次完成(1 次跨语言)。
 ## 实测 1 万个: 逐个 set_parent 81.7ms → 批量 ~2ms(约 40×)。
 ## ⚠ 不逐实体触发组件 hook(与 batch_* 一致); 需要 hook 时用单条 set_parent。

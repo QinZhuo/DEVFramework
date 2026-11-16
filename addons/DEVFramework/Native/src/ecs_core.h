@@ -136,8 +136,10 @@ struct Archetype {
 	std::vector<ECSColumn> cols;
 	std::vector<int32_t> col_off;            // 每组件起始下标; size = comps.size()+1(末位=总列数)
 	std::vector<int32_t> entities;            // 实体 index
-	std::vector<int32_t> row_map;             // 实体 index -> 行号(-1)
-	std::vector<uint32_t> row_ver;            // 每行写版本(变更检测: 写时递增)
+	// 注: 行号映射已上移到 ECSCore::entity_row_(全局一张表)。
+	// 这里是 std::vector<int32_t> row_map(每块按最大实体下标开的稀疏表), 内存是 4 × 块数 × 池大小,
+	// 20 个块 + 池涨到 100 万就是 80MB, 且只写 -1 从不缩容 —— 长会话里的泄漏型增长。
+	std::vector<uint64_t> row_ver;            // 每行写版本(变更检测: 写时递增; 64 位避免回绕)
 	uint64_t bits = 0;                        // 组件位集(comp < 64, 参考 Flecs/Bevy 位匹配)
 
 	// 组件位置(升序 comps): 用位集 popcount O(1)(comp<64), 超 64 fallback 二分
@@ -156,9 +158,6 @@ struct Archetype {
 			return ((bits >> comp) & 1) != 0;
 		}
 		return std::binary_search(comps.begin(), comps.end(), comp);
-	}
-	inline int32_t row_of(int32_t entity) const {
-		return (int32_t(entity) < int32_t(row_map.size())) ? row_map[entity] : -1;
 	}
 	inline int32_t col_count(int cp) const { return col_off[size_t(cp) + 1] - col_off[size_t(cp)]; }
 	// 带边界检查的列访问。**越界不再返回野指针**: 打一条错误, 返回一个空列(写=丢弃, 读=默认值)。
@@ -245,7 +244,14 @@ public:
 	// 聚合行号(某组件的 get_column 索引) -> 实体 ID(archetype 下跨块聚合顺序)。
 	int32_t get_entity_at(const StringName &comp, int32_t row) const;
 	// 变更检测: 返回该组件所有"行版本 > since"的聚合行号(增量同步/系统用)。
-	PackedInt32Array get_changed(const StringName &comp, uint32_t since) const;
+	// 全局写入序号: 每次写把一个**全局自增**的值盖到该行的 row_ver 上(而不是每行自增)。
+	// 这样 get_changed(comp, since) 的 since 才是"时间点"而不是"该行被写过几次"。
+	int64_t write_tick() const { return int64_t(write_tick_); }
+
+	// 查询级变更过滤(Bevy Changed<T> / flecs changed 的等价物):
+	// 返回 row_ver > since 的行, 行序与 columns_of 一致 → 渲染/UI 只处理变化的行。
+	// since 用 int64(与 64 位 row_ver 同宽, 不会回绕); 传 0 等于全量。
+	PackedInt32Array get_changed(const StringName &comp, int64_t since) const;
 	// 变更检测开关(默认关: 避免全量写标记开销; 开启后 batch 写递增行版本, 供 get_changed 增量查询)。
 	void set_change_detection(bool enabled);
 	bool is_change_detection() const;
@@ -472,6 +478,14 @@ private:
 	std::vector<int32_t> free_list_;
 	// 实体 index -> 所属 archetype(-1 = 无组件)
 	std::vector<int32_t> entity_arch_;
+	// 实体 index -> 所在块内的行号(全局一张表, 与 entity_arch_ 同步维护)。
+	// 取代了原先"每块一张按最大实体下标开的稀疏 row_map": 内存从 4×块数×池大小 降到 4×池大小,
+	// 且少一次间接寻址(row_of 一次索引, 原来要先按 index 查块内稀疏表)。
+	std::vector<int32_t> entity_row_;
+	uint64_t write_tick_ = 0;   // 全局写入序号(见 write_tick())
+	inline int32_t row_of(int32_t index) const {
+		return (index >= 0 && index < int32_t(entity_row_.size())) ? entity_row_[size_t(index)] : -1;
+	}
 	// 查询缓存: 查询签名(anchor+must+without 组件索引) -> 匹配 archetype 列表。
 	// scanned = 已扫描到的 archetypes_ 下标: archetype 只增不删, 新查询只需补扫新增部分。
 	struct ArchMatch {
