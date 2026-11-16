@@ -1,10 +1,24 @@
-# gdextension — 框架级共享原生核心
+# NativeSrc — 框架级共享原生核心(源码)
 
-整个 DEVFramework 唯一的 C++ 共享扩展：`ECSCore` 等原生类都注册在这一个库里，GDScript 侧统一用 `FrameworkNative.get_native(&"类名", [方法...])` 访问。
+整个 DEVFramework 唯一的 C++ 共享扩展：`ECSCore` 等原生类都注册在这一个库里，GDScript 侧统一用
+`FrameworkNative.get_native(&"类名", [方法...])` 访问。
+
+**为什么源码放在插件目录里**：把 `addons/DEVFramework/` 整个拷到新项目就能构建，不需要在项目根再建
+`gdextension/`。目录带 `.gdignore`，编辑器不会去扫 `godot-cpp/` 的上万个文件。
+
+```
+addons/DEVFramework/
+├── NativeSrc/            ← 本目录(C++ 源码 + 构建配置, 整个被 .gdignore 忽略)
+│   ├── .gdignore
+│   ├── CMakeLists.txt
+│   ├── src/              ← 自己的源码(新增类放这里)
+│   └── godot-cpp/        ← git submodule
+└── Native/               ← 构建产物 + dev.gdextension(引擎从这里加载)
+```
 
 ## 构建
 
-产物输出到 `res://addons/DEVFramework/Native/`，文件名必须与 `Native/dev.gdextension` 的 8 个平台条目严格对应：
+产物输出到 `res://addons/DEVFramework/Native/`，文件名必须与 `Native/dev.gdextension` 的条目严格对应：
 
 | 平台 | Debug | Release |
 |---|---|---|
@@ -16,8 +30,9 @@
 ```bash
 git submodule update --init --recursive        # 首次克隆后初始化 godot-cpp
 
-cmake -S gdextension -B gdextension/build -DGODOTCPP_API_VERSION=4.7 -DCMAKE_BUILD_TYPE=Release
-cmake --build gdextension/build --config Release
+cmake -S addons/DEVFramework/NativeSrc -B addons/DEVFramework/NativeSrc/build \
+      -DGODOTCPP_API_VERSION=4.7 -DCMAKE_BUILD_TYPE=Release
+cmake --build addons/DEVFramework/NativeSrc/build --config Release
 ```
 
 三种入口，构建流程是同一份实现（`GDExtensionRebuild`）：

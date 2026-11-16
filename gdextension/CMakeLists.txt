@@ -15,11 +15,24 @@ if(NOT DEFINED GODOTCPP_API_VERSION)
     set(GODOTCPP_API_VERSION "4.7")
 endif()
 
+# 符号可见性: GDExtension 只需导出入口函数(GDE_EXPORT 已标 default 可见性), 其余全部隐藏。
+# 必须放在 add_subdirectory(godot-cpp) 之前 —— godot-cpp 是静态库, 可见性在编译期烙进 .o,
+# 目录级变量才会被子目录继承。不隐藏时, godot-cpp 的内联 weak 符号(如 DefaultAllocator::alloc)
+# 会被**同进程加载的多个扩展开各自导出**, 动态链接器做符号抢占(interposing): 某个扩展加载失败后,
+# 其未初始化副本会抢占另一个扩展的同名符号, 导致后者调到空函数指针而崩在 _bind_methods 里。
+# (参考 GodotVoxelSupport 的实测注释: 与 VoxelSupport 扩展并存时踩过, macOS 上表现为 EXC_BAD_ACCESS)
+set(CMAKE_CXX_VISIBILITY_PRESET hidden)
+set(CMAKE_VISIBILITY_INLINES_HIDDEN ON)
+
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/godot-cpp ${CMAKE_CURRENT_BINARY_DIR}/godot-cpp)
 
+# 源码位置: 插件自己的 C++ 放在 addons/DEVFramework/Native/src(随插件分发),
+# 构建区/第三方(godot-cpp)留在项目根 gdextension/。本文件只做"编排"。
+set(DEV_SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../addons/DEVFramework/Native/src)
+
 add_library(dev SHARED
-    src/register_types.cpp
-    src/ecs_core.cpp
+    ${DEV_SRC_DIR}/register_types.cpp
+    ${DEV_SRC_DIR}/ecs_core.cpp
 )
 
 target_link_libraries(dev PRIVATE godot-cpp)
