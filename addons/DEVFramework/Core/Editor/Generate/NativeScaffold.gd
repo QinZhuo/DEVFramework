@@ -24,19 +24,6 @@ const GEN_DIR := "generated"
 # 纯渲染函数(无副作用, 可单测)
 # ============================================================
 
-## 列出的源文件 -> generated/sources.cmake
-static func render_sources_cmake(rel_paths: PackedStringArray) -> String:
-	var out := "# %s: gdextension/src 下的全部 C++ 源文件(每次构建刷新, 请勿手改)\n" % MARKER
-	out += "set(DEV_SOURCES\n"
-	for p in rel_paths:
-		out += "\t\"${CMAKE_CURRENT_SOURCE_DIR}/%s\"\n" % p
-	out += ")\n"
-	return out
-
-
-## 扫描到的类 -> generated/register_types.cpp
-## [param classes] 每项 {name, header(相对 gdextension/ 的路径, 可为空)}
-## [param target] 目标名, 入口符号为 `<target>_library_init`(与 .gdextension 的 entry_symbol 对应)
 static func render_register_types(classes: Array, target: String, api_hint := "") -> String:
 	var out := "// %s: 扫描 src/** 里的 GDCLASS(...) 自动注册(构建时刷新, 请勿手改)\n" % MARKER
 	if api_hint != "":
@@ -70,40 +57,6 @@ static func render_register_types(classes: Array, target: String, api_hint := ""
 	return out
 
 
-## 生成的 CMakeLists.txt: 与官方模板同款结构, 只做"编成共享库并直出到 Native 目录"。
-## [param with_generated_entry] false 表示用户自带 src/register_types.cpp, 不再挂生成的入口。
-static func render_cmake(target: String, api_default: String, with_generated_entry := true) -> String:
-	var up := target.to_upper()
-	var out := "# %s: 本文件缺失时自动重建; 想完全接管构建, 删掉这行注释即可(不会再被覆盖)\n" % MARKER
-	out += "cmake_minimum_required(VERSION 3.17)\n\n"
-	out += "project(%s LANGUAGES CXX)\n\n" % target
-	out += "if(NOT DEFINED GODOTCPP_API_VERSION)\n\tset(GODOTCPP_API_VERSION \"%s\")\nendif()\n\n" % api_default
-	out += "add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/godot-cpp ${CMAKE_CURRENT_BINARY_DIR}/godot-cpp)\n\n"
-	out += "include(${CMAKE_CURRENT_SOURCE_DIR}/%s/sources.cmake)\n" % GEN_DIR
-	if with_generated_entry:
-		out += "add_library(%s SHARED ${DEV_SOURCES} ${CMAKE_CURRENT_SOURCE_DIR}/%s/register_types.cpp)\n\n" % [target, GEN_DIR]
-	else:
-		out += "# 工程自带 src/register_types.cpp, 入口由它提供\n"
-		out += "add_library(%s SHARED ${DEV_SOURCES})\n\n" % target
-	out += "target_link_libraries(%s PRIVATE godot-cpp)\n" % target
-	out += "set_target_properties(%s PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)\n\n" % target
-	out += "# 浮点语义与引擎一致(引擎未开 FMA 融合), 保证 C++ 与 GDScript 结果对齐\n"
-	out += "if(NOT MSVC)\n\ttarget_compile_options(%s PRIVATE -ffp-contract=off)\nendif()\n\n" % target
-	out += "# 产物直出到框架的 Native 目录(部署/声明同步都基于这个目录)\n"
-	out += "# 本文件在 addons/DEVFramework/NativeSrc/ 下, 所以产物目录是 ../../Native\n"
-	out += "set_target_properties(%s PROPERTIES\n" % target
-	out += "\tLIBRARY_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/../../Native\n"
-	out += "\tRUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/../../Native\n"
-	out += "\tARCHIVE_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/../../Native\n)\n"
-	return out
-
-
-## 单组件多插件: 一个 CMakeLists 里**每个插件一个 target**, 共用一次 godot-cpp 构建。
-## 这就是"项目里有多个插件都带 C++"的模型:
-##   addons/A/Native/src -> libA + A.gdextension
-##   addons/B/Native/src -> libB + B.gdextension
-## godot-cpp 只 add_subdirectory 一次(编一次), N 个 target 链同一个库。
-## [param plugins] 每项 {target, src_res, native_res}(res:// 绝对路径)
 static func render_cmake_multi(plugins: Array, api_default: String) -> String:
 	var out := "# %s: 每个原生插件一个 target, 共用一份 godot-cpp 构建\n" % MARKER
 	out += "cmake_minimum_required(VERSION 3.17)\n\n"
@@ -126,7 +79,11 @@ static func render_cmake_multi(plugins: Array, api_default: String) -> String:
 		var native_res := String(p.get("native_res", ""))
 		out += "# ---- %s ----\n" % t
 		out += "include(${CMAKE_CURRENT_SOURCE_DIR}/%s/%s_sources.cmake)\n" % [GEN_DIR, t]
-		out += "add_library(%s SHARED ${%s_SOURCES} ${CMAKE_CURRENT_SOURCE_DIR}/%s/%s_register_types.cpp)\n" % [t, t.to_upper(), GEN_DIR, t]
+		if bool(p.get("with_entry", true)):
+			out += "add_library(%s SHARED ${%s_SOURCES} ${CMAKE_CURRENT_SOURCE_DIR}/%s/%s_register_types.cpp)\n" % [t, t.to_upper(), GEN_DIR, t]
+		else:
+			out += "# 工程自带 register_types.cpp, 入口由它提供\n"
+			out += "add_library(%s SHARED ${%s_SOURCES})\n" % [t, t.to_upper()]
 		out += "target_link_libraries(%s PRIVATE godot-cpp)\n" % t
 		out += "set_target_properties(%s PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)\n" % t
 		out += "if(NOT MSVC)\n\ttarget_compile_options(%s PRIVATE -ffp-contract=off)\nendif()\n" % t
@@ -270,55 +227,6 @@ static func _header_for(root_abs: String, rel: String) -> String:
 # 落地(只补缺失项)
 # ============================================================
 
-## 确保 [param root_abs](gdextension/ 的绝对路径) 具备可构建骨架。
-## 返回 {created: Array[String], skipped: Array[String], sources: int, classes: int}
-static func ensure(root_abs: String, target: String, api_default: String,
-		fetch_deps := true, log_fn := Callable()) -> Dictionary:
-	var created: Array[String] = []
-	var skipped: Array[String] = []
-	var src_dir := root_abs.path_join("src")
-	if not DirAccess.dir_exists_absolute(src_dir):
-		return {"created": created, "skipped": ["no src/"], "sources": 0, "classes": 0}
-	var sources := scan_sources(root_abs)
-	if sources.is_empty():
-		return {"created": created, "skipped": ["no cpp"], "sources": 0, "classes": 0}
-	# GDCLASS 写在类声明头文件里, 所以扫描要连头文件一起(只把 .cpp 传进去会一个类都找不到)
-	var scan_targets := scan_files(root_abs, PackedStringArray(["cpp", "cc", "cxx", "h", "hpp"]))
-
-	if fetch_deps:
-		if FileAccess.file_exists(root_abs.path_join("godot-cpp/SConstruct")):
-			skipped.append("godot-cpp")
-		elif _fetch_godot_cpp(root_abs, log_fn):
-			created.append("godot-cpp")
-		else:
-			skipped.append("godot-cpp(失败)")
-
-	var classes := scan_gdclasses(root_abs, scan_targets)
-	# 用户自带入口(手写 src/register_types.cpp)时不再生成, 否则同一入口符号定义两次
-	var gen_entry := not FileAccess.file_exists(root_abs.path_join("src/register_types.cpp"))
-
-	# CMakeLists: 只有"完全没有"或"是本工具生成的"才写 —— 手写的一律不动
-	var cmake_path := root_abs.path_join("CMakeLists.txt")
-	var write_cmake := true
-	if FileAccess.file_exists(cmake_path):
-		write_cmake = FileAccess.get_file_as_string(cmake_path).contains(MARKER)
-	if write_cmake:
-		if _write_if_changed(cmake_path, render_cmake(target, api_default, gen_entry)):
-			created.append("CMakeLists.txt")
-		# generated/* 只服务于"我们接管了构建"的工程: 手写 CMakeLists 的项目不产生无用文件
-		var gen_dir := root_abs.path_join(GEN_DIR)
-		DirAccess.make_dir_recursive_absolute(gen_dir)
-		if _write_if_changed(gen_dir.path_join("sources.cmake"), render_sources_cmake(sources)):
-			created.append(GEN_DIR + "/sources.cmake")
-		if gen_entry and _write_if_changed(gen_dir.path_join("register_types.cpp"), render_register_types(classes, target, api_default)):
-			created.append(GEN_DIR + "/register_types.cpp")
-	else:
-		skipped.append("CMakeLists.txt(手写, 不接管)")
-	return {"created": created, "skipped": skipped, "sources": sources.size(), "classes": classes.size()}
-
-
-## 发现项目里**所有**带原生源码的插件: addons/<Plugin>/Native/src/**.cpp
-## target 名取插件内已有 *.gdextension 的文件名(它是入口符号与产物名的来源), 没有则用小写插件名。
 static func discover_plugins(project_abs: String) -> Array:
 	var out: Array = []
 	var d := DirAccess.open(project_abs.path_join("addons"))
@@ -393,11 +301,13 @@ static func ensure_project(project_abs: String, api_default: String, fetch_deps 
 		p["classes"] = classes
 		p["src_res"] = src_res
 		p["native_res"] = native_res
+		# 插件自带入口(手写 src/register_types.cpp)时不再生成入口文件, 否则同一符号定义两次
+		var gen_entry := not FileAccess.file_exists(src_abs.path_join("register_types.cpp"))
 		if own:
 			if _write_if_changed(gen_abs.path_join("%s_sources.cmake" % target),
 					render_plugin_sources(target, scan_sources(src_abs), src_res)):
 				created.append("%s/%s_sources.cmake" % [GEN_DIR, target])
-			if _write_if_changed(gen_abs.path_join("%s_register_types.cpp" % target),
+			if gen_entry and _write_if_changed(gen_abs.path_join("%s_register_types.cpp" % target),
 					render_register_types(classes, target, api_default)):
 				created.append("%s/%s_register_types.cpp" % [GEN_DIR, target])
 		# src/ 加 .gdignore: 源码不必进编辑器面板(也不该被当资源扫)。注意只能加在 src/ 子目录,
@@ -410,7 +320,8 @@ static func ensure_project(project_abs: String, api_default: String, fetch_deps 
 				created.append("%s/Native/src/.gdignore" % String(p["plugin"]))
 		if ensure_gdextension(native_abs, target):
 			created.append("%s/Native/%s.gdextension" % [String(p["plugin"]), target])
-		cmake_plugins.append({"target": target, "src_res": src_res, "native_res": native_res})
+		cmake_plugins.append({"target": target, "src_res": src_res, "native_res": native_res,
+				"with_entry": gen_entry})
 
 	if own and _write_if_changed(cmake_path, render_cmake_multi(cmake_plugins, api_default)):
 		created.append("gdextension/CMakeLists.txt")

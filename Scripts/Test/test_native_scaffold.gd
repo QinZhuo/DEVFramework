@@ -10,14 +10,6 @@ const REBUILD := preload("res://addons/DEVFramework/Core/Editor/Generate/GDExten
 const PROBE := "user://scaffold_probe"
 
 
-## 源文件清单: 路径要带上 ${CMAKE_CURRENT_SOURCE_DIR}, 否则 include 后是相对构建目录
-func test_render_sources_cmake() -> void:
-	var text: String = SCAFFOLD.render_sources_cmake(PackedStringArray(["src/a.cpp", "src/sub/b.cpp"]))
-	assert_true(text.contains("${CMAKE_CURRENT_SOURCE_DIR}/src/a.cpp"), "应带源码目录前缀")
-	assert_true(text.contains("${CMAKE_CURRENT_SOURCE_DIR}/src/sub/b.cpp"), "子目录也要覆盖")
-	assert_true(text.contains("set(DEV_SOURCES"), "变量名必须与生成的 CMakeLists 一致")
-
-
 ## 自动注册: 扫到的类每个一条 GDREGISTER_CLASS, 入口符号 = <target>_library_init
 func test_render_register_types() -> void:
 	var classes := [
@@ -30,21 +22,6 @@ func test_render_register_types() -> void:
 	assert_true(text.contains("GDREGISTER_CLASS(OtherNode);"), "应注册 OtherNode")
 	assert_true(text.contains("probe_library_init"), "入口符号必须与 .gdextension 的 entry_symbol 对应")
 	assert_true(text.contains("MODULE_INITIALIZATION_LEVEL_SCENE"), "初始化级别固定 SCENE")
-
-
-## 生成的 CMakeLists: 引用 generated/sources.cmake、产物直出到框架 Native 目录
-func test_render_cmake() -> void:
-	var text: String = SCAFFOLD.render_cmake("probe", "4.7")
-	assert_true(text.contains("add_library(probe SHARED"), "应建共享库")
-	assert_true(text.contains("generated/sources.cmake"), "应包含生成的源文件清单")
-	assert_true(text.contains("generated/register_types.cpp"), "应包含生成的注册文件")
-	assert_true(text.contains("addons/DEVFramework/Native"), "产物要直出到 Native 目录")
-	assert_true(text.contains("GODOTCPP_API_VERSION"), "API 版本要可被 -D 覆盖")
-
-	# 工程自带 register_types.cpp: 不能再挂生成的入口(否则同一符号定义两次)
-	var own: String = SCAFFOLD.render_cmake("probe", "4.7", false)
-	assert_false(own.contains("generated/register_types.cpp"), "自带入口时不应引用生成的注册文件")
-	assert_true(own.contains("add_library(probe SHARED ${DEV_SOURCES})"), "自带入口时只用源清单")
 
 
 ## 生成的声明: entry_symbol 与产物键都要齐(否则引擎加载不到)
@@ -69,37 +46,6 @@ func test_scan_gdclasses() -> void:
 	assert_eq(classes.size(), 1, "应认出 1 个类")
 	assert_eq(String(classes[0]["name"]), "HelloNode", "类名")
 	assert_eq(String(classes[0]["header"]), "src/hello.h", "头文件路径(供 include)")
-	_clean_probe()
-
-
-## 落地: 缺什么补什么; 第二次运行必须什么都不改(幂等)
-func test_ensure_is_idempotent() -> void:
-	_clean_probe()
-	var abs := ProjectSettings.globalize_path(PROBE)
-	DirAccess.make_dir_recursive_absolute(abs.path_join("src"))
-	_write(abs.path_join("src/hello.h"), "class HelloNode : public Node {\n\tGDCLASS(HelloNode, Node)\n};\n")
-	_write(abs.path_join("src/hello.cpp"), "#include \"hello.h\"\n")
-
-	var r1: Dictionary = SCAFFOLD.ensure(abs, "probe", "4.7", false)
-	var created: Array = r1.get("created", [])
-	assert_true(created.has("CMakeLists.txt"), "缺 CMakeLists 应生成")
-	assert_true(created.has("generated/register_types.cpp"), "应生成自动注册")
-	assert_eq(int(r1.get("classes", 0)), 1, "应认出 1 个类")
-	assert_true(FileAccess.file_exists(abs.path_join("CMakeLists.txt")), "文件要落盘")
-	assert_true(FileAccess.get_file_as_string(abs.path_join("generated/register_types.cpp")).contains("GDREGISTER_CLASS(HelloNode);"),
-			"生成的注册文件应包含扫描到的类")
-	var rescanned: PackedStringArray = SCAFFOLD.scan_sources(abs)
-	for p in rescanned:
-		assert_false(String(p).contains("generated/"), "generated/ 不能被扫回源清单(否则注册入口被编译两次)")
-
-	var r2: Dictionary = SCAFFOLD.ensure(abs, "probe", "4.7", false)
-	assert_true((r2.get("created", []) as Array).is_empty(), "第二次运行不应再写任何文件(幂等)")
-
-	# 手写 CMakeLists(去掉生成标记) → 工具不再接管, 也不产生 generated/*
-	_write(abs.path_join("CMakeLists.txt"), "# my own build\nadd_library(probe SHARED ${DEV_SOURCES})\n")
-	var r3: Dictionary = SCAFFOLD.ensure(abs, "probe", "4.7", false)
-	assert_false((r3.get("created", []) as Array).has("CMakeLists.txt"), "手写文件不能被覆盖")
-	assert_eq(FileAccess.get_file_as_string(abs.path_join("CMakeLists.txt")), "# my own build\nadd_library(probe SHARED ${DEV_SOURCES})\n", "内容必须原样保留")
 	_clean_probe()
 
 
@@ -156,6 +102,47 @@ func test_filter_targets_by_plugin() -> void:
 	assert_eq(one.size(), 1, "按名字只留一个(大小写不敏感)")
 	assert_eq(String(one[0]["target"]), "voxelnative", "留下的是被点名的那个")
 	assert_eq(REBUILD.filter_targets(targets, "nope").size(), 0, "不存在的名字 → 空(调用方据此报错)")
+
+
+## 单插件源清单: 路径要能相对 gdextension/generated/ 解析(.. 回到项目根再进插件目录)。
+func test_render_plugin_sources() -> void:
+	var text: String = SCAFFOLD.render_plugin_sources("probe", PackedStringArray(["a.cpp", "sub/b.cpp"]), "/addons/A/Native/src")
+	assert_true(text.contains("set(PROBE_SOURCES"), "变量名必须是 <TARGET>_SOURCES")
+	assert_true(text.contains("${CMAKE_CURRENT_SOURCE_DIR}/../addons/A/Native/src/a.cpp"), "绝对/相对拼法要一致")
+	assert_true(text.contains("sub/b.cpp"), "子目录也要覆盖")
+
+
+## 自带入口(手写 register_types.cpp)时不能再挂生成的入口文件, 否则符号定义两次。
+func test_render_cmake_multi_entry_switch() -> void:
+	var p_own := [{"target": "own", "src_res": "/addons/O/Native/src", "native_res": "/addons/O/Native", "with_entry": false}]
+	var text: String = SCAFFOLD.render_cmake_multi(p_own, "4.7")
+	assert_false(text.contains("own_register_types.cpp"), "自带入口时不得引用生成的入口")
+	assert_true(text.contains("add_library(own SHARED ${OWN_SOURCES})"), "只用源清单")
+	var p_gen := [{"target": "gen", "src_res": "/addons/G/Native/src", "native_res": "/addons/G/Native"}]
+	assert_true(SCAFFOLD.render_cmake_multi(p_gen, "4.7").contains("gen_register_types.cpp"), "默认应挂生成的入口")
+
+
+## 骨架幂等 + 不覆盖手写文件。
+func test_ensure_project_idempotent_and_respects_handwritten() -> void:
+	_clean_probe()
+	var abs := ProjectSettings.globalize_path(PROBE)
+	var src := abs.path_join("addons/P/Native/src")
+	DirAccess.make_dir_recursive_absolute(src)
+	_write(src.path_join("p.h"), "class PNode : public Node {\n\tGDCLASS(PNode, Node)\n};\n")
+	_write(src.path_join("p.cpp"), "#include \"p.h\"\n")
+	_write(src.path_join("register_types.cpp"), "// 手写入口\n")
+	var r1: Dictionary = SCAFFOLD.ensure_project(abs, "4.7", false)
+	assert_true((r1.get("created", []) as Array).size() > 0, "首次应生成骨架")
+	var r2: Dictionary = SCAFFOLD.ensure_project(abs, "4.7", false)
+	assert_true((r2.get("created", []) as Array).is_empty(), "第二次运行不应再写任何文件(幂等)")
+	assert_false(FileAccess.file_exists(abs.path_join("gdextension/generated/P_register_types.cpp")),
+			"插件自带 register_types.cpp 时不应再生成入口")
+	# 手写 CMakeLists(去掉生成标记) → 不接管, 也不产生 generated/*
+	_write(abs.path_join("gdextension/CMakeLists.txt"), "# my own build\nadd_library(P SHARED x)\n")
+	var r3: Dictionary = SCAFFOLD.ensure_project(abs, "4.7", false)
+	assert_true((r3.get("created", []) as Array).is_empty(), "手写构建文件不应被改写")
+	assert_eq(FileAccess.get_file_as_string(abs.path_join("gdextension/CMakeLists.txt")), "# my own build\nadd_library(P SHARED x)\n", "内容必须原样保留")
+	_clean_probe()
 
 
 ## 多插件: 一个 CMakeLists 里每插件一个 target, godot-cpp 只引入一次。
