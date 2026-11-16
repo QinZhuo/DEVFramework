@@ -30,6 +30,11 @@ var _access_target_active := false
 var _system_access_declared := {}         # ECSSystem -> {compName:true} 声明的读写组件
 var _access_mutex := Mutex.new()
 var _last_groups: Array = []              # 上一次 tick 的分批结果(系统名), 供回归测试断言
+## 空块治理: 每 N 帧尝试压缩一次(无空块时是 O(块数) 的廉价检查)。0 = 关闭。
+## 频繁 add/remove 组件的玩法(状态机/buff)最容易积累空块, 它们会让聚合与遍历每帧空转。
+const COMPACT_EVERY_TICKS := 600
+var _tick_count := 0
+var _last_compacted := 0
 
 # ---------------- 耗时统计 ----------------
 var _times := {}                          # ECSSystem -> 本帧耗时 ms(并行安全)
@@ -117,6 +122,8 @@ func set_paused(paused: bool) -> void:
 
 ## 驱动一帧：排序 → 频率判定 → 串行或并行执行 → 并入访问记录。
 func tick(delta: float) -> void:
+	world.begin_frame_stats()   # 逐实体读写守卫的帧计数
+	_maybe_compact()
 	_resort()
 	# 频率调度: 主线程先对每个系统做 interval/rate/fixed_step 判断, 标记本帧是否运行
 	for system in _sorted:
@@ -319,15 +326,19 @@ func _run_system(system: ECSSystem) -> void:
 		return
 	var t0 := Time.get_ticks_usec()
 	var ctx := ECSSystemContext.new(world)
+	# 系统上下文: 让 ECSWorld 能把"逐实体 get/set_field"的误用归到具体系统(见 ENTITY_CALL_WARN)
+	world.begin_system(system.get_system_name())
 	if not _tracking:
 		system._run(ctx, delta)
 		ctx._auto_execute()
+		world.end_system()
 		_record_time(system, t0)
 		return
 	_begin_access(system)
 	system._run(ctx, delta)
 	ctx._auto_execute()
 	_end_access()
+	world.end_system()
 	_record_time(system, t0)
 
 
@@ -338,10 +349,12 @@ func _parallel_worker(system: ECSSystem) -> void:
 		return
 	var t0 := Time.get_ticks_usec()
 	var ctx := ECSSystemContext.new(world)
+	world.begin_system(system.get_system_name())
 	_begin_access(system)
 	system._run(ctx, delta)
 	ctx._auto_execute()
 	_end_access()
+	world.end_system()
 	_record_time(system, t0)
 
 
@@ -449,6 +462,21 @@ func _record_groups(groups: Array) -> void:
 ## 上一次 tick 的并行分批结果: Array[Array[String]](组内并行, 组间串行)。
 func debug_parallel_groups() -> Array:
 	return _last_groups.duplicate(true)
+
+
+## 上一次自动压缩移除的空块数(调试/回归用)。
+func debug_last_compacted() -> int:
+	return _last_compacted
+
+
+## 空块治理: 每 COMPACT_EVERY_TICKS 帧尝试一次。没有空块时 archetype_count 不变, 直接返回。
+func _maybe_compact() -> void:
+	if world == null or COMPACT_EVERY_TICKS <= 0:
+		return
+	_tick_count += 1
+	if _tick_count % COMPACT_EVERY_TICKS != 0:
+		return
+	_last_compacted = world.compact_archetypes()
 
 
 ## 执行一组系统。不可并行系统(如访问场景树)必须主线程串行。

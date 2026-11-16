@@ -2841,6 +2841,40 @@ Dictionary ECSCore::debug_stats() const {
 // ECSCore — 序列化/反序列化
 // ---------------------------------------------------------------------------
 
+int32_t ECSCore::archetype_count() const {
+	return int32_t(archetypes_.size());
+}
+
+int32_t ECSCore::compact_archetypes() {
+	// 块下标被 entity_arch_ / 匹配缓存 / 迁移图引用, 所以移除空块必须同时重建这三处。
+	std::vector<int32_t> remap(archetypes_.size(), -1);
+	std::vector<Archetype> kept_list;
+	kept_list.reserve(archetypes_.size());
+	int32_t kept = 0;
+	for (size_t i = 0; i < archetypes_.size(); ++i) {
+		if (archetypes_[i].entities.empty()) {
+			continue;   // 空块: 没有实体引用它
+		}
+		remap[i] = kept++;
+		kept_list.push_back(std::move(archetypes_[i]));
+	}
+	const int32_t removed = int32_t(archetypes_.size()) - kept;
+	if (removed == 0) {
+		return 0;
+	}
+	archetypes_ = std::move(kept_list);
+	for (int32_t &a : entity_arch_) {
+		if (a >= 0) {
+			a = remap[size_t(a)];
+		}
+	}
+	_arch_cache.clear();
+	arch_edge_add_.clear();
+	arch_edge_remove_.clear();
+	++struct_version_;
+	return removed;
+}
+
 Dictionary ECSCore::serialize() const {
 	Dictionary root;
 	// 列式: entities = PackedInt32Array, columns = {字段: Packed 数组}。
@@ -3157,6 +3191,62 @@ void ECSCore::cmd_remove_component(int32_t entity, const StringName &comp) {
 	cmd_comps_.push_back(comp);
 }
 
+PackedInt32Array ECSCore::cmd_create_many(int32_t count) {
+	PackedInt32Array out;
+	if (count <= 0) {
+		return out;
+	}
+	ensure_cmd_batch();
+	const size_t base = cmd_types_.size();
+	cmd_types_.reserve(base + size_t(count));
+	cmd_entities_.reserve(base + size_t(count));
+	cmd_comps_.reserve(base + size_t(count));
+	cmd_created_.reserve(cmd_created_.size() + size_t(count));
+	out.resize(count);
+	int32_t *w = out.ptrw();
+	for (int32_t i = 0; i < count; ++i) {
+		const int32_t idx = int32_t(cmd_created_.size());
+		cmd_types_.push_back(CMD_CREATE);
+		cmd_entities_.push_back(-(idx + 1));   // 负句柄 = 占位
+		cmd_created_.push_back(-1);
+		cmd_comps_.push_back(StringName());
+		w[i] = -(idx + 1);
+	}
+	return out;
+}
+
+void ECSCore::cmd_add_many(const PackedInt32Array &entities, const StringName &comp) {
+	if (entities.is_empty()) {
+		return;
+	}
+	ensure_cmd_batch();
+	const size_t base = cmd_types_.size();
+	cmd_types_.reserve(base + size_t(entities.size()));
+	cmd_entities_.reserve(base + size_t(entities.size()));
+	cmd_comps_.reserve(base + size_t(entities.size()));
+	for (int32_t i = 0; i < entities.size(); ++i) {
+		cmd_types_.push_back(CMD_ADD_COMP);
+		cmd_entities_.push_back(entities[i]);
+		cmd_comps_.push_back(comp);
+	}
+}
+
+void ECSCore::cmd_destroy_many(const PackedInt32Array &entities) {
+	if (entities.is_empty()) {
+		return;
+	}
+	ensure_cmd_batch();
+	const size_t base = cmd_types_.size();
+	cmd_types_.reserve(base + size_t(entities.size()));
+	cmd_entities_.reserve(base + size_t(entities.size()));
+	cmd_comps_.reserve(base + size_t(entities.size()));
+	for (int32_t i = 0; i < entities.size(); ++i) {
+		cmd_types_.push_back(CMD_DESTROY);
+		cmd_entities_.push_back(entities[i]);
+		cmd_comps_.push_back(StringName());
+	}
+}
+
 int32_t ECSCore::pending_command_count() const {
 	return int32_t(cmd_types_.size());
 }
@@ -3289,6 +3379,11 @@ void ECSCore::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("cmd_destroy", "entity"), &ECSCore::cmd_destroy);
 	ClassDB::bind_method(D_METHOD("cmd_add_component", "entity", "comp"), &ECSCore::cmd_add_component);
 	ClassDB::bind_method(D_METHOD("cmd_remove_component", "entity", "comp"), &ECSCore::cmd_remove_component);
+	ClassDB::bind_method(D_METHOD("cmd_create_many", "count"), &ECSCore::cmd_create_many);
+	ClassDB::bind_method(D_METHOD("cmd_add_many", "entities", "comp"), &ECSCore::cmd_add_many);
+	ClassDB::bind_method(D_METHOD("cmd_destroy_many", "entities"), &ECSCore::cmd_destroy_many);
+	ClassDB::bind_method(D_METHOD("archetype_count"), &ECSCore::archetype_count);
+	ClassDB::bind_method(D_METHOD("compact_archetypes"), &ECSCore::compact_archetypes);
 	ClassDB::bind_method(D_METHOD("flush_commands"), &ECSCore::flush_commands);
 	ClassDB::bind_method(D_METHOD("pending_command_count"), &ECSCore::pending_command_count);
 	ClassDB::bind_method(D_METHOD("created_entity_at", "index"), &ECSCore::created_entity_at);

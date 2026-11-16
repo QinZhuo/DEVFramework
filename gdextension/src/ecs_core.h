@@ -170,6 +170,11 @@ public:
 	PackedStringArray get_entity_components(int32_t entity) const;
 	// 按 archetype(组件组合)分组枚举实体(调试/查看器用): Array[Dictionary{comps, entities}]。
 	Array get_archetype_groups() const;
+	// 当前 archetype 块数量(含空块)。
+	int32_t archetype_count() const;
+	// 压缩空块: 长跑游戏反复刷怪/死亡会让"已经没有实体的组件组合块"越积越多,
+	// 聚合与遍历每帧都要跳过它们。移除后会重建块下标与匹配/迁移缓存, 返回移除数量。
+	int32_t compact_archetypes();
 
 	// ---- 查询 ----
 	// 返回匹配实体的实体 ID 列表(可直接 get_field/set_field, archetype 下最直观的查询)。
@@ -316,6 +321,12 @@ public:
 	void cmd_destroy(int32_t entity);
 	void cmd_add_component(int32_t entity, const StringName &comp);
 	void cmd_remove_component(int32_t entity, const StringName &comp);
+	// 批量入队: 逐条 cmd_* 在 GDScript 里是 N 次跨语言调用(2000 实体 = 4000 次),
+	// 实测比"直接改结构"还慢 70% —— defer 一旦变慢就会被绕开, 而绕开会在遍历中改结构。
+	// 这几个接口把 N 次调用压成 1 次, flush 语义完全不变。
+	PackedInt32Array cmd_create_many(int32_t count);
+	void cmd_add_many(const PackedInt32Array &entities, const StringName &comp);
+	void cmd_destroy_many(const PackedInt32Array &entities);
 	void flush_commands();                        // 执行全部排队命令(帧末调用)
 	int32_t pending_command_count() const;
 	int32_t created_entity_at(int32_t index) const; // 查询第 index 个 create 生成的实体

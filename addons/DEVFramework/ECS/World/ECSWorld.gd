@@ -319,15 +319,48 @@ func resolve_component_name(component) -> StringName:
 # ============================================================
 
 func get_field(entity: int, component, field: StringName):
+	_note_entity_access()
 	var cn := resolve_component_name(component)
 	_record_access(cn)
 	return _core.get_field(entity, cn, field)
 
 func set_field(entity: int, component, field: StringName, value) -> void:
+	_note_entity_access()
 	var cn := resolve_component_name(component)
 	_record_access(cn)
 	_core.set_field(entity, cn, field, value)
 	_mark_dirty(cn)
+
+
+# ---- 逐实体读写守卫(防静默慢) ----
+## get_field/set_field 每次约 2.8µs(跨语言), 1000 个实体就是 2.8ms —— 一帧的 17%。
+## 在系统循环里这么写不会报错、也不会卡顿, 只会悄悄吃掉帧预算, 所以这里当场告警。
+## 阈值取得比"正常的零星单点访问"高一截(256), 避免误报。
+const ENTITY_CALL_WARN := 256
+var _sys_depth := 0            # >0 = 当前在系统执行上下文内(并行批内也成立)
+var _sys_current := ""         # 最近的系统名(并行时可能不是精确的那个, 仅用于告警定位)
+var _entity_calls := 0         # 本帧系统内的逐实体读写次数
+
+## 调度器在系统执行前调用。
+func begin_system(name: String) -> void:
+	_sys_depth += 1
+	_sys_current = name
+
+## 调度器在系统执行后调用。
+func end_system() -> void:
+	_sys_depth = maxi(_sys_depth - 1, 0)
+
+## 调度器每帧开始调用: 计数器归零。
+func begin_frame_stats() -> void:
+	_entity_calls = 0
+
+func _note_entity_access() -> void:
+	if _sys_depth == 0:
+		return   # 系统外的访问(初始化/夹具/工具)不算误用
+	_entity_calls += 1
+	if _entity_calls == ENTITY_CALL_WARN:
+		push_warning("ECS: 本帧在系统里做了 %d 次逐实体 get/set_field(约 %.1fms, 每次≈2.8µs), 最近系统 %s。批量读写请用 columns_of/set_columns_of 或 batch_apply_*。" % [
+			_entity_calls, _entity_calls * 0.0028, _sys_current])
 
 # ============================================================
 
@@ -713,6 +746,42 @@ func cmd_remove_component(entity: int, component) -> void:
 		_cmd_ops.append(["remove", entity, name])
 		_cmd_mutex.unlock()
 
+# ---- 批量入队: N 条命令 = 1 次跨语言(逐条排队在 2000 实体时要 4000 次调用) ----
+
+## 批量排队创建, 返回占位句柄(负值, 可直接交给 cmd_add_many)。
+func cmd_create_many(count: int) -> PackedInt32Array:
+	if count <= 0:
+		return PackedInt32Array()
+	_cmd_mutex.lock()
+	var handles: PackedInt32Array = _core.cmd_create_many(count)
+	_cmd_create_count += handles.size()
+	for i in handles.size():
+		_cmd_ops.append(["create"])
+	_cmd_mutex.unlock()
+	return handles
+
+## 批量排队: 给一组实体加同一个组件。
+func cmd_add_many(entities: PackedInt32Array, component) -> void:
+	var name := resolve_component_name(component)
+	if name == &"" or entities.is_empty():
+		return
+	_cmd_mutex.lock()
+	_core.cmd_add_many(entities, name)
+	for e in entities:
+		_cmd_ops.append(["add", e, name])
+	_cmd_mutex.unlock()
+
+## 批量排队: 销毁一组实体。
+func cmd_destroy_many(entities: PackedInt32Array) -> void:
+	if entities.is_empty():
+		return
+	_cmd_mutex.lock()
+	_core.cmd_destroy_many(entities)
+	for e in entities:
+		if e >= 0:
+			_cmd_ops.append(["destroy", e])
+	_cmd_mutex.unlock()
+
 ## 待执行命令数。
 func cmd_pending_count() -> int:
 	_cmd_mutex.lock()
@@ -1074,6 +1143,17 @@ func deserialize(data: Dictionary) -> Array:
 ## 内存统计(调试)
 func debug_stats() -> Dictionary:
 	return _core.debug_stats()
+
+## 压缩空 archetype 块: 长跑游戏反复刷怪/死亡后, "已经没有实体的组件组合块"会越积越多,
+## 聚合与遍历每帧都得跳过它们。块下标会重建 ⇒ 匹配缓存/迁移图自动失效, 下一次查询重扫一次。
+## 返回移除的块数(0 = 没有空块, 无副作用)。
+func compact_archetypes() -> int:
+	_struct_mutex.lock()
+	var removed: int = _core.compact_archetypes()
+	if removed > 0:
+		_world_version += 1
+	_struct_mutex.unlock()
+	return removed
 
 # ============================================================
 
