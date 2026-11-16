@@ -175,6 +175,36 @@ func test_canonical_order_by_entity_id() -> void:
 		prev = e
 
 
+## 层级索引已在原生层(反向表): 大批子节点、重挂、清空、父销毁, 语义必须与旧 Dictionary 版一致。
+func test_hierarchy_native_index() -> void:
+	var w := ECSWorld.new(false)
+	var p := w.create_entity()
+	var kids: Array[int] = []
+	for i in 500:
+		var c := w.create_entity()
+		w.set_parent(c, p)
+		kids.append(c)
+	assert_eq(w.child_count(p), 500, "child_count 应为 500")
+	assert_eq(w.get_children(p).size(), 500, "get_children 数量一致")
+
+	# 重挂: 老父列表必须移除, 新父必须有, 组件 target 同步
+	var p2 := w.create_entity()
+	w.set_parent(kids[0], p2)
+	assert_eq(w.child_count(p), 499, "重挂后老父少一个")
+	assert_eq(w.child_count(p2), 1, "新父有一个")
+	assert_eq(w.get_parent(kids[0]), p2, "ECSParent.target 应同步")
+
+	# clear_parent: 组件保留但 target = -1, 索引清空
+	w.clear_parent(kids[0])
+	assert_eq(w.get_parent(kids[0]), -1, "clear_parent 后 target = -1")
+	assert_eq(w.child_count(p2), 0, "新父列表清空")
+
+	# 父销毁 → 子变孤儿但仍存活(与 destroy_entity 的既定语义一致)
+	w.destroy_entity(p)
+	assert_true(w.is_alive(kids[1]), "子仍存活")
+	assert_eq(w.get_parent(kids[1]), -1, "父销毁后子成为孤儿")
+
+
 ## 层级: destroy_entity 只解除关联(子变孤儿), destroy_recursive 连坐销毁。
 func test_destroy_semantics_orphan_vs_recursive() -> void:
 	var w := ECSWorld.new(false)

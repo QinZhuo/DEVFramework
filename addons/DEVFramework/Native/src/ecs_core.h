@@ -2,6 +2,7 @@
 #define DECS_ECS_CORE_H
 
 #include <godot_cpp/classes/ref_counted.hpp>
+#include <godot_cpp/core/error_macros.hpp>
 #include <godot_cpp/variant/array.hpp>
 #include <godot_cpp/variant/color.hpp>
 #include <godot_cpp/variant/dictionary.hpp>
@@ -130,7 +131,10 @@ struct ECSFilterCond {
 // ---------------------------------------------------------------------------
 struct Archetype {
 	std::vector<int32_t> comps;
-	std::vector<std::vector<ECSColumn>> cols; // [comp_pos][field]
+	// 扁平列存储: cols[col_off[cp] + fi]。早先是 vector<vector<ECSColumn>>(两层):
+	// 每块每组件一次小分配, 且每次字段访问多一次指针追逐。
+	std::vector<ECSColumn> cols;
+	std::vector<int32_t> col_off;            // 每组件起始下标; size = comps.size()+1(末位=总列数)
 	std::vector<int32_t> entities;            // 实体 index
 	std::vector<int32_t> row_map;             // 实体 index -> 行号(-1)
 	std::vector<uint32_t> row_ver;            // 每行写版本(变更检测: 写时递增)
@@ -155,6 +159,25 @@ struct Archetype {
 	}
 	inline int32_t row_of(int32_t entity) const {
 		return (int32_t(entity) < int32_t(row_map.size())) ? row_map[entity] : -1;
+	}
+	inline int32_t col_count(int cp) const { return col_off[size_t(cp) + 1] - col_off[size_t(cp)]; }
+	// 带边界检查的列访问。**越界不再返回野指针**: 打一条错误, 返回一个空列(写=丢弃, 读=默认值)。
+	// 上次崩溃就是"把总字段数当组件数"导致 cp 越界读 col_off —— 有这层检查就只会红不会崩。
+	inline ECSColumn &col_at(int cp, int fi) {
+		if (cp < 0 || size_t(cp) + 1 >= col_off.size() || fi < 0 || fi >= col_count(cp)) {
+			ERR_PRINT("ECS: col_at() 越界 (cp/fi 超出该块的组件与字段范围)");
+			static ECSColumn dummy;
+			return dummy;
+		}
+		return cols[size_t(col_off[size_t(cp)] + size_t(fi))];
+	}
+	inline const ECSColumn &col_at(int cp, int fi) const {
+		if (cp < 0 || size_t(cp) + 1 >= col_off.size() || fi < 0 || fi >= col_count(cp)) {
+			ERR_PRINT("ECS: col_at() 越界 (cp/fi 超出该块的组件与字段范围)");
+			static ECSColumn dummy;
+			return dummy;
+		}
+		return cols[size_t(col_off[size_t(cp)] + size_t(fi))];
 	}
 };
 
@@ -261,6 +284,26 @@ public:
 	PackedInt32Array spatial_query_radius(const Vector2 &center, double radius);
 	// {enabled, cells, entities, dirty, cell_size}
 	Dictionary spatial_stats();
+
+	// 内部 prefab 标记组件: 世界初始化时调用一次(幂等, 组件名 `__prefab`)。
+	// 作用是让模板落到独立 archetype; is_internal_comp 已在上面声明。
+	void set_prefab_tag(const StringName &comp);
+
+	// ---- 层级索引(原生反向表 parent → children) ----
+	// 组件语义(ECSParent.target)仍由 GDScript 维护, 这里只承担**索引**:
+	// 上万子节点时 Dictionary 的逐次数组分配与线性 erase 是主要开销。
+	// 与列存储无耦合(不碰 cols/col_off), 所以是重构中最安全的一块。
+	void hierarchy_set_parent(int32_t child, int32_t parent);
+	// 批量挂父: 组件(target)与反向索引都在原生侧一次做完。
+	// 单独 set_parent 每次要 4 次跨语言(get_parent/set_field|add_component/hierarchy_set_parent),
+	// 实测 1 万个 = 81.7ms; 批量版只 1 次跨语言。
+	// ⚠ 不逐实体触发组件 hook(与其它 batch_* 一致的取舍), 需要 hook 请用单条 set_parent。
+	void set_parent_bulk(const PackedInt32Array &children, int32_t parent, const StringName &parent_comp);
+	void hierarchy_remove_child(int32_t parent, int32_t child);
+	PackedInt32Array hierarchy_children(int32_t parent) const;
+	// 销毁前调用: 返回并清空该实体的子列表(调用方负责把子实体的父置 -1)。
+	PackedInt32Array hierarchy_detach(int32_t entity);
+	int32_t hierarchy_child_count(int32_t parent) const;
 
 	// ---- 确定性查询: 按字段值排序的行集 ----
 	// 联机/回放要求"同样的输入 → 同样的遍历顺序"。行集本身按块内行号稳定,
@@ -450,7 +493,20 @@ private:
 	// 组件名 -> components_ 下标(注册时填一次, 之后只读 —— 并行系统里查也安全)
 	std::unordered_map<uint64_t, int32_t> component_index_;
 	// 块内是否含 prefab 行(带 struct_version_ 缓存): 聚合/散射按列调用, 不能每列都扫全块。
+	// 实测 5 列 128µs → 78µs(去掉的是 5 × 2 万行的重复扫描)。
 	bool arch_has_prefab(int32_t arch, const Archetype &a) const;
+
+	// prefab 行位置缓存(按 struct_version_ 失效)。
+	// 聚合/散射是**每列**调用一次; 早先每次都做两趟 O(行数) 扫描(数非 prefab 行 + 逐行判 prefab),
+	// 20k × 5 列 = 20 万次判定 —— 实测 5 列 68µs 里绝大部分是这个。缓存后每列只剩纯 memcpy。
+	struct ArchPrefabInfo {
+		int32_t non_prefab = 0;      // 非 prefab 行数(聚合总长直接累加它)
+		std::vector<int32_t> rows;   // prefab 行号(升序, 拷贝时按它切段)
+	};
+	const ArchPrefabInfo &arch_prefab_info(int32_t arch, const Archetype &a) const;
+	mutable std::vector<ArchPrefabInfo> prefab_info_;
+	mutable uint64_t prefab_info_ver_ = ~uint64_t(0);
+	mutable std::mutex arch_cache_mutex_;   // 并行批量算子也会读这些缓存 → 串行化
 
 	// 空间索引状态: 统一网格(格子 → 实体 id 列表)。dirty 时下次查询整表重建。
 	int32_t spatial_comp_ = -1;
@@ -461,6 +517,8 @@ private:
 	std::unordered_map<int64_t, std::vector<int32_t>> spatial_cells_;
 	// 实体 id → 所在格子。增量更新时用它 O(1) 找到旧格子, 避免全表扫描。
 	std::unordered_map<int32_t, int64_t> spatial_owner_;
+	// 层级反向索引: parent → children(原生, 取代 GDScript 的 Dictionary)
+	std::unordered_map<int32_t, std::vector<int32_t>> children_;
 	int32_t spatial_built_entities_ = 0;
 	void spatial_mark_dirty();
 	void spatial_rebuild();

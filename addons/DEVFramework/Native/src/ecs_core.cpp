@@ -315,7 +315,7 @@ void ECSCore::sync_fields(const PackedInt32Array &nl_rows, const PackedInt32Arra
 			if (fi2 < 0) {
 				continue;
 			}
-			Variant v = a.cols[cp][fi2].get(cr.second);
+			Variant v = a.col_at(cp, fi2).get(cr.second);
 			if (sync_direct_) {
 				const int32_t dk = sc.direct_kind[fi];
 				if (dk != 0) {
@@ -743,12 +743,20 @@ int32_t ECSCore::find_archetype(const std::vector<int32_t> &comps) {
 			a.bits |= (1ULL << cc);
 		}
 	}
-	a.cols.resize(comps.size());
+	// 扁平布局: 先算每组的列起始下标, 再一次性 resize 整块
+	a.col_off.resize(comps.size() + 1);
+	int32_t total_cols = 0;
+	for (size_t cp = 0; cp < comps.size(); ++cp) {
+		a.col_off[cp] = total_cols;
+		total_cols += int32_t(components_[comps[cp]].fields.size());
+	}
+	a.col_off[comps.size()] = total_cols;
+	a.cols.resize(size_t(total_cols));
 	for (size_t cp = 0; cp < comps.size(); ++cp) {
 		const int32_t ci = comps[cp];
-		a.cols[cp].resize(components_[ci].fields.size());
-		for (size_t f = 0; f < components_[ci].fields.size(); ++f) {
-			a.cols[cp][f].type = components_[ci].fields[f].type;
+		const size_t nf = components_[ci].fields.size();
+		for (size_t f = 0; f < nf; ++f) {
+			a.cols[size_t(a.col_off[cp]) + f].type = components_[ci].fields[f].type;
 		}
 	}
 	archetypes_.push_back(std::move(a));
@@ -779,7 +787,7 @@ void ECSCore::remove_from_archetype(int32_t arch, int32_t index) {
 		for (size_t cp = 0; cp < a.comps.size(); ++cp) {
 			const int32_t ci = a.comps[cp];
 			for (size_t f = 0; f < components_[ci].fields.size(); ++f) {
-				ECSColumn &c = a.cols[cp][f];
+				ECSColumn &c = a.col_at(cp, f);
 				c.set(row, c.get(last));
 				c.pop();
 			}
@@ -788,7 +796,7 @@ void ECSCore::remove_from_archetype(int32_t arch, int32_t index) {
 		for (size_t cp = 0; cp < a.comps.size(); ++cp) {
 			const int32_t ci = a.comps[cp];
 			for (size_t f = 0; f < components_[ci].fields.size(); ++f) {
-				a.cols[cp][f].pop();
+				a.col_at(cp, f).pop();
 			}
 		}
 	}
@@ -818,9 +826,9 @@ void ECSCore::migrate_entity(int32_t index, int32_t src_arch, int32_t dst_arch) 
 					continue;
 				}
 				for (size_t f = 0; f < components_[ci].fields.size(); ++f) {
-					ECSColumn &dcol = dst.cols[dp][f];
+					ECSColumn &dcol = dst.col_at(dp, f);
 					dcol.resize(row + 1);
-					dcol.set(row, src.cols[cp][f].get(src_row));
+					dcol.set(row, src.col_at(cp, f).get(src_row));
 				}
 			}
 		}
@@ -832,7 +840,7 @@ void ECSCore::migrate_entity(int32_t index, int32_t src_arch, int32_t dst_arch) 
 		}
 		const auto &comp = components_[ci];
 		for (size_t f = 0; f < comp.fields.size(); ++f) {
-			ECSColumn &dcol = dst.cols[cp][f];
+			ECSColumn &dcol = dst.col_at(cp, f);
 			dcol.resize(row + 1);
 			dcol.set(row, comp.defaults[f]);
 		}
@@ -925,8 +933,11 @@ void ECSCore::release_entity_id(int32_t index) {
 
 int32_t ECSCore::register_component(const StringName &name, const PackedStringArray &fnames,
 		const PackedInt32Array &ftypes, const Array &fdefaults) {
-	if (find_comp(name) != nullptr) {
-		return int32_t(components_.size()); // 已注册, 幂等
+	// 幂等: 已注册要返回**已有下标**。早先这里返回 components_.size()(下一个空位),
+	// 调用方把它当 index 用就会指向越界位置 —— 内部标记组件(__prefab)正是被这个
+	// 静默跳过, 表现为"注册成功但标记永远挂不上"。
+	if (const ECSComponentData *existing = find_comp(name)) {
+		return int32_t(existing - components_.data());
 	}
 	const int32_t n = int32_t(fnames.size());
 	ECSComponentData data;
@@ -1389,7 +1400,7 @@ Variant ECSCore::get_field(int32_t entity, const StringName &comp, const StringN
 	if (row < 0) {
 		return Variant();
 	}
-	return a.cols[cp][fi].get(row);
+	return a.col_at(cp, fi).get(row);
 }
 
 void ECSCore::set_field(int32_t entity, const StringName &comp, const StringName &field, const Variant &value) {
@@ -1416,7 +1427,7 @@ void ECSCore::set_field(int32_t entity, const StringName &comp, const StringName
 		return;
 	}
 	if (change_detection_) ++a.row_ver[row];
-	a.cols[cp][fi].set(row, value);
+	a.col_at(cp, fi).set(row, value);
 }
 
 // ---------------------------------------------------------------------------
@@ -1466,6 +1477,49 @@ bool ECSCore::arch_has_prefab(int32_t arch, const Archetype &a) const {
 	return f == 1;
 }
 
+// prefab 行位置缓存: 结构版本变了才重算(一次扫全部块), 之后每列都是 O(prefab 个数) 切段。
+const ECSCore::ArchPrefabInfo &ECSCore::arch_prefab_info(int32_t arch, const Archetype &a) const {
+	std::lock_guard<std::mutex> lock(arch_cache_mutex_);
+	if (prefab_info_ver_ != struct_version_ || prefab_info_.size() != archetypes_.size()) {
+		prefab_info_.assign(archetypes_.size(), ArchPrefabInfo());
+		for (size_t i = 0; i < archetypes_.size(); ++i) {
+			const Archetype &ar = archetypes_[i];
+			ArchPrefabInfo &info = prefab_info_[i];
+			info.rows.clear();
+			for (int32_t r = 0; r < int32_t(ar.entities.size()); ++r) {
+				if (is_prefab_index(ar.entities[r])) {
+					info.rows.push_back(r);
+				}
+			}
+			info.non_prefab = int32_t(ar.entities.size()) - int32_t(info.rows.size());
+		}
+		prefab_info_ver_ = struct_version_;
+	}
+	return prefab_info_[size_t(arch)];
+}
+
+// 按"跳过这些行号"切段整拷。skip 升序(来自 arch_prefab_info), 段数 = skip 数 + 1。
+static size_t ecs_copy_runs_skip(uint8_t *dst, const uint8_t *src, size_t elem, size_t n,
+		const std::vector<int32_t> &skip) {
+	size_t out = 0;
+	size_t prev = 0;
+	for (int32_t s : skip) {
+		const size_t row = size_t(s);
+		if (row > prev) {
+			const size_t run = row - prev;
+			memcpy(dst + out * elem, src + prev * elem, run * elem);
+			out += run;
+		}
+		prev = row + 1;
+	}
+	if (prev < n) {
+		const size_t run = n - prev;
+		memcpy(dst + out * elem, src + prev * elem, run * elem);
+		out += run;
+	}
+	return out;
+}
+
 // 跨块列聚合: 含 ci 的 archetype 块按序拼接非 prefab 实体值(get_column 索引 = 聚合顺序)
 Variant ECSCore::column_aggregate(int32_t ci, int32_t fi) const {
 	const Variant::Type t = components_[ci].fields[fi].type;
@@ -1479,26 +1533,13 @@ Variant ECSCore::column_aggregate(int32_t ci, int32_t fi) const {
 	for (int32_t arch2 : archs_with(ci)) {
 		const auto &a = archetypes_[arch2];
 		const int cp = a.comp_pos(ci);
-		int cnt = 0;
-		for (int32_t r = 0; r < int32_t(a.entities.size()); ++r) {
-			if (!is_prefab_index(a.entities[r])) {
-				++cnt;
-			}
-		}
+		// 非 prefab 行数直接取缓存(早先在这里现扫一遍, 每列一次 → 5 列 = 10 万次判定)
+		const int32_t cnt = arch_prefab_info(arch2, a).non_prefab;
 		if (cnt > 0) {
 			blocks.push_back({&a, cp, arch2});
 			total += size_t(cnt);
 		}
 	}
-	// 无 prefab 块整块 memcpy(快路径)
-	auto has_pref = [this](const Archetype &a) {
-		for (int32_t r = 0; r < int32_t(a.entities.size()); ++r) {
-			if (is_prefab_index(a.entities[r])) {
-				return true;
-			}
-		}
-		return false;
-	};
 	switch (t) {
 		case Variant::INT: {
 			PackedInt32Array a;
@@ -1506,14 +1547,14 @@ Variant ECSCore::column_aggregate(int32_t ci, int32_t fi) const {
 			int32_t *dst = a.ptrw();
 			size_t idx = 0;
 			for (const auto &b : blocks) {
-				const int32_t *col = b.a->cols[b.cp][fi].ptr<int32_t>(); const size_t cn = b.a->cols[b.cp][fi].size();
+				const int32_t *col = b.a->col_at(b.cp, fi).ptr<int32_t>(); const size_t cn = b.a->col_at(b.cp, fi).size();
 				if (!arch_has_prefab(b.arch, *b.a)) {
 					memcpy(dst + idx, col, cn * sizeof(int32_t));
 					idx += cn;
 				} else {
-					idx += ecs_copy_runs(reinterpret_cast<uint8_t *>(dst) + idx * sizeof(*col),
+					idx += ecs_copy_runs_skip(reinterpret_cast<uint8_t *>(dst) + idx * sizeof(*col),
 							reinterpret_cast<const uint8_t *>(col), sizeof(*col), cn,
-							[this, &b](size_t row) { return is_prefab_index(b.a->entities[row]); });
+							arch_prefab_info(b.arch, *b.a).rows);
 				}
 			}
 			return a;
@@ -1524,14 +1565,14 @@ Variant ECSCore::column_aggregate(int32_t ci, int32_t fi) const {
 			float *dst = a.ptrw();
 			size_t idx = 0;
 			for (const auto &b : blocks) {
-				const float *col = b.a->cols[b.cp][fi].ptr<float>(); const size_t cn = b.a->cols[b.cp][fi].size();
+				const float *col = b.a->col_at(b.cp, fi).ptr<float>(); const size_t cn = b.a->col_at(b.cp, fi).size();
 				if (!arch_has_prefab(b.arch, *b.a)) {
 					memcpy(dst + idx, col, cn * sizeof(float));
 					idx += cn;
 				} else {
-					idx += ecs_copy_runs(reinterpret_cast<uint8_t *>(dst) + idx * sizeof(*col),
+					idx += ecs_copy_runs_skip(reinterpret_cast<uint8_t *>(dst) + idx * sizeof(*col),
 							reinterpret_cast<const uint8_t *>(col), sizeof(*col), cn,
-							[this, &b](size_t row) { return is_prefab_index(b.a->entities[row]); });
+							arch_prefab_info(b.arch, *b.a).rows);
 				}
 			}
 			return a;
@@ -1542,14 +1583,14 @@ Variant ECSCore::column_aggregate(int32_t ci, int32_t fi) const {
 			uint8_t *dst = a.ptrw();
 			size_t idx = 0;
 			for (const auto &b : blocks) {
-				const uint8_t *col = b.a->cols[b.cp][fi].ptr<uint8_t>(); const size_t cn = b.a->cols[b.cp][fi].size();
+				const uint8_t *col = b.a->col_at(b.cp, fi).ptr<uint8_t>(); const size_t cn = b.a->col_at(b.cp, fi).size();
 				if (!arch_has_prefab(b.arch, *b.a)) {
 					memcpy(dst + idx, col, cn);
 					idx += cn;
 				} else {
-					idx += ecs_copy_runs(reinterpret_cast<uint8_t *>(dst) + idx * sizeof(*col),
+					idx += ecs_copy_runs_skip(reinterpret_cast<uint8_t *>(dst) + idx * sizeof(*col),
 							reinterpret_cast<const uint8_t *>(col), sizeof(*col), cn,
-							[this, &b](size_t row) { return is_prefab_index(b.a->entities[row]); });
+							arch_prefab_info(b.arch, *b.a).rows);
 				}
 			}
 			return a;
@@ -1560,14 +1601,14 @@ Variant ECSCore::column_aggregate(int32_t ci, int32_t fi) const {
 			Vector2 *dst = a.ptrw();
 			size_t idx = 0;
 			for (const auto &b : blocks) {
-				const Vector2 *col = b.a->cols[b.cp][fi].ptr<Vector2>(); const size_t cn = b.a->cols[b.cp][fi].size();
+				const Vector2 *col = b.a->col_at(b.cp, fi).ptr<Vector2>(); const size_t cn = b.a->col_at(b.cp, fi).size();
 				if (!arch_has_prefab(b.arch, *b.a)) {
 					memcpy(dst + idx, col, cn * sizeof(Vector2));
 					idx += cn;
 				} else {
-					idx += ecs_copy_runs(reinterpret_cast<uint8_t *>(dst) + idx * sizeof(*col),
+					idx += ecs_copy_runs_skip(reinterpret_cast<uint8_t *>(dst) + idx * sizeof(*col),
 							reinterpret_cast<const uint8_t *>(col), sizeof(*col), cn,
-							[this, &b](size_t row) { return is_prefab_index(b.a->entities[row]); });
+							arch_prefab_info(b.arch, *b.a).rows);
 				}
 			}
 			return a;
@@ -1578,14 +1619,14 @@ Variant ECSCore::column_aggregate(int32_t ci, int32_t fi) const {
 			Vector3 *dst = a.ptrw();
 			size_t idx = 0;
 			for (const auto &b : blocks) {
-				const Vector3 *col = b.a->cols[b.cp][fi].ptr<Vector3>(); const size_t cn = b.a->cols[b.cp][fi].size();
+				const Vector3 *col = b.a->col_at(b.cp, fi).ptr<Vector3>(); const size_t cn = b.a->col_at(b.cp, fi).size();
 				if (!arch_has_prefab(b.arch, *b.a)) {
 					memcpy(dst + idx, col, cn * sizeof(Vector3));
 					idx += cn;
 				} else {
-					idx += ecs_copy_runs(reinterpret_cast<uint8_t *>(dst) + idx * sizeof(*col),
+					idx += ecs_copy_runs_skip(reinterpret_cast<uint8_t *>(dst) + idx * sizeof(*col),
 							reinterpret_cast<const uint8_t *>(col), sizeof(*col), cn,
-							[this, &b](size_t row) { return is_prefab_index(b.a->entities[row]); });
+							arch_prefab_info(b.arch, *b.a).rows);
 				}
 			}
 			return a;
@@ -1596,14 +1637,14 @@ Variant ECSCore::column_aggregate(int32_t ci, int32_t fi) const {
 			Vector4 *dst = a.ptrw();
 			size_t idx = 0;
 			for (const auto &b : blocks) {
-				const Vector4 *col = b.a->cols[b.cp][fi].ptr<Vector4>(); const size_t cn = b.a->cols[b.cp][fi].size();
+				const Vector4 *col = b.a->col_at(b.cp, fi).ptr<Vector4>(); const size_t cn = b.a->col_at(b.cp, fi).size();
 				if (!arch_has_prefab(b.arch, *b.a)) {
 					memcpy(dst + idx, col, cn * sizeof(Vector4));
 					idx += cn;
 				} else {
-					idx += ecs_copy_runs(reinterpret_cast<uint8_t *>(dst) + idx * sizeof(*col),
+					idx += ecs_copy_runs_skip(reinterpret_cast<uint8_t *>(dst) + idx * sizeof(*col),
 							reinterpret_cast<const uint8_t *>(col), sizeof(*col), cn,
-							[this, &b](size_t row) { return is_prefab_index(b.a->entities[row]); });
+							arch_prefab_info(b.arch, *b.a).rows);
 				}
 			}
 			return a;
@@ -1614,14 +1655,14 @@ Variant ECSCore::column_aggregate(int32_t ci, int32_t fi) const {
 			Color *dst = a.ptrw();
 			size_t idx = 0;
 			for (const auto &b : blocks) {
-				const Color *col = b.a->cols[b.cp][fi].ptr<Color>(); const size_t cn = b.a->cols[b.cp][fi].size();
+				const Color *col = b.a->col_at(b.cp, fi).ptr<Color>(); const size_t cn = b.a->col_at(b.cp, fi).size();
 				if (!arch_has_prefab(b.arch, *b.a)) {
 					memcpy(dst + idx, col, cn * sizeof(Color));
 					idx += cn;
 				} else {
-					idx += ecs_copy_runs(reinterpret_cast<uint8_t *>(dst) + idx * sizeof(*col),
+					idx += ecs_copy_runs_skip(reinterpret_cast<uint8_t *>(dst) + idx * sizeof(*col),
 							reinterpret_cast<const uint8_t *>(col), sizeof(*col), cn,
-							[this, &b](size_t row) { return is_prefab_index(b.a->entities[row]); });
+							arch_prefab_info(b.arch, *b.a).rows);
 				}
 			}
 			return a;
@@ -1631,7 +1672,7 @@ Variant ECSCore::column_aggregate(int32_t ci, int32_t fi) const {
 			a.resize(int32_t(total));
 			size_t idx = 0;
 			for (const auto &b : blocks) {
-				const auto &col = b.a->cols[b.cp][fi].s;
+				const auto &col = b.a->col_at(b.cp, fi).s;
 				for (int32_t r = 0; r < int32_t(b.a->entities.size()); ++r) {
 					if (is_prefab_index(b.a->entities[r])) {
 						continue;
@@ -1715,32 +1756,58 @@ static int32_t ecs_value_count(const Variant &v) {
 	}
 }
 
+// 按 prefab 行切段, 把 Packed 数组整段写进列(同类型等宽 → memcpy)。
+// skip 升序(prefab 行号); idx 是"已消费的源元素数"(跨块累计)。
+template <typename T, typename PackedT>
+static void ecs_scatter_runs(godot::ECSColumn &col, const Variant &values, size_t &idx,
+		const std::vector<int32_t> &skip) {
+	PackedT src = values;   // COW: 共享底层缓冲, 不复制数据
+	const T *sp = src.ptr();
+	T *dp = col.ptr<T>();
+	const size_t n = col.size();
+	size_t prev = 0;
+	for (int32_t s : skip) {
+		const size_t row = size_t(s);
+		if (row > prev) {
+			const size_t run = row - prev;
+			memcpy(dp + prev, sp + idx, run * sizeof(T));
+			idx += run;
+		}
+		prev = row + 1;
+	}
+	if (prev < n) {
+		const size_t run = n - prev;
+		memcpy(dp + prev, sp + idx, run * sizeof(T));
+		idx += run;
+	}
+}
+
 void ECSCore::column_scatter(int32_t ci, int32_t fi, const Variant &values) {
 	const Variant::Type t = components_[ci].fields[fi].type;
 	size_t idx = 0;
-	auto has_pref = [this](const Archetype &a) {
-		for (int32_t r = 0; r < int32_t(a.entities.size()); ++r) {
-			if (is_prefab_index(a.entities[r])) {
-				return true;
-			}
-		}
-		return false;
-	};
-	for (auto &a : archetypes_) {
+	// ⚠ 早先这里有个 has_pref(a) 每列扫全块 + 慢路径逐行 ecs_value_at(每行都重新拷一次 Packed 数组),
+	// 实测 20k × 1 列 = **49ms**(无 prefab 时 16µs) —— 每帧写位置列会直接把帧率打穿。
+	// 现在: prefab 行位置走 arch_prefab_info 缓存, 写回按段整拷。
+	for (int32_t arch_i = 0; arch_i < int32_t(archetypes_.size()); ++arch_i) {
+		auto &a = archetypes_[size_t(arch_i)];
 		if (!a.has_comp(ci)) {
 			continue;
 		}
 		const int cp = a.comp_pos(ci);
-		auto &col = a.cols[cp][fi];
+		auto &col = a.col_at(cp, fi);
 		const size_t cn = col.size();   // 本块行数(memcpy 的目标长度)
-		// 源数组不够长 → 不 memcpy(会越界读), 逐行写: 有值的写值, 缺的写字段默认值。
-		// 静默越界比"写默认值"危险得多: 前者读脏内存且不报错。
-		if (idx + col.size() > size_t(ecs_value_count(values))) {
+		const ArchPrefabInfo &info = arch_prefab_info(arch_i, a);
+		const std::vector<int32_t> &pref_rows = info.rows;
+		const int32_t have = ecs_value_count(values);
+		// 长度校验只比"**非 prefab 行数**": prefab 行不消费源数据。
+		// ⚠ 早先拿 col.size()(含 prefab 行)比源数组 → 模板块永远"源不够长" → 恒走逐行兜底,
+		// 而兜底里每行还重算 ecs_value_count(values) → 实测 20k 一行 set_columns_of 要 44ms。
+		if (idx + size_t(info.non_prefab) > size_t(have)) {
 			for (int32_t r = 0; r < int32_t(a.entities.size()); ++r) {
 				if (is_prefab_index(a.entities[r])) {
 					continue;
 				}
-				const Variant v = idx < size_t(ecs_value_count(values))
+				const Variant v = idx < size_t(have)
 						? ecs_value_at(values, idx)
 						: components_[ci].defaults[fi];
 				col.set(r, v);
@@ -1748,7 +1815,7 @@ void ECSCore::column_scatter(int32_t ci, int32_t fi, const Variant &values) {
 			}
 			continue;
 		}
-		if (!has_pref(a)) {
+		if (pref_rows.empty()) {
 			switch (t) {
 				case Variant::INT: {
 					PackedInt32Array p = values;
@@ -1801,14 +1868,43 @@ void ECSCore::column_scatter(int32_t ci, int32_t fi, const Variant &values) {
 				}
 			}
 		} else {
-			// 慢路径: 块内含 prefab(模板与实例同块是**常态**, 因为 instantiate 就追加在模板块里)。
-			// 逐行 set 并跳过 prefab 行; 取值必须用 ecs_value_at(按 Packed 类型)。
-			for (int32_t r = 0; r < int32_t(a.entities.size()); ++r) {
-				if (is_prefab_index(a.entities[r])) {
-					continue;
+			// 慢路径: 块内含 prefab(instantiate 就追加在模板块里, 所以这是**常态**)。
+			// 按 prefab 行把源数组切成若干段整拷; 只有 STRING/类型不匹配才退回逐行 Variant。
+			bool done = true;
+			switch (t) {
+				case Variant::INT:
+					ecs_scatter_runs<int32_t, PackedInt32Array>(col, values, idx, pref_rows);
+					break;
+				case Variant::FLOAT:
+					ecs_scatter_runs<float, PackedFloat32Array>(col, values, idx, pref_rows);
+					break;
+				case Variant::BOOL:
+					ecs_scatter_runs<uint8_t, PackedByteArray>(col, values, idx, pref_rows);
+					break;
+				case Variant::VECTOR2:
+					ecs_scatter_runs<godot::Vector2, PackedVector2Array>(col, values, idx, pref_rows);
+					break;
+				case Variant::VECTOR3:
+					ecs_scatter_runs<godot::Vector3, PackedVector3Array>(col, values, idx, pref_rows);
+					break;
+				case Variant::VECTOR4:
+					ecs_scatter_runs<godot::Vector4, PackedVector4Array>(col, values, idx, pref_rows);
+					break;
+				case Variant::COLOR:
+					ecs_scatter_runs<godot::Color, PackedColorArray>(col, values, idx, pref_rows);
+					break;
+				default:
+					done = false;
+					break;
+			}
+			if (!done) {
+				for (int32_t r = 0; r < int32_t(a.entities.size()); ++r) {
+					if (is_prefab_index(a.entities[r])) {
+						continue;
+					}
+					col.set(r, ecs_value_at(values, idx));
+					++idx;
 				}
-				col.set(r, ecs_value_at(values, idx));
-				++idx;
 			}
 		}
 	}
@@ -1897,7 +1993,7 @@ bool ECSCore::batch_apply_entity(int32_t entity, int32_t oci, int32_t ofi, int32
 		return false;
 	}
 	++archetypes_[earch].row_ver[erow];
-	auto &col = archetypes_[earch].cols[cp][ofi];
+	auto &col = archetypes_[earch].col_at(cp, ofi);
 	switch (col.type) {
 		case Variant::INT: {
 			int32_t &w = col.at<int32_t>(erow);
@@ -1966,8 +2062,8 @@ bool ECSCore::batch_apply_entity_col(int32_t entity, int32_t oci, int32_t ofi, i
 		return false;
 	}
 	++archetypes_[earch].row_ver[erow];
-	auto &ocol = archetypes_[earch].cols[cp][ofi];
-	const auto &scol = archetypes_[earch].cols[scp][sfi];
+	auto &ocol = archetypes_[earch].col_at(cp, ofi);
+	const auto &scol = archetypes_[earch].col_at(scp, sfi);
 	if (ocol.type == Variant::FLOAT && (scol.type == Variant::FLOAT || scol.type == Variant::INT)) {
 		const double sv = (scol.type == Variant::INT) ? double(scol.at<int32_t>(erow)) : double(scol.at<float>(erow));
 		const float v = float(sv * factor + addend);
@@ -2048,7 +2144,7 @@ bool ECSCore::cond_matches_entity(int32_t entity, const std::vector<ECSFilterCon
 		if (cp < 0) {
 			return false;
 		}
-		const auto &col = archetypes_[arch].cols[cp][c.field_idx];
+		const auto &col = archetypes_[arch].col_at(cp, c.field_idx);
 		double val = 0.0;
 		switch (col.type) {
 			case Variant::INT: val = double(col.at<int32_t>(row)); break;
@@ -2173,7 +2269,7 @@ static void ecs_write_rows(std::vector<godot::Archetype> &archs,
 		return;
 	}
 	const godot::Variant::Type want =
-			archs[size_t(tgt_arch[0])].cols[size_t(tgt_cp[0])][size_t(fi)].type;
+			archs[size_t(tgt_arch[0])].col_at(int(tgt_cp[0]), int(fi)).type;
 #define ECS_WRITE_CASE(ENUM, TYPE, WANT, ELEM)                                                \
 	case godot::Variant::ENUM: {                                                                \
 		if (want == godot::Variant::WANT) {                                                     \
@@ -2183,7 +2279,7 @@ static void ecs_write_rows(std::vector<godot::Archetype> &archs,
 			for (size_t r = 0; r < n; ++r) {                                                    \
 				const int32_t k = int32_t(r);                                                   \
 				if (k < sn) {                                                                   \
-					archs[size_t(tgt_arch[r])].cols[size_t(tgt_cp[r])][size_t(fi)]              \
+					archs[size_t(tgt_arch[r])].col_at(int(tgt_cp[r]), int(fi))                  \
 							.at<ELEM>(size_t(tgt_row[r])) = sp[r];                                \
 				}                                                                               \
 			}                                                                                   \
@@ -2206,7 +2302,7 @@ static void ecs_write_rows(std::vector<godot::Archetype> &archs,
 	const bool from_src = src.get_type() == godot::Variant::PACKED_STRING_ARRAY;
 	for (size_t r = 0; r < n; ++r) {
 		const godot::Variant v = from_src ? agg_at(src, int32_t(r)) : fallback;
-		archs[size_t(tgt_arch[r])].cols[size_t(tgt_cp[r])][size_t(fi)].set(size_t(tgt_row[r]),
+		archs[size_t(tgt_arch[r])].col_at(int(tgt_cp[r]), int(fi)).set(size_t(tgt_row[r]),
 				v.get_type() == godot::Variant::NIL ? fallback : v);
 	}
 }
@@ -2445,8 +2541,8 @@ int64_t ECSCore::batch_apply_col_rows(const StringName &anchor, const PackedInt3
 			const int cp = a.comp_pos(oci);
 			const int scp = a.comp_pos(sci);
 			if (cp >= 0 && scp >= 0) {
-				auto &ocol = a.cols[cp][ofi];
-				auto &scol = a.cols[scp][sfi];
+				auto &ocol = a.col_at(cp, ofi);
+				auto &scol = a.col_at(scp, sfi);
 				if (ocol.type == Variant::VECTOR2 && scol.type == Variant::VECTOR2 && op == COL_ADD) {
 					float *w = reinterpret_cast<float *>(ocol.ptr<Vector2>());
 					const float *s = reinterpret_cast<const float *>(scol.ptr<Vector2>());
@@ -2551,8 +2647,8 @@ int64_t ECSCore::batch_apply_col_rows(const StringName &anchor, const PackedInt3
 			if (cp < 0 || scp < 0) {
 				continue;
 			}
-			auto &ocol = a.cols[cp][ofi];
-			auto &scol = a.cols[scp][sfi];
+			auto &ocol = a.col_at(cp, ofi);
+			auto &scol = a.col_at(scp, sfi);
 			// 该块聚合行号上界
 			int32_t top = (k + 1 < arch_list.size()) ? arch_base[k + 1] : off;
 			// 收集该块匹配行(rows 单调, 二分起点)
@@ -2759,9 +2855,9 @@ int64_t ECSCore::batch_clamp_where(const StringName &anchor, const PackedStringA
 			if (cp < 0 || ncp < 0 || xcp < 0) {
 				continue;
 			}
-			auto &ocol = archetypes_[earch].cols[cp][ofi];
-			const auto &minc = archetypes_[earch].cols[ncp][nfi];
-			const auto &maxc = archetypes_[earch].cols[xcp][xfi];
+			auto &ocol = archetypes_[earch].col_at(cp, ofi);
+			const auto &minc = archetypes_[earch].col_at(ncp, nfi);
+			const auto &maxc = archetypes_[earch].col_at(xcp, xfi);
 			if (ocol.type == Variant::FLOAT && minc.type == Variant::FLOAT && maxc.type == Variant::FLOAT) {
 				ocol.at<float>(erow) = std::clamp(ocol.at<float>(erow), minc.at<float>(erow), maxc.at<float>(erow));
 			} else if (ocol.type == Variant::INT && minc.type == Variant::INT && maxc.type == Variant::INT) {
@@ -2833,8 +2929,8 @@ int64_t ECSCore::batch_vec_add(const StringName &anchor, const PackedStringArray
 			if (pcp < 0 || vcp < 0) {
 				continue;
 			}
-			auto &pcol = archetypes_[earch].cols[pcp][pfi];
-			const auto &vcol = archetypes_[earch].cols[vcp][vfi];
+			auto &pcol = archetypes_[earch].col_at(pcp, pfi);
+			const auto &vcol = archetypes_[earch].col_at(vcp, vfi);
 			if (pcol.type == Variant::VECTOR2 && vcol.type == Variant::VECTOR2) {
 				pcol.at<Vector2>(erow) += vcol.at<Vector2>(erow) * float(delta);
 			} else if (pcol.type == Variant::VECTOR3 && vcol.type == Variant::VECTOR3) {
@@ -2986,7 +3082,7 @@ void ECSCore::spatial_rebuild() {
 		if (cp < 0) {
 			continue;
 		}
-		const ECSColumn &col = a.cols[size_t(cp)][size_t(spatial_field_)];
+		const ECSColumn &col = a.col_at(size_t(cp), size_t(spatial_field_));
 		if (col.type != Variant::VECTOR2) {
 			continue;
 		}
@@ -3032,7 +3128,7 @@ void ECSCore::spatial_update_entity(int32_t id) {
 		return;
 	}
 	const float cs = spatial_cell_ > 0.0f ? spatial_cell_ : 1.0f;
-	const Vector2 p = archetypes_[size_t(arch)].cols[size_t(cp)][size_t(spatial_field_)].at<Vector2>(size_t(row));
+	const Vector2 p = archetypes_[size_t(arch)].col_at(size_t(cp), size_t(spatial_field_)).at<Vector2>(size_t(row));
 	const int64_t nk = spatial_key(int32_t(Math::floor(p.x / cs)), int32_t(Math::floor(p.y / cs)));
 	if (it != spatial_owner_.end() && it->second == nk) {
 		return;   // 同一格: 什么都不用做(绝大多数"小步移动"都是这种)
@@ -3079,7 +3175,7 @@ PackedInt32Array ECSCore::spatial_query_rect(const Vector2 &min_pos, const Vecto
 				if (cp < 0 || row < 0) {
 					continue;
 				}
-				const Vector2 p = archetypes_[size_t(arch)].cols[size_t(cp)][size_t(spatial_field_)]
+				const Vector2 p = archetypes_[size_t(arch)].col_at(size_t(cp), size_t(spatial_field_))
 										  .at<Vector2>(size_t(row));
 				if (p.x < min_pos.x || p.x > max_pos.x || p.y < min_pos.y || p.y > max_pos.y) {
 					continue;      // 格子命中但点在矩形外
@@ -3124,7 +3220,7 @@ PackedInt32Array ECSCore::spatial_query_radius(const Vector2 &center, double rad
 		if (cp < 0 || row < 0) {
 			continue;
 		}
-		const Vector2 p = archetypes_[size_t(arch)].cols[size_t(cp)][size_t(spatial_field_)]
+		const Vector2 p = archetypes_[size_t(arch)].col_at(size_t(cp), size_t(spatial_field_))
 								  .at<Vector2>(size_t(row));
 		if (p.distance_squared_to(center) <= r2) {
 			hits.push_back(id);
@@ -3195,7 +3291,7 @@ PackedInt32Array ECSCore::query_rows_sorted(const StringName &anchor, const Pack
 			if (is_prefab_index(id)) {
 				continue;
 			}
-			keys.push_back(fi < 0 ? 0.0 : ecs_sort_key(a.cols[size_t(cp)][size_t(fi)], r));
+			keys.push_back(fi < 0 ? 0.0 : ecs_sort_key(a.col_at(size_t(cp), size_t(fi)), r));
 			ids.push_back(id);
 		}
 	}
@@ -3408,6 +3504,85 @@ Array ECSCore::deserialize(const Dictionary &data) {
 }
 
 // ---------------------------------------------------------------------------
+// ECSCore — 层级索引(原生反向表 parent → children)
+// 只维护"谁是谁的子"这份索引; ECSParent 组件的读写仍在 GDScript。
+// ---------------------------------------------------------------------------
+
+void ECSCore::set_parent_bulk(const PackedInt32Array &children, int32_t parent, const StringName &parent_comp) {
+	const int32_t ci = comp_index(parent_comp);
+	const int32_t fi = ci >= 0 ? components_[ci].field_index("target") : -1;
+	if (fi < 0) {
+		return;
+	}
+	const int32_t plen = children.size();
+	const int32_t *pw = children.ptr();
+	for (int32_t i = 0; i < plen; ++i) {
+		const int32_t child = pw[i];
+		if (child == parent || !is_alive(child)) {
+			continue;
+		}
+		if (has_component(child, parent_comp)) {
+			// 重挂: 必须先把孩子从**旧父**的反向表里摘掉, 否则旧父永远留着这条
+			// (单条 set_parent 里由调用方做, 批量版必须自己补; 用例当场抓到 500 条残留)
+			const Variant oldv = get_field(child, parent_comp, "target");
+			const int32_t old = oldv.get_type() == Variant::NIL ? -1 : int32_t(int64_t(oldv));
+			if (old != -1 && old != parent) {
+				hierarchy_remove_child(old, child);
+			}
+		} else {
+			add_component(child, parent_comp);
+		}
+		set_field(child, parent_comp, "target", int64_t(parent));
+		hierarchy_set_parent(child, parent);
+	}
+}
+
+void ECSCore::hierarchy_set_parent(int32_t child, int32_t parent) {
+	auto &arr = children_[parent];
+	if (std::find(arr.begin(), arr.end(), child) == arr.end()) {
+		arr.push_back(child);
+	}
+}
+
+void ECSCore::hierarchy_remove_child(int32_t parent, int32_t child) {
+	auto it = children_.find(parent);
+	if (it == children_.end()) {
+		return;
+	}
+	auto &arr = it->second;
+	arr.erase(std::remove(arr.begin(), arr.end(), child), arr.end());
+	if (arr.empty()) {
+		children_.erase(it);
+	}
+}
+
+PackedInt32Array ECSCore::hierarchy_children(int32_t parent) const {
+	PackedInt32Array out;
+	auto it = children_.find(parent);
+	if (it == children_.end()) {
+		return out;
+	}
+	const size_t n = it->second.size();
+	out.resize(int32_t(n));
+	int32_t *w = out.ptrw();
+	for (size_t i = 0; i < n; ++i) {
+		w[i] = it->second[i];
+	}
+	return out;
+}
+
+PackedInt32Array ECSCore::hierarchy_detach(int32_t entity) {
+	PackedInt32Array out = hierarchy_children(entity);
+	children_.erase(entity);
+	return out;
+}
+
+int32_t ECSCore::hierarchy_child_count(int32_t parent) const {
+	auto it = children_.find(parent);
+	return it == children_.end() ? 0 : int32_t(it->second.size());
+}
+
+// ---------------------------------------------------------------------------
 // ECSCore — Prefab 预制体
 // ---------------------------------------------------------------------------
 
@@ -3436,6 +3611,22 @@ bool ECSCore::is_internal_comp(int32_t ci) const {
 	return ci >= 0 && ci < int32_t(components_.size()) && components_[ci].name.begins_with("__");
 }
 
+void ECSCore::set_prefab_tag(const StringName &comp) {
+	// 幂等: 已存在就直接用, 不存在才注册。这样共享核心(进程内单例)与独立核心(测试)都安全,
+	// 且调用方(GDScript 世界初始化)只需一行。
+	int32_t ci = comp_index(comp);
+	if (ci < 0) {
+		PackedStringArray fnames;
+		fnames.push_back("on");
+		PackedInt32Array ftypes;
+		ftypes.push_back(int32_t(Variant::BOOL));
+		Array fdefaults;
+		fdefaults.append(false);
+		ci = register_component(comp, fnames, ftypes, fdefaults);
+	}
+	prefab_tag_comp_ = ci;
+}
+
 int32_t ECSCore::create_prefab() {
 	const int32_t e = create_entity();
 	if (e < 0) {
@@ -3446,9 +3637,9 @@ int32_t ECSCore::create_prefab() {
 		prefab_bitmap_.resize(index + 1, 0);
 	}
 	prefab_bitmap_[index] = 1;
-	// 注: 曾尝试给模板挂内部标记组件, 让模板独占一个 archetype 块, 从而让聚合/批量写走纯 memcpy。
-	// 但"在 create_prefab 里临时注册新组件"会在编辑器启动期(插件初始化就建 prefab)触发不稳定,
-	// 实测两次导致编辑器退出, 因此回退。性能问题改用"块内按 prefab 行分段 memcpy"解决(见 column_aggregate)。
+	// 注: 内部标记组件(__prefab)隔离方案已放弃: 存储层分离成立, 但内部组件按名字查不到
+	// (comp_index 返回 -1), 按名 API 全部失效, 且性能无改善。热路径改用
+	// "块内按 prefab 行分段 memcpy"(见 column_aggregate 的 ecs_copy_runs)。
 	return e;
 }
 
@@ -3491,9 +3682,16 @@ Array ECSCore::instantiate(int32_t prefab, int32_t count, const Dictionary &over
 		return result;
 	}
 
-	// 模板与实例组件组合相同 ⇒ 直接往**同一个 archetype 块**批量追加,
-	// 不再"每实体一次 archetype 迁移 + 每字段一次字符串查找 + 每字段一次 Variant 装箱"。
-	// (旧路径 5000 个实体要几万次字符串比较, 是刷怪/弹幕场景的真实瓶颈。)
+	// 目标块 = 模板组件集**去掉内部标记**(实例不继承 __prefab) ⇒ 实例落独立 archetype,
+	// 于是聚合/散射不必再逐行跳过模板行。没有内部标记时 dst_comps 与模板相同 → 行为与旧版一致。
+	std::vector<int32_t> dst_comps;
+	for (int32_t ci : archetypes_[size_t(parch)].comps) {
+		if (!is_internal_comp(ci)) {
+			dst_comps.push_back(ci);
+		}
+	}
+	const int32_t darch = find_archetype(dst_comps);
+
 	std::vector<int32_t> ids;
 	ids.reserve(size_t(count));
 	for (int32_t n = 0; n < count; ++n) {
@@ -3508,14 +3706,13 @@ Array ECSCore::instantiate(int32_t prefab, int32_t count, const Dictionary &over
 		return result;
 	}
 
-	Archetype &dst = archetypes_[parch];
+	Archetype &dst = archetypes_[size_t(darch)];
 	const int32_t base = int32_t(dst.entities.size());
 	dst.entities.resize(size_t(base + n));
 	dst.row_ver.resize(size_t(base + n), 0);
-	for (auto &comp_cols : dst.cols) {
-		for (auto &col : comp_cols) {
-			col.resize(size_t(base + n));
-		}
+	// 扁平列: 一次遍历全部列(不再有"组件 → 字段"两层)
+	for (auto &col : dst.cols) {
+		col.resize(size_t(base + n));
 	}
 
 	// 行槽位: 实体索引 + 反向行号 + 所属块
@@ -3526,13 +3723,20 @@ Array ECSCore::instantiate(int32_t prefab, int32_t count, const Dictionary &over
 			dst.row_map.resize(size_t(idx + 1), -1);
 		}
 		dst.row_map[size_t(idx)] = base + i;
-		entity_arch_[size_t(idx)] = parch;
+		entity_arch_[size_t(idx)] = darch;
 	}
 
-	// 字段值: 按列整段拷模板行(同类型直拷, 不经过 Variant)
-	for (int32_t cp = 0; cp < int32_t(dst.cols.size()); ++cp) {
-		for (size_t fi = 0; fi < dst.cols[size_t(cp)].size(); ++fi) {
-			ecs_copy_row_range(dst.cols[size_t(cp)][fi], size_t(prow), size_t(base), n);
+	// 字段值: 按组件对齐整段拷模板行(同类型直拷, 不经过 Variant)。
+	// 目标块可能比模板块**少**内部组件, 所以按 dst_comps 逐个组件定位, 不能用扁平下标直接对拷。
+	for (size_t c = 0; c < dst_comps.size(); ++c) {
+		const int32_t cp_src = archetypes_[size_t(parch)].comp_pos(dst_comps[c]);
+		const int32_t cp_dst = dst.comp_pos(dst_comps[c]);
+		if (cp_src < 0 || cp_dst < 0) {
+			continue;
+		}
+		const int32_t nf = dst.col_count(cp_dst);
+		for (int32_t fi = 0; fi < nf; ++fi) {
+			ecs_copy_row_range(dst.col_at(cp_dst, fi), size_t(prow), size_t(base), n);
 		}
 	}
 
@@ -3554,7 +3758,7 @@ Array ECSCore::instantiate(int32_t prefab, int32_t count, const Dictionary &over
 			}
 			const Variant v = od[field_keys[f]];
 			for (int32_t i = 0; i < n; ++i) {
-				dst.cols[size_t(cp)][size_t(fi)].set(size_t(base + i), v);
+				dst.col_at(size_t(cp), size_t(fi)).set(size_t(base + i), v);
 			}
 		}
 	}
@@ -3814,6 +4018,13 @@ void ECSCore::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("spatial_query_rect", "min_pos", "max_pos"), &ECSCore::spatial_query_rect);
 	ClassDB::bind_method(D_METHOD("spatial_query_radius", "center", "radius"), &ECSCore::spatial_query_radius);
 	ClassDB::bind_method(D_METHOD("spatial_stats"), &ECSCore::spatial_stats);
+	ClassDB::bind_method(D_METHOD("hierarchy_set_parent", "child", "parent"), &ECSCore::hierarchy_set_parent);
+	ClassDB::bind_method(D_METHOD("set_parent_bulk", "children", "parent", "parent_comp"), &ECSCore::set_parent_bulk);
+	ClassDB::bind_method(D_METHOD("hierarchy_remove_child", "parent", "child"), &ECSCore::hierarchy_remove_child);
+	ClassDB::bind_method(D_METHOD("hierarchy_children", "parent"), &ECSCore::hierarchy_children);
+	ClassDB::bind_method(D_METHOD("hierarchy_detach", "entity"), &ECSCore::hierarchy_detach);
+	ClassDB::bind_method(D_METHOD("hierarchy_child_count", "parent"), &ECSCore::hierarchy_child_count);
+	ClassDB::bind_method(D_METHOD("set_prefab_tag", "comp"), &ECSCore::set_prefab_tag);
 	ClassDB::bind_method(D_METHOD("query_rows_sorted", "anchor", "must", "without", "field", "descending"), &ECSCore::query_rows_sorted, DEFVAL(false));
 	ClassDB::bind_method(D_METHOD("flush_commands"), &ECSCore::flush_commands);
 	ClassDB::bind_method(D_METHOD("pending_command_count"), &ECSCore::pending_command_count);
