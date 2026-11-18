@@ -6,11 +6,37 @@ extends SceneTree
 const GAME_READY_MAX_FRAMES := 240
 
 
+var _logger = null
+
+
 func _initialize() -> void:
+	for a in OS.get_cmdline_user_args():
+		var arg := str(a)
+		if arg.begins_with("--freshness="):
+			TestRunner.set_freshness_mode(arg.trim_prefix("--freshness="))
 	if _wants_game_mode():
 		_run_game()
 	else:
 		_run()
+
+
+## headless 也要像 GUT 一样把引擎/脚本报错算进失败（原来只有 MCP 注入 logger 才统计）。
+## 传 "--allow-errors" 可关闭（给"故意触发错误"的旧用例兜底）。
+func _attach_logger() -> void:
+	for a in OS.get_cmdline_user_args():
+		if str(a) == "--allow-errors":
+			return
+	var script = load("res://addons/DEVFramework/MCP/MCPLoggerDebug.gd")
+	if script == null:
+		return
+	_logger = script.new()
+	OS.add_logger(_logger)
+
+
+func _detach_logger() -> void:
+	if _logger != null:
+		OS.remove_logger(_logger)
+		_logger = null
 
 
 func _wants_game_mode() -> bool:
@@ -21,7 +47,9 @@ func _wants_game_mode() -> bool:
 
 
 func _run() -> void:
-	var summary: Dictionary = await TestRunner.run_all(_script_arg(), TestRunner.MODE_EDITOR)
+	_attach_logger()
+	var summary: Dictionary = await TestRunner.run_all(_script_arg(), TestRunner.MODE_EDITOR, _logger)
+	_detach_logger()
 	# 早退（选择器无匹配/解析失败）是同步返回的：若在 _initialize 阶段直接 quit()，
 	# 主循环还没起来，退出码会被忽略（实测 no-selector 仍 exit 0）。等一帧再退出。
 	await process_frame
@@ -62,7 +90,10 @@ func _run_game() -> void:
 		quit(1)
 		return
 	await _await_scene_ready()
-	_finish(await TestRunner.run_all(_script_arg(), TestRunner.MODE_GAME))
+	_attach_logger()
+	var summary: Dictionary = await TestRunner.run_all(_script_arg(), TestRunner.MODE_GAME, _logger)
+	_detach_logger()
+	_finish(summary)
 
 
 func _await_scene_ready() -> void:

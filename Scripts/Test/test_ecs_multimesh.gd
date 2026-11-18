@@ -9,6 +9,13 @@ extends TestCase
 const N_PERF := 2000
 
 
+## MultiMesh 的变换/颜色校验读取的是渲染服务器里的实例缓冲；
+## headless 使用 dummy 渲染器，get_instance_transform/color 会返回默认值（不是代码写错了）。
+## 因此整个文件在游戏进程跑；数据面（数量/漏绑/销毁重建）仍可在 game 段验证。
+func needs_game_process() -> bool:
+	return true
+
+
 func _make_mm(use_colors := true) -> MultiMesh:
 	var m := MultiMesh.new()
 	var box := BoxMesh.new()

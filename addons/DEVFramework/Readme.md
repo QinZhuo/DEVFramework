@@ -107,6 +107,10 @@ godot --headless --path . -s res://addons/DEVFramework/Test/run_headless.gd -- -
 **0 个用例 / 脚本解析失败现在一律判失败**：CI 里“没跑”与“跑了全过”必须可区分。
 编辑器进程若检测到磁盘脚本与已加载版本不一致，会拒绝开跑并提示重启（或改用 headless）。
 
+headless 默认还会挂一个 `MCPLogger`，把运行期 **script/shader/engine error** 算进失败（GUT 的 failure_error_types 语义；warning/printerr 不算，避免误伤故意制造告警的用例）。
+- `-- --allow-errors`：关闭运行期错误统计（给“故意触发错误”的旧用例兜底）。
+- `-- --freshness=strict|warn|off`：编辑器新鲜度策略；默认 strict，也可用项目设置 `dev_framework/test/freshness` 配置。
+
 **进度与 ETA 是内建的**：`total` 在开跑前就按"确认会执行的方法数"算好，`eta_ms` 由最近 3 秒的进度速率外推；
 进度不可用（总数未知/还没推进）时退化到**同类任务的历史用时**（`user://.dev_framework/perf_history.json`）。
 测试轮次还会在正文里给出"用时 X（预估 Y，偏差 Z%）"，预估来自各用例方法的历史 EMA。

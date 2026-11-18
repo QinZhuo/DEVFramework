@@ -35,6 +35,7 @@ func _enter_tree() -> void:
 	# 编辑器兜底扫描烘焙产物的根目录（*_lightmap_set.res）
 	_register("dev_framework/lightmap/scan_dir", TYPE_STRING, "res://Scenes")
 	_register("dev_framework/mcp/enabled", TYPE_BOOL, true)
+	_register("dev_framework/test/freshness", TYPE_STRING, "strict")
 	# 旧的项目级端口。**多实例中枢默认开启时它不被使用**(中枢走 mcp/hub_port);
 	_register("dev_framework/mcp/port", TYPE_INT, 8931)
 	_register("dev_framework/mcp/token", TYPE_STRING, "")

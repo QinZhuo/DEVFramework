@@ -18,6 +18,8 @@ const MAX_HISTORY := 32
 static var _epoch: int = 0
 static var _cache_clearers: Dictionary = {}
 static var _history: Array = []
+## 上一次真正清缓存时的代次；begin_run 只在代次变化时清，避免每轮测试无谓清空。
+static var _last_run_epoch: int = -1
 
 
 ## 当前脚本代次。缓存 key 可以拼上它，或只依赖 begin_run() 的失效回调。
@@ -61,10 +63,13 @@ static func invalidate_caches(reason: String = "") -> int:
 	return cleared
 
 
-## 测试/长任务开始：先递增代次，再清所有项目缓存。
+## 测试/长任务开始：代次变化时才清项目缓存；没变化直接返回当前代次。
+## （每轮无条件清会让第一用例无谓变慢，也会掩盖"缓存是否真的跨代残留"。）
 static func begin_run(reason: String = "test_run") -> int:
-	var e := bump(reason)
-	invalidate_caches(reason)
+	var e := current()
+	if e != _last_run_epoch:
+		_last_run_epoch = e
+		invalidate_caches(reason)
 	return e
 
 
@@ -77,15 +82,10 @@ static func status() -> Dictionary:
 	}
 
 
-## 只测试用：清空注册表与历史（不重置 epoch，避免掩盖代次增长）。
-static func reset_registry() -> void:
-	_cache_clearers.clear()
-	_history.clear()
-
-
 ## 会话级复位（由 ResetTool.all() 调用）：代次归零、清注册表与历史。
 ## 新会话不应继承上一局的脚本代次；正在跑的长任务不该被这里打断（JobTool 自己管）。
 static func reset() -> void:
 	_epoch = 0
+	_last_run_epoch = -1
 	_cache_clearers.clear()
 	_history.clear()

@@ -23,10 +23,14 @@ func test_script_epoch_registry() -> void:
 	var state := {"calls": 0}
 	var clearer := func() -> void: state["calls"] = int(state["calls"]) + 1
 	assert_true(EpochTool.register_cache(&"test_contract", clearer))
+	EpochTool.bump("test_contract")   # 让代次变化；begin_run 只在变化时清
 	var before := EpochTool.current()
 	var after := EpochTool.begin_run("test_contract")
-	assert_true(after > before, "begin_run 应递增脚本代次")
-	assert_true(int(state["calls"]) >= 1, "begin_run 应调用注册的清缓存回调")
+	assert_eq(after, before, "begin_run 本身不递增代次（bump 才递增）")
+	assert_true(int(state["calls"]) >= 1, "代次变化时 begin_run 应调用注册的清缓存回调")
+	var calls_after := int(state["calls"])
+	EpochTool.begin_run("same_epoch")
+	assert_eq(int(state["calls"]), calls_after, "代次没变时不应重复清缓存")
 	EpochTool.unregister_cache(&"test_contract")
 	assert_false((EpochTool.status()["caches"] as Array).has(&"test_contract"))
 
@@ -52,3 +56,10 @@ func test_job_start_returns_before_work_runs() -> void:
 	var result: Dictionary = await JobTool.wait(str(snap.get("job_id", "")), 5000)
 	assert_eq(str(result.get("status", "")), "done", "job 应在下一空闲执行完")
 	assert_true(bool(state["done"]), "work 应已执行")
+func test_freshness_policy_override() -> void:
+	var old := TestRunner.freshness_mode()
+	TestRunner.set_freshness_mode("warn")
+	assert_eq(TestRunner.freshness_mode(), "warn")
+	TestRunner.set_freshness_mode("off")
+	assert_eq(TestRunner.freshness_mode(), "off")
+	TestRunner.set_freshness_mode(old)

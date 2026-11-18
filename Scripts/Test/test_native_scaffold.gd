@@ -53,6 +53,9 @@ func test_scan_gdclasses() -> void:
 ## 这样 CMake/MinGW 的默认 SHLIBPREFIX 与规范名同前缀, 不需要 PREFIX "" 平台特例;
 ## 唯一硬约束是 规范名 与 .gdextension 的 [libraries] 一字不差(否则扩展静默加载失败)。
 func test_library_name_prefix_per_platform() -> void:
+	# EditorScript 只能在编辑器进程实例化；headless CI 跳过这一条（其余用例仍跑）。
+	if not Engine.is_editor_hint():
+		return
 	var rb = REBUILD.new()
 	var name: String = rb._canonical_file("probe", "release", "x86_64")
 	assert_true(name.begins_with("lib"), "规范名应带 lib 前缀: %s" % name)

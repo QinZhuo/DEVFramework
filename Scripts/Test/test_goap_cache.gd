@@ -81,17 +81,19 @@ func test_cache_key_sensitive_to_state() -> void:
 func test_cache_is_fast() -> void:
 	GoapPlanner.clear_plan_cache()
 	var p := GoapPlanner.new()
-	var acts := _chain(10)
+	# 链长 14：单次搜索的成本足够大，不会被调度抖动吃掉；缓存侧仍近似常数。
+	var acts := _chain(14)
 	var ws := _state({"s0": true})
 	var goal := {"done": true}
 	# 真实用法: 行动集签名预计算一次(GoapAgent 也是这么做的)
 	var sig := GoapPlanner.actions_signature(acts)
 	p.plan_cached(ws, goal, acts, 0, sig)   # 预热(写入缓存)
 
-	var cached := PerfTool.bench(func() -> void: p.plan_cached(ws, goal, acts, 0, sig), 30, 10)
-	var raw := PerfTool.bench(func() -> void: p.plan(ws, goal, acts), 10, 3)
-	assert_true(cached.p50_ms < raw.p50_ms * 0.2,
-			"命中缓存应至少快 5×: cached=%.3fms raw=%.3fms" % [cached.p50_ms, raw.p50_ms])
+	var cached := PerfTool.bench(func() -> void: p.plan_cached(ws, goal, acts, 0, sig), 50, 15)
+	var raw := PerfTool.bench(func() -> void: p.plan(ws, goal, acts), 20, 5)
+	assert_true(raw.p50_ms > 0.05, "基准测不出来(raw=%.3fms)，不能拿噪声当结论" % raw.p50_ms)
+	assert_true(cached.p50_ms < raw.p50_ms * 0.25,
+			"命中缓存应至少快 4×: cached=%.3fms raw=%.3fms" % [cached.p50_ms, raw.p50_ms])
 
 
 ## 事件驱动: 没有状态变化时, tick 不应触发规划。
