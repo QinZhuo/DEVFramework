@@ -11,6 +11,7 @@ const CAMERA_GIZMO_SCRIPT := "res://addons/DEVFramework/Camera/Editor/VirtualCam
 ## 虚拟机位取景器(底部面板, 预览机位看到的画面)
 const CAMERA_VIEWFINDER_SCRIPT := "res://addons/DEVFramework/Camera/Editor/CameraViewfinder.gd"
 
+const ScriptEpoch := preload("res://addons/DEVFramework/Core/Tool/ScriptEpochTool.gd")
 const AUTOLOAD_NAME := "DevMCP"
 const AUTOLOAD_PATH := "res://addons/DEVFramework/MCP/MCPDevServer.gd"
 ## 导出血 DevMCP autoload 用的键（导出时临时移除，避免编辑器专用脚本进正式包）
@@ -63,8 +64,16 @@ func _enter_tree() -> void:
 	_setup_def_table()
 	_setup_camera_gizmo()
 	_setup_camera_viewfinder()
+	# 编辑器保存/重扫后递增脚本代次；真正清缓存由 TestRunner/显式调用触发，避免误清。
+	var fs := get_editor_interface().get_resource_filesystem()
+	if fs != null and not fs.filesystem_changed.is_connected(_on_filesystem_changed):
+		fs.filesystem_changed.connect(_on_filesystem_changed)
 	## 清掉上一轮编辑器会话残留的静态状态（@tool 脚本 reload 后可能留住旧值）
 	ResetTool.all()
+
+
+func _on_filesystem_changed() -> void:
+	ScriptEpoch.bump("editor_filesystem_changed")
 
 
 func _exit_tree() -> void:

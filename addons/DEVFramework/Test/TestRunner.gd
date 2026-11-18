@@ -7,6 +7,10 @@ class_name TestRunner extends RefCounted
 ##   - headless CLI: godot --headless --script res://addons/DEVFramework/Test/run_headless.gd [-- --game]
 
 const TESTS_DIR := "res://Scripts/Test/"
+## 用 preload 而不是全局类名：新增的全局类在编辑器脚本缓存里要重启才可见，
+## 而测试基础设施本身必须先可编译（否则连"检查新鲜度"都跑不起来）。
+const FreshnessTool := preload("res://addons/DEVFramework/Core/Tool/ScriptFreshnessTool.gd")
+const EpochTool := preload("res://addons/DEVFramework/Core/Tool/ScriptEpochTool.gd")
 ## 内联源码长度上限(字符)。与 eval_code 的 MAX_EVAL_LENGTH 同量级: 临时用例够用, 又挡住误传巨型文本。
 const MAX_INLINE_LEN := 8192
 ## 单次 run_all 的**硬超时**(毫秒): 到点即判失败并停止等待剩余用例。
@@ -50,6 +54,15 @@ static func _run_all(script: String, mode: String, logger: Object) -> Dictionary
 	var started_at := Time.get_ticks_msec()
 	var deadline := started_at + HARD_TIMEOUT_MS
 	_runs_this_process += 1
+	# 编辑器进程不会自动换掉已加载脚本：先确认"磁盘 == 已加载"，否则本轮结果不可信。
+	# 游戏进程/headless 是启动时从磁盘加载的，不需要这道检查。
+	if mode == MODE_EDITOR:
+		var stale: Array = FreshnessTool.stale_cached_scripts()
+		if not stale.is_empty():
+			return _error_result("检测到 %d 个脚本的磁盘内容与已加载版本不一致，本轮拒绝执行（避免测旧代码）。\n%s\n请重启编辑器后重跑，或改用 headless：\n  godot --headless --path . -s res://addons/DEVFramework/Test/run_headless.gd -- --script %s" % [
+				stale.size(), FreshnessTool.describe(stale), script if not script.is_empty() else "all"], script, mode)
+		# 每轮开始清一次项目静态缓存；项目通过 ScriptEpochTool.register_cache 注册。
+		EpochTool.begin_run("test_run")
 	if is_inline_source(script):
 		return await _run_inline(script, mode, logger, deadline)
 
@@ -78,6 +91,15 @@ static func _run_all(script: String, mode: String, logger: Object) -> Dictionary
 	var planned := 0
 	for item in plan:
 		planned += (item["methods"] as Array).size()
+	if planned == 0:
+		# 0 个用例不是"通过"：选择器打错 / 全部被跳过 / 全被解析失败，都要显式报错。
+		if int(acc["failed"]) == 0:
+			acc["failures"].append("没有可执行的测试用例（选择器 '%s'，模式 %s）—— 检查脚本名/进程模式/解析错误" % [script, mode])
+			acc["failed"] = 1
+		acc["total"] = maxi(int(acc["total"]), 1)
+		PerfTool.flush_history()
+		var zero_text := _format(int(acc["total"]), int(acc["failed"]), acc["failures"], acc["skipped"], acc["overruns"], mode)
+		return _summary(acc, script, mode, zero_text)
 	var est := _estimate_ms(plan)
 	if int(est["covered"]) > 0:
 		_progress("预计总时长 %s（历史基线覆盖 %d/%d 个方法）" % [
@@ -136,8 +158,10 @@ static func _build_plan(case_paths: Array, mode: String, acc: Dictionary) -> Arr
 		# 解析失败的脚本: source_code 仍有文本(所以上面那句放它过去), 但 new() 会抛异常。
 		# reload() 的返回码是唯一可靠的"能否编译"判据(实测 can_instantiate() 对正常用例也返回 false)。
 		if script_res is GDScript and script_res.reload() != OK:
-			acc["skipped"].append({case = label, reason = "脚本解析失败(修好之前无法运行)"})
-			_progress("跳过 %s（解析失败）" % label)
+			# 解析失败**必须**是失败：原来只记 skipped，CI 会把"测试坏了"判成通过。
+			acc["failures"].append("%s: 测试脚本解析失败（修好之前无法运行）" % path)
+			acc["failed"] = int(acc["failed"]) + 1
+			_progress("失败 %s（解析失败）" % label)
 			continue
 		var probe = script_res.new()
 		if probe == null:
@@ -532,5 +556,3 @@ static func _next_tool(mode: String) -> String:
 		# 两段都跳过了它 ⇒ 不是进程归属问题(两边都不认), 得看该脚本自己
 		return "检查该脚本 needs_game_process() 与依赖环境"
 	return "run_tests(process=game)"
-
-

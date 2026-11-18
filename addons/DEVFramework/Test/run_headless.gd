@@ -21,12 +21,22 @@ func _wants_game_mode() -> bool:
 
 
 func _run() -> void:
-	_finish(await TestRunner.run_all(_script_arg(), TestRunner.MODE_EDITOR))
+	var summary: Dictionary = await TestRunner.run_all(_script_arg(), TestRunner.MODE_EDITOR)
+	# 早退（选择器无匹配/解析失败）是同步返回的：若在 _initialize 阶段直接 quit()，
+	# 主循环还没起来，退出码会被忽略（实测 no-selector 仍 exit 0）。等一帧再退出。
+	await process_frame
+	_finish(summary)
 
 
 ## 打印结果并退出: 码 0=全通过 / 1=有失败, 供 CI 判定。两个模式共用
 func _finish(summary: Dictionary) -> void:
 	print(str(summary.get("text", "")))
+	# 0 个用例绝不能算成功：CI 里"没跑"和"跑了全过"必须是两种结局。
+	var total := int(summary.get("total", 0))
+	if total <= 0:
+		printerr("[测试] 本轮执行了 0 个用例（选择器/进程模式/脚本解析/目录扫描），按失败处理。")
+		quit(2)
+		return
 	quit(0 if int(summary.get("failed", 1)) == 0 else 1)
 
 
