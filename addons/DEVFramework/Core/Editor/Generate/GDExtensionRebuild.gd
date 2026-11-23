@@ -778,8 +778,8 @@ func _precheck(source_dir: String) -> bool:
 		_log("该扩展暂仅支持 CMake 构建(未找到 CMakeLists.txt)。")
 		return false
 	if not FileAccess.file_exists(abs.path_join("godot-cpp/SConstruct")):
-		_log("godot-cpp submodule 未初始化, 请先执行:")
-		_log("    git submodule update --init --recursive")
+		_log("godot-cpp 尚未获取(不入库), 请执行:")
+		_log("    git clone --depth 1 https://github.com/godotengine/godot-cpp gdextension/godot-cpp")
 		return false
 	var out: Array = []
 	if OS.execute("cmake", ["--version"], out, true) != 0:

@@ -20,6 +20,8 @@ const DIM_Z := 4088
 const TIP_Z := 4092
 ## 一次最多处理多少个目标矩形(与 shader 里的数组长度保持一致)
 const MAX_RECTS := 16
+## 轮廓一开始建不起来(目标还没有可见网格)时的补建帧数
+const SIL_RETRY_FRAMES := 20
 const _SPOT_SHADER: Shader = preload("res://addons/DEVFramework/Focus/FocusMaskSpotlight.gdshader")
 const _NAV_ACTIONS: Array[StringName] = [&"ui_focus_next", &"ui_focus_prev",
 		&"ui_left", &"ui_right", &"ui_up", &"ui_down"]
@@ -83,6 +85,8 @@ var _sil_ok := true
 var _sil_check_frames := 0
 ## 目标数超上限是否已提示过(避免每帧刷警告)
 var _warned_overflow := false
+## 轮廓补建剩余帧数(0 = 不再尝试)
+var _sil_retry := 0
 ## 2D 目标的离屏快照(duplicate 一份渲染, 拿它的 alpha 当真实轮廓)
 var _contour_view: SubViewport
 
@@ -215,6 +219,7 @@ static func _promote(node: Node) -> Node:
 
 ## 建"只渲染目标"的轮廓通道: 3D 用层分离重渲, 2D 用离屏快照(子视口里的也算)
 func _setup_silhouette() -> void:
+	_sil_retry = 0
 	if not outline_3d:
 		return
 	for i in _targets.size():
@@ -227,11 +232,29 @@ func _setup_silhouette() -> void:
 			if _visible_mesh_aabb(promoted as Node3D).size != Vector3.ZERO:
 				_build_3d_silhouette(promoted as Node3D, i)
 				return
+			# 目标当帧还没有可见网格(视图刚入树 / 模型刚换) ⇒ 留几帧补建,
+			# 否则会一直退化成矩形亮块: 目标本体不贴合、也没有贴形状的描边
+			_sil_retry = SIL_RETRY_FRAMES
 			continue
 		# 2D 目标不建轮廓快照: 控件样式盒经常只画边框/贴图未设置, 快照里"控件内部"是空的,
 		# 于是目标内部会被当成区域外(遮罩不透明时只剩一圈框、本体全黑)。
 		# 2D 直接用"矩形 + 样式盒圆角"的 SDF, 形状与区域都可靠。
 		return
+
+
+## 补建轮廓: 每帧重试一次, 直到目标的可见网格就绪或次数用完(用完就保留矩形保底)
+func _retry_silhouette() -> void:
+	if _sil_retry <= 0:
+		return
+	_sil_retry -= 1
+	for i in _targets.size():
+		var node: Node = _targets[i]
+		if not is_instance_valid(node) or _promoted.get(node) != node:
+			continue
+		if node is Node3D and _visible_mesh_aabb(node as Node3D).size != Vector3.ZERO:
+			_build_3d_silhouette(node as Node3D, i)
+			_apply_spot_params()
+			return
 
 
 ## 2D 目标的真实轮廓: 把控件自己的样式盒画进离屏视口。
@@ -317,6 +340,7 @@ class ContourPainter extends Control:
 ## 每帧维护轮廓: 验证离屏快照是否真的渲出了内容, 并让轮廓跟随目标移动/缩放
 func _tick_silhouette() -> void:
 	if _sil_view == null or not is_instance_valid(_sil_view) or _sil_rect_index < 0:
+		_retry_silhouette()
 		return
 	if _sil_check_frames > 0:
 		_sil_check_frames -= 1
@@ -515,6 +539,7 @@ func _release_presentation() -> void:
 	_sil_target = null
 	_sil_rect_index = -1
 	_sil_rect = Rect2()
+	_sil_retry = 0
 	_contour_view = null
 	_promoted.clear()
 	if _spot:

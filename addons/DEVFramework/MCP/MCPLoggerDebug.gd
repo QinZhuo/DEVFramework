@@ -5,6 +5,11 @@ class_name MCPLogger extends Logger
 const CAPACITY := 2000        # 环形缓冲容量(日志条目数)
 const ERROR_CAPACITY := 500   # 错误条目容量(含栈追踪, 占空间)
 
+## 错误旁路: 游戏进程用它把错误**实时**推给编辑器。
+## 断点暂停后主循环停摆, 编辑器发来的 get_logs 请求根本不会被执行, 只有这份先推出去的副本
+## 能让 breaked 诊断说出真实错误(否则只能回"错误缓冲无内容")。
+static var error_sink: Callable
+
 ## 日志条目结构: {"time":int毫秒, "message":String, "is_error":bool}
 var _messages: Array = []
 var _errors: Array = []
@@ -19,15 +24,21 @@ func _init() -> void:
 
 ## 由 _log_message 调用 — 捕获普通 print / printerr(text流)
 func _log_message(message: String, error: bool) -> void:
-	_mutex.lock()
+	var text := _strip_ansi(message)
 	if error:
 		# printerr 输出也计入错误列表末尾, 方便统一查看
-		_push_error({"time": Time.get_ticks_msec(), "message": _strip_ansi(message), "is_error": true, "type": "stderr", "stack": []})
-	else:
-		_messages.append({"time": Time.get_ticks_msec(), "message": _strip_ansi(message), "is_error": false})
-		if _messages.size() > CAPACITY:
-			_messages.pop_front()
-			_base_index += 1
+		var entry := {"time": Time.get_ticks_msec(), "message": text, "is_error": true, "type": "stderr", "stack": []}
+		_mutex.lock()
+		_push_error(entry)
+		_mutex.unlock()
+		if error_sink.is_valid():
+			error_sink.call(entry)
+		return
+	_mutex.lock()
+	_messages.append({"time": Time.get_ticks_msec(), "message": text, "is_error": false})
+	if _messages.size() > CAPACITY:
+		_messages.pop_front()
+		_base_index += 1
 	_mutex.unlock()
 
 
@@ -51,8 +62,7 @@ func _log_error(
 			var ln: int = bt.get_frame_line(i)
 			lines.append("    at %s (%s:%d)" % [label, src, ln])
 		bt_texts.append({"language": bt.get_language_name(), "frames_raw": bt.format(), "lines": lines})
-	_mutex.lock()
-	_push_error({
+	var entry := {
 		"time": Time.get_ticks_msec(),
 		"message": rationale if not rationale.is_empty() else code,
 		"type": _error_type_name(error_type),
@@ -61,8 +71,13 @@ func _log_error(
 		"line": line,
 		"code": code,
 		"stack": bt_texts,
-	})
+	}
+	_mutex.lock()
+	_push_error(entry)
 	_mutex.unlock()
+	# 旁路要在锁外调用: 回调里可能再次打日志
+	if error_sink.is_valid():
+		error_sink.call(entry)
 
 
 func _error_type_name(t: int) -> String:

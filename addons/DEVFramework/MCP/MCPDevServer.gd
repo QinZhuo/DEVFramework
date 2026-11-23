@@ -150,8 +150,13 @@ var _pending := {}
 var _next_req_id := 1
 ## 编辑器模式: 游戏是否处于断点暂停状态(脚本错误/断点导致主循环暂停)
 var _game_breaked := false
+## 编辑器模式: 游戏进程推上来的最近错误副本。断点后游戏主循环停摆, 请求式的 get_logs 拿不到东西,
+## 断点诊断就只能靠这份"错误发生当时"推过来的副本。
+var _game_error_digest: Array[Dictionary] = []
 ## 断点暂停时仍可安全执行的工具(只读缓冲, 不依赖游戏主循环):
 const _BREAK_SAFE_TOOLS := ["get_logs", "clear_logs"]
+## 游戏进程实时推上来的错误副本条数上限(见 MCPLogger.error_sink)
+const GAME_ERROR_DIGEST_KEEP := 20
 ## 游戏用例运行期间仍可用的工具: 用例自己就是长任务, 轮询进度/取消必须放行。
 ## job_wait 只等主循环帧(用例本就让出帧), job_cancel 是纯同步操作 —— 都不会被用例拖死。
 const _GAME_TESTS_OPEN_TOOLS := ["run_tests", "job_wait", "job_cancel"]
@@ -200,6 +205,7 @@ func _ready() -> void:
 	_game_started_at = int(Time.get_unix_time_from_system())
 	_logger = MCPLogger.new()
 	OS.add_logger(_logger)
+	MCPLogger.error_sink = _forward_error_to_editor
 	_mode = MODE_RUNTIME
 	# (1) 开发期桥接: "由编辑器启动的游戏进程"注册调试线工具(不占端口)。含 eval_code(process=game)
 	if _is_editor_build():
@@ -222,6 +228,22 @@ func _ready() -> void:
 ## (实测 os_has_editor=true / class_ei=true), 编辑器类可解析、调试线可用。判据收敛在此一处。
 static func _is_editor_build() -> bool:
 	return OS.has_feature("editor")
+
+
+## 游戏进程: 每产生一条运行期错误就推一份精简副本给编辑器。
+## 断点暂停后主循环不再运行, 编辑器再发 get_logs 也不会被执行 —— 只能靠这条单向推送留证。
+func _forward_error_to_editor(entry: Dictionary) -> void:
+	if not _is_editor_build() or not EngineDebugger.is_active():
+		return
+	if str(entry.get("type", "")) == "warning":
+		return
+	EngineDebugger.send_message(DEBUGGER_PREFIX + ":error", [{
+		message = str(entry.get("message", "")),
+		file = str(entry.get("file", "")),
+		line = int(entry.get("line", 0)),
+		function = str(entry.get("function", "")),
+		type = str(entry.get("type", "")),
+	}])
 
 
 ## 游戏进程: 处理编辑器经调试线发来的工具调用消息。
@@ -267,6 +289,11 @@ func _on_debugger_capture(message: String, data: Array) -> bool:
 			if data.size() >= 2:
 				var req_id := int(data[0])
 				_pending[req_id] = data[1]
+		"error":
+			if not data.is_empty() and data[0] is Dictionary:
+				_game_error_digest.append(data[0])
+				if _game_error_digest.size() > GAME_ERROR_DIGEST_KEEP:
+					_game_error_digest.pop_front()
 	return true
 
 
@@ -274,6 +301,7 @@ func _on_debugger_capture(message: String, data: Array) -> bool:
 func _on_session_started(session_id: int) -> void:
 	LogTool.log("MCP", "游戏调试会话已建立(session=%d)" % session_id)
 	_game_ready = false
+	_game_error_digest.clear()
 	_mark_script_baseline("调试会话建立")
 	# 保留旧的未决失败结果不覆盖; 新会话开始, 旧请求已无意义
 	for req_id in _pending:
@@ -289,7 +317,8 @@ func _on_session_stopped(session_id: int) -> void:
 	_game_ready = false
 	_game_breaked = false
 	_game_started_at = 0
-	var msg := "游戏进程已停止(正常结束或崩溃), 所有未完成的运行时调用被取消。请先 game_control(action=start) 重新启动游戏后再试。"
+	## 崩溃/启动失败时进程已经没了, 能说明原因的只有游戏侧之前推上来的错误
+	var msg := _with_game_error("游戏进程已停止(正常结束或崩溃), 所有未完成的运行时调用被取消。请先 game_control(action=start) 重新启动游戏后再试。")
 	for req_id in _pending:
 		if _pending[req_id] == null:
 			_pending[req_id] = _err_game_stopped(msg, "调用 game_control(action=start) 重新启动游戏, 等待调试线就绪后重试")
@@ -299,7 +328,8 @@ func _on_session_stopped(session_id: int) -> void:
 func _on_session_breaked(_session_id: int, can_debug: bool) -> void:
 	_game_breaked = true
 	LogTool.log("MCP", "游戏已进入断点暂停(调试循环=%s)。运行时工具会立即返回明确错误, 可用 game_control(action=continue) 让游戏继续。" % str(can_debug))
-	var msg := "游戏被断点暂停(脚本错误/断点)。get_logs(process=game) 仍可用, 先查错误; 再game_control(action=continue)继续; 要修脚本则game_control(action=stop)后改代码重跑。"
+	## 断点后主循环停摆: 能用的只有错误发生当时就推过来的副本
+	var msg := _with_game_error("游戏被断点暂停(脚本错误/断点)。get_logs(process=game) 仍可用, 先查错误; 再game_control(action=continue)继续; 要修脚本则game_control(action=stop)后改代码重跑。")
 	for req_id in _pending:
 		if _pending[req_id] == null:
 			_pending[req_id] = _err_game_breaked(msg)
@@ -2051,7 +2081,13 @@ func _game_call_timeout_ms() -> int:
 ## 转发工具调用到游戏进程(经 EngineDebugger 调试线)。仅编辑器模式。
 func _call_runtime_proxy(tool_name: String, args: Dictionary) -> Dictionary:
 	if debugger_plugin == null or not debugger_plugin.has_active_session():
-		return _err_game_stopped("游戏未运行。请先使用 game_control(action=start) 启动游戏", "调用 game_control(action=start) 启动游戏, 等待调试线就绪后重试")
+		return _err_game_stopped(_with_game_error("游戏未运行。请先使用 game_control(action=start) 启动游戏"),
+			"调用 game_control(action=start) 启动游戏, 等待调试线就绪后重试")
+	if _game_breaked and tool_name == "get_logs" and not _game_error_digest.is_empty() \
+			and VariantTool.get_string(args, "kind", "log") == "error":
+		# 断点期间游戏主循环停摆, 请求式的 get_logs 也收不到响应: 直接给错误发生当时推上来的副本
+		return MCPResult.ok_json({count = _game_error_digest.size(), errors = _game_error_digest,
+			source = "game_digest"})
 	if _game_breaked and not _BREAK_SAFE_TOOLS.has(tool_name):
 		# 断点暂停: 依赖主循环的工具必然挂起; get_logs/clear_logs(process=game) 仍可用; 自动回查错误缓冲拼进响应。
 		var diagnose := await _fetch_recent_game_error(tool_name)
@@ -2061,6 +2097,10 @@ func _call_runtime_proxy(tool_name: String, args: Dictionary) -> Dictionary:
 		return _err_game_breaked("游戏被断点暂停, 工具 %s 需要主循环无法执行。\n错误缓冲无内容(可能是手动断点)。get_logs(process=game,kind=error)复核后 game_control(action=continue), 或 game_control(action=stop) 重启。" %
 			tool_name, "get_logs(process=game,kind=error)复核后game_control(action=continue); 或game_control(action=stop)修复重启")
 	if not _game_ready:
+		# 启动期脚本编译错误会让桥接永远不 ready, 那时只能靠编辑器侧的编译失败记录说明白
+		if _describe_game_error() != "":
+			return _err_validation(_with_game_error("游戏调试线未就绪(启动期大概率有脚本错误)。"),
+				"修正上方脚本错误后 game_control(action=stop), 再 game_control(action=start) 重启")
 		return _err_transient("游戏调试线尚未就绪", "等待游戏启动完成(可稍后重试, 或 game_control(action=start) 重启)")
 	var req_id := _next_req_id
 	_next_req_id += 1
@@ -2095,6 +2135,10 @@ func _call_runtime_proxy(tool_name: String, args: Dictionary) -> Dictionary:
 
 ## 超时诊断: 回查游戏错误缓冲, 返回最近一条脚本错误描述(无则返回 "")
 func _fetch_recent_game_error(tool_name: String) -> String:
+	# 断点暂停时游戏主循环停着, 下面的调试线请求根本不会被处理 —— 先用错误发生当时推上来的副本
+	var pushed := _describe_game_error()
+	if pushed != "":
+		return pushed
 	# 用内部 req_id 再发一次 get_logs(process=game, kind=error)(短超时), 避免二次长期挂起
 	var req_id := _next_req_id
 	_next_req_id += 1
@@ -2126,6 +2170,49 @@ func _fetch_recent_game_error(tool_name: String) -> String:
 	if _pending.has(req_id):
 		_pending.erase(req_id)
 	return ""
+
+
+## 给诊断文本补上"已捕获的错误"(没有则不追加)。断点/崩溃/未就绪三类提示共用同一份措辞。
+func _with_game_error(text: String) -> String:
+	var detail := _describe_game_error()
+	return text + ("\n已捕获的错误:\n" + detail if detail != "" else "")
+
+
+## 最近一条游戏进程错误的描述(没有则返回 ""): 优先用游戏实时推送的副本;
+## 启动期脚本编译错误来不及推(那时桥接还没 ready), 回落到编辑器侧"脚本仍编译不出来"的记录。
+func _describe_game_error() -> String:
+	if not _game_error_digest.is_empty():
+		var e: Dictionary = _game_error_digest[_game_error_digest.size() - 1]
+		var file := str(e.get("file", ""))
+		if file.is_empty():
+			return "  错误: " + str(e.get("message", "")).strip_edges()
+		return "  错误: %s\n  位置: %s:%s (函数: %s)" % [
+			str(e.get("message", "")).strip_edges(), file,
+			str(e.get("line", "?")), str(e.get("function", "?"))]
+	return _editor_side_compile_error()
+
+
+## 编辑器日志里最近一条"脚本当前仍编译不出来"的解析错误。
+## 以"现在还能不能编译"为准, 避免把早已修好的旧错误翻出来误导诊断。
+func _editor_side_compile_error() -> String:
+	if _logger == null:
+		return ""
+	var entries: Array = _logger.take_errors_since(0).get("entries", [])
+	for i in range(entries.size() - 1, -1, -1):
+		var e: Dictionary = entries[i]
+		var msg := str(e.get("message", ""))
+		if not (msg.begins_with("Parse Error") or msg.contains("Parser Error") or msg.contains("Failed to load script")):
+			continue
+		var path := str(e.get("file", ""))
+		if path.begins_with("res://") and _script_still_broken(path):
+			return "  错误: %s\n  位置: %s:%s" % [msg, path, str(e.get("line", "?"))]
+	return ""
+
+
+## 该脚本现在是否仍编译失败(坏脚本实例化不出来)
+func _script_still_broken(path: String) -> bool:
+	var res := ResourceLoader.load(path)
+	return res == null or (res is Script and not (res as Script).can_instantiate())
 
 
 ## 归一化来自游戏的 wire 结果, 保留结构化错误元数据供 AI 决策

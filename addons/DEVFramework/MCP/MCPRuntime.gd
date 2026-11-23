@@ -292,6 +292,8 @@ func _call_stop_game(_args: Dictionary) -> Dictionary:
 		return server._fail("当前没有运行中的游戏")
 	server._mod("MCPEditorEnv").stop_playing_scene()
 	server._game_ready = false
+	# 主动停止: 上一轮的错误副本不再代表当前状态, 别让下一次调用背上旧的"崩溃"提示
+	server._game_error_digest.clear()
 	return server._ok("已停止游戏")
 
 
