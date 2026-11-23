@@ -154,12 +154,15 @@ var _game_breaked := false
 ## 断点诊断就只能靠这份"错误发生当时"推过来的副本。
 var _game_error_digest: Array[Dictionary] = []
 ## 断点暂停时仍可安全执行的工具(只读缓冲, 不依赖游戏主循环):
-const _BREAK_SAFE_TOOLS := ["get_logs", "clear_logs"]
+## game_control 也必须在这里: 它正是"解暂停"的那把钥匙, 拦它等于把出口锁在里面。
+const _BREAK_SAFE_TOOLS := ["get_logs", "clear_logs", "game_control"]
 ## 游戏进程实时推上来的错误副本条数上限(见 MCPLogger.error_sink)
 const GAME_ERROR_DIGEST_KEEP := 20
 ## 游戏用例运行期间仍可用的工具: 用例自己就是长任务, 轮询进度/取消必须放行。
-## job_wait 只等主循环帧(用例本就让出帧), job_cancel 是纯同步操作 —— 都不会被用例拖死。
-const _GAME_TESTS_OPEN_TOOLS := ["run_tests", "job_wait", "job_cancel"]
+## job_wait 只等主循环帧(用例本就让出帧), job_cancel / job_list 是纯同步操作 —— 都不会被用例拖死。
+## 跑用例期间仍放行的工具。wait_for 必须在内: 用例本身经常"点了等结果", 而它纯轮询、
+## 不驱动输入, 拦掉它等于让用例在被它等的那一刻永远等不到。
+const _GAME_TESTS_OPEN_TOOLS := ["run_tests", "job_wait", "job_cancel", "job_list", "wait_for"]
 
 ## 逐条 JSON-RPC 请求日志的开关(现场可 set, 不必重启编辑器)。
 static var _log_rpc := false
@@ -773,6 +776,10 @@ func _session_facts_provider() -> Dictionary:
 		"mcp_running": is_running(),
 		"game_running": _has_game_session(),
 		"bridge_ready": _has_game_session() and _game_ready,
+		# 断点暂停是一种**必须能看见**的状态: 此时游戏在跑但主循环停摆, 所有依赖帧的工具都会挂起。
+		# 此前只有 game_control(action=continue) 能解, 却没有任何地方能看出"现在正暂停着" ——
+		# 调用方只能从"工具超时"倒推, 于是把超时当成卡死, 反复重试或直接重启。
+		"game_breaked": _has_game_session() and debugger_plugin != null and debugger_plugin.is_breaked(),
 	}
 	# 多实例身份随会话事实一起报: get_project_info 是 AI 判断"我现在操作的是哪个项目"的第一入口,
 	# 多开时它必须能看出差别 —— 否则两个项目的 basic 段除了 project_name 完全一样。
@@ -791,6 +798,9 @@ func _register_providers() -> void:
 	# 资源注册表与服务器说明都随每轮工具注册一起重建(与 _reset_tools 同节奏), 避免残留。
 	var docs: Variant = _mod("MCPResourceDocs")
 	docs.clear()
+	# 内置长文(工具描述里按 devframework://docs/... 引用)。必须在 clear 之后注册,
+	# 否则会被清掉; 放在 provider 之前, 让 provider 同 uri 时能覆盖内置版本。
+	docs.register_builtin()
 	_provider_instructions = []
 	var paths: Variant = ProjectSettings.get_setting(SETTING_PROVIDERS, PackedStringArray())
 	if not (paths is Array or paths is PackedStringArray):
@@ -847,7 +857,7 @@ func _register_project_tools() -> void:
 ## -- 运行游戏 --
 func _register_run_tools() -> void:
 	_add_tool("game_control",
-		"游戏运行控制。action=start: 以调试模式启动(等效F5, 自动建EngineDebugger调试线; scene缺省用主场景且支持 uid:// 形式; 游戏已在运行时自动停止旧实例后重启); action=stop: 停止运行中的游戏; action=continue: 解除因脚本错误/断点被暂停的游戏(等效Debugger面板Continue)—— 工具报 error_category=game_breaked 时用它恢复, 未暂停时调用是安全的空操作。【副作用】start/stop 会抢占并中断用户手头正在玩的那个游戏进程 —— 执行前先用 get_editor_activity 确认没有正在进行的调试, 执行后游戏不会自动恢复。",
+		"游戏运行控制。start=以调试模式启动(等效F5, 自动建 EngineDebugger 调试线, 缺省用主场景, 已在运行则先停旧实例); stop=停止; continue=解除因脚本错误/断点造成的暂停(报 error_category=game_breaked 时用它, 未暂停时是安全空操作)。**【副作用】start/stop 会抢占用户手头正在调试的游戏进程 —— 执行前先用 get_editor_activity 确认没有人在调试, 执行后游戏不会自动恢复。**",
 		{"type": "object", "properties": {
 			"action": {"type": "string", "enum": ["start", "stop", "continue"], "description": "启动/停止/解除断点暂停"},
 			"scene": {"type": "string", "description": "action=start 时可选: 要运行的场景 res:// 或 uid:// 路径"}
@@ -858,7 +868,7 @@ func _register_run_tools() -> void:
 ## -- 刷新工具注册表 --
 func _register_refresh_tool() -> void:
 	_add_tool("refresh_tools",
-		"手动重建 MCP 工具注册表(免重启编辑器), 响应含工具数、schema_fingerprint 与契约自检结果。**判定'是否真的生效': 跨次对比 schema_fingerprint** —— 指纹不变即工具表没变。【客户端不一定同步】本服务器是短连接 HTTP, 发不出 notifications/tools/list_changed(capabilities 已如实报 listChanged:false), 客户端缓存的旧 tools/list 不会自动刷新, 需在 IDE 侧重连 MCP 才更新; 在此之前, 以 tools/list 直查服务器为准, 勿把会话开始时的快照当权威。【重要: 适用范围】改动 **MCP 目录下任一域脚本**(MCPResourceTools / MCPSceneTools 等: 新增或修改工具、注解名单、入参构造、handler)时有效 —— 本工具会先把域脚本缓存换成磁盘版本, 再按路径动态注册, 免重启生效。**唯一例外是 MCPDevServer.gd 自身**: 运行实例的方法体不会被热替换, 必须重建服务器实例(禁用再启用 DEVFramework 插件, 或 restart_editor); 该情况下本工具仍返回成功但注册表原样不变 —— 正是靠 schema_fingerprint 不变来识别这种'假成功'。",
+		"重建 MCP 工具注册表并跑契约自检, 返回工具数与 schema_fingerprint(同值=注册表没变)。只对**域脚本**(MCP 目录下除 MCPDevServer.gd 以外的文件)的改动有效; 改了 MCPDevServer.gd 自身必须 restart_editor —— 那种情况下本工具仍报成功, 靠 fingerprint 不变识别。客户端不会自动刷新 tools/list(服务器发不出 list_changed), 需重连 MCP。详见 resources: devframework://docs/refresh_tools",
 		MCPToolSchema.no_arg(),
 		_call_refresh_tools)
 
@@ -868,7 +878,7 @@ func _register_refresh_tool() -> void:
 ## 于是"改了 gdextension/src 却没重编"变成静默失效(测试跑的是旧 dll, 全绿)。
 func _register_build_tool() -> void:
 	_add_tool("build_native",
-		"构建 GDExtension 原生扩展(gdextension/ → 产物部署到 addons/DEVFramework/Native)。**改动 gdextension/src/** 之后必须调用**, 否则游戏与测试跑的是旧库且不会报任何错。action=status: 只比较\"源码 vs 已编译库\"的时间戳, 零等待, 建议每次改完先查; action=build: 完整流程(CMake 配置 → 增量编译 → 规范命名部署), 是长任务 —— 超出等待窗口后返回 job_id, 用 job_wait 轮询到 running=false。restart=true 时构建完成后自动重载编辑器(Windows 上运行中的编辑器会锁住 dll, 部署会退化为改写 .gdextension 指向新产物, 必须重载才生效)。",
+		"构建 GDExtension 原生扩展(gdextension/ → addons/DEVFramework/Native)。**改过 gdextension/src/ 之后必须调用**, 否则游戏与测试跑的是旧库且不报任何错。status=只比时间戳(零等待, 改完先查); build=完整构建(CMake→增量编译→部署), 长任务, 超时返回 job_id 用 job_wait 轮询。restart=true 时构建完自动重载编辑器(Windows 上运行中的编辑器锁 dll, 需要重载才生效)。",
 		{"type": "object", "properties": {
 			"action": {"type": "string", "enum": ["status", "build"], "description": "status=检查是否需要重编(不编译); build=执行构建"},
 			"restart": {"type": "boolean", "description": "action=build 时: 完成后是否自动重载编辑器(默认 false, 由调用方决定何时重启)"},
@@ -904,18 +914,16 @@ func _register_instance_tools() -> void:
 		}, "required": ["project_path"]},
 		_call_launch_project)
 
+	# scope 让"只看退出记录"不必额外付日志与 Windows 事件日志的采集成本 —— 崩溃后最常见的
+	# 第一问是"它到底崩没崩", 不该为此等 PowerShell 拉 24 小时事件日志。
 	_add_tool("crash_report",
-		"崩溃取证: 汇总某项目最近的非正常退出记录(含存活时长)、editor 日志尾部、以及 Windows 事件日志里的**故障模块@偏移**。若连续两次的 模块+偏移 相同, 会直接标 same_fault=true —— 那说明上一个修复没生效。崩溃后先看它, 再决定改代码还是拉起。",
+		"崩溃取证: 汇总某项目最近的非正常退出记录(含存活时长)、editor 日志尾部、以及 Windows 事件日志里的**故障模块@偏移**。若连续两次的 模块+偏移 相同, 会直接标 same_fault=true —— 那说明上一个修复没生效。崩溃后先看它, 再决定改代码还是拉起。scope=exits 只取退出记录(最快), scope=full(默认) 才追加日志尾部与 Windows 事件日志。",
 		{"type": "object", "properties": {
 			"project_path": {"type": "string", "description": "项目根目录绝对路径; 省略则用当前实例所属项目"},
-			"log_lines": {"type": "integer", "description": "附带多少行 editor 日志尾部(默认 80)"},
+			"scope": {"type": "string", "enum": ["exits", "full"], "description": "exits=只返回实例退出记录(不读日志/事件日志, 最快); full=默认, 追加 editor 日志尾部与 Windows 故障模块@偏移"},
+			"log_lines": {"type": "integer", "description": "scope=full 时附带多少行 editor 日志尾部(默认 80)"},
 		}},
 		_call_crash_report)
-
-	_add_tool("project_exits",
-		"最近有哪些实例离开过、是否正常退出(clean=false 表示心跳超时=崩溃/强杀)。**判断'项目是不是崩了'就看这里**: 正常关闭会先注销(clean=true), 崩溃不会。",
-		MCPToolSchema.no_arg(),
-		_call_project_exits)
 
 
 ## launch_project: 拉起一个项目的编辑器(崩溃恢复用)。
@@ -977,17 +985,33 @@ func _call_launch_project(args: Dictionary) -> Dictionary:
 
 ## crash_report: 崩溃取证 —— 退出记录 + 日志尾部 + Windows 事件日志里的 模块@偏移。
 ## "同模块同偏移连续出现"是最有价值的信号: 说明上一个修复没生效(我们自己踩过一次)。
+## scope=exits 只列退出记录, full 才去读日志与事件日志 ——
+## 后两步要起 powershell 查 Get-WinEvent, 在"只想确认它是不是崩了"的场景里纯属浪费。
 func _call_crash_report(args: Dictionary) -> Dictionary:
 	var proj := String(args.get("project_path", "")).strip_edges()
 	if proj == "":
 		proj = ProjectSettings.globalize_path("res://").simplify_path()
 	proj = proj.simplify_path()
+	var scope := VariantTool.get_string(args, "scope", "full").strip_edges()
+	if scope.is_empty():
+		scope = "full"
+	if scope != "exits" and scope != "full":
+		return MCPResult.err_validation("未知的 scope: '%s'" % scope, "scope 只能是 exits 或 full")
 	var n_lines := maxi(10, int(args.get("log_lines", 80)))
 
 	var mine: Array = []
 	for e in _hub.exits_snapshot(20):
 		if String(e.get("project_path", "")).simplify_path() == proj:
 			mine.append(e)
+	if scope == "exits":
+		# 与 full 共用 exits/crashed_count 两个键, 只省掉昂贵部分 —— 调用方不必按 scope 改解析逻辑。
+		return MCPResult.ok_json({
+			"project_path": proj,
+			"scope": "exits",
+			"exits": mine,
+			"crashed_count": mine.size(),
+			"hint": "clean=false 的条目说明该实例没走正常注销(心跳超时被剔除) → 崩溃/被强杀。要日志尾部与 Windows 故障模块@偏移, 用 scope=full; 拉起用 launch_project。",
+		})
 	var evr: Dictionary = windows_crash_events_ex(5)
 	var events: Array = evr.get("events", [])
 	var same := false
@@ -1132,20 +1156,6 @@ static func _parse_crash_lines(all: String) -> Array:
 	return events
 
 
-## project_exits: 最近的实例离开记录(崩溃 vs 正常关闭)。
-func _call_project_exits(_args: Dictionary) -> Dictionary:
-	var exits: Array = _hub.exits_snapshot(8)
-	var crashed := 0
-	for e in exits:
-		if not bool(e.get("clean", true)):
-			crashed += 1
-	return MCPResult.ok_json({
-		"exits": exits,
-		"crashed_count": crashed,
-		"hint": "clean=false 的条目说明该实例没走正常注销(心跳超时被剔除) → 崩溃/被强杀。用 launch_project 拉起后, 可通过 previous_exit 看到这次判断。",
-	})
-
-
 ## ======= MCP 协议处理 =======
 
 func _on_request(method: String, path: String, query: String, headers: Dictionary, body: PackedByteArray, stream) -> void:
@@ -1201,6 +1211,10 @@ func _handle_jsonrpc(req: Dictionary, proto: String = PROTOCOL_VERSION) -> Dicti
 	var req_id: Variant = req.get("id", null)
 	if req_id == null:
 		return {}
+	# JSON 数字经 JSON.parse_string 一律变成 float, 原样回包就成了 {"id":777.0} —— 严格客户端
+	# (按整数 id 配对响应)会认不出来。整数值的 float 收回 int; 非整数 id 按规范原样回。
+	if req_id is float and float(int(req_id)) == float(req_id):
+		req_id = int(req_id)
 
 	var method: String = req.get("method", "")
 	match method:
@@ -1673,6 +1687,14 @@ func _call_job_cancel_routed(args: Dictionary) -> Dictionary:
 	return await _runtime().call_job_cancel_routed(args)
 
 
+func _call_job_list_local(args: Dictionary) -> Dictionary:
+	return await _runtime().call_job_list_local(args)
+
+
+func _call_job_list_routed(args: Dictionary) -> Dictionary:
+	return await _runtime().call_job_list_routed(args)
+
+
 ## 游戏运行控制（start / stop / continue）：实现见 MCPRuntime。
 func _call_game_control(args: Dictionary) -> Dictionary:
 	return await _runtime().call_game_control(args)
@@ -1727,24 +1749,51 @@ func _register_game_play_tools() -> void:
 	_mod("MCPDevTools").set_eval_ctx_provider(_eval_ctx_provider)
 	# 排在 simulate_click 之前注册: 使用顺序就是"先查后点", 工具表按此顺序排能让 AI
 	_register_game_play_tool("get_interactables",
-		"列出当前画面里可交互的东西 —— **2D 控件(按钮/输入框/滑动条/标签)与 3D 物体(按钮/道具等)** —— 每条带一个短引用 ref(如 e3)。**先查后点**: 拿到 ref 后用 simulate_click(ref=e3) 直接点击, 无需自己换算坐标。2D 元素给两套矩形(viewport_rect 视口坐标 / window_rect 窗口坐标); space=3d 的元素刻意不给矩形(3D 投影点会随相机漂移), 点击由工具在物体自身上激活。用 space=3d 可单独取 3D 子集(数量可能比 UI 还多, 混在默认清单里容易被 max_nodes 截掉)。filter=text 只取带文字的(读数值/提示语), class_filter=Button 按类型筛(对 3D 元素也可按脚本名筛, 如 ButtonView3D), text_contains 按文案筛。ref 由服务端解析成**实时**位置, 界面在查询后有动画或位移也不会点偏; 若报未知 ref 说明界面已变, 重新查一次即可。【只读】不改任何游戏状态。",
+		"列出当前画面可交互的 2D 控件与 3D 物体, 每条带短引用 ref(如 e3)。**先查后点**: 拿到 ref 后交给 simulate_click(ref=e3), 服务端解析成实时位置, 界面动了也不会点偏。2D 给两套矩形, 3D 刻意不给坐标。【只读】。详见 resources: devframework://docs/simulate_ui",
 		MCPUITools.schema(),
 		MCPUITools._handle_get_interactables)
 
 	_register_game_play_tool("simulate_click",
-		"在游戏窗口模拟鼠标左键点击(按下+释放)。**推荐先用 get_interactables 拿到元素 ref, 再用 ref=e3 点击** —— 由服务端解析成实时位置, 不必自己换算坐标。ref 指向 3D 物体(space=3d)时改为在该物体自身上激活一次点击、**不注入鼠标事件**(相机可动, 投影坐标必点偏)。ref 指向子视口元素(space=subviewport, 渲染在 SubViewport 里的 UI)时事件直接 push_input 进那个子视口 —— 那块 UI 不在窗口 GUI 层, 只用 x/y 走主窗口**永远点不到**; 此时别怀疑输入被吞, 拿 ref 点即可(x/y 无法指定子视口)。也可直接传 x/y(默认窗口坐标, 传 space=viewport 则按视口坐标换算)。【副作用】注入的是**真实输入事件**, 会打进用户此刻正在玩的那个游戏窗口并走完整业务链路 —— 重复调用会重复触发业务逻辑, 故不可自动重试; 游戏未在运行时调用会失败。",
+		"在游戏窗口模拟鼠标左键点击(按下+释放)。**推荐先 get_interactables 拿 ref, 再 ref=e3**: 服务端解析实时位置, 不必自己换算坐标(3D 物体在物体自身上激活、子视口元素直接 push_input, 这两类用 x/y 永远点不到)。也可直接传 x/y。【副作用】真实输入事件, 重复调用重复触发, 不可自动重试; 游戏未运行会失败。详见 resources: devframework://docs/simulate_ui",
 		MCPToolSchema.simulate_click(),
 		_call_simulate_click)
 
 	_register_game_play_tool("simulate_drag",
-		"在游戏窗口模拟拖拽(按下→移动→释放), 测试拖拽交互。【副作用】注入的是**真实输入事件**, 会打进用户此刻正在玩的那个游戏窗口并走完整业务链路, 重复调用会重复触发(如重复拾取/重复移动), 故不可自动重试; 游戏未在运行时调用会失败。",
+		"在游戏窗口模拟拖拽(按下→移动→释放)。坐标是**窗口坐标**。【副作用】真实输入事件, 重复调用会重复触发(重复拾取/重复移动), 不可自动重试; 游戏未运行会失败。",
 		MCPToolSchema.simulate_drag(),
 		_call_simulate_drag)
 
 	_register_game_play_tool("simulate_key",
-		"在游戏窗口模拟键盘按键(按下/释放), 测试键盘交互。【副作用】注入的是**真实输入事件**, 会打进用户此刻正在玩的那个游戏窗口并走完整业务链路, 重复调用会重复触发(重复跳两次/重复扣血), 故不可自动重试; 游戏未在运行时调用会失败。",
+		"在游戏窗口模拟键盘按键(按下/释放)。只认内置键名表(space/enter/escape/tab/方向键/修饰键/单字符)。【副作用】真实输入事件, 重复调用会重复触发(重复跳两次/重复扣血), 不可自动重试; 游戏未运行会失败。中文等文本输入请用 simulate_text。",
 		MCPToolSchema.simulate_key(),
 		_call_simulate_key)
+
+	# 文本与滚轮此前是缺口: 逐字符 simulate_key 处理不了 IME/中文, 而列表滚动只认 WHEEL_* 事件。
+	_register_game_play_tool("simulate_text",
+		"往输入框(LineEdit/TextEdit)里输入文本, 支持中文等任意字符。**不是**逐字符注入按键(直接调 insert_text_at_caret), 所以验证的是'输入之后的业务链路'(校验/提交/回填), 不是输入法本身。ref 优先, 也可给 path; replace=true(默认)先清空, submit=true 再发一次回车(触发 text_submitted)。【副作用】驱动真实业务逻辑, 重复调用会重复提交。",
+		MCPToolSchema.simulate_text(),
+		_call_simulate_text)
+
+	_register_game_play_tool("simulate_scroll",
+		"在游戏窗口发送滚轮事件(WHEEL_UP/DOWN), 用于滚动列表/滚动容器(这类控件不响应键盘翻页)。amount 正数=向下、负数=向上; ref 指定滚到哪个控件上, 省略则用 x/y 或视口中心。【副作用】真实输入事件, 重复调用会重复滚动。",
+		MCPToolSchema.simulate_scroll(),
+		_call_simulate_scroll)
+
+	# 等待是 simulate_* 缺失的另一半: 点了按钮之后"等动画播完/等加载结束"此前只能 sleep(写死时长,
+	# 短了假失败)或反复调 get_interactables(让调用方自己实现轮询)。这中间超时与"条件写错"长得
+	# 一模一样, 于是被当卡死处理。这里把轮询收进服务器, 并把"最后一次观察到的值"带回去。
+	_register_game_play_tool("wait_for",
+		"等待游戏里的条件成立再返回(内部轮询, 成立即返回, 超时返回 isError 并附最后一次观察到的值)。condition: text_visible=画面上出现含该文本的可见控件; text_gone=该文本消失; node_exists/node_gone=按节点路径(或名字); value=某节点属性等于期望值; time=单纯等 timeout_ms 毫秒。点击/输入之后等动画或加载结束用它, 别用固定 sleep。【只读】不驱动任何输入。",
+		{"type": "object", "properties": {
+			"condition": {"type": "string", "enum": ["text_visible", "text_gone", "node_exists", "node_gone", "value", "time"], "description": "等待的条件种类"},
+			"text": {"type": "string", "description": "condition=text_visible/text_gone 时: 要出现/消失的可见文本子串(忽略大小写)"},
+			"path": {"type": "string", "description": "condition=node_exists/node_gone/value 时: 节点路径(绝对 /root/... 或相对场景根)或节点名字"},
+			"property": {"type": "string", "description": "condition=value 时: 要比对的属性名"},
+			"expected": {"description": "condition=value 时: 期望值(数字/字符串/布尔; 字符串与属性值按文本比较)"},
+			"timeout_ms": {"type": "integer", "description": "最长等待毫秒数, 默认 5000, 上限 60000"},
+			"interval_ms": {"type": "integer", "description": "轮询间隔毫秒, 默认 100, 最小 30"},
+		}, "required": ["condition"]},
+		_call_wait_for)
 
 	# take_screenshot 的 name/desc/schema 由 MCPScreenshotTools.spec() 单副本提供, 这里不再各写
 	var _shot_spec: Variant = _mod("MCPScreenshotTools").spec()
@@ -1767,7 +1816,7 @@ func _register_game_play_tools() -> void:
 		"required": ["process"],
 	}
 	_register_game_play_tool("eval_code",
-		"执行一段 GDScript(方法体内容, 缩进由服务器处理)。process 必填: editor=在编辑器进程执行(可读写编辑态, 新鲜度闸门 + 热重载); game=在游戏进程执行(可读运行状态/改变量/触发逻辑, 需游戏运行; 导出运行时=本进程)。【副作用】执行任意代码, 不可自动重试; 纯查询优先用专用只读工具(如 get_interactables / get_scene_tree / get_logs)。可 return 返回值; 支持 await(timeout_ms 默认 8000/上限 15000)。get_node 相对路径基于 eval 实例, 访问游戏节点用 /root/... 或 get_tree().current_scene.get_node(...)。【新鲜度闸门(process=game)】引擎不热重载游戏进程: 改过 .gd 后执行只会得到旧代码, 工具会先自动热重载, 再对(①已有既存实例的脚本 ②全局类)拒绝并给出 error_category=stale_code; 此时需 game_control(action=start) 重启再验。",
+		"执行一段 GDScript(方法体, 缩进由服务器处理; 可 return, 支持 await)。process 必填: editor=编辑器进程; game=游戏进程(需游戏在跑)。**【副作用】执行任意代码, 不可自动重试; 纯观测优先用专用只读工具。** 节点路径用 /root/...。改过 .gd 后 game 侧可能报 stale_code。详见 resources: devframework://docs/eval_code",
 		eval_schema,
 		_call_eval_code_local,
 		_call_eval_code_routed)
@@ -1782,7 +1831,7 @@ func _register_game_play_tools() -> void:
 		"required": ["process", "script"],
 	}
 	_register_game_play_tool("run_tests",
-		"运行**指定**的项目单元测试(Scripts/Test/ 下, extends TestCase, test_ 开头方法自动发现; 支持协程用例)。**script 必填**: 传脚本路径子串(或 'all' 全量, 不推荐)按文件跑; 或**直接传内联 GDScript 源码**(含换行/以 'extends ' 开头即视为源码, `extends TestCase` + test_ 方法, 不落盘, 临时验证用)。process 必填: editor=编辑器进程(只跑进程无关用例); game=游戏进程(跑 needs_game_process() 用例; 无运行中的游戏时自动启动一个); both=先 editor 段再 game 段并合并(**同步阻塞**, 跑全量用)。**长任务语义**: wait_sec 默认 5 秒（0=立即返回）；窗口内跑完直接给完整汇总，否则返回 `{job_id, running:true, ...}`，用 **`job_wait(job_id)`** 继续等（不会重跑）。建议长测试传 wait_sec=0~5，避免 MCP 客户端 30s 超时把 job_id 丢掉。测试整体硬超时 10 分钟。",
+		"运行单元测试(Scripts/Test/ 下 extends TestCase, test_ 方法自动发现)。script 必填: 脚本名子串 / 'all'=全量 / 内联 GDScript 源码(不落盘)。process 必填: editor|game|both。**长任务**: wait_sec 默认 5, 超窗口返回 {job_id, running:true}, 用 job_wait 继续等; 建议 wait_sec=0~5 避免客户端 30s 超时丢 job_id。详见 resources: devframework://docs/run_tests",
 		tests_schema,
 		_call_run_tests_local,
 		_call_run_tests_routed)
@@ -1791,16 +1840,22 @@ func _register_game_play_tools() -> void:
 	var job_wait_schema := {
 		"type": "object",
 		"properties": {
-			"job_id": {"type": "string", "description": "长任务返回体里的 job_id。"},
-			"job_id_note": {"type": "string", "description": "等待时长固定 28 秒(不提供参数): 超过 MCP 客户端 30s 上限的等待一定会被客户端掐断, 没有意义。"},
+			"job_id": {"type": "string", "description": "长任务返回体里的 job_id。省略=最近启动的那个 job(JobTool 会回落 _active/最近的 job)。"},
+			# 等待时长是固定的(28s)且不可指定 —— 原先这里挂了一个同名"说明"参数, 它不进任何逻辑,
+			# 只会诱导模型去填一个毫无作用的入参。
 		},
-		"required": ["job_id"],
 	}
 	_register_game_play_tool("job_wait",
-		"等待长任务结束(**通用**: 任何返回 `job_id + running:true` 的接口都适用, 且不会重跑任务)。每次调用固定等 28 秒(不超过 MCP 客户端 30s 上限, 调用方无需也不能指定): 完成 → 返回完整结果(status=done/failed); 未完成 → 返回同一 job_id 的进度快照(progress/current/elapsed_ms), 继续调它即可。job 在哪个进程不用管, 工具会自动找到(先本地, 再转游戏进程)。典型用法: 拿到 job_id 后循环 `job_wait(job_id)` 直到 `running == false`。",
+		"等待长任务结束(**通用**: 任何返回 job_id + running:true 的接口都适用, 不会重跑任务)。每次固定等 28 秒(不可指定): 完成 → 完整结果; 未完成 → 进度快照, 继续调它即可。job 在哪个进程不用管, 工具会自动找(先本地再转游戏进程)。循环调用直到 running == false。job_id 可省略(等价于问最近那个 job); 不知道 id 时用 job_list 先看。",
 		job_wait_schema,
 		_call_job_wait_local,
 		_call_job_wait_routed)
+
+	_register_game_play_tool("job_list",
+		"列出本进程记得的 job(最近的在前, 摘要级: 状态/进度/耗时/ETA/是否已请求取消)。用于「不知道 job_id 但想知道那个任务怎样了」—— 例如上一次响应被客户端超时丢掉了。要完整结果(含 result)仍用 job_wait(job_id)。",
+		MCPToolSchema.no_arg(),
+		_call_job_list_local,
+		_call_job_list_routed)
 
 	var job_cancel_schema := {
 		"type": "object",
@@ -1819,7 +1874,7 @@ func _register_game_play_tools() -> void:
 	var perf_schema := {
 		"type": "object",
 		"properties": {
-			"process": {"type": "string", "enum": ["editor", "game"], "description": "在哪个进程采样: editor=编辑器进程; game=游戏进程(需游戏运行; 导出运行时=本进程)。必填。"},
+			"process": MCPToolSchema.process_arg("在哪个进程采样 —— **测帧率必须选 game**"),
 			"action": {"type": "string", "enum": ["snapshot", "fps", "history", "reset"], "description": "snapshot=当前即时指标(零等待); fps=采样 N 帧算 p50/p95/卡顿; history=历史耗时基线; reset=清空基线重新积累。"},
 			"frames": {"type": "integer", "description": "action=fps 时采样的帧数, 默认 120(约 2 秒 @60fps), 上限 1200。"},
 			"warmup": {"type": "integer", "description": "action=fps 时先丢弃的预热帧数, 默认 30 —— 首帧的着色器编译/资源加载会让结果高出量级。"},
@@ -1828,14 +1883,16 @@ func _register_game_play_tools() -> void:
 		"required": ["process", "action"],
 	}
 	_register_game_play_tool("perf",
-		"性能采样。action=snapshot: 即时 fps/帧时间/process/physics/绘制调用/节点数/内存(零等待, 适合频繁轮询); action=fps: 等待并采样 N 帧, 返回 avg/p50/p95/p99、**fps_1pct_low(最差 1% 帧的等效帧率, 判断手感的标准口径)**、卡顿次数(@stutter_ms 阈值)、CV(>10% 说明测量本身不可信) 与 env(GPU/CPU/max_fps/vsync/窗口/聚焦 —— 这些不同则数字互不可比); action=history: 读历史耗时基线(测试用例/长任务各自一条 EMA, 可用来判断'这次是不是变慢了'); action=reset: 清空基线。process 必填: 测游戏帧率必须 process=game(编辑器进程会被空闲节流压到 10fps)。**逻辑微基准不要用本工具**: 用 run_tests 传内联 TestCase(`await assert_fps_at_least(...)` / `assert_under_ms(...)`), 那里的阈值能进 CI。",
+		"性能采样。action=snapshot=即时指标(零等待); fps=采样 N 帧, 返回 avg/p50/p95/p99、fps_1pct_low(判断手感的标准口径)、卡顿次数、CV(>10% 说明测量不可信) 与 env(环境不同则数字互不可比); history=历史耗时基线; reset=清空基线。process 必填, **测帧率必须 game**(编辑器进程被空闲节流压到 10fps)。**逻辑微基准别用本工具**, 用 run_tests 传内联 TestCase(assert_fps_at_least/assert_under_ms), 阈值能进 CI。",
 		perf_schema,
 		_call_perf_local,
 		_call_perf_routed)
 
 	# 日志读/清: 统一入口, process 必填(editor|game)。编辑器进程: editor=本进程缓冲, game=转发;
+	# 两个日志工具的 process 参数走同一个工厂(MCPToolSchema.process_arg), 不再各手写一份 enum ——
+	# 手写的那份此前已经漂移过(clear_logs 的 process 描述与 get_logs 不一致)。
 	var logs_schema := MCPToolSchema.logs("200(log)/100(warning|error)", "条目", {
-		"process": {"type": "string", "enum": ["editor", "game"], "description": "读哪个进程的缓冲: editor=编辑器进程; game=游戏进程(需游戏运行; 导出运行时=本进程)。必填。"},
+		"process": MCPToolSchema.process_arg("读哪个进程的缓冲"),
 		"kind": {"type": "string", "enum": ["log", "warning", "error"], "description": "获取类别, 默认 log"},
 	})
 	logs_schema["required"] = ["process"]
@@ -1845,14 +1902,8 @@ func _register_game_play_tools() -> void:
 		_call_get_logs_local,
 		_call_get_logs_routed)
 
-	var clear_schema := {
-		"type": "object",
-		"properties": {
-			"process": {"type": "string", "enum": ["editor", "game"], "description": "清哪个进程的缓冲: editor=编辑器进程; game=游戏进程(需游戏运行; 导出运行时=本进程)。必填。"},
-			"scope": {"type": "string", "enum": ["all", "logs", "errors"], "description": "清理范围, 默认 all"},
-		},
-		"required": ["process"],
-	}
+	# schema 由工厂生成: 原先这里手写了一份, 与 get_logs 共享的参数各写各的, 已经出现过描述不一致。
+	var clear_schema := MCPToolSchema.clear_logs()
 	_register_game_play_tool("clear_logs",
 		"清空指定进程的日志/错误缓冲(调试复位)。process 必填: editor/game。scope=all 全清; logs 只清 print 日志; errors 只清错误与警告。",
 		clear_schema,
@@ -2022,6 +2073,266 @@ func _call_simulate_key(args: Dictionary) -> Dictionary:
 	})
 
 
+## 运行时: 在输入控件里输入文本。
+## 走控件自己的编辑 API(insert_text_at_caret)而不是逐字符注入 InputEventKey ——
+## 逐字符要自己处理 IME、修饰键、选区与光标, 而且中文根本注入不进去。
+## 代价: 绕过了"按键 → 控件"那一段, 所以它验证的是"输入之后的业务链路", 不是输入法本身。
+## wait_for 的条件种类(与注册处的 enum 必须同一份, 否则文字说明与执行会漂)
+const _WAIT_CONDITIONS := ["text_visible", "text_gone", "node_exists", "node_gone", "value", "time"]
+
+
+func _call_simulate_text(args: Dictionary) -> Dictionary:
+	var text := VariantTool.get_string(args, "text")
+	if text.is_empty():
+		return _fail("text 不能为空; 要清空控件请用 simulate_text(text='', replace=true) 之外的方式")
+	var node := _resolve_sim_target(args, "输入控件")
+	if node.has("error"):
+		return _fail(str(node["error"]))
+	var ctrl: Variant = node["node"]
+	if not (ctrl is LineEdit) and not (ctrl is TextEdit):
+		return _fail("目标 %s [%s] 不是输入控件(只支持 LineEdit / TextEdit); 先用 get_interactables 找到输入框" % [str(ctrl.name), ctrl.get_class()])
+	if not ctrl.is_visible_in_tree():
+		return _fail("目标 %s 当前不可见" % str(ctrl.name))
+	ctrl.grab_focus()
+	if VariantTool.get_bool(args, "replace", true):
+		ctrl.clear()
+	ctrl.insert_text_at_caret(text)
+	var submit := VariantTool.get_bool(args, "submit", false)
+	if submit:
+		if ctrl is LineEdit:
+			# 与真人回车同路: LineEdit 的 text_submitted 只在收到回车时发。
+			(ctrl as LineEdit).text_submitted.emit((ctrl as LineEdit).text)
+		else:
+			ctrl.insert_text_at_caret("\n")
+	return _ok_json({
+		"path": str(ctrl.get_path()),
+		"class": ctrl.get_class(),
+		"text": ctrl.text if ctrl is LineEdit else ctrl.get_parsed_text(),
+		"submitted": submit,
+		"message": "已向 %s 输入 %d 个字符%s" % [str(ctrl.name), text.length(), ("并提交" if submit else "")],
+	})
+
+
+## 运行时: 滚轮。列表/滚动容器只认 WHEEL_UP/WHEEL_DOWN, 键盘翻页并不等价。
+func _call_simulate_scroll(args: Dictionary) -> Dictionary:
+	var amount := VariantTool.get_int(args, "amount", 1)
+	if amount == 0:
+		return _fail("amount 不能为 0(正数=向下, 负数=向上)")
+	var pos := Vector2.ZERO
+	var located := ""
+	var sub_vp: SubViewport = null
+	var ref := VariantTool.get_string(args, "ref").strip_edges()
+	if not ref.is_empty():
+		var r := MCPUITools.resolve_ref(ref)
+		if not bool(r.get("ok")):
+			return _fail(str(r.get("error", "ref 解析失败")))
+		var sp := str(r.get("space", "window"))
+		if sp == "3d":
+			return _fail("ref=%s 指向 3D 物体, 滚轮只对 2D 控件/视口有意义" % ref)
+		pos = r["pos"]
+		located = "ref=%s" % ref
+		var svp := str(r.get("sub_viewport_path", ""))
+		if not svp.is_empty():
+			var loop := Engine.get_main_loop() as SceneTree
+			sub_vp = loop.root.get_node_or_null(NodePath(svp)) as SubViewport
+			if sub_vp == null:
+				return _fail("ref=%s 所在的子视口已不存在(界面已变化), 请重新调用 get_interactables。" % ref)
+	else:
+		if args.has("x") and args.has("y"):
+			pos = Vector2(VariantTool.get_int(args, "x"), VariantTool.get_int(args, "y"))
+			located = "x/y(窗口坐标)"
+		else:
+			# 不给坐标就滚视口中心: 全屏列表这类场景里, 中心点几乎总在可滚区域内。
+			var vp_node := get_viewport()
+			if vp_node == null:
+				return _fail("无法获取游戏视口")
+			pos = vp_node.get_visible_rect().size * 0.5
+			located = "视口中心(未给 ref 与 x/y)"
+	var dir := MOUSE_BUTTON_WHEEL_DOWN if amount > 0 else MOUSE_BUTTON_WHEEL_UP
+	var steps := absi(amount)
+	for i in steps:
+		var ev := InputEventMouseButton.new()
+		ev.button_index = dir
+		ev.pressed = true
+		ev.position = pos
+		ev.global_position = pos
+		ev.factor = 1.0
+		if sub_vp != null:
+			sub_vp.push_input(ev)
+		else:
+			Input.parse_input_event(ev)
+		var rel := InputEventMouseButton.new()
+		rel.button_index = dir
+		rel.pressed = false
+		rel.position = pos
+		rel.global_position = pos
+		rel.factor = 1.0
+		if sub_vp != null:
+			sub_vp.push_input(rel)
+		else:
+			Input.parse_input_event(rel)
+	return _ok_json({
+		"amount": amount,
+		"direction": "down" if amount > 0 else "up",
+		"located_by": located,
+		"position": {"x": pos.x, "y": pos.y},
+		"message": "已向%s投递 %d 次滚轮%s事件" % [("子视口 " + str(sub_vp.get_path()) + " ") if sub_vp != null else " ", steps, "向下" if amount > 0 else "向上"],
+	})
+
+
+## wait_for: 把"等条件成立"的轮询收进服务器。
+## 为什么必须有它: 点击/输入之后等动画或加载结束, 此前只能写死 sleep(短了假失败、长了白等),
+## 或反复调 get_interactables 让调用方自己轮询。而"超时"与"条件本身写错"在响应里长得一模一样,
+## 于是被当成卡死处理。这里把最后一次观察到的实际值一并带回去, 两者就能当场区分。
+func _call_wait_for(args: Dictionary) -> Dictionary:
+	var c := VariantTool.get_string(args, "condition", "").strip_edges()
+	if not c in _WAIT_CONDITIONS:
+		return _err_validation("condition 无效: '%s'" % c, "可选: %s" % " / ".join(_WAIT_CONDITIONS))
+	var timeout_ms: int = clampi(VariantTool.get_int(args, "timeout_ms", 5000), 0, 60000)
+	var interval_ms: int = clampi(VariantTool.get_int(args, "interval_ms", 100), 30, 2000)
+	var text := VariantTool.get_string(args, "text", "")
+	var path := VariantTool.get_string(args, "path", "")
+	var property := VariantTool.get_string(args, "property", "")
+	var expected: Variant = args.get("expected", null)
+	# 前置校验: 缺参立刻报错而不是等满 timeout。一个少传 text 的调用若白等 60 秒, 调用方从
+	# "超时"里根本读不出是自己写错了 —— 这正是本工具要消灭的那种歧义。
+	if c in ["text_visible", "text_gone"] and text.is_empty():
+		return _err_validation("condition=%s 需要 text" % c, "传 text(要出现/消失的可见文本子串)")
+	if c in ["node_exists", "node_gone", "value"] and path.is_empty():
+		return _err_validation("condition=%s 需要 path" % c, "传节点路径(/root/... 或相对场景根)或节点名字")
+	if c == "value" and property.is_empty():
+		return _err_validation("condition=value 需要 property", "传要比对的属性名, 如 text / visible / position")
+	if c == "time":
+		if timeout_ms > 0:
+			await get_tree().create_timer(float(timeout_ms) / 1000.0).timeout
+		return _ok_json({"condition": c, "met": true, "probes": 0, "waited_ms": timeout_ms, "observed": null})
+	var started := Time.get_ticks_msec()
+	var deadline := started + timeout_ms
+	var probes := 0
+	var last := ""
+	while true:
+		probes += 1
+		var seen := _probe_wait_condition(c, text, path, property, expected)
+		last = str(seen.get("observed", ""))
+		if bool(seen.get("ok", false)):
+			return _ok_json({"condition": c, "met": true, "probes": probes,
+				"waited_ms": Time.get_ticks_msec() - started, "observed": seen.get("observed", null)})
+		if Time.get_ticks_msec() >= deadline:
+			break
+		await get_tree().create_timer(float(interval_ms) / 1000.0).timeout
+	return _err("等待条件超时(%d ms, 轮询 %d 次): %s。最后一次观察值: %s" % [timeout_ms, probes, c, last],
+		MCPResult.CAT_TRANSIENT, true,
+		"先确认条件本身写对(text/path/property 是否指向真实存在的目标 —— 观察值已给出实际是什么); 条件无误则调大 timeout_ms")
+
+
+## wait_for 的单次探测。observed 一律回"当前实际是什么", 用来区分"没等到"与"写错了"。
+func _probe_wait_condition(c: String, text: String, path: String, property: String, expected: Variant) -> Dictionary:
+	var loop := get_tree()
+	if loop == null or loop.root == null:
+		return {"ok": false, "observed": "场景树不可用"}
+	match c:
+		"text_visible", "text_gone":
+			var needle := text.to_lower()
+			var found := ""
+			var stack: Array = [loop.root]
+			while not stack.is_empty():
+				var n: Node = stack.pop_back()
+				var t := ""
+				if n is Label:
+					t = (n as Label).text
+				elif n is BaseButton:
+					t = (n as BaseButton).text
+				elif n is LineEdit:
+					t = (n as LineEdit).text
+				elif n is TextEdit:
+					t = (n as TextEdit).text
+				if not t.is_empty() and t.to_lower().contains(needle) and (n as Control).is_visible_in_tree():
+					found = t
+					break
+				for ch in n.get_children():
+					stack.append(ch)
+			var hit := not found.is_empty()
+			return {"ok": hit if c == "text_visible" else not hit,
+				"observed": ("找到: " + found) if hit else "画面上没有包含该文本的可见控件"}
+		"node_exists", "node_gone":
+			var node := _find_wait_node(loop, path)
+			var exists := node != null
+			return {"ok": exists if c == "node_exists" else not exists,
+				"observed": ("存在: " + str(node.get_path())) if exists else "找不到该节点"}
+		"value":
+			var node2 := _find_wait_node(loop, path)
+			if node2 == null:
+				return {"ok": false, "observed": "找不到该节点: %s" % path}
+			if not _node_has_prop(node2, property):
+				return {"ok": false, "observed": "节点 %s 没有属性 %s" % [str(node2.name), property]}
+			var actual: Variant = node2.get(property)
+			return {"ok": _value_matches(actual, expected), "observed": str(actual)}
+	return {"ok": false, "observed": "未知的 condition"}
+
+
+## 按路径找节点: 先当绝对/相对路径, 再当名字在全树里找(名字是调用方最常用的写法)。
+func _find_wait_node(loop: SceneTree, path: String) -> Node:
+	var n := loop.root.get_node_or_null(NodePath(path))
+	if n == null and loop.current_scene != null:
+		n = loop.current_scene.get_node_or_null(NodePath(path))
+		if n == null:
+			# 也接受「场景根/子路径」: 场景根未必直接挂在 /root 下(编辑器里就在 @EditorNode 子树里),
+			# 而 get_node_info 给的正是相对场景根的路径 —— 两边写法定要能互通, 否则"查到的路径"喂不回来。
+			var root_name := str(loop.current_scene.name)
+			if path.begins_with(root_name + "/"):
+				n = loop.current_scene.get_node_or_null(NodePath(path.substr(root_name.length() + 1)))
+	if n == null:
+		n = loop.root.find_child(path, true, false)
+	return n
+
+
+func _node_has_prop(node: Node, property: String) -> bool:
+	for p in node.get_property_list():
+		if str(p.name) == property:
+			return true
+	return false
+
+
+## 期望值比对: 数字按容差比, 其余按文本比 —— 调用方写 "true"/true 不该有两种结果。
+func _value_matches(actual: Variant, expected: Variant) -> bool:
+	if actual is float or actual is int:
+		var e := str(expected)
+		if e.is_valid_float():
+			return absf(float(actual) - e.to_float()) < 0.0001
+		return str(actual) == e
+	if actual is bool:
+		return str(actual).to_lower() == str(expected).to_lower()
+	return str(actual) == str(expected)
+
+
+## simulate_text / simulate_scroll 共用的目标解析: ref 优先, 否则 path, 否则报错。
+## 返回 {node: Node} 或 {error: String} —— 不用 Dictionary 的 null 判别: Node 可能真为 null。
+func _resolve_sim_target(args: Dictionary, what: String) -> Dictionary:
+	var ref := VariantTool.get_string(args, "ref").strip_edges()
+	var loop := Engine.get_main_loop() as SceneTree
+	if loop == null or loop.root == null:
+		return {"error": "场景树不可用(游戏未运行?)"}
+	if not ref.is_empty():
+		var r := MCPUITools.resolve_ref(ref)
+		if not bool(r.get("ok")):
+			return {"error": str(r.get("error", "ref 解析失败"))}
+		if str(r.get("space", "")) == "3d":
+			return {"error": "ref=%s 指向 3D 物体, %s 只支持 2D 控件" % [ref, what]}
+		var n := loop.root.get_node_or_null(NodePath(str(r.get("path", ""))))
+		if n == null:
+			return {"error": "ref=%s 指向的节点已不存在(界面已变化), 请重新调用 get_interactables。" % ref}
+		return {"node": n}
+	var path := VariantTool.get_string(args, "path").strip_edges()
+	if path.is_empty():
+		return {"error": "需要 ref(get_interactables 返回的元素引用)或 path(节点路径)"}
+	var by_path := loop.root.get_node_or_null(NodePath(path))
+	if by_path == null and loop.current_scene != null:
+		by_path = loop.current_scene.get_node_or_null(NodePath(path))
+	if by_path == null:
+		return {"error": "找不到节点: %s(路径相对 /root; 也给相对游戏场景根的写法)" % path}
+	return {"node": by_path}
+
+
 ## ======= 运行时: 游戏进程用例(依赖项目单例 / 场景树 / 真实时间轴) =======
 
 ## 运行中的测试标志: run_tests(process=game) 阻塞执行期间为 true —— 供 _call_runtime_tool_async
@@ -2056,7 +2367,8 @@ func _runtime_take_screenshot(args: Dictionary) -> Dictionary:
 		"capture_type": "game",
 		"color_mode": str(shot.get("color_mode", "")),
 	}
-	return _ok_json(result)
+	# 直接把像素放进 content: 截图工具只回路径时, 调用方必须再走一次读图才看得见画面。
+	return _mod("MCPResult").attach_image(_ok_json(result), str(shot.get("path", "")))
 
 
 ## ======= 编辑器模式的运行时工具转发(经 EngineDebugger 调试线) =======
@@ -2234,11 +2546,22 @@ func _normalize_wire_result(result: Dictionary, _tool_name: String) -> Dictionar
 		extra["recovery"] = str(result.get("recovery", ""))
 	# 保留来源侧的 content[].text(错误响应里是 _err 拼的结构化 JSON): 代理归一化的只是
 	var content_text := text
+	var extra_blocks: Array = []
 	if result.get("content") is Array:
 		var c: Array = result["content"]
 		if not c.is_empty() and c[0] is Dictionary:
 			content_text = str(c[0].get("text", text))
-	return _wrap(text, is_err, extra, content_text)
+		# 保留文本以外的内容块(截图/预览的 image): 这里只重建 content[0], 不带上它们等于把
+		# 游戏进程刚拍好的像素丢在转发路上 —— 编辑器模式下截图工具"不回图"就是这么来的。
+		for i in range(1, c.size()):
+			if c[i] is Dictionary and str(c[i].get("type", "")) != "text":
+				extra_blocks.append(c[i])
+	var wrapped := _wrap(text, is_err, extra, content_text)
+	if not extra_blocks.is_empty():
+		var out_content: Array = wrapped.get("content", [])
+		out_content.append_array(extra_blocks)
+		wrapped["content"] = out_content
+	return wrapped
 
 
 ## eval_code 的 runtime 侧(服务器位于游戏进程内): process 只能是 game。

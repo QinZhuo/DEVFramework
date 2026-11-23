@@ -53,24 +53,44 @@ static func fail(text: String) -> Dictionary:
 
 
 ## 结构化结果封装: 数据同时以 structuredContent 与 content[].text(序列化 JSON, 向后兼容)
+## 【为什么不再做 JSON 往返】这里曾写成 JSON.stringify -> JSON.parse_string 再放进
+## structuredContent, 意图是"只留 JSON 安全的形状"。代价是 Godot 的 JSON 解析把**所有**数字
+## 变成 float: node_count=5 变成 5.0, 客户端按 schema 的 "type":"integer" 校验时判为不符合
+## (实测 get_scene_tree 的 node_count/width/bytes 全带 .0)。Duplicate 一份即可达到同样目的:
+## 结构仍是 Dictionary, 而 int 保持 int。真含不可序列化值的调用方本来就会在 stringify 那一步暴露。
 static func ok_json(data: Dictionary) -> Dictionary:
-	var json := JSON.stringify(data)
-	var safe_data: Variant = JSON.parse_string(json)
-	if not safe_data is Dictionary:
-		safe_data = data
-	return make(json, false, {"structuredContent": safe_data})
+	return make(JSON.stringify(data), false, {"structuredContent": data.duplicate(true)})
 
 
 ## 正文与结构化元信息**分离**的封装(补 ok_json 的缺口)。
-## 于是一份正文在响应里出现**三次**(顶层 text / content[].text / structuredContent)。实测
-## 标量元信息(节点总数、是否被截断), 供调用方判断要不要续读。meta 同样经 JSON 往返。
+## 标量元信息(节点总数、是否被截断)供调用方判断要不要续读; meta 同样 duplicate 而非 JSON 往返
+## (理由见 ok_json)。
 static func ok_with_meta(text: String, meta: Dictionary) -> Dictionary:
-	var safe_meta: Variant = {}
-	if not meta.is_empty():
-		var parsed: Variant = JSON.parse_string(JSON.stringify(meta))
-		if parsed is Dictionary:
-			safe_meta = parsed
-	return make(text, false, {"structuredContent": safe_meta})
+	return make(text, false, {"structuredContent": meta.duplicate(true)})
+
+
+## 把已落盘的 PNG 附到结果里, 让"画面感知"一步到位。
+## 此前截图类工具只回文件路径, 调用方得再走一次读图才看得见像素 —— 而工具名与描述都在承诺
+## "回答画面长什么样"。省掉这一跳是本函数唯一的目的。
+## 超限时不报错(图已落盘, 路径仍在结果里), 只把省略原因写进 image_omitted: 静默丢弃会让
+## 调用方以为"这图就是黑的"。
+const MAX_INLINE_IMAGE_BYTES := 1572864
+
+static func attach_image(result: Dictionary, path: String, mime: String = "image/png") -> Dictionary:
+	if bool(result.get("is_error", false)) or path.is_empty():
+		return result
+	var bytes := FileAccess.get_file_as_bytes(path)
+	if bytes.is_empty():
+		result["image_omitted"] = "读不到图片字节: %s" % path
+		return result
+	if bytes.size() > MAX_INLINE_IMAGE_BYTES:
+		result["image_omitted"] = "图片 %d 字节超过内联上限 %d, 已只回路径(可缩小 max_width 重试)" % [
+			bytes.size(), MAX_INLINE_IMAGE_BYTES]
+		return result
+	var content: Array = result.get("content", [])
+	content.append({"type": "image", "data": Marshalls.raw_to_base64(bytes), "mimeType": mime})
+	result["content"] = content
+	return result
 
 
 ## 工具返回"资源链接"(规范 content 类型 resource_link): 让大段文档走 resources 通道, 而不是

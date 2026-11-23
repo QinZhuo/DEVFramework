@@ -12,7 +12,9 @@ const MCPResult := preload("res://addons/DEVFramework/MCP/MCPResult.gd")
 const HUB_TOOLS := ["list_instances", "use_instance"]
 
 ## 注入进每个工具 schema 的 `instance` 参数说明。
-const INSTANCE_ARG_DESC := "可选: 目标编辑器实例。省略则用 use_instance 设置的默认目标(未设置时=本实例)。可填实例 id(如 MyGame@a1b2c3d4)、唯一前缀、或端口号; 不确定时先调 list_instances。"
+## **这段文字会在 49 个工具里各存一份**(实测占整份 tools/list 的 19.7%), 所以只留"怎么填"一行,
+## 完整的多实例规则(歧义判定/默认目标/离线时为何拒执行)进 resources: devframework://docs/instances。
+const INSTANCE_ARG_DESC := "目标编辑器实例: 实例 id / 唯一前缀 / 端口号; 省略则用默认目标(未设置=本实例)。不确定时先 list_instances。"
 
 ## MCPDevServer（Variant: 跨编译代次不信任类型标注）
 var server = null
@@ -25,7 +27,9 @@ func _init(owner) -> void:
 ## tools/list 出口整形: 每个工具多一个可选 `instance` 参数(实例管理工具除外)。
 func tools_for_list(defs: Array) -> Array:
 	var hub = server._hub
-	if hub == null:
+	# 只管"有没有一个中枢"是不够的: 单实例(或中枢被关掉)时 _hub 依然存在, 但那时 instance
+	# 参数没有任何接收方 —— 注入它等于给 50 个工具各挂一个填了就报错的参数(实测占全表 15.5%)。
+	if hub == null or not bool(hub.hub_mode):
 		return defs
 	return hub.inject_instance_arg(defs, INSTANCE_ARG_DESC, HUB_TOOLS)
 
@@ -114,7 +118,7 @@ func forward(req: Dictionary, req_id: Variant, _tool_name: String, route: Dictio
 				why = "诊断: 该实例**上次是非正常退出(崩溃/被强杀)** —— %s, 约 %d 秒前。" % [str(ex.get("reason", "")), ago]
 		var recovery := ""
 		if proj != "":
-			recovery = "若确认它需要重启: 调 launch_project(project_path=\"%s\") 由本实例拉起新进程(崩溃后 restart_editor 不可用, 因为它调的是目标进程自己的重启), 随后 list_instances → use_instance 选定新实例。想看更多证据用 project_exits。" % proj
+			recovery = "若确认它需要重启: 调 launch_project(project_path=\"%s\") 由本实例拉起新进程(崩溃后 restart_editor 不可用, 因为它调的是目标进程自己的重启), 随后 list_instances → use_instance 选定新实例。想看更多证据用 crash_report(scope=\"exits\")。" % proj
 		else:
 			recovery = "用 list_instances 确认清单; 目标已关闭/崩溃时用 launch_project(project_path=...) 拉起, 或 use_instance 换成活着的实例。"
 		var parts := PackedStringArray(["转发到实例 %s 失败(%s)。" % [str(route.get("target", "?")), route.get("via", "")], tail])

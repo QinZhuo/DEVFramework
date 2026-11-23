@@ -342,6 +342,22 @@ func call_job_cancel_routed(args: Dictionary) -> Dictionary:
 	return await _route_job("job_cancel", args, call_job_cancel_local)
 
 
+## 列出 job: 本地有就直接给本地; 本地空且有游戏会话时才去问游戏进程。
+## 与 wait/cancel 的"先探本地"不同 —— 列表没有 id 可探, 本地"空列表"本身不是答案。
+func call_job_list_local(_args: Dictionary) -> Dictionary:
+	return server._ok_json(JobTool.list())
+
+
+func call_job_list_routed(args: Dictionary) -> Dictionary:
+	var local: Dictionary = JobTool.list()
+	if int(local.get("count", 0)) > 0 or not _has_game_session():
+		return server._ok_json(local)
+	var r: Dictionary = await server._call_runtime_proxy("job_list", args)
+	if not bool(r.get("is_error", false)):
+		return r
+	return server._ok_json(local)
+
+
 ## ------- perf: 帧率 / 引擎指标 -------
 ## action=snapshot(即时指标) / fps(采样 N 帧) / history(历史耗时基线) / reset(清基线)。
 ## 逻辑微基准**不走这里**: 用 run_tests 传内联 TestCase + assert_under_ms —— 那边才有断言与历史基线。

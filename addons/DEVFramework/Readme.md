@@ -65,6 +65,9 @@ C++ 原生能力（ECS）需编译，见 [gdextension/README](../../gdextension/
 
 - 多项目并存：`list_instances` → `use_instance` 选默认，或单次调用带 `instance`
 - 常用：`validate` / `get_logs` / `eval_code` / `run_tests` / `perf` / `build_native` / `game_control` / `restart_editor`
+- 场景批量改动：`apply_scene_edits`（一次事务，失败整体回滚；复制节点/连信号也是它的 op）+ `undo_redo`；文件改名 `move_file`
+- 点完等结果：`wait_for`（轮询到条件成立，超时带"实际观察值"）；别写死 sleep
+- 长说明不在 `tools/list` 里（常驻开销），按需读 `resources/list` 的 `devframework://docs/*`
 - 改 `addons/DEVFramework/Native/src/**` 后**必须** `build_native`（`action=status` 查过期 → `action=build` 构建 → 重载生效），否则测试跑的是旧库且全绿
 - 目录约定：**插件自己的 C++ 放 `addons/<插件>/Native/src`**（随插件分发）；构建区与第三方（godot-cpp）在项目根 `gdextension/`。多个插件各有 `Native/src` 时各编一个库、共用一份 godot-cpp
 - 导出包默认不带入口（`dev_framework/mcp/runtime_enabled = false`）
@@ -102,6 +105,7 @@ godot --headless --path . -s res://addons/DEVFramework/Test/run_headless.gd -- -
 |---|---|
 | `run_tests(process, script, wait_sec)` | 启动任务。`wait_sec` 默认 5（0=立即返回）；窗口内跑完直接给完整汇总，否则返回 `{job_id, running:true, ...}` |
 | `job_wait(job_id)` | 轮询同一个 job（固定等 28s，完成返回结果，**不重跑**）；`job` 状态在启动它的进程里 |
+| `job_list()` | 不知道 `job_id`（比如上一次响应被客户端超时丢掉）时列出还记着的 job；`job_id` 省略时 `job_wait` 也会回落最近那个 |
 
 慢测试（回放类常 100s+）不要反复启动 —— 拿到 `job_id` 后只调 `job_wait`。
 **0 个用例 / 脚本解析失败现在一律判失败**：CI 里“没跑”与“跑了全过”必须可区分。

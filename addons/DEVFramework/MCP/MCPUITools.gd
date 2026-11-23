@@ -30,6 +30,7 @@ static func schema() -> Dictionary:
 		"class_filter": {"type": "string", "description": "按类名子串过滤(如 Button); 对 3D 元素额外匹配脚本名(如 ButtonView3D)。注意 2D 只匹配引擎类名(get_class), **不匹配节点名** —— 用节点名会返回空, 要按名字找请用 text_contains 或直接看返回里的 name; 空=不过滤"},
 		"max_nodes": {"type": "integer", "description": "返回条数上限, 默认 60, 上限 200"},
 		"max_depth": {"type": "integer", "description": "遍历深度上限, 默认 24, 上限 32。UI 层级深的项目给小了只能看到空壳容器; 响应里 depth_capped=true 就是撞上了上限"},
+		"include_hidden": {"type": "boolean", "description": "默认 false。开启后把**看不见(或尺寸为 0)的控件**列进 hidden_elements —— 界面看着空、清单里却有一堆节点时用它对照, 判断是'真没这个控件'还是'控件在但没显示'"},
 	}}
 
 
@@ -46,8 +47,10 @@ static func _handle_get_interactables(args: Dictionary) -> Dictionary:
 
 	# capped 必须单独报出来: 只报 max_nodes 截断的话, "面板真是空的"与"内容在深度上限之外"
 	# 返回的清单长得一模一样(只剩几个空壳容器), 调用方无从下手。实测踩过 —— 设置面板在
+	var want_hidden := VariantTool.get_bool(args, "include_hidden", false)
 	var controls: Array = []
-	var depth_capped: bool = _collect_controls(loop.root, controls, max_depth, 0)
+	var hidden_controls: Array = []
+	var depth_capped: bool = _collect_controls(loop.root, controls, max_depth, 0, hidden_controls, want_hidden)
 	var areas_3d: Array = []
 	if _collect_interactables_3d(loop.root, areas_3d, max_depth, 0):
 		depth_capped = true
@@ -149,7 +152,7 @@ static func _handle_get_interactables(args: Dictionary) -> Dictionary:
 		elements.append(e)
 
 	var win := Vector2(DisplayServer.window_get_size())
-	return MCPResult.ok_json({
+	var payload := {
 		"count": elements.size(),
 		"count_3d": count_3d,
 		"count_3d_total": total_3d,
@@ -161,7 +164,22 @@ static func _handle_get_interactables(args: Dictionary) -> Dictionary:
 		"content_scale": {"x": scale.x, "y": scale.y},
 		"elements": elements,
 		"hint": "用 simulate_click(ref=...) 直接点, 坐标换算与 3D 激活都由工具做, 你不必自己算。space=window 的元素两套矩形都给了; space=subviewport 的元素在子视口内(UI 渲染在 SubViewport 里时), 只给子视口坐标, 点击会被直接投递进那个子视口; space=3d 是 3D 物体(按钮/道具等), 刻意不给坐标——投影点会随相机漂移, 点击由工具在物体自身上激活。3D 元素排在 2D 之后, 若 count_3d < count_3d_total 说明被 max_nodes 截掉了, 用 space=3d 单独查。truncated=true 是被 max_nodes 截断(调大或缩小 space 缩小范围); depth_capped=true 是遍历没走完(调大 max_depth, 或用 space/filter 缩小范围)——两者都true 时面板可能看着空, 其实内容在上限之外, 别急着当项目 bug 查。ref 仅在本次清单内有效, 界面变化后重新查询。",
-	})
+	}
+	if want_hidden:
+		# 只报"在树里但不可见"的那一层: 这是"面板是空的"与"控件没显示"唯一能区分开的地方。
+		var hidden_items: Array = []
+		for h in hidden_controls:
+			var hc := h as Control
+			hidden_items.append({
+				"name": String(hc.name),
+				"class": hc.get_class(),
+				"path": String(hc.get_path()),
+				"text": _visible_text(hc),
+				"size": {"x": hc.size.x, "y": hc.size.y},
+			})
+		payload["hidden_count"] = hidden_items.size()
+		payload["hidden_elements"] = hidden_items
+	return MCPResult.ok_json(payload)
 
 
 ## 窗口/视口的比例系数。点击坐标换算与布局输出共用这一个口径, 免得两处各算一遍而漂移。
@@ -221,7 +239,9 @@ static func resolve_ref(ref: String) -> Dictionary:
 
 
 ## 返回 true = 有子树因触及上限而没被走到(深度上限或节点硬上限), 调用方据此报 depth_capped。
-static func _collect_controls(node: Node, out: Array, max_depth: int, depth: int) -> bool:
+## 收集可见控件; want_hidden=true 时顺带把"在树里但不可见"的那一层收进 hidden。
+## hidden 与 out 必须分开: 后者是"能点的东西", 前者只是诊断线索, 混在一起会让 ref 指到点不到的东西。
+static func _collect_controls(node: Node, out: Array, max_depth: int, depth: int, hidden: Array = [], want_hidden: bool = false) -> bool:
 	# 400 是收集阶段的硬上限: 界面重建时它防住"节点暴涨把一次调用拖死", 不影响结果集大小
 	if depth > max_depth or out.size() >= 400:
 		return true
@@ -231,11 +251,14 @@ static func _collect_controls(node: Node, out: Array, max_depth: int, depth: int
 			var c := child as Control
 			if c.is_visible_in_tree():
 				out.append(c)
-				if _collect_controls(c, out, max_depth, depth + 1):
+				if _collect_controls(c, out, max_depth, depth + 1, hidden, want_hidden):
 					capped = true
-			# 不可见的 Control 直接剪枝: 其子树的 is_visible_in_tree 必然也是 false,
-			# 走进去只会在每帧变化的深层树上白跑一遍(这是本域唯一的性能热点)。
-		elif _collect_controls(child, out, max_depth, depth + 1):
+			elif want_hidden:
+				# 不可见的 Control 对**可见清单**照旧剪枝(子树必然也不可见, 走进去只是白跑)。
+				# 但"控件在树里、清单里没有"正是最常见的那种 bug, 所以要把这一层记下来 ——
+				# 不展开它的子节点, 因为整棵子树都不可见, 逐层列出只是噪声。
+				hidden.append(c)
+		elif _collect_controls(child, out, max_depth, depth + 1, hidden, want_hidden):
 			capped = true
 	return capped
 

@@ -8,7 +8,39 @@ extends RefCounted
 const _CODE_ARG_DEFAULT := "要执行的 GDScript 代码(方法体内容, 缩进由服务器自动处理)"
 
 ## search_symbols 的 kind 合法取值(单一来源)。schema 的 enum 与 handler 的校验共用它 ——
-const SEARCH_KIND := ["all", "function", "variable", "class", "node", "resource", "ref"]
+## 检索维度。除前四项是 .gd 的定义形态外, 其余都是"这行以某种方式提到了某个东西":
+##   signal      signal 声明与 emit/connect 调用点(Godot 的信号连接是最高频的改动点之一)
+##   export      @export 变量(项目配置面, 与普通 variable 的用途完全不同)
+##   shader      shader_type / uniform 等(着色器代码不在 .gd 里, 只能按行文本判)
+##   node/.tscn 里的节点   resource/[ext_resource] 引用的资源
+##   ref         其它所有出现点(兜底)
+const SEARCH_KIND := ["all", "function", "variable", "class", "signal", "export", "shader", "node", "resource", "ref"]
+
+## 进程维度工具的 process 合法取值(单一来源)。此前 get_logs/clear_logs/run_tests/perf/
+## eval_code/take_screenshot 六个 schema 各写一份 enum, 改一处忘一处时会话里就出现两种取值。
+const PROCESS := ["editor", "game"]
+
+
+## 进程维度工具共用的 process 参数(必填)。
+static func process_arg(desc: String = "") -> Dictionary:
+	return {
+		"type": "string",
+		"enum": PROCESS,
+		"description": desc if not desc.is_empty() else "在哪个进程执行: editor=编辑器进程; game=游戏进程(需游戏运行; 导出运行时=本进程)。必填。",
+	}
+
+
+## clear_logs 的 schema。与 get_logs 同域, 但参数集不同(它是"清"), 故不复用 logs() 工厂;
+## 形状集中在此, 免得像此前那样在 MCPDevServer 里手写一份而与工厂漂移。
+static func clear_logs() -> Dictionary:
+	return {
+		"type": "object",
+		"properties": {
+			"process": process_arg("清哪个进程的缓冲: editor=编辑器进程; game=游戏进程(需游戏运行; 导出运行时=本进程)。必填。"),
+			"scope": {"type": "string", "enum": ["all", "logs", "errors"], "description": "清理范围, 默认 all"},
+		},
+		"required": ["process"],
+	}
 
 
 ## 通用字符串参数。
@@ -26,7 +58,7 @@ static func code_timeout_arg() -> Dictionary:
 	return {"type": "integer", "description": "可选: 含await代码的等待上限毫秒, 默认 8000, 上限 15000"}
 
 
-## 通用文件路径参数描述(read_file / write_file / append_file 三处字面量相同)。
+## 通用文件路径参数描述(多处字面量相同)。
 const _FILE_PATH_DESC := "文件路径(res:// 或 user://)"
 
 
@@ -61,6 +93,29 @@ static func simulate_key() -> Dictionary:
 	}, "required": ["key"]}
 
 
+## 文本输入: 走控件的 insert_text_at_caret 而不是逐字符注入按键。
+## 逐字符注入要处理 IME、修饰键、光标与选区, 而且中文根本注入不进去; 直接调控件的编辑 API
+## 与"用户输入完"的最终状态等价, 是 UI 自动化里更可靠的那条路。
+static func simulate_text() -> Dictionary:
+	return {"type": "object", "properties": {
+		"text": {"type": "string", "description": "要输入的文本(支持中文等任意字符)"},
+		"ref": {"type": "string", "description": "目标输入控件的 ref(get_interactables 返回, 如 e3)。优先用这个"},
+		"path": {"type": "string", "description": "或直接给节点路径(/root/... 或相对游戏场景根); 与 ref 二选一, ref 优先"},
+		"submit": {"type": "boolean", "description": "输入后是否发一次回车(LineEdit 会触发 text_submitted), 默认 false"},
+		"replace": {"type": "boolean", "description": "true=先清空控件现有内容, 默认 true(false=在光标处插入)"},
+	}, "required": ["text"]}
+
+
+## 滚轮: 容器/列表滚动只能靠 WHEEL_UP/DOWN 事件, 键盘翻页并不等价。
+static func simulate_scroll() -> Dictionary:
+	return {"type": "object", "properties": {
+		"amount": {"type": "integer", "description": "滚动格数, 正数=向下(WHEEL_DOWN), 负数=向上。默认 1"},
+		"ref": {"type": "string", "description": "滚轮事件的目标控件 ref; 省略则用 x/y(或视口中心)"},
+		"x": {"type": "integer", "description": "滚轮位置 X(窗口坐标), 仅在无 ref 时用"},
+		"y": {"type": "integer", "description": "滚轮位置 Y(窗口坐标), 仅在无 ref 时用"},
+	}}
+
+
 ## 游标类工具(get_logs)的 schema。
 ## 应当先看到, 否则它得读完四个游标参数才发现这个工具要先选类别。
 static func logs(default_max: String, unit: String, extra: Dictionary = {}) -> Dictionary:
@@ -87,22 +142,25 @@ static func file_path(path_desc: String, with_dry_run: bool = false) -> Dictiona
 	return {"type": "object", "properties": props, "required": ["path"]}
 
 
-## read_file 的 schema: path + 字符游标(offset / limit)。
+## read_file 的 schema: path + 字符游标(offset / limit) + probe(只探测存在性)。
 ## 返回里 next_char_offset=-1 表示已读完, 否则原样作为下次 offset 传回即可。
 ## `FileAccess.get_length()` 给的**字节**。两个单位混用是这类接口最常见的踩坑点, 故游标
+## probe 与读取同住: 删/改之前先探一下是常见动作, 不值得为它常驻一个工具。
 static func read_file() -> Dictionary:
 	return {"type": "object", "properties": {
 		"path": str_arg(_FILE_PATH_DESC),
+		"probe": {"type": "boolean", "description": "只探测存在性, 不读取内容: 返回 exists/is_file/is_directory/size。默认 false"},
 		"offset": {"type": "integer", "minimum": 0, "description": "起始字符下标, 默认 0。**单位是字符不是字节**, 与 next_char_offset 同单位"},
 		"limit": {"type": "integer", "minimum": 1, "description": "本次最多返回的字符数, 默认 0=不限(仍受全局输出上限约束)。被上限截断时按 next_char_offset 续读"},
 	}, "required": ["path"]}
 
 
-## 文件写入/追加 schema(两个工具共用同一结构).
+## 文件写入 schema(mode 决定覆盖还是追加)。
 static func write_content() -> Dictionary:
 	return {"type": "object", "properties": {
 		"path": str_arg(_FILE_PATH_DESC),
 		"content": {"type": "string", "description": "要写入/追加的内容"},
+		"mode": {"type": "string", "enum": ["overwrite", "append"], "description": "写入模式, 默认 overwrite=整份覆盖(不可撤销); append=追加到末尾(目标不存在则创建)"},
 		"dry_run": dry_run_arg(),
 	}, "required": ["path", "content"]}
 

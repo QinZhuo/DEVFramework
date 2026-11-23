@@ -66,13 +66,15 @@ static func _handle_get_project_info(args: Dictionary) -> Dictionary:
 	return MCPResult.ok_json(info)
 
 
-## 感知编辑器当前状态(用于 AI 与人类协作): 打开场景/选中节点/运行状态等
+## 感知编辑器当前状态(用于 AI 与人类协作): 打开场景/选中节点/是否在跑游戏
+##
+## **只报"人此刻在做什么"** —— 进程与会话事实(mcp_running / game_running / bridge_ready /
+## 实例身份)统一由 get_project_info(basic) 给出, 这里不再重复注入第二份:
+## 同一份事实有两个来源时, 两边一旦不同步, 调用方就无从判断哪个是真的。
 static func _handle_get_editor_activity(_args: Dictionary) -> Dictionary:
 	if not Engine.is_editor_hint():
 		return MCPResult.fail("仅在编辑器模式可用")
-	var out := {
-		"mode": "editor",
-	}
+	var out := {}
 	# 打开的场景与选中节点
 	var root := MCPEditorEnv.edited_root()
 	if root:
@@ -84,7 +86,11 @@ static func _handle_get_editor_activity(_args: Dictionary) -> Dictionary:
 		for n in selection.get_selected_nodes():
 			selected.append(n)
 		out["selected_nodes"] = selected.map(func(n: Node): return str(n.get_path()))
-	_apply_session_facts(out)
+	# 编辑器此刻是否在跑游戏 / 在跑哪个场景 —— 这是"人在做什么", 与 game_running 的同名事实不同:
+	# game_running 说"有没有游戏进程", 这里说"跑的是哪个场景"。
+	var playing := EditorInterface.get_playing_scene()
+	out["playing_scene"] = playing if not playing.is_empty() else null
+	out["hint"] = "进程/会话事实(mcp_running、game_running、bridge_ready、实例身份)见 get_project_info(scope=basic)"
 	return MCPResult.ok_json(out)
 
 
