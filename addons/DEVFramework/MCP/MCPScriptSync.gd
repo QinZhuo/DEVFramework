@@ -54,7 +54,7 @@ static func _guard_editor() -> Dictionary:
 			lines.append("  %s —— %s" % [p, str(_unreloadable[p])])
 		return {
 			"ok": false,
-			# 归 stale_code 而非 validation: 跑不动的原因是"跑的是旧代码",
+			# 归 stale_code 而非 validation: 跑不动的原因是"跑的是旧代码"。
 			"category": "stale_code",
 			"message": "这些脚本承载长驻服务, 不能热重载(重载会终止该服务, 且之后所有 MCP 工具都调不到, 无法自救), 已阻止执行:\n%s"
 				% "\n".join(lines),
@@ -74,7 +74,7 @@ static func _guard_editor() -> Dictionary:
 		return _pass(stale)
 	return {
 		"ok": false,
-		# 编辑器侧的失败含义与游戏侧不同: 这里是"磁盘版本自身有问题"(语法错),
+		# 编辑器侧的失败含义与游戏侧不同: 这里是"磁盘版本自身有问题"(语法错)。
 		"category": "validation",
 		"message": "这些脚本改动后无法重新加载(通常是磁盘版本存在语法错误), 已阻止执行:\n%s"
 			% "\n".join(PackedStringArray(failed)),
@@ -93,7 +93,7 @@ static func _guard_runtime(baseline: int, tree: SceneTree) -> Dictionary:
 	var changed := changed_by_mtime(baseline)
 	if changed.is_empty():
 		return _pass([])
-	# 关键顺序: 先抓住"旧脚本对象"再重载。重载后 ResourceLoader 里已是新版,
+	# 关键顺序: 先抓住"旧脚本对象"再重载。重载后 ResourceLoader 里已是新版。
 	var old_scripts: Dictionary = {}  # path -> 旧脚本对象
 	for p in changed:
 		if ResourceLoader.has_cached(p):

@@ -76,7 +76,7 @@ func _script_arg() -> String:
 
 
 ## 游戏进程模式: 先起主场景, 等它就绪, 再跑游戏用例。
-## ⚠️ 依赖项目 autoload 与主场景节点在 headless 下能正常初始化;
+## ⚠️ 依赖项目 autoload 与主场景节点在 headless 下能正常初始化。
 func _run_game() -> void:
 	var main_scene := str(ProjectSettings.get_setting("application/run/main_scene", ""))
 	if main_scene.is_empty():

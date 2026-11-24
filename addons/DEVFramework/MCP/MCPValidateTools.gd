@@ -281,7 +281,7 @@ static func _handle_classdb_query(args: Dictionary) -> Dictionary:
 	return MCPResult.ok_json(out)
 
 
-## 获取类的信号列表: ClassDB.class_get_signal_list 对内置类返回空,
+## 获取类的信号列表: ClassDB.class_get_signal_list 对内置类返回空。
 static func _instance_signal_list(cname: String) -> Array:
 	if not ClassDB.can_instantiate(cname):
 		return []

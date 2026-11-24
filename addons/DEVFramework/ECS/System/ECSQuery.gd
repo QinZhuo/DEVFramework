@@ -132,12 +132,12 @@ func clamp_where(field: StringName, min_comp, min_field: StringName,
 
 # ---------- Callback 动作(手写层, GDScript 执行) ----------
 
-## 声明要遍历的锚组件字段(数组), 配合 .process(cb) 使用 —— 推荐写法:
+## 声明要遍历的锚组件字段(数组), 配合 .process(cb) 使用。
 func with(fields: Array) -> ECSQuery:
 	_with_fields = fields
 	return self
 
-## 动作: 用 GDScript Callback 自定义遍历逻辑。三种用法:
+## 动作: 用 GDScript Callback 自定义遍历逻辑。三种用法见下。
 func process(cb: Callable, fields = {}) -> ECSQuery:
 	if not _with_fields.is_empty():
 		# A 模式: with(字段...) 声明 → 回调直接收列参数
@@ -151,7 +151,7 @@ func process(cb: Callable, fields = {}) -> ECSQuery:
 	return self
 
 
-## 执行查询(返回处理实体数)。通常无需手动调用 —— 系统 _run 结束后框架自动执行本系统未 execute 的查询;
+## 执行查询(返回处理实体数)。通常无需手动调用 —— 系统 _run 结束后框架自动执行本系统未 execute 的查询。
 func execute() -> int:
 	if _executed:
 		return _last_count
@@ -196,7 +196,7 @@ func _apply_rows(rows: PackedInt32Array) -> int:
 
 
 func _comp_name(c) -> StringName:
-	# 统一走 ECSWorld 的解析器(全框架唯一实现): 避免此处回退成脚本资源字符串,
+	# 统一走 ECSWorld 的解析器(全框架唯一实现): 避免此处回退成脚本资源字符串。
 	if world == null:
 		return StringName(str(c))
 	return world.resolve_component_name(c)

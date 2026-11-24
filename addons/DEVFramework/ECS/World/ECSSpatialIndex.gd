@@ -73,7 +73,7 @@ func query_nearest(pos: Vector2, radius: float) -> int:
 			best = e
 	return best
 
-## 快速最近实体: 只查所在格及相邻 8 格(比 query_nearest 的半径扫描快,
+## 快速最近实体: 只查所在格及相邻 8 格(比 query_nearest 的半径扫描快)。
 func query_cell_nearest(pos: Vector2, max_dist: float, exclude: int = -1) -> int:
 	var pos_col: PackedVector2Array = world.get_column(comp, field)
 	var best := -1

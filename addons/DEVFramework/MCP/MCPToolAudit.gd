@@ -21,7 +21,7 @@ static var _sources_ok := true
 ## 锚点路径由调用方传入, 不能用 get_script().resource_path —— 那读到的是本文件自己。
 static func audit_tools(tool_defs: Array, tool_handlers: Dictionary, anchor_script_path: String, audit_handlers: Dictionary = {}, registry_is_full: bool = true, extra_scripts: Array = []) -> Array[String]:
 	var issues: Array[String] = []
-	# 源码缓存必须每次自检重新读: 缓存的意义只是"一次自检内读一次"(几十个工具共用一份切片),
+	# 源码缓存必须每次自检重新读: 缓存的意义只是"一次自检内读一次"(几十个工具共用一份切片)。
 	_load_sources(anchor_script_path, extra_scripts)
 	issues.append_array(MCPToolMeta.audit())
 	issues.append_array(audit_tool_name_duplicates(tool_defs))
@@ -56,7 +56,7 @@ static func _load_sources(anchor_script_path: String, extra_scripts: Array = [])
 	var dir_path := anchor_script_path.get_base_dir()
 	var dir := DirAccess.open(dir_path)
 	if dir == null:
-		# 目录都打不开(锚点路径写错/目录被移走): 什么都不扫 = 静默全通过, 是最坏结果,
+		# 目录都打不开(锚点路径写错/目录被移走): 什么都不扫 = 静默全通过, 是最坏结果。
 		_source_cache[anchor_script_path] = ""
 		_sources_ok = false
 		return
@@ -78,7 +78,7 @@ static func _load_sources(anchor_script_path: String, extra_scripts: Array = [])
 		var path := str(p)
 		if not path.is_empty() and not _source_cache.has(path):
 			_source_cache[path] = FileAccess.get_file_as_string(path)
-	# 判定源码可读性: 锚点(主文件)内容为空即视为读不到 —— 导出包脚本是二进制 token,
+	# 判定源码可读性: 锚点(主文件)内容为空即视为读不到 —— 导出包脚本是二进制 token。
 	_sources_ok = not str(_source_cache.get(anchor_script_path, "")).is_empty()
 
 
@@ -98,10 +98,10 @@ static func audit_tool_name_duplicates(tool_defs: Array) -> Array[String]:
 
 
 ## ======= 检查 E: 源码里声明注册了, 就必须真的进了注册表(漏注册检测) =======
-## 两条边界必须写明, 防止后来人把它当成更强的检查:
+## 两条边界必须写明, 防止后来人把它当成更强的检查。
 static func audit_declared_registrations(registered: Dictionary) -> Array[String]:
 	var issues: Array[String] = []
-	# 注册调用的三种书写形态(见 MCPDevServer 顶部"工具域文件"一段):
+	# 注册调用的三种书写形态(见 MCPDevServer 顶部"工具域文件"一段)。
 	var re := RegEx.create_from_string("\\b(?:_add_tool|_register_game_play_tool|add_tool\\.call)\\(\\s*\"(\\w+)\"")
 	for path in _source_cache:
 		# 必须剥注释: MCPValidateTools 顶部就在注释里列着 `_add_tool("validate", ...)` 这种
@@ -117,7 +117,7 @@ static func audit_declared_registrations(registered: Dictionary) -> Array[String
 ## ======= 检查 D: 跨域静态调用的目标必须存在 =======
 ## 本项是**唯一**能抓到"改名做了一半"的: read_lints / get_script_method_list 全部零诊断
 ## (类名能解析, 只是没那个成员), 故障只在 tools/call 执行到那一行时爆 "Function not found"。
-## 两条边界必须写明, 防止后来人把它当成更强的检查:
+## 两条边界必须写明, 防止后来人把它当成更强的检查。
 static func audit_cross_domain_calls() -> Array[String]:
 	var issues: Array[String] = []
 	# 类名(= 文件 basename) -> 该文件的顶层成员表。只有本目录里存在的才算域。
@@ -278,7 +278,7 @@ static func _next_func_line(body: String) -> int:
 
 ## 扫出函数体里读取的所有入参键。覆盖统一入口 VariantTool.get_*(args, "k") 与遗留的
 ## 第一条模式**不能**加 `(?<![\w.])` 否定环视: 调用形态已变成 `VariantTool.get_string(`,
-## 而后两条的 `args` 前必须加否定环视: 局部字典若恰好以 `args` 结尾(如 `verify_args["k"]`),
+## 而后两条的 `args` 前必须加否定环视: 局部字典若恰好以 `args` 结尾(如 `verify_args["k"]`)。
 static func scan_arg_keys(body: String) -> Array[String]:
 	var out: Array[String] = []
 	for pattern in [

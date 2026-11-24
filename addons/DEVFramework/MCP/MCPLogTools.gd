@@ -27,7 +27,7 @@ static func _call_get_logs(args: Dictionary) -> Dictionary:
 	# _call_collect_logs 内无 await, 故此处不必 await(对非协程 await 是多余的)。
 	var result: Dictionary = _call_collect_logs(args, is_errors)
 	if is_errors:
-		# 错误必须原样返回, 不能进过滤分支: payload 兜底取的是 result 本身,
+		# 错误必须原样返回, 不能进过滤分支: payload 兜底取的是 result 本身。
 		if bool(result.get("is_error", false)):
 			return result
 		# 按类别过滤: warning 只要 type==warning; error 排除 warning(script_error/shader_error/stderr/error)
@@ -86,7 +86,7 @@ static func _call_collect_logs(args: Dictionary, is_errors: bool) -> Dictionary:
 		"count": out.size(),
 		"next": int(result.get("next", 0)),
 		"total_raw": clean.size(),
-		# 回显过滤条件: 传了 contains 却漏实现时, 至少能从响应里看出来,
+		# 回显过滤条件: 传了 contains 却漏实现时, 至少能从响应里看出来。
 		"contains": contains,
 		"hint": hint,
 	}

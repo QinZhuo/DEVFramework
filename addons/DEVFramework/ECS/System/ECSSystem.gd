@@ -9,7 +9,7 @@ var priority: int = 0
 ## 启停开关
 var enabled: bool = true
 
-## —— 频率控制(参考 Flecs interval/rate、Unity RateUtils、Bevy FixedUpdate) ——
+## 频率控制(参考 Flecs interval/rate、Unity RateUtils、Bevy FixedUpdate)。
 var interval: float = 0.0
 var rate: int = 1
 var fixed_step: float = 0.0

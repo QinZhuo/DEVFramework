@@ -68,7 +68,7 @@ static func _handle_read_file(args: Dictionary) -> Dictionary:
 	var offset: int = maxi(0, VariantTool.get_int(args, "offset", 0))
 	var limit: int = VariantTool.get_int(args, "limit", 0)
 	if offset > total_chars:
-		# 不静默返回空串: 读到文件末尾却拿到空内容, 调用方无法区分"文件是空的"与"游标越界",
+		# 不静默返回空串: 读到文件末尾却拿到空内容, 调用方无法区分"文件是空的"与"游标越界"。
 		return MCPResult.fail("offset %d 超出文件末尾(总字符数 %d)。文件已读完, 无需续读; 若确需重读请把 offset 回退到 0" % [offset, total_chars])
 	# limit<=0 表示不限: substr 的第二参传 -1 即"到末尾", 但显式分两支写, 免得读代码的人以为会切出空串。
 	var chunk: String = content.substr(offset, limit) if limit > 0 else content.substr(offset)
@@ -80,7 +80,7 @@ static func _handle_read_file(args: Dictionary) -> Dictionary:
 		"offset": offset,
 		"total_chars": total_chars,
 		"returned_chars": chunk.length(),
-		# -1 = 已读完; 否则原样作为下次 offset 传回即可续读。语义与 get_logs 的 next 一致,
+		# -1 = 已读完; 否则原样作为下次 offset 传回即可续读。语义与 get_logs 的 next 一致。
 		"next_char_offset": consumed if consumed < total_chars else -1,
 		"content": chunk,
 	})

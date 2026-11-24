@@ -13,7 +13,7 @@ var scene_root: Node = null
 var render_enabled := true
 
 ## 服务器直连开关(默认 false): true 时 position/transform/modulate/self_modulate/visible/z_index
-## 注意: 直连**只改渲染**, 对应节点属性不更新, 会导致碰撞(基于节点 transform)、拾取、
+## 注意: 直连**只改渲染**, 对应节点属性不更新, 依赖节点 transform 的碰撞与拾取会失准。
 var server_direct := false
 
 ## 节点缓存: NodeLink 行号 -> Node(数组索引 O(1))。NodeLink 实体数变化时重建。
@@ -23,7 +23,7 @@ var _nl_rows := PackedInt32Array()
 ## node_path 列缓存(结构变化时更新, 免每帧 get_column 复制 10000 路径)
 var _nl_paths: PackedStringArray = []
 
-## 同步规则(预编译为数组, 避免每实体 dict 遍历):
+## 同步规则(预编译为数组, 避免每实体 dict 遍历)。
 var _rule_items: Array = []
 
 ## 对齐行号缓存: comp -> query_aligned(NodeLink, [comp]) 结果(实体结构变化时清空)

@@ -34,7 +34,7 @@ static func _tree() -> SceneTree:
 	return Engine.get_main_loop() as SceneTree
 
 
-## resolve_eval_ctx 必须拿到**真值**的三个键。列成常量而非散在各处写字符串,
+## resolve_eval_ctx 必须拿到**真值**的三个键。列成常量而非散在各处写字符串。
 const EVAL_CTX_KEYS := ["mode", "game_started_at", "logger"]
 
 ## 降级文案里的"后果说明": 让看到告警的人立刻知道漏了这一项会怎样, 而不只是"少了这一项"。
@@ -49,7 +49,7 @@ static func resolve_eval_ctx(override: Dictionary = {}) -> Dictionary:
 		"game_started_at": 0,
 		"logger": null,
 	}
-	# 来源记账: out 的初值是"推导值"而非真值。降级判定必须按"哪些键拿到了真值"来算 ——
+	# 来源记账: out 的初值是"推导值"而非真值。降级判定必须按"哪些键拿到了真值"来算。
 	var from_source := PackedStringArray()
 	if _eval_ctx_provider.is_valid():
 		var provided: Variant = _eval_ctx_provider.call()
@@ -84,7 +84,7 @@ static func _call_eval_code(args: Dictionary, ctx: Dictionary = {}) -> Dictionar
 	var mode := str(context.get("mode", MODE_EDITOR))
 	var game_started_at := int(context.get("game_started_at", 0))
 	var logger: Object = context.get("logger", null)
-	# 降级告警在**每一条**返回路径上都要带上(含错误路径): 守卫误判时 eval 是失败的,
+	# 降级告警在**每一条**返回路径上都要带上(含错误路径): 守卫误判时 eval 是失败的。
 	var warn := _degraded_warning(mode, game_started_at, context)
 	var tree := _tree()
 	# 顺序: 新鲜度守卫排在预检**之前**, 让预检基于已同步的缓存判断。
@@ -99,7 +99,7 @@ static func _call_eval_code(args: Dictionary, ctx: Dictionary = {}) -> Dictionar
 		# category 由守卫按失败原因判定(编辑器侧=磁盘脚本语法错, 游戏侧=跑的是旧代码)。
 		return _attach_warning(MCPResult.err(str(guard.get("message", "")), str(guard.get("category", MCPResult.CAT_STALE_CODE)),
 			bool(guard.get("retryable", false)), str(guard.get("recovery", ""))), warn)
-	# 预处理(长度/安全扫描/语法编译)**只做一次**, 并把编译好的脚本返回来直接执行 ——
+	# 预处理(长度/安全扫描/语法编译)**只做一次**, 并把编译好的脚本返回来直接执行。
 	var prep := _prepare_eval(code, logger)
 	if not bool(prep.get("ok", false)):
 		return _attach_warning(MCPResult.err_validation(str(prep.get("error", "")),
@@ -149,7 +149,7 @@ static func _call_eval_code(args: Dictionary, ctx: Dictionary = {}) -> Dictionar
 			var e: Dictionary = merged[i]
 			var count := int(e.get("count", 1))
 			msgs.append("%s@%s:%s" % [e.get("message", ""), e.get("file", "?"), e.get("line", "?")] + ("" if count <= 1 else " (x%d)" % count))
-		# 用 err_validation(is_retryable=false) 而非裸 err + true:
+		# 用 err_validation(is_retryable=false) 而非裸 err + true。
 		return _attach_warning(MCPResult.err_validation(
 					"eval 执行返回: %s\n执行中捕获 %d 条运行期错误(合并后 %d 类, 前 %d 类):\n%s\n\n提示: get_node() 相对路径基于 eval 脚本实例, 找不到节点常因路径写错, 建议用绝对路径(/root/场景名/...) 或 get_tree().current_scene.get_node(...)。完整错误列表可用 %s; 重复噪音可在项目设置 dev_framework/mcp/ignored_error_patterns 配置子串忽略。" %
 			# 上面这些错误取自**本进程**的 logger 游标, 故按模式指向对应进程的日志。

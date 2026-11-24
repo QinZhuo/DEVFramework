@@ -64,7 +64,7 @@ func on_request(method: String, path: String, query: String, headers: Dictionary
 		server._send_rpc_error(stream, 400, headers, null, ERR_PARSE, "Parse error")
 		return
 	var req: Dictionary = parsed
-	# 协议版本协商(2026-07-28 起逐请求声明)。两处都缺省才回落 PROTOCOL_VERSION ——
+	# 协议版本协商(2026-07-28 起逐请求声明)。两处都缺省才回落 PROTOCOL_VERSION。
 	var proto := str(headers.get(HEADER_VERSION, ""))
 	var meta_version := ""
 	var rparams: Variant = req.get("params", null)
@@ -117,7 +117,7 @@ func on_request(method: String, path: String, query: String, headers: Dictionary
 	# 提前取 sessionId: 旧式 SSE 会话投递的请求要把响应改走 SSE 流, 且日志需与会话对应
 	var sid := query_param(query, "sessionId")
 	# 默认只记**首次**版本协商那一条; 全量开关打开时才记其余请求。
-	# **initialize 必须用 _version_negotiated 收窄**: 客户端每次重连都会重发 initialize,
+	# **initialize 必须用 _version_negotiated 收窄**: 客户端每次重连都会重发 initialize。
 	if bool(server._log_rpc) or (rpc_method == "initialize" and not bool(server._version_negotiated)):
 		LogTool.log("MCP", "POST %s | 版本 %s | 会话 %s" % [rpc_method, effective, sid if not sid.is_empty() else "-"])
 	var response: Dictionary = await server._handle_jsonrpc(req, effective)
@@ -142,7 +142,7 @@ func on_request(method: String, path: String, query: String, headers: Dictionary
 ## 否则界面永远停在"连接中"。
 func _serve_sse(stream, headers: Dictionary) -> void:
 	var endpoint := _endpoint_url()
-	# 已完成握手的客户端走 Streamable HTTP, 它此刻开的流只是通知/保活通道, 永不承载请求 ——
+	# 已完成握手的客户端走 Streamable HTTP, 它此刻开的流只是通知/保活通道, 永不承载请求。
 	var sid: String = server._http.open_legacy_sse(stream, _sse_headers(headers), endpoint, not bool(server._version_negotiated))
 	if sid.is_empty():
 		# 开不了流(并发已满/连接已断) → 回 405, 客户端仍可退回纯 Streamable HTTP

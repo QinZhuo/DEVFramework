@@ -658,7 +658,7 @@ static func _event_key(event: InputEvent) -> String:
 		return ""
 	return prefix + str(name) if name != null else ""
 
-## 事件是否符合设备：device >= 0 时只认该设备；-1 时按模式（鼠标/触摸归指针，
+## 事件是否符合设备：device >= 0 时只认该设备；-1 时按当前模式判断（导航模式只认摇杆/按键，操作模式只认指针）。
 static func _match_device(event: InputEvent, device := -1) -> bool:
 	if device >= 0:
 		return _device_of(event) == device

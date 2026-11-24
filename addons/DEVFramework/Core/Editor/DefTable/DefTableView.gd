@@ -1,5 +1,5 @@
 @tool
-## DefTable 顶部 Main Screen: 按 Def 类型目录加载 Def 资源(.tres),
+## DefTable 顶部 Main Screen: 按 Def 类型目录加载 Def 资源(.tres)。
 class_name DefTableView
 extends Control
 
@@ -10,7 +10,7 @@ const ROW_HEIGHT := DefTableGrid.MIN_ROW_HEIGHT
 ## Def 根目录: 复用 Def 的唯一常量, 避免多处各写一份字面量而漂移
 const DEFS_BASE := Def.DEFS_BASE
 const MAX_COL_WIDTH := 600.0
-## 单元格内容左右内边距(与 DefTableCell 的 CELL_MARGIN_L/R 一致):
+## 单元格内容左右内边距(与 DefTableCell 的 CELL_MARGIN_L/R 一致)。
 const CELL_PADDING := 8.0
 ## 行高垂直余量: 叠加在字体实测高度上, 给文字上下留呼吸感(单行与多行行高共用)
 const ROW_V_PADDING := 8.0
@@ -102,7 +102,7 @@ func _ready() -> void:
 	refresh_btn.pressed.connect(_on_refresh_pressed)
 	dir_tree.item_selected.connect(_on_dir_selected)
 	_setup_hover_highlight()
-	# 用 _shortcut_input 处理快捷键(Ctrl+C/V 在编辑器里可能先被编辑器自身的快捷键消费,
+	# 用 _shortcut_input 处理快捷键(Ctrl+C/V 在编辑器里可能先被编辑器自身的快捷键消费)。
 	set_process_shortcut_input(true)
 	set_process_unhandled_input(true)
 
@@ -537,7 +537,7 @@ func _compare_values(a, b) -> bool:
 
 ## 计算列宽 + 行高 (单次遍历, 缓存文本测量结果)
 ##   · 文本经 _cell_text 缓存, 布局与渲染共享一份(计算型 getter 只算一次)
-##   · 仅含显式换行的内容做 RTL 实测撑行; 单行内容(BBCode 与否)固定行高,
+##   · 仅含显式换行的内容做 RTL 实测撑行; 单行内容(BBCode 与否)固定行高。
 func _compute_layout() -> void:
 	var font := get_theme_font("font", "Label")
 	var fsize := get_theme_font_size("font", "Label")
@@ -574,10 +574,10 @@ func _compute_layout() -> void:
 			var tw := _measure_text_width(measure_text, font, fsize)
 			if is_bb:
 				tw += text.count("[img]") * IMG_PREVIEW_MIN_WIDTH
-			# 列宽扩到能容纳单行文本: 留足 CELL_PADDING 余量,
+			# 列宽扩到能容纳单行文本: 留足 CELL_PADDING 余量。
 			if tw + CELL_PADDING >= column_widths[col] and column_widths[col] < MAX_COL_WIDTH:
 				column_widths[col] = minf(tw + CELL_PADDING, MAX_COL_WIDTH)
-			# 自动行高: 仅显式多行内容(字典/数组/多段描述)按实际渲染高度撑行;
+			# 自动行高: 仅显式多行内容(字典/数组/多段描述)按实际渲染高度撑行。
 			if measure_text.contains("\n"):
 				var lh := _measure_bbcode_height(text, column_widths[col] - CELL_PADDING)
 				if lh > row_h:
@@ -621,7 +621,7 @@ func _measure_bbcode_height(text: String, width: float) -> float:
 	return rtl.get_content_height() + ROW_V_PADDING
 
 
-## 测量当前主题下单行文本实际高度 + 垂直余量(替代硬编码 ROW_HEIGHT, 适配不同编辑器字号;
+## 测量当前主题下单行文本实际高度 + 垂直余量(替代硬编码 ROW_HEIGHT, 适配不同编辑器字号)。
 func _measure_line_height() -> float:
 	if not is_inside_tree():
 		return ROW_HEIGHT
@@ -712,7 +712,7 @@ func _make_header_button(col: int) -> Button:
 	btn.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
 	btn.pressed.connect(_on_header_pressed.bind(col))
 	btn.tooltip_text = String(columns[col])
-	# 表头分隔线。去掉主题默认内容边距, 让按钮宽度=列宽,
+	# 表头分隔线。去掉主题默认内容边距, 让按钮宽度=列宽。
 	var sb := StyleBoxFlat.new()
 	sb.bg_color = Color(0.16, 0.16, 0.18, 0.35)
 	sb.set_border_width_all(0)
@@ -790,7 +790,7 @@ func _update_visible_rows(force_rebuild: bool = false) -> void:
 
 	var view_h := maxf(grid_scroll.size.y, 1.0)
 	var new_first: int = grid.row_index_at(grid_scroll.scroll_vertical)
-	# 累加起点必须是首行的绝对偏移 row_offsets[new_first], 而非 scroll_vertical:
+	# 累加起点必须是首行的绝对偏移 row_offsets[new_first], 而非 scroll_vertical。
 	var acc := 0.0
 	if grid.row_offsets.size() > 0:
 		acc = grid.row_offsets[new_first]
@@ -1069,7 +1069,7 @@ func _backfill_resource_previews() -> void:
 				_request_resource_preview(cell, v)
 
 
-## 行染色(don-tnowe row stylization): 取该行首个有效 Color 值, 低透明度染整行;
+## 行染色(don-tnowe row stylization): 取该行首个有效 Color 值, 低透明度染整行。
 func _compute_row_tints() -> void:
 	_row_tints.clear()
 	for r in rows.size():
@@ -1096,7 +1096,7 @@ func _row_tint_for(row: int) -> Color:
 	return tint
 
 
-## 悬停行高亮(B3, Excel crosshair 风格): 由 DefTableGrid 自绘(hover_row 属性),
+## 悬停行高亮(B3, Excel crosshair 风格): 由 DefTableGrid 自绘(hover_row 属性)。
 func _setup_hover_highlight() -> void:
 	grid.mouse_exited.connect(func() -> void: _set_hover_row(-1))
 	frozen_grid.mouse_exited.connect(func() -> void: _set_hover_row(-1))
@@ -1559,7 +1559,7 @@ func _shortcut_input(event: InputEvent) -> void:
 	# 仅当 DefTable 是当前激活的 Main Screen(可见)时才处理快捷键, 避免误吞编辑器其他处的 Ctrl+C/V
 	if not visible or not is_inside_tree():
 		return
-	# 处理 Ctrl+C / Ctrl+V 复制粘贴(在编辑器里 _shortcut_input 比 _unhandled_input 更早触发,
+	# 处理 Ctrl+C / Ctrl+V 复制粘贴(在编辑器里 _shortcut_input 比 _unhandled_input 更早触发)。
 	if event is InputEventKey:
 		var key_event := event as InputEventKey
 		if not key_event.pressed:

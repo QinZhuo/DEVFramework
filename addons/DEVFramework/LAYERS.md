@@ -100,6 +100,13 @@
 删除它们要同时动 `Core/Tool/ResetTool.gd:17`（`AudioTool.reset`）与 `Signal/ValueConditionDef.gd`（`ValueDef` 字段），
 故先保留并在此登记，避免误认为是死代码就随手删。
 
+- `Audio/AudioTool.gd`（264 行）运行时播放入口：2D/3D 同接口、音乐交叉淡化、总线音量与静音。
+- `Audio/AudioMixerTool.gd`（170 行）编辑器/启动期配置：效果预设与总线布局的构建、应用、保存。
+- `Audio/AudioBakeTool.gd`（76 行）仅编辑器：经效果链真播一遍并用 `AudioEffectRecord` 录回、写 WAV。
+
+要用音频却没接线的项目，直接调 `AudioTool.play` 这类静态入口即可（容器节点 `_Audio` 挂在 `SceneTree.root` 下跨场景存活），
+不必先搬模块；只有在确定整块不要音频时才按上面两处解绑后删除。
+
 `Value/` 里 `DivideValueDef`（公式 A/B，除零给 ±INF）与 `FractionValueDef`（分数/比例，除零回 0）
 看着都是除法，语义并不同，**不要合并**。
 

@@ -18,11 +18,11 @@ static func capture_editor_side(capture_type: String, args: Dictionary) -> Dicti
 	# 上也拍不到"正在跑的游戏", 所以这里必须硬失败而不是退化成拍编辑器。
 	if not Engine.is_editor_hint():
 		return MCPResult.fail("take_screenshot: editor/scene 只能在编辑器进程捕获, 当前进程不可用(检查主服务器是否漏了 _mode 判断)")
-	# scene 的渲染归属在资源域(与 preview_resource 同一个底座), 这里只转发。
+	# scene 的渲染归属在资源域(与 resource_inspect 的 render 同一个底座), 这里只转发。
 	if capture_type == "scene":
 		return await MCPResourceTools.scene_thumbnail(args)
 	if capture_type != "editor":
-		# 这里**故意不做**"视作 editor"的兜底: schema 的 enum + MCPToolContract 只挡协议路径,
+		# 这里**故意不做**"视作 editor"的兜底: schema 的 enum + MCPToolContract 只挡协议路径。
 		return MCPResult.fail("capture_type=%s 不是本域支持的模式(本域只做 editor / scene; game 由主服务器转发去游戏进程)" % capture_type)
 	var img: Image = await _capture_editor_viewport()
 	if img == null or img.is_empty():

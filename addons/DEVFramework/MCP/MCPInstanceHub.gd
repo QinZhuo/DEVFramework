@@ -436,7 +436,7 @@ func count_matches(query: String) -> int:
 
 
 ## ------- 目标绑定 -------
-## 绑定用 **uid** 而非 instance_id: uid 带进程号, 唯一; 而 instance_id 在同项目多开时会撞,
+## 绑定用 **uid** 而非 instance_id: uid 带进程号, 唯一; 而 instance_id 在同项目多开时会撞。
 func set_active(entry: Dictionary) -> void:
 	active_instance = str(entry.get("uid", ""))
 	active_instance_id = str(entry.get("instance_id", ""))
@@ -773,7 +773,7 @@ func post_json(port: int, path: String, payload: Dictionary, timeout_ms := 3000,
 			buf.append_array(chunk)
 	var status := client.get_response_code()
 	client.close()
-	# 状态码不参与判定: 本服务器在"传输层拒绝"时也回 JSON-RPC 错误体(400/401/403),
+	# 状态码不参与判定: 本服务器在"传输层拒绝"时也回 JSON-RPC 错误体(400/401/403)。
 	var parsed: Variant = JSON.parse_string(buf.get_string_from_utf8())
 	if parsed is Dictionary:
 		return parsed

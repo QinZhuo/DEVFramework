@@ -116,7 +116,7 @@ const BUILTIN_CONV := """# 本 MCP 服务器的工具契约约定
 
 `get_*` 读、`set_*` 写、`list_*`/`search_*` 枚举、`simulate_*` 注入输入。
 读写合一或多动作的工具用参数区分, 名字取动词(`save(scope=scene|all)`、
-`crash_report(scope=exits|full)`、`preview_resource(mode=thumbnail|render)`)。
+`crash_report(scope=exits|full)`、`resource_inspect(mode=tree|thumbnail|render)`)。
 
 ## 错误分类(error_category)
 

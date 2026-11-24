@@ -57,19 +57,12 @@ static func register(add_tool: Callable) -> void:
 		}, "required": ["path", "script"]},
 		_handle_create_resource)
 
-	add_tool.call("get_resource_info",
-		"读取 .tres/.tscn 资源的完整属性树(递归), 便于理解配置结构。返回类型/导出属性/嵌套子资源/引用的脚本。**对 .tscn 还会给出节点结构(root/各节点 path+type+script), 无需先在编辑器打开**; 但要读运行时的属性值仍需 open_scene 后用 get_scene_tree / get_node_info。排查配置或了解 Def 资源用。",
+	add_tool.call("resource_inspect",
+		"检视一个资源, mode 决定看什么。tree(默认)=读 .tres/.tscn 的完整属性树(递归): 返回类型/导出属性/嵌套子资源/引用的脚本, **对 .tscn 还给出节点结构(root/各节点 path+type+script), 无需先在编辑器打开**; 但要读运行时属性值仍需 open_scene 后用 get_scene_tree / get_node_info。thumbnail=取编辑器为它生成的**预览缩略图**(视角固定、尺寸由编辑器缩略图设置决定), path 传**源文件**(如 .vox, 需已导入)。render=离屏渲染, **相机可调**(yaw/pitch/dist/size/bg/transparent), 用于逐角度放大核对造型。thumbnail/render 产出只是落盘 PNG, 删掉即回退。",
 		{"type": "object", "properties": {
-			"path": MCPToolContract.str_arg("资源 res:// 路径(如 res://Assets/Def/MyDef.tres)"),
-			"max_depth": {"type": "integer", "description": "嵌套资源最大展开深度, 默认 5"}
-		}, "required": ["path"]},
-		_handle_get_resource_info)
-
-	add_tool.call("preview_resource",
-		"把资源渲染成 PNG 并返回路径(两者都只是落盘产物, 删掉即回退)。mode=thumbnail(默认)取编辑器为它生成的**预览缩略图**(FileSystem 里那种): 视角固定、尺寸由编辑器缩略图设置决定, 传**源文件路径**(如 res://demo/deer.vox, 需已导入)。mode=render 改用离屏渲染, **相机可调**(yaw/pitch/dist/size/bg/transparent), 用于逐角度放大核对造型(模型/道具的多角度核对走这条)。",
-		{"type": "object", "properties": {
-			"path": MCPToolContract.str_arg("资源路径: thumbnail 传已导入的源文件(如 res://demo/deer.vox); render 传 Mesh/.mesh/含 Mesh 的 .tscn(如 res://demo/samples/cottage.qvx)"),
-			"mode": {"type": "string", "enum": ["thumbnail", "render"], "description": "渲染方式, 默认 thumbnail=编辑器缩略图(视角固定); render=离屏渲染(相机可调)"},
+			"path": MCPToolContract.str_arg("资源路径: tree 传 .tres/.tscn; thumbnail 传已导入的源文件(如 .vox); render 传 Mesh/.mesh/含 Mesh 的 .tscn"),
+			"mode": {"type": "string", "enum": ["tree", "thumbnail", "render"], "description": "检视方式, 默认 tree=属性树; thumbnail=编辑器缩略图(视角固定); render=离屏渲染(相机可调)"},
+			"max_depth": {"type": "integer", "description": "mode=tree: 嵌套资源最大展开深度, 默认 5"},
 			"yaw": {"type": "number", "description": "mode=render: 水平角(度), 默认 35"},
 			"pitch": {"type": "number", "description": "mode=render: 俯仰角(度), 默认 20, 范围 -85..85"},
 			"dist": {"type": "number", "description": "mode=render: 相机距离 = dist × 模型包围球半径, 越小越放大, 默认 2.7"},
@@ -77,7 +70,7 @@ static func register(add_tool: Callable) -> void:
 			"bg": {"type": "string", "description": "mode=render: 背景色 #rrggbb, 默认 #2a2d33"},
 			"transparent": {"type": "boolean", "description": "mode=render: 透明背景, 默认 false"}
 		}, "required": ["path"]},
-		_handle_preview_resource)
+		_handle_resource_inspect)
 
 
 ## ======= 实现 =======
@@ -140,7 +133,7 @@ static func _handle_set_project_setting(args: Dictionary) -> Dictionary:
 	if name.is_empty():
 		return MCPResult.fail("必须提供 name")
 	var value: Variant = args.get("value", null)
-	# 防御: 部分 JSON→Variant 链路会把数组/对象退化为字符串(形如 ["a","b"]/{"k":1}),
+	# 防御: 部分 JSON→Variant 链路会把数组/对象退化为字符串(形如 ["a","b"]/{"k":1})。
 	if value is String:
 		var s := str(value).strip_edges()
 		if (s.begins_with("[") and s.ends_with("]")) or (s.begins_with("{") and s.ends_with("}")):
@@ -290,8 +283,20 @@ static func _has_resource_property(res: Resource, key: String) -> bool:
 	return false
 
 
-## 读取资源的完整属性树
-static func _handle_get_resource_info(args: Dictionary) -> Dictionary:
+## resource_inspect 的统一入口: mode 决定看属性树还是出图。
+static func _handle_resource_inspect(args: Dictionary) -> Dictionary:
+	var mode := VariantTool.get_string(args, "mode", "tree").strip_edges()
+	if mode.is_empty():
+		mode = "tree"
+	if mode == "tree":
+		return _inspect_tree(args)
+	if mode == "thumbnail" or mode == "render":
+		return await _inspect_image(args)
+	return MCPResult.fail("未知的 mode: '%s'(只能是 tree / thumbnail / render)" % mode)
+
+
+## mode=tree: 资源属性树(+ .tscn 的节点结构)。
+static func _inspect_tree(args: Dictionary) -> Dictionary:
 	var path := VariantTool.get_string(args, "path")
 	var max_depth := VariantTool.get_int(args, "max_depth", 5)
 	if path.is_empty():
@@ -390,9 +395,8 @@ static func _value_type(v: Variant) -> String:
 	return type_string(typeof(v))
 
 
-## preview_resource 的统一入口: mode 决定走编辑器缩略图还是离屏渲染。
-## 两者都是"把资源变成一个 PNG 给调用方看", 差异只在相机能不能调, 故合成一个工具。
-static func _handle_preview_resource(args: Dictionary) -> Dictionary:
+## mode=thumbnail|render: 出一张 PNG(两个旧工具只差相机能不能调, 故合成一个)。
+static func _inspect_image(args: Dictionary) -> Dictionary:
 	if not Engine.is_editor_hint():
 		return MCPResult.fail("仅在编辑器模式可用")
 	var path := str(args.get("path", "")).strip_edges()
@@ -423,7 +427,8 @@ static func _handle_preview_resource(args: Dictionary) -> Dictionary:
 		return MCPResult.fail("预览纹理没有图像数据: %s" % path)
 	var dir := "user://mcp_previews"
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(dir))
-	var out_path := "%s/%s.png" % [dir, path.get_file()]
+	# 用 get_basename 去掉源扩展名, 免得出现 icon.png.png。
+	var out_path := "%s/%s.png" % [dir, path.get_file().get_basename()]
 	var err := img.save_png(out_path)
 	if err != OK:
 		return MCPResult.fail("保存预览失败（错误码 %d）" % err)
@@ -464,7 +469,7 @@ class PreviewReceiver extends RefCounted:
 		tex = preview
 
 
-## ======= preview_resource(mode=render): 可调相机的离屏渲染 =======
+## ======= resource_inspect(mode=render): 可调相机的离屏渲染 =======
 static func _preview_by_render(path: String, args: Dictionary) -> Dictionary:
 	if not ResourceLoader.exists(path):
 		return MCPResult.fail("资源不存在: %s" % path)

@@ -4,7 +4,7 @@ extends RefCounted
 ## [UIPanel] / [UIPanel3D] 的共享打开/关闭状态机(纯静态工具, 与 [UITool] 同族)。
 ## 两个面板基类必须分别继承 [Control] / [Node3D](GDScript 无多继承), 无法共享基类,
 
-## 应用面板显隐。走面板的 [method UIPanel3D.apply_visibility] / [method UIPanel.apply_visibility]，
+## 应用面板显隐。走面板的 [method UIPanel3D.apply_visibility] / [method UIPanel.apply_visibility]。
 static func _apply_visibility(panel, shown: bool) -> void:
 	if panel.has_method(&"apply_visibility"):
 		panel.apply_visibility(shown)

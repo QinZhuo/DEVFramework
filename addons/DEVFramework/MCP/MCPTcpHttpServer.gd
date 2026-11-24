@@ -81,7 +81,7 @@ func poll() -> void:
 		if TRACE_WIRE:
 			LogTool.log("MCP", "[wire] 新连接接入, 连接数=%d" % _conns.size())
 
-	# 脚本热重载不跑初始化代码, 实例成员变量会被重置成默认值, 这两个表就成了 null,
+	# 脚本热重载不跑初始化代码, 实例成员变量会被重置成默认值, 这两个表就成了 null。
 	if _sse_sessions == null:
 		_sse_sessions = {}
 	if _sse_used == null:
@@ -94,7 +94,7 @@ func poll() -> void:
 		var status := stream.get_status()
 		if status == StreamPeerTCP.STATUS_CONNECTED or status == StreamPeerTCP.STATUS_CONNECTING:
 			if c.get("_sse", false):
-				# SSE 流只维持存活, 不再解析请求: 客户端不会在一条已开流的连接上再发请求,
+				# SSE 流只维持存活, 不再解析请求: 客户端不会在一条已开流的连接上再发请求。
 				if _poll_sse(c, now):
 					finished.append(i)
 			else:
@@ -197,7 +197,7 @@ func _process_buffer(c: Dictionary, finished: Array, conn_index: int) -> void:
 		c.content_length = cl
 		c.headers_done = true
 		c._body_start = body_start
-		# 每条新请求都要能再发一次 100 Continue, 故在这里清标志(连接是 keep-alive 的,
+		# 每条新请求都要能再发一次 100 Continue, 故在这里清标志(连接是 keep-alive 的)。
 		c["_sent_continue"] = false
 		if c.content_length < 0 or c.content_length > MAX_BODY_SIZE:
 			_send_simple(c.stream, 411, {}, "Length Required")
@@ -326,7 +326,7 @@ func begin_sse(stream: StreamPeerTCP, headers: Dictionary, session_id: String = 
 	return false
 
 
-## 维持一条已开启的 SSE 连接: 按间隔发注释帧(SSE 里以 ":" 开头的行是注释, 客户端会忽略,
+## 维持一条已开启的 SSE 连接: 按间隔发注释帧(SSE 里以 ":" 开头的行是注释, 客户端会忽略)。
 func _poll_sse(c: Dictionary, now: int) -> bool:
 	var stream: StreamPeerTCP = c.stream
 	# SSE 流不承载请求, 但仍要把客户端可能发来的字节读走: 堆在接收缓冲里不读会让
@@ -365,7 +365,7 @@ func _sse_write(stream: StreamPeerTCP, text: String) -> bool:
 	return stream.get_status() == StreamPeerTCP.STATUS_CONNECTED
 
 
-## 结束 chunked 响应体: 补一个长度为 0 的终止块, 客户端才认为这条流是正常收尾,
+## 结束 chunked 响应体: 补一个长度为 0 的终止块, 客户端才认为这条流是正常收尾。
 func _sse_end(stream: StreamPeerTCP) -> void:
 	stream.put_data("0\r\n\r\n".to_utf8_buffer())
 
@@ -411,7 +411,7 @@ func send_sse_message(session_id: String, message: String) -> bool:
 
 
 func _gen_session_id() -> String:
-	# 旧式握手只要求"不透明且唯一", 无需密码学强度; 用时间戳+计数器+随机数足够,
+	# 旧式握手只要求"不透明且唯一", 无需密码学强度; 用时间戳+计数器+随机数足够。
 	_sse_seq += 1
 	return "%x-%x-%04x" % [Time.get_ticks_msec(), randi(), _sse_seq & 0xFFFF]
 

@@ -7,14 +7,14 @@ extends RefCounted
 ##   - 系统级并行执行(冲突检测分批, 多线程并行)
 ##   - 批量查询与列访问(高频路径)
 
-## —— 批量运算操作符(传给 batch_apply / batch_apply_where 的 op 参数) ——
+## 批量运算操作符(传给 batch_apply / batch_apply_where 的 op 参数)。
 enum BatchOp {
 	ADD_VALUE = 0,       # 加值:   col += addend
 	MULTIPLY_ADD = 1,    # 乘加:   col = col * factor + addend
 	SET_VALUE = 2,       # 赋值:   col = addend
 }
 
-## —— 条件比较符(传给 batch_apply_where / batch_count_where 的 conditions.op) ——
+## 条件比较符(传给 batch_apply_where / batch_count_where 的 conditions.op)。
 enum CondOp {
 	LESS_THAN = 0,        # <   小于
 	LESS_OR_EQUAL = 1,    # <=  小于等于
@@ -24,7 +24,7 @@ enum CondOp {
 	NOT_EQUAL = 5,        # !=  不等于
 }
 
-## —— 列间运算操作符(传给 batch_apply_col 的 op 参数) ——
+## 列间运算操作符(传给 batch_apply_col 的 op 参数)。
 enum ColOp {
 	COL_ADD = 0,  # 目标列 += 源列(可缩放)
 	COL_SUB = 1,  # 目标列 -= 源列(可缩放)
@@ -109,7 +109,7 @@ var _comp_versions := {}                  # 组件名 -> 结构版本(该组件�
 var _world_version := 0                   # 全局结构版本(destroy/批量结构变更时 +1)
 
 func _init(p_use_shared_core: bool = true) -> void:
-	# 默认使用全局共享核心(游戏通常只有一个世界);
+	# 默认使用全局共享核心(游戏通常只有一个世界)。
 	if p_use_shared_core:
 		_core = ECSNative.get_instance()
 	else:
@@ -435,7 +435,7 @@ func _note_entity_access() -> void:
 # ============================================================
 
 ## 查询匹配实体(返回 anchor 组件的 dense 行号列表)。
-## 注意: 行号属于 anchor 组件; 跨组件访问时, 先 entity_of_row(anchor, row) 取实体ID,
+## 注意: 行号属于 anchor 组件; 跨组件访问时, 先 entity_of_row(anchor, row) 取实体ID。
 func get_entity_at(component, row: int) -> int:
 	return _core.get_entity_at(resolve_component_name(component), row)
 
@@ -481,7 +481,7 @@ func _resolve_query_args(anchor, must: Array, without: Array) -> Array:
 		_record_access(wn)
 	return [anchor_name, must_names, without_names]
 
-## 查询缓存键: 扁平字符串键(字段间用 \u001e, 数组元素间用 \u001f),
+## 查询缓存键: 扁平字符串键(字段间用 \u001e, 数组元素间用 \u001f)。
 const _QKEY_FIELD := "\u001e"
 const _QKEY_ITEM := "\u001f"
 
@@ -629,7 +629,7 @@ func batch_clamp_where(anchor, must: Array, op_comp, op_field: StringName,
 		mincn, min_field, maxcn, max_field, _normalize_conds(conditions))
 
 
-## int 列钳制的 GDScript 兜底实现(原生 batch_clamp 仅支持 float 列):
+## int 列钳制的 GDScript 兜底实现(原生 batch_clamp 仅支持 float 列)。
 func _gd_batch_clamp_int(an: StringName, must: Array, ocn: StringName, op_field: StringName,
 		mincn: StringName, min_field: StringName, maxcn: StringName, max_field: StringName,
 		conditions: Array) -> int:
@@ -1509,7 +1509,7 @@ func batch_count_where(anchor, must: Array, conditions: Array) -> int:
 		_record_access(resolve_component_name(c.get("comp", &"")))
 	return _core.batch_count(an, _names(must), _normalize_conds(conditions))
 
-## 批量收集: 单次遍历匹配 anchor+must(不含 without)的签名实体, 同时判定多组条件,
+## 批量收集: 单次遍历匹配 anchor+must(不含 without)的签名实体, 同时判定多组条件。
 func batch_collect(anchor, must: Array, without: Array, groups: Array) -> Array:
 	var an := resolve_component_name(anchor)
 	_record_access(an)

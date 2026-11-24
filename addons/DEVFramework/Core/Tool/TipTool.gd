@@ -53,7 +53,7 @@ static func attach(target: RichTextLabel, target_tween: TweenAnimation = null) -
 		_tree.process_frame.connect(_tick)
 	_render()
 
-## 显示提示。entries 三种写法：
+## 显示提示。entries 三种写法。
 static func show_tip(entries: Variant, source: Object = null, priority := 0, delay := 0.0) -> void:
 	if not _can_show():
 		return

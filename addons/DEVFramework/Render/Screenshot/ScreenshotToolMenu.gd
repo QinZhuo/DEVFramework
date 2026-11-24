@@ -30,7 +30,7 @@ func _capture_editor() -> Dictionary:
 		return {"ok": false, "error": "无法获取编辑器视口"}
 	var tree := base.get_tree()
 	if tree != null:
-		# 编辑器主循环由 process_frame 驱动, frame_post_draw 不保证按时触发,
+		# 编辑器主循环由 process_frame 驱动, frame_post_draw 不保证按时触发。
 		for i in 2:
 			await tree.process_frame
 	return await ScreenshotTool.capture(viewport, {

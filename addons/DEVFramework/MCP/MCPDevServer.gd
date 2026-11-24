@@ -396,7 +396,7 @@ func _start_hub_mode() -> void:
 	# 身份: 项目名取 project.godot 的 application/config/name; 路径必须 globalize 成绝对路径。
 	var project_name := str(ProjectSettings.get_setting("application/config/name", "project"))
 	var project_path := ProjectSettings.globalize_path("res://")
-	# 显式标类型: `_hub` 是 Variant(动态编译出来的脚本实例), 从它身上取到的返回值静态推断不出类型,
+	# 显式标类型: `_hub` 是 Variant(动态编译出来的脚本实例), 从它身上取到的返回值静态推断不出类型。
 	var instance_id: String = str(_hub.make_instance_id(project_name, project_path))
 	var uid := "%s#%d" % [instance_id, OS.get_process_id()]
 	_hub.set_self(uid, instance_id, project_name, project_path)
@@ -755,7 +755,7 @@ func _session_facts_provider() -> Dictionary:
 
 
 ## 注册项目侧 provider(见 SETTING_PROVIDERS): 加载脚本, 调其 `static register(add_tool)`
-## 没有运行的游戏时也必须可用; 需要操作"正在运行的游戏"的项目工具应改用脚本 + eval_code(process=game),
+## 没有运行的游戏时也必须可用; 需要操作"正在运行的游戏"的项目工具应改用脚本 + eval_code(process=game)。
 func _register_providers() -> void:
 	# 资源注册表与服务器说明都随每轮工具注册一起重建(与 _reset_tools 同节奏), 避免残留。
 	var docs: Variant = _mod("MCPResourceDocs")
@@ -965,14 +965,14 @@ func _handle_jsonrpc(req: Dictionary, proto: String = PROTOCOL_VERSION) -> Dicti
 			# 详见 MCPResult.for_protocol。
 			return {"jsonrpc": "2.0", "id": req_id, "result": MCPResult.for_protocol(result)}
 		# resources: 静态文档入口(内嵌内容)。短连接架构发不出推送。
-		# 注意 resources/read 的成功与失败**都**放在 result 里(失败时带 isError + content),
+		# 注意 resources/read 的成功与失败**都**放在 result 里(失败时带 isError + content)。
 		"resources/list":
 			return {"jsonrpc": "2.0", "id": req_id, "result": _decorate_result(
 				{"resources": _mod("MCPResourceDocs").list_all()}, proto, true)}
 		"resources/read":
 			var rparams: Variant = req.get("params", {})
 			var rdict: Dictionary = rparams if rparams is Dictionary else {}
-			# 成功与失败都在 result 里(失败时是 _err_validation, 自带 content+isError),
+			# 成功与失败都在 result 里(失败时是 _err_validation, 自带 content+isError)。
 			return {"jsonrpc": "2.0", "id": req_id,
 				"result": _decorate_result(MCPResult.for_protocol(_mod("MCPResourceDocs").read(str(rdict.get("uri", "")))), proto, true)}
 		"ping":
@@ -1075,7 +1075,7 @@ func _send_rpc_error(stream, status: int, req_headers: Dictionary, req_id: Varia
 	var hdrs := _cors_headers(req_headers)
 	for k in extra_headers:
 		hdrs[k] = extra_headers[k]
-	# data 仅在非空时才出现。规范原文是"客户端需要结构化信息时放在 data",
+	# data 仅在非空时才出现。规范原文是"客户端需要结构化信息时放在 data"。
 	var err_obj := {"code": code, "message": message}
 	if not data.is_empty():
 		err_obj["data"] = data
@@ -1084,7 +1084,7 @@ func _send_rpc_error(stream, status: int, req_headers: Dictionary, req_id: Varia
 	})))
 
 
-## 服务端能力声明。initialize 与 server/discover 共用 —— 同一份事实写两处,
+## 服务端能力声明。initialize 与 server/discover 共用 —— 同一份事实写两处。
 func _server_capabilities() -> Dictionary:
 	return {
 		# 工具清单在进程生命周期内静态(_tool_defs 只在初始化时填), 且本服务器发不出 listChanged 通知。

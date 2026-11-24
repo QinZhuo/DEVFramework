@@ -101,7 +101,7 @@ static func _handle_get_interactables(args: Dictionary) -> Dictionary:
 		items.append({"node": n3, "text": text3, "interactive": true, "is_3d": true,
 			"rank": 2, "dist": cam.global_position.distance_to(n3.global_position) if cam != null else INF})
 
-	# 可交互的排前面, 其余按屏幕位置自上而下、同排自左而右 —— 与人读界面的顺序一致,
+	# 可交互的排前面, 其余按屏幕位置自上而下、同排自左而右 —— 与人读界面的顺序一致。
 	items.sort_custom(_sort_items)
 
 	var truncated := items.size() > max_nodes
@@ -290,7 +290,7 @@ static func _visible_text(c: Control) -> String:
 	# Label 与 BaseButton 各自都有 text, 但两者**无继承关系**(都直接继承 Control), 故必须分开判。
 	if c is Label:
 		return (c as Label).text
-	# RichTextLabel 的 text 存的是 bbcode 源码, 且用 append_text() 追加的内容不会写回 text,
+	# RichTextLabel 的 text 存的是 bbcode 源码, 且用 append_text() 追加的内容不会写回 text。
 	if c is RichTextLabel:
 		var rtl := c as RichTextLabel
 		return rtl.text if not rtl.text.is_empty() else rtl.get_parsed_text()

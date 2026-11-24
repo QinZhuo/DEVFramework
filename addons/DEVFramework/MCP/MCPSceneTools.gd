@@ -16,7 +16,7 @@ const MCPEditorEnv := preload("res://addons/DEVFramework/MCP/MCPEditorEnv.gd")
 ## 输出给 AI 的核心属性白名单(过滤编辑器内部数百项属性, 控制上下文开销)
 const CORE_PROP_NAMES := ["name", "position", "scale", "rotation", "rotation_degrees", "visible", "modulate", "process_mode", "z_index", "text", "color"]
 
-## 默认展开深度; 场景 UI 层级深的项目可在 dev_framework/mcp/scene_tree_depth 调小,
+## 默认展开深度; 场景 UI 层级深的项目可在 dev_framework/mcp/scene_tree_depth 调小。
 const SETTING_SCENE_TREE_DEPTH := "dev_framework/mcp/scene_tree_depth"
 const DEFAULT_SCENE_TREE_DEPTH := 8
 
@@ -115,7 +115,7 @@ static func _handle_get_scene_tree(args: Dictionary) -> Dictionary:
 	if root == null:
 		return MCPResult.fail("当前没有打开的场景")
 	var lines: Array = []
-	# 用字典带回"是否有子树因深度上限未展开", 而不是让它隐没在缺失的文本里 ——
+	# 用字典带回"是否有子树因深度上限未展开", 而不是让它隐没在缺失的文本里。
 	var stats := {"pruned": 0, "nodes": 0}
 	_walk_scene_tree(root, 0, max_depth, include_props, lines, stats)
 	var text := "\n".join(lines)

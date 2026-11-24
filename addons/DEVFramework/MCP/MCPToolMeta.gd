@@ -24,7 +24,7 @@ const READ_ONLY := [
 	# -- 多实例观测 --
 	"list_instances",
 	# -- 代码/符号检索 --
-	"search_symbols", "find_resource_users", "script_status", "get_resource_info",
+	"search_symbols", "find_resource_users", "script_status",
 	# -- 文件观测 --
 	"read_file",
 	# -- 崩溃取证: 只读日志与事件日志 --
@@ -38,7 +38,7 @@ const READ_ONLY := [
 ## 不在这张名单里的写工具一律按破坏性处理(见 build() 兜底)。
 const NON_DESTRUCTIVE := [
 	# -- 产物落盘(新文件, 不覆盖; 删除即回退) --
-	"take_screenshot", "preview_resource",
+	"take_screenshot", "resource_inspect", # resource_inspect 的 thumbnail/render 只新增产物文件; tree 纯只读
 	# -- 场景编辑(单步都走 UndoRedo) --
 	"set_node_property", "add_node", "undo_redo",
 	# -- 保存(写的是当前内存态, 重放结果相同) --
@@ -93,7 +93,7 @@ const IDEMPOTENT := [
 	# -- 刻意不列 --
 	# add_node: 重放会多出一个节点, 不幂等
 	# apply_scene_edits: 内含 add_node/duplicate_node, 同一批 ops 重放会翻倍
-	# preview_resource / take_screenshot: 每次新增一个产物文件
+	# resource_inspect(thumbnail|render) / take_screenshot: 每次新增一个产物文件
 	# simulate_*: 重放会把业务逻辑再触发一遍
 ]
 
@@ -122,7 +122,7 @@ static func build(name: String, desc: String, input_schema: Dictionary) -> Dicti
 			# 显式标 false 表示无外部影响。不可省: 规范默认是 true。
 			"openWorldHint": false,
 		},
-		# 只声明 type: 各工具 structuredContent 形状差异极大(日志是数组、classdb 是成员树…),
+		# 只声明 type: 各工具 structuredContent 形状差异极大(日志是数组、classdb 是成员树…)。
 		"outputSchema": {"type": "object"},
 	}
 	return def
