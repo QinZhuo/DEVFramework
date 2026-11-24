@@ -26,7 +26,7 @@ func _attach_logger() -> void:
 	for a in OS.get_cmdline_user_args():
 		if str(a) == "--allow-errors":
 			return
-	var script = load("res://addons/DEVFramework/MCP/MCPLoggerDebug.gd")
+	var script = load("res://addons/DEVFramework/Core/Tool/LogCaptureTool.gd")
 	if script == null:
 		return
 	_logger = script.new()

@@ -2,14 +2,16 @@ class_name ECSSpatialIndex
 extends RefCounted
 
 ## ECS 空间索引 —— 网格分桶, 快速邻居查询。
+## 索引里存的是**行号**(与 world.query_rows / get_column 同一套下标, 列按行取值),
+## 不是实体 ID; 要实体对象请再走 world.query_entities(rows)。
 
 var world: ECSWorld
 var comp: Script          # 位置组件
 var field: StringName     # 位置字段
 var cell_size: float      # 网格单元大小
 
-var _cells := {}          # "gx,gy" -> Array[实体ID]
-var _cell_entities := {}  # 实体ID -> 所在格(快速移除)
+var _cells := {}          # "gx,gy" -> Array[行号]
+var _cell_entities := {}  # 行号 -> 所在格(快速移除)
 
 ## 需要世界 + 位置组件 + 位置字段 + 网格大小
 func _init(p_world: ECSWorld, p_comp: Script, p_field: StringName = &"pos", p_cell_size: float = 64.0) -> void:
@@ -33,7 +35,7 @@ func rebuild() -> void:
 		_cells[key].append(e)
 		_cell_entities[e] = key
 
-## 半径查询: 返回以 pos 为中心、radius 范围内(可能含 comp 组件)的实体 ID 数组。
+## 半径查询: 返回以 pos 为中心、radius 范围内(含 comp 组件)的**行号**数组。
 func query_radius(pos: Vector2, radius: float) -> Array[int]:
 	var out: Array[int] = []
 	var radius2 := radius * radius

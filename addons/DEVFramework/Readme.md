@@ -21,7 +21,10 @@ Godot 4.7 数据驱动框架：`Def`（配置）→ `Entity`（运行时）→ `
 
 1. **数据不下行**：View 不写 Entity，Entity 不写 Def。要反馈就发信号或 `Callable`。
 2. **一个角色一个基类**：不为同类问题开第二个基类。
-3. **删除测试**：删掉任一模块目录，框架仍能编译运行（唯一例外：`plugin.gd` 里的编辑器接线）。
+3. **依赖方向**：能力模块可引用 `Core`，`Core` 不引用能力模块（`plugin.gd` 只做编辑器接线）。
+
+   现状**未**达标：`Core` 里 9 个文件仍沿 33 处反向引用 8 个能力模块（ECS / Translation / Camera / Tween / Focus / Task / Dialogue / Audio），
+   清单与理由见 [LAYERS.md](LAYERS.md) 第七节。新增代码不要加重这层环，动这些点前先读清单。
 
 ## 目录
 
@@ -36,6 +39,9 @@ addons/DEVFramework/
 ```
 
 规则：**目录名 = 能力名**；模块内按 `Def / Entity / View / Tool / Editor` 分层，少于 3 个文件就扁平。
+
+两处按内容命名（比五层贴切，保留）：`ECS/` 用 `Component / System / World / Timer / Render`（列存储 + 调度），
+`Render/` 下分 `Lightmap / Screenshot` 两个子能力。单一角色的模块（`Value/ Signal/ UI/ Audio/` 等）保持扁平。
 
 命名、归属、搬迁纪律全在 [LAYERS.md](LAYERS.md)。
 
@@ -111,7 +117,7 @@ godot --headless --path . -s res://addons/DEVFramework/Test/run_headless.gd -- -
 **0 个用例 / 脚本解析失败现在一律判失败**：CI 里“没跑”与“跑了全过”必须可区分。
 编辑器进程若检测到磁盘脚本与已加载版本不一致，会拒绝开跑并提示重启（或改用 headless）。
 
-headless 默认还会挂一个 `MCPLogger`，把运行期 **script/shader/engine error** 算进失败（GUT 的 failure_error_types 语义；warning/printerr 不算，避免误伤故意制造告警的用例）。
+headless 默认还会挂一个 `LogCaptureTool`，把运行期 **script/shader/engine error** 算进失败（GUT 的 failure_error_types 语义；warning/printerr 不算，避免误伤故意制造告警的用例）。
 - `-- --allow-errors`：关闭运行期错误统计（给“故意触发错误”的旧用例兜底）。
 - `-- --freshness=strict|warn|off`：编辑器新鲜度策略；默认 strict，也可用项目设置 `dev_framework/test/freshness` 配置。
 

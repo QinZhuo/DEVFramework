@@ -1,13 +1,14 @@
 @tool
-## MCP 日志与错误捕获器 — 继承 Godot 4.5+ 的 Logger
-class_name MCPLogger extends Logger
+## 日志/错误捕获器 — 继承 Godot 的 Logger, 环形缓冲 print 与 push_error/脚本错误(含栈追踪)。
+## 为什么放在 Core: 只有引擎依赖, MCP 与 headless 测试两侧都要用; 留在 MCP 会让 Test 反向依赖 MCP。
+## Reset: 进程级（error_sink 是宿主注入的回调, 重载后由宿主重新绑定, 不进 ResetTool）
+class_name LogCaptureTool extends Logger
 
 const CAPACITY := 2000        # 环形缓冲容量(日志条目数)
 const ERROR_CAPACITY := 500   # 错误条目容量(含栈追踪, 占空间)
 
-## 错误旁路: 游戏进程用它把错误**实时**推给编辑器。
-## 断点暂停后主循环停摆, 编辑器发来的 get_logs 请求根本不会被执行, 只有这份先推出去的副本
-## 能让 breaked 诊断说出真实错误(否则只能回"错误缓冲无内容")。
+## 错误旁路: 宿主(如 MCP)注入后, 每条错误额外实时推给另一个进程。
+## 断点暂停时主循环停摆, 对端发来的查询根本不会被执行, 只有这份先推出去的副本能说出真实错误。
 static var error_sink: Callable
 
 ## 日志条目结构: {"time":int毫秒, "message":String, "is_error":bool}

@@ -18,7 +18,8 @@ var server_direct := false
 
 ## 节点缓存: NodeLink 行号 -> Node(数组索引 O(1))。NodeLink 实体数变化时重建。
 var _nl_nodes: Array = []
-var _nl_count := -1
+## 上次重建时用的行集: 只比 size 会漏掉"销毁 N 个又创建 N 个"(数量不变但实体全换), 节点会指向旧对象。
+var _nl_rows := PackedInt32Array()
 ## node_path 列缓存(结构变化时更新, 免每帧 get_column 复制 10000 路径)
 var _nl_paths: PackedStringArray = []
 
@@ -70,12 +71,15 @@ func _run(ctx: ECSSystemContext, _delta: float) -> void:
 	if rows.is_empty():
 		return
 
-	# 节点缓存(行号 -> node) + node_path 列缓存, 结构变化(实体数)时重建并清空对齐缓存
-	if _nl_count != rows.size():
-		_nl_count = rows.size()
+	# 节点缓存(行号 -> node) + node_path 列缓存, 行集变化时重建并清空对齐缓存
+	if _nl_rows != rows:
+		_nl_rows = rows
 		_aligned_cache.clear()
-		_nl_nodes.resize(rows.size())
 		_nl_paths = w.get_column(NodeLink, &"node_path")
+		var max_row := -1
+		for e in rows:
+			max_row = maxi(max_row, int(e))
+		_nl_nodes.resize(max_row + 1)
 		for e in rows:
 			_nl_nodes[e] = scene_root.get_node_or_null(_nl_paths[e])
 

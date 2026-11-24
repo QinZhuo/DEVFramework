@@ -9,19 +9,19 @@ const MCPResult := preload("res://addons/DEVFramework/MCP/MCPResult.gd")
 const MCPToolContract := preload("res://addons/DEVFramework/MCP/MCPToolContract.gd")
 
 ## 本域私有的编译错误捕获器。**刻意不共用 MCPDevServer 的那个**, 理由见下方"编译错误从哪来"。
-static var _compile_log: MCPLogger = null
+static var _compile_log: LogCaptureTool = null
 
 
-## ======= 编译错误从哪来: 为什么本域自建一个 MCPLogger =======
+## ======= 编译错误从哪来: 本域自建一个日志捕获器 =======
 ## 接缝判据: **漏调必须可见**。捕获器若靠注入, 漏调后果是编译错误捕获不到、
 ## validate 恒返回 valid=true(把编译失败的代码报成合法)—— 属静默失效, 故必须域内自建。
 
 ## 取本域私有的编译错误捕获器(首次调用时创建并注册到 OS)。
 ## 它与主文件的日志捕获器各自独立: get_error_cursor 只取写指针, take_errors_since 只读区间,
 ## 本路径不调 clear_errors —— 故不会互相清空。**不要因为看起来"重复注册"就删掉任一个。**
-static func _compile_error_log() -> MCPLogger:
+static func _compile_error_log() -> LogCaptureTool:
 	if _compile_log == null:
-		_compile_log = MCPLogger.new()
+		_compile_log = LogCaptureTool.new()
 		OS.add_logger(_compile_log)
 	return _compile_log
 

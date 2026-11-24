@@ -96,6 +96,10 @@ var _dirty_mutex := Mutex.new()
 # ---------------- 事件队列 ----------------
 var _event_queues := {}                  # type(StringName) -> Array[Variant]
 var _event_subscribers := {}             # type(StringName) -> Array[Callable]
+## 实体过滤订阅的"原始 handler → 包装 handler"对应表: 没有它, off_event(原始) 解不掉包装。
+var _event_wrappers := {}                # type(StringName) -> Array[[原始 Callable, 包装 Callable]]
+## 是否正处于 tick() 内(调度器驱动): 期间的结构变更延迟到帧末统一 flush。
+var _in_tick := false
 
 # ---------------- 查询缓存(增量失效) ----------------
 ## 行集缓存条数上限: 超出按插入序淘汰一半(不是整表清空, 避免查询种类偏多时每帧重建)
@@ -112,6 +116,7 @@ func _init(p_use_shared_core: bool = true) -> void:
 		_core = ClassDB.instantiate(&"ECSCore")
 	if _core == null:
 		push_error("ECSWorld: ECSCore 原生库不可用! 请确认 res://addons/DEVFramework/Native/devframework.gdextension 已加载(框架强依赖 C++, 无回退)。")
+		# 不可用时世界退化为空实现: 结构操作直接返回, tick/cmd_flush 空转(见各处 _core 判空)。
 	# 注: prefab 隔离为独立 archetype 的方案试过两轮, 已放弃 —— 存储层分离其实做到了
 	# (component_counts 显示内部组件 0 行、实例 20k 行), 但内部组件**按名字查不到**
 	# (comp_index("__prefab") 返回 -1), 于是 get_field/add_component 这类按名 API 全部失效;
@@ -1037,13 +1042,19 @@ func cmd_pending_count() -> int:
 
 ## 立即执行全部排队命令(通常由 tick() 帧末自动调用)。
 func cmd_flush() -> void:
+	if _core == null:
+		return
 	# 快路径: 没有 hook 时 `_cmd_ops` 是空的(见 _cmd_mirror_needed) → 一次原生 flush + 粗粒度失效。
 	# 这些都是"结构变更", 本就该让全部查询缓存失效, 比逐条精确失效更省。
 	if _cmd_ops.is_empty():
 		_cmd_mutex.lock()
-		_core.flush_commands()
+		var pending: int = _core.pending_command_count()
+		if pending > 0:
+			_core.flush_commands()
 		_cmd_mutex.unlock()
-		_world_version += 1
+		# 队列本来就空时不能加版本号: tick() 每帧都调这里, 无条件 +1 会让全部查询缓存每帧失效。
+		if pending > 0:
+			_world_version += 1
 		# 占位句柄计数必须**每批重置**: 下一批的 create 占位从 -1 重新开始
 		# (漏了这句会让第二批句柄变成 -2, 解析到上一批的实体 —— 用例当场抓到)
 		_cmd_create_count = 0
@@ -1130,10 +1141,25 @@ func _record_access(comp: StringName) -> void:
 ## 每帧驱动全部系统。内部先按依赖图拓扑排序(优先级仅作同层平级次序)。
 ## 否则回退纯串行(行为与旧版一致)。并行开启时第一帧自动串行预热以采集访问记录。
 func tick(delta: float) -> void:
+	if _core == null:
+		return
 	_frame_count += 1
+	_in_tick = true
 	scheduler().tick(delta)
 	_dispatch_events()
 	cmd_flush()
+	_in_tick = false
+
+
+## 是否处于 tick() 内。系统在 tick 里排队销毁实体后不要自己 flush(会打断本帧其余系统),
+## 交给帧末的 cmd_flush(); 独立调用(测试/手动驱动)仍需自己 flush, 否则同帧断言看不到结果。
+func is_ticking() -> bool:
+	return _in_tick
+
+
+## 原生核心是否可用。不可用时世界为空实现, 只报错不崩溃。
+func is_available() -> bool:
+	return _core != null
 
 ## 调试: 各系统本帧耗时(ms), 键为系统名。
 func get_system_times() -> Dictionary:
@@ -1300,7 +1326,7 @@ func on_entity_event(type: StringName, filter: Array, handler: Callable) -> void
 			if not has_component(eid, comp):
 				return
 		handler.call(eid, payload.get("data", null))
-	on_event(type, wrapped)
+	_subscribe_wrapped(type, handler, wrapped)
 
 ## 订阅"实体事件"并按组件过滤(带 where 条件)。
 func on_entity_event_where(type: StringName, filter: Array, conditions: Array, handler: Callable) -> void:
@@ -1314,11 +1340,28 @@ func on_entity_event_where(type: StringName, filter: Array, conditions: Array, h
 		if not _entity_matches_conds(eid, conditions):
 			return
 		handler.call(eid, payload.get("data", null))
+	_subscribe_wrapped(type, handler, wrapped)
+
+## 登记包装订阅: on_event 存包装版, 本表留"原始 → 包装", off_event(原始) 才有解。
+func _subscribe_wrapped(type: StringName, handler: Callable, wrapped: Callable) -> void:
 	on_event(type, wrapped)
+	if not _event_wrappers.has(type):
+		_event_wrappers[type] = []
+	_event_wrappers[type].append([handler, wrapped])
+
 
 func off_event(type: StringName, handler: Callable) -> void:
 	var arr: Array = _event_subscribers.get(type, [])
 	arr.erase(handler)
+	# 实体过滤订阅存的是包装版: 按原始 handler 找到包装版一并摘掉, 否则回调永久泄漏。
+	var pairs: Array = _event_wrappers.get(type, [])
+	for i in range(pairs.size() - 1, -1, -1):
+		var pair: Array = pairs[i]
+		if pair[0] == handler:
+			arr.erase(pair[1])
+			pairs.remove_at(i)
+	if pairs.is_empty():
+		_event_wrappers.erase(type)
 
 ## 取走本帧某类事件(取一次即清空, 再取返回空)。
 ## 与 on_event 订阅是**两种并存**的消费方式:

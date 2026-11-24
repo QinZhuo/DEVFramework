@@ -9,12 +9,12 @@ const MCPResult := preload("res://addons/DEVFramework/MCP/MCPResult.gd")
 const MCPToolContract := preload("res://addons/DEVFramework/MCP/MCPToolContract.gd")
 
 ## 本进程日志捕获器。由 MCPDevServer 建好 _logger 后 bind_logger() 注入; 未注入时报"未就绪"。
-static var _logger: MCPLogger = null
+static var _logger: LogCaptureTool = null
 
 
 ## 绑定本进程日志捕获器。以最后一次为准: 热重载会新建捕获器, 重新注册时再绑一次。
 ## **接缝判据(全局统一)**: 接缝可以存在, 但漏调必须可见; 漏调会静默失效的场合一律不许用接缝。
-static func bind_logger(logger: MCPLogger) -> void:
+static func bind_logger(logger: LogCaptureTool) -> void:
 	_logger = logger
 
 

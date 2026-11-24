@@ -75,10 +75,12 @@ func _mark_finished() -> void:
 	view_finished.emit()
 
 ## 清除所有子节点（并作废进行中的分帧生成）
+## ⚠️ 必须走 _mark_finished(): 只改代次不 emit, 卡在 wait_finished 的协程永远等不到 view_finished
+##    (它的循环条件其实已满足, 但要先被唤醒才会去检查)。
 func clear() -> void:
 	_generation_id += 1
 	_clear_children()
-	_finished_generation = _generation_id
+	_mark_finished()
 
 func _clear_children() -> void:
 	for view in get_children():

@@ -114,7 +114,7 @@ const DEBUGGER_PREFIX := "dev_mcp"
 static var instance: MCPDevServer
 
 var _http: MCPTcpHttpServer
-var _logger: MCPLogger
+var _logger: LogCaptureTool
 var _port := int(ProjectSettings.get_setting(SETTING_PORT, 8931))
 var _enabled := true
 ## 是否已完成 initialize 版本协商(进程级单标志)。
@@ -143,7 +143,7 @@ var _game_error_digest: Array[Dictionary] = []
 ## 断点期间仍可安全执行的工具(只读缓冲, 不依赖主循环)。
 ## game_control 必须在内: 它正是解暂停的那把钥匙, 拦它等于把出口锁在里面。
 const _BREAK_SAFE_TOOLS := ["get_logs", "clear_logs", "game_control"]
-## 错误副本条数上限(见 MCPLogger.error_sink)
+## 错误副本条数上限(见 LogCaptureTool.error_sink)
 const GAME_ERROR_DIGEST_KEEP := 20
 ## 游戏用例运行期间仍放行的工具。用例是长任务, 轮询/取消必须能进来;
 ## wait_for 也必须在内 —— 用例常"点了等结果"。
@@ -188,9 +188,9 @@ func _ready() -> void:
 		return
 	# 新鲜度基准(见 MCPScriptSync.guard_eval): 游戏进程内自记一份, 取 autoload 就绪时刻。
 	_game_started_at = int(Time.get_unix_time_from_system())
-	_logger = MCPLogger.new()
+	_logger = LogCaptureTool.new()
 	OS.add_logger(_logger)
-	MCPLogger.error_sink = _forward_error_to_editor
+	LogCaptureTool.error_sink = _forward_error_to_editor
 	_mode = MODE_RUNTIME
 	# (1) 开发期桥接: "由编辑器启动的游戏进程"注册调试线工具(不占端口)。含 eval_code(process=game)
 	if _is_editor_build():
@@ -342,7 +342,7 @@ func start_editor() -> void:
 		LogTool.log("MCP", "dev_framework/mcp/enabled=false, 编辑器 MCP 服务器已跳过启动")
 		return
 	if _logger == null:
-		_logger = MCPLogger.new()
+		_logger = LogCaptureTool.new()
 		OS.add_logger(_logger)
 	_register_editor_tools()
 	# 中枢开启时走"抢 hub 端口 / 退让临时端口", 否则单端口。
