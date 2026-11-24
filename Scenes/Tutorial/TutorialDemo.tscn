@@ -1,42 +1,38 @@
-[gd_scene load_steps=6 format=3]
+[gd_scene format=3 uid="uid://hjqobxma4mk3"]
 
-[ext_resource type="Script" path="res://Scenes/Tutorial/TutorialDemo.gd" id="1_demo"]
-[ext_resource type="Script" path="res://addons/DEVFramework/UI/ButtonView3D.gd" id="2_button3d"]
+[ext_resource type="Script" uid="uid://dknttvis40t50" path="res://Scenes/Tutorial/TutorialDemo.gd" id="1_demo"]
+[ext_resource type="Script" uid="uid://62oprh4xdfwq" path="res://addons/DEVFramework/UI/ButtonView3D.gd" id="2_button3d"]
 
 [sub_resource type="SphereMesh" id="SphereMesh_ball"]
-radius = 0.5
-height = 1.0
-
-[sub_resource type="SphereShape3D" id="SphereShape3D_ball"]
-radius = 0.5
 
 [sub_resource type="StandardMaterial3D" id="StandardMaterial3D_ball"]
 albedo_color = Color(0.3, 0.65, 1, 1)
 
-[node name="TutorialDemo" type="Node3D"]
+[sub_resource type="SphereShape3D" id="SphereShape3D_ball"]
+
+[node name="TutorialDemo" type="Node3D" unique_id=1366142068]
 script = ExtResource("1_demo")
 
-[node name="Camera3D" type="Camera3D" parent="."]
-rotation = Vector3(-0.15, 0, 0)
-position = Vector3(0, 1, 4.2)
+[node name="Camera3D" type="Camera3D" parent="." unique_id=1569908896]
+transform = Transform3D(1, 0, 0, 0, 0.9887711, 0.14943814, 0, -0.14943814, 0.9887711, 0, 1, 4.2)
 
-[node name="DirLight" type="DirectionalLight3D" parent="."]
-rotation = Vector3(-0.9, 0.5, 0)
+[node name="DirLight" type="DirectionalLight3D" parent="." unique_id=440237841]
+transform = Transform3D(0.87758255, -0.37554693, 0.2980157, 0, 0.62161, 0.7833269, -0.47942555, -0.687434, 0.54551405, 0, 0, 0)
 
-[node name="Ball" type="Area3D" parent="."]
-position = Vector3(0, 0.15, 0.4)
+[node name="Ball" type="Area3D" parent="." unique_id=209467615]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.15, 0.4)
 script = ExtResource("2_button3d")
 
-[node name="Mesh" type="MeshInstance3D" parent="Ball"]
+[node name="Mesh" type="MeshInstance3D" parent="Ball" unique_id=344099155]
 mesh = SubResource("SphereMesh_ball")
 surface_material_override/0 = SubResource("StandardMaterial3D_ball")
 
-[node name="CollisionShape3D" type="CollisionShape3D" parent="Ball"]
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Ball" unique_id=1406900138]
 shape = SubResource("SphereShape3D_ball")
 
-[node name="UI" type="CanvasLayer" parent="."]
+[node name="UI" type="CanvasLayer" parent="." unique_id=1778151676]
 
-[node name="StartButton" type="Button" parent="UI"]
+[node name="StartButton" type="Button" parent="UI" unique_id=424527797]
 anchors_preset = 7
 anchor_left = 0.5
 anchor_top = 1.0
@@ -50,25 +46,25 @@ grow_horizontal = 2
 grow_vertical = 0
 text = "开始游戏"
 
-[node name="MovingButton" type="Button" parent="UI"]
+[node name="MovingButton" type="Button" parent="UI" unique_id=744134389]
 offset_left = 110.0
 offset_top = 150.0
 offset_right = 270.0
 offset_bottom = 198.0
 text = "缓慢移动"
 
-[node name="CircleButton" type="Button" parent="UI"]
+[node name="CircleButton" type="Button" parent="UI" unique_id=757003339]
 offset_left = 960.0
 offset_top = 96.0
 offset_right = 1056.0
 offset_bottom = 192.0
 text = "圆"
 
-[node name="Hint" type="Label" parent="UI"]
+[node name="Hint" type="Label" parent="UI" unique_id=1422455137]
 anchors_preset = 10
 anchor_right = 1.0
 offset_top = 32.0
 offset_bottom = 72.0
 grow_horizontal = 2
-horizontal_alignment = 1
 text = "按提示完成新手引导"
+horizontal_alignment = 1

@@ -1,19 +1,18 @@
-[gd_resource type="Resource" script_class="TutorialStepDef" format=3]
+[gd_resource type="Resource" script_class="TutorialStepDef" format=3 uid="uid://cjij1hbk25gho"]
 
 [ext_resource type="Script" uid="uid://djqgtqpyuuecc" path="res://addons/DEVFramework/Task/Def/TutorialStepDef.gd" id="1_step"]
 [ext_resource type="Script" uid="uid://ecvlbe1pssoo" path="res://addons/DEVFramework/Signal/SignalDef.gd" id="2_sig"]
 [ext_resource type="Script" uid="uid://bnk4gycnoo48j" path="res://addons/DEVFramework/Task/Def/TutorialTargetDef.gd" id="3_target"]
 [ext_resource type="Script" uid="uid://bskdrnpw1mrbs" path="res://addons/DEVFramework/Signal/NodeSignalDef.gd" id="4_node_sig"]
 
-[sub_resource type="Resource" id="Resource_target"]
-script = ExtResource("3_target")
-node_path = NodePath("Screen3D/Screen/SubViewport/Cube")
-padding = 6.0
-
 [sub_resource type="Resource" id="Resource_sig"]
 script = ExtResource("4_node_sig")
 node_path = NodePath("Screen3D/Screen/SubViewport/Cube")
 signal_name = &"button_up"
+
+[sub_resource type="Resource" id="Resource_target"]
+script = ExtResource("3_target")
+node_path = NodePath("Screen3D/Screen/SubViewport/Cube")
 
 [resource]
 resource_name = "Step_Screen3D"

@@ -1,9 +1,24 @@
-[gd_resource type="Resource" script_class="TutorialStepDef" format=3]
+[gd_resource type="Resource" script_class="TutorialStepDef" format=3 uid="uid://c1nnh1ml2q20s"]
 
 [ext_resource type="Script" uid="uid://djqgtqpyuuecc" path="res://addons/DEVFramework/Task/Def/TutorialStepDef.gd" id="1_step"]
 [ext_resource type="Script" uid="uid://ecvlbe1pssoo" path="res://addons/DEVFramework/Signal/SignalDef.gd" id="2_sig"]
 [ext_resource type="Script" uid="uid://bnk4gycnoo48j" path="res://addons/DEVFramework/Task/Def/TutorialTargetDef.gd" id="3_target"]
 [ext_resource type="Script" uid="uid://bskdrnpw1mrbs" path="res://addons/DEVFramework/Signal/NodeSignalDef.gd" id="4_node_sig"]
+
+[sub_resource type="Resource" id="Resource_sig_a"]
+script = ExtResource("4_node_sig")
+node_path = NodePath("UI/StartButton")
+signal_name = &"pressed"
+
+[sub_resource type="Resource" id="Resource_sig_b"]
+script = ExtResource("4_node_sig")
+node_path = NodePath("UI/MovingButton")
+signal_name = &"pressed"
+
+[sub_resource type="Resource" id="Resource_sig_c"]
+script = ExtResource("4_node_sig")
+node_path = NodePath("UI/CircleButton")
+signal_name = &"pressed"
 
 [sub_resource type="Resource" id="Resource_target_a"]
 script = ExtResource("3_target")
@@ -16,21 +31,6 @@ node_path = NodePath("UI/MovingButton")
 [sub_resource type="Resource" id="Resource_target_c"]
 script = ExtResource("3_target")
 node_path = NodePath("UI/CircleButton")
-
-[sub_resource type="Resource" id="Resource_sig_c"]
-script = ExtResource("4_node_sig")
-node_path = NodePath("UI/CircleButton")
-signal_name = &"pressed"
-
-[sub_resource type="Resource" id="Resource_sig_a"]
-script = ExtResource("4_node_sig")
-node_path = NodePath("UI/StartButton")
-signal_name = &"pressed"
-
-[sub_resource type="Resource" id="Resource_sig_b"]
-script = ExtResource("4_node_sig")
-node_path = NodePath("UI/MovingButton")
-signal_name = &"pressed"
 
 [resource]
 resource_name = "Step_Multi"

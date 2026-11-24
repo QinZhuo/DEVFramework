@@ -13,7 +13,6 @@ signal_name = &"button_up"
 [sub_resource type="Resource" id="Resource_target"]
 script = ExtResource("2_target")
 node_path = NodePath("Ball")
-padding = 16.0
 
 [resource]
 resource_name = "Step_ClickBall"
