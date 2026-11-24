@@ -19,6 +19,13 @@ static func bind(rebuild: Callable, runtime: Callable) -> void:
 	_runtime_provider = runtime
 
 
+## 宿主未 bind(域脚本被单独重编译/加载)时给出明确错误, 而不是在空 Callable 上崩。
+static func _rt() -> Variant:
+	if not _runtime_provider.is_valid():
+		return null
+	return _runtime_provider.call()
+
+
 static func tools() -> Array:
 	return [
 		{
@@ -52,7 +59,9 @@ static func tools() -> Array:
 
 static func _handle_game_control(args: Dictionary) -> Dictionary:
 	# 刻意为 Variant: MCPRuntime 由宿主按"当前磁盘版本"重编译, 这里按 preload 的类型绑定会对不上代次。
-	var rt: Variant = _runtime_provider.call()
+	var rt: Variant = _rt()
+	if rt == null:
+		return MCPResult.err_internal("运维域未绑定运行时", "调用 refresh_tools 重建注册表; 仍失败说明宿主注册后没走 _bind_domains")
 	return await rt.call_game_control(args)
 
 
@@ -85,5 +94,7 @@ static func _handle_refresh_tools(_args: Dictionary) -> Dictionary:
 
 
 static func _handle_build_native(args: Dictionary) -> Dictionary:
-	var rt: Variant = _runtime_provider.call()
+	var rt: Variant = _rt()
+	if rt == null:
+		return MCPResult.err_internal("运维域未绑定运行时", "调用 refresh_tools 重建注册表; 仍失败说明宿主注册后没走 _bind_domains")
 	return await rt.call_build_native_local(args)

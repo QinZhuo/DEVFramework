@@ -357,7 +357,10 @@ func snapshot(now: int = -1) -> Array:
 	for e in live_members():
 		var item: Dictionary = (e as Dictionary).duplicate()
 		item["age_ms"] = t - int(item.get("last_seen", t))
-		item["is_hub"] = hub_mode and str(item.get("uid", "")) == own_uid
+		# 只有自己的条目由本地判定; 别人的条目必须沿用中枢快照里的 is_hub ——
+		# 否则成员进程里看中枢也是 is_hub=false, 客户端会以为这台机器没有中枢。
+		if str(item.get("uid", "")) == own_uid:
+			item["is_hub"] = hub_mode
 		item.erase("last_seen")
 		out.append(item)
 	return out

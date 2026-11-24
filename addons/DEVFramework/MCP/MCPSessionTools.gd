@@ -8,6 +8,7 @@ extends RefCounted
 ## 判据只有 Engine.is_editor_hint() 一条, 收在 _handlers 里, 于是注册时不必再区分两套 handler。
 ## 具体实现在 MCPRuntime(由宿主经 bind 注入), 本域只提供工具面。
 ## **必须带 @tool 且不声明 class_name**, 理由见 MCPDevServer 顶部"工具域文件"一段。
+const MCPResult := preload("res://addons/DEVFramework/MCP/MCPResult.gd")
 const MCPToolContract := preload("res://addons/DEVFramework/MCP/MCPToolContract.gd")
 
 ## 无参 Callable, 返回 MCPRuntime 实例(宿主懒创建, 回指宿主)。
@@ -16,6 +17,13 @@ static var _runtime_provider: Callable = Callable()
 
 static func bind(runtime: Callable) -> void:
 	_runtime_provider = runtime
+
+
+## 宿主未 bind(域脚本被单独重编译/加载)时给出明确错误, 而不是在空 Callable 上崩。
+static func _rt() -> Variant:
+	if not _runtime_provider.is_valid():
+		return null
+	return _runtime_provider.call()
 
 
 static func tools() -> Array:
@@ -91,49 +99,63 @@ static func tools() -> Array:
 ## 编辑器进程: 目标可能是它自己, 也可能是它拉起的游戏 → 走 routed(内部按 process 决定)。
 ## 游戏进程(含导出运行时): 本进程就是目标 → 走 local, 不再转发。
 static func _handle_run_tests(args: Dictionary) -> Dictionary:
-	var rt: Variant = _runtime_provider.call()
+	var rt: Variant = _rt()
+	if rt == null:
+		return MCPResult.err_internal("会话域未绑定运行时", "调用 refresh_tools 重建注册表; 仍失败说明宿主注册后没走 _bind_domains")
 	if Engine.is_editor_hint():
 		return await rt.call_run_tests_routed(args)
 	return await rt.call_run_tests_local(args)
 
 
 static func _handle_job_wait(args: Dictionary) -> Dictionary:
-	var rt: Variant = _runtime_provider.call()
+	var rt: Variant = _rt()
+	if rt == null:
+		return MCPResult.err_internal("会话域未绑定运行时", "调用 refresh_tools 重建注册表; 仍失败说明宿主注册后没走 _bind_domains")
 	if Engine.is_editor_hint():
 		return await rt.call_job_wait_routed(args)
 	return await rt.call_job_wait_local(args)
 
 
 static func _handle_job_list(args: Dictionary) -> Dictionary:
-	var rt: Variant = _runtime_provider.call()
+	var rt: Variant = _rt()
+	if rt == null:
+		return MCPResult.err_internal("会话域未绑定运行时", "调用 refresh_tools 重建注册表; 仍失败说明宿主注册后没走 _bind_domains")
 	if Engine.is_editor_hint():
 		return await rt.call_job_list_routed(args)
 	return await rt.call_job_list_local(args)
 
 
 static func _handle_job_cancel(args: Dictionary) -> Dictionary:
-	var rt: Variant = _runtime_provider.call()
+	var rt: Variant = _rt()
+	if rt == null:
+		return MCPResult.err_internal("会话域未绑定运行时", "调用 refresh_tools 重建注册表; 仍失败说明宿主注册后没走 _bind_domains")
 	if Engine.is_editor_hint():
 		return await rt.call_job_cancel_routed(args)
 	return await rt.call_job_cancel_local(args)
 
 
 static func _handle_perf(args: Dictionary) -> Dictionary:
-	var rt: Variant = _runtime_provider.call()
+	var rt: Variant = _rt()
+	if rt == null:
+		return MCPResult.err_internal("会话域未绑定运行时", "调用 refresh_tools 重建注册表; 仍失败说明宿主注册后没走 _bind_domains")
 	if Engine.is_editor_hint():
 		return await rt.call_perf_routed(args)
 	return await rt.call_perf_local(args)
 
 
 static func _handle_get_logs(args: Dictionary) -> Dictionary:
-	var rt: Variant = _runtime_provider.call()
+	var rt: Variant = _rt()
+	if rt == null:
+		return MCPResult.err_internal("会话域未绑定运行时", "调用 refresh_tools 重建注册表; 仍失败说明宿主注册后没走 _bind_domains")
 	if Engine.is_editor_hint():
 		return await rt.call_get_logs_routed(args)
 	return await rt.call_get_logs_local(args)
 
 
 static func _handle_clear_logs(args: Dictionary) -> Dictionary:
-	var rt: Variant = _runtime_provider.call()
+	var rt: Variant = _rt()
+	if rt == null:
+		return MCPResult.err_internal("会话域未绑定运行时", "调用 refresh_tools 重建注册表; 仍失败说明宿主注册后没走 _bind_domains")
 	if Engine.is_editor_hint():
 		return await rt.call_clear_logs_routed(args)
 	return await rt.call_clear_logs_local(args)

@@ -166,7 +166,11 @@ var _hub_port := DEFAULT_HUB_PORT
 ## 上一次心跳的时刻(ms)与防重入标志(一次心跳会连续 await 多个 HTTP 往返,
 ## 而 _process 每帧都调 _hub_tick)。
 var _hub_last_beat := 0
+## 登记标志的失效阈值(见 _hub_tick)。
+const HUB_BEAT_STALE_MS := 15000
 var _hub_beating := false
+## 本次登记的开始时刻: 用来识别"协程被热重载掐断导致的死标志"。
+var _hub_beat_started_ms := 0
 ## "中枢端口被非本框架程序占用"的告警只打一次: 该判定每次心跳都成立, 不节流会刷屏。
 var _hub_port_foreign_warned := false
 ## 路由 / 运行时 / 传输模块实例(懒创建, 见 _router() / _runtime() / _transport())。
@@ -434,8 +438,14 @@ func _hub_tick() -> void:
 	if now - _hub_last_beat < _hub.heartbeat_ms():
 		return
 	if _hub_beating:
-		return
+		# 标志位会漏: register_to 的 await 可能被脚本热重载掐断(协程随旧脚本实例一起失效),
+		# 之后没有任何代码把它改回 false, 本实例就永远不再心跳、从中枢清单里消失。
+		# 以时间戳判活: 一次正常的登记最多 2s 连接 + 3s 请求, 超过 STALE 必然已失效。
+		if now - _hub_beat_started_ms < HUB_BEAT_STALE_MS:
+			return
+		_hub_beating = false
 	_hub_last_beat = now
+	_hub_beat_started_ms = now
 	if bool(_hub.hub_mode):
 		return
 	_hub_beating = true
@@ -1334,6 +1344,9 @@ func _register_game_play_tools() -> void:
 	# 两个进程都用同一个 handler, 不能留空让宿主套上"转发到游戏"的默认包装。
 	for t in _mod("MCPSessionTools").tools():
 		_register_game_play_tool(t["name"], t["desc"], t["schema"], t["handler"], t["handler"])
+	# 游戏进程只走本函数(编辑器走 start_editor), 域不绑就会在 _runtime_provider.call() 上空调用崩溃。
+	# 必须在 _reset_tools() 之后: 它清 _mod_cache, 重编译出的域实例会丢掉静态 bind。
+	_bind_domains()
 
 ## ======= 运行时: 游戏进程用例(依赖项目单例 / 场景树 / 真实时间轴) =======
 
