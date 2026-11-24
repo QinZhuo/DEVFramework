@@ -26,7 +26,8 @@ var _nl_paths: PackedStringArray = []
 ## 同步规则(预编译为数组, 避免每实体 dict 遍历)。
 var _rule_items: Array = []
 
-## 对齐行号缓存: comp -> query_aligned(NodeLink, [comp]) 结果(实体结构变化时清空)
+## 对齐行号缓存: comp -> {result, struct_v, comp_v}。NodeLink 行集不变也可能有组件增删,
+## 所以按"全局结构版本 + 该组件版本"双判, 只比行集会把旧行号对到新节点上。
 var _aligned_cache := {}
 
 
@@ -88,14 +89,21 @@ func _run(ctx: ECSSystemContext, _delta: float) -> void:
 		var fields: PackedStringArray = item.fields
 		var props: PackedStringArray = item.props
 		# 对齐行号(缓存): aligned[0]=NodeLink 行号, aligned[1]=comp 行号(同一 k 索引)
-		var aligned: Variant = _aligned_cache.get(comp)
-		if aligned == null:
-			aligned = w.query_aligned(NodeLink, [comp])
-			_aligned_cache[comp] = aligned
+		var sv := w.struct_version()
+		var cv := w.comp_version(comp)
+		var entry: Variant = _aligned_cache.get(comp)
+		if entry == null or entry.struct_v != sv or entry.comp_v != cv:
+			entry = {"result": w.query_aligned(NodeLink, [comp]), "struct_v": sv, "comp_v": cv}
+			_aligned_cache[comp] = entry
+		var aligned: Variant = entry.result
 		if aligned.size() < 2:
 			continue
 		var nl_rows_a: PackedInt32Array = aligned[0]
 		var comp_rows_a: PackedInt32Array = aligned[1]
+		# 兜底: 行号必须落在 _nl_nodes 内(缓存意外过期时宁可本帧跳过, 也不越界写节点)
+		if not nl_rows_a.is_empty() and int(nl_rows_a[nl_rows_a.size() - 1]) >= _nl_nodes.size():
+			_aligned_cache.clear()
+			continue
 		# C++ 批量同步(内层循环下沉到原生库): 读列 + 写节点属性
 		w.native().call(&"sync_fields", nl_rows_a, comp_rows_a, _nl_nodes,
 				w.component_name(item.comp), fields, props)

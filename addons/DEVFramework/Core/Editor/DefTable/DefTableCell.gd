@@ -335,3 +335,5 @@ func set_resource_preview(texture: Texture2D) -> void:
 		else:
 			tex.custom_minimum_size = Vector2.ZERO
 			tex.visible = false
+			# 池化复用: 不清纹理的话, 每个休息中的 RESOURCE 格都替旧预览资源把引用留着
+			tex.texture = null

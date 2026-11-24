@@ -33,7 +33,7 @@ addons/DEVFramework/
 ├─ Core/          Def/ Entity/ Tool/ Async/ Pool/ Editor/   ← 跨能力复用
 ├─ <能力>/         Dialogue Task AI Camera ECS Tween UI Focus Render
 │                 ArrayView Value Effect Signal Audio Translation
-│                 Screenshot Changelog GameCommand Test
+│                 Changelog GameCommand Test
 ├─ MCP/           扁平（preload 硬编码网，分层无收益）
 └─ Native/        原生库 + dev.gdextension（禁止移动）
 ```
@@ -54,14 +54,31 @@ C++ 原生能力（ECS）需编译，见 [gdextension/README](../../gdextension/
 
 ## 模块文档
 
+每个模块都有自己的 Readme，写清定位、怎么用、坑与文件结构。MCP 没有模块 Readme，它写在下方
+[MCP 调试服务器](#mcp-调试服务器)一节（对使用者更重要）。
+
 | 模块 | 文档 | 可运行示例 |
 |---|---|---|
+| 基础（Def / Entity / Tool / Async / Pool） | [Core/Readme.md](Core/Readme.md) | — |
 | ECS（列存储 + 系统 + 查询链） | [ECS/Readme.md](ECS/Readme.md) | `Scenes/ECS/ECSDemo.tscn` |
 | 对话 / 气泡 | [Dialogue/Readme.md](Dialogue/Readme.md) | `Scenes/Dialogue/DialogueDemo.tscn` |
 | 任务 / 教程 | [Task/Readme.md](Task/Readme.md) | `Scenes/Tutorial/TutorialDemo.tscn` |
 | GOAP AI | [AI/Readme.md](AI/Readme.md) | `Scenes/AI/GoapDemo.tscn` |
 | 相机（机位竞争 + 混合） | [Camera/Readme.md](Camera/Readme.md) | — |
 | 命令回放 | [GameCommand/Readme.md](GameCommand/Readme.md) | `Scenes/GameCommand/GameCommandDemo.tscn` |
+| UI（面板 / 层级 / 拖拽） | [UI/Readme.md](UI/Readme.md) | — |
+| 渲染（后处理 / 光照贴图 / 截图） | [Render/Readme.md](Render/Readme.md) | — |
+| 补间（动画资产） | [Tween/Readme.md](Tween/Readme.md) | — |
+| 数组视图（虚拟滚动列表） | [ArrayView/Readme.md](ArrayView/Readme.md) | — |
+| 焦点 / 轮廓遮罩 | [Focus/Readme.md](Focus/Readme.md) | — |
+| 数值（ValueDef 树） | [Value/Readme.md](Value/Readme.md) | — |
+| 信号与条件 | [Signal/Readme.md](Signal/Readme.md) | — |
+| 效果（可叠可逆） | [Effect/Readme.md](Effect/Readme.md) | — |
+| 音频 | [Audio/Readme.md](Audio/Readme.md) | — |
+| 多语言 | [Translation/Readme.md](Translation/Readme.md) | — |
+| 更新日志 | [Changelog/Readme.md](Changelog/Readme.md) | — |
+| 测试 | [Test/Readme.md](Test/Readme.md) | — |
+| 原生（C++ 扩展） | [Native/Readme.md](Native/Readme.md) | — |
 
 其余场景见 [Scenes/README.md](../../Scenes/README.md)。
 

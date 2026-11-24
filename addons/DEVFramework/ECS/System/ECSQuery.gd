@@ -183,6 +183,9 @@ func _apply_rows(rows: PackedInt32Array) -> int:
 			"mul":
 				acts.append({"t": 1, "of": str(act.field), "op": 1, "f": float(act.factor), "v": 0.0})
 			"div":
+				## 除数为 0 时乘法路径会算出 INF 铺满整列; 原生 COL_DIV 是静默跳过, 这里与之保持一致
+				if is_zero_approx(float(act.divisor)):
+					continue
 				acts.append({"t": 1, "of": str(act.field), "op": 1, "f": 1.0 / float(act.divisor), "v": 0.0})
 			"set":
 				acts.append({"t": 1, "of": str(act.field), "op": 2, "f": 0.0, "v": float(act.value)})
@@ -218,6 +221,9 @@ func _run() -> int:
 				total += world.batch_apply_where(anchor, must, anchor, act.field,
 						ECSWorld.BatchOp.MULTIPLY_ADD, float(act.factor), 0.0, conditions)
 			"div":
+				## 同批量下发路径: 除数为 0 直接跳过, 不写 INF
+				if is_zero_approx(float(act.divisor)):
+					continue
 				total += world.batch_apply_where(anchor, must, anchor, act.field,
 						ECSWorld.BatchOp.MULTIPLY_ADD, 1.0 / float(act.divisor), 0.0, conditions)
 			"set":
@@ -238,7 +244,9 @@ func _run() -> int:
 				if rows.is_empty():
 					continue
 				var comp_rows := {}
-				for i in act.comps.size():
+				# 原生只返回它真匹配到的组件结果, 少一个就少一个, 不能按下标硬取越界
+				var got: int = mini(act.comps.size(), aligned.size() - 1)
+				for i in got:
 					comp_rows[_comp_name(act.comps[i])] = aligned[i + 1]
 				total += rows.size()
 				act.callable.call(rows, comp_rows, world)

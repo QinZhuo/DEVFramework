@@ -59,7 +59,9 @@ var parallel_threads: int:
 		return scheduler().parallel_threads
 	set(value):
 		scheduler().parallel_threads = value
-		_core.set_thread_count(maxi(value, 0))
+		## 原生库缺失时 _core 为 null(见 _init), 此处不能直接解引用
+		if _core != null:
+			_core.set_thread_count(maxi(value, 0))
 
 
 ## 调度器懒创建(它要回指本世界: 解析组件名、取原生核心、作上下文宿主)。
@@ -193,6 +195,10 @@ func is_alive(entity: int) -> bool:
 
 ## 销毁实体(从所有组件移除, 复用 id 防悬垂)
 func destroy_entity(entity: int) -> void:
+	## 已死/重复销毁: 原生 destroy 是空操作, 但这里继续走会把 remove 与 destroyed 钩子再发一遍
+	## (池化对象的双重回收就是这么来的)
+	if not _core.is_alive(entity):
+		return
 	_cleanup_relations(entity)   # 关系清理: 解除该实体的父/子关联(索引 + 对端 target)
 	var pending_comps: Array = []
 	if _has_any_component_hooks or not _entity_destroyed_hooks.is_empty():
@@ -354,11 +360,17 @@ func has_component(entity: int, component) -> bool:
 
 func remove_component(entity: int, component) -> void:
 	var name := resolve_component_name(component)
-	if name != &"":
-		_struct_mutex.lock()
+	if name == &"":
+		return
+	_struct_mutex.lock()
+	## 原生 remove_component 对"没有该组件/实体已死"是幂等空操作, 这里若照样发钩子,
+	## 用户侧的解绑/归还池会被执行两次, 所以先确认真的移除过
+	var had: bool = _core.has_component(entity, name)
+	if had:
 		_core.remove_component(entity, name)
 		_bump_comp(name)
-		_struct_mutex.unlock()
+	_struct_mutex.unlock()
+	if had:
 		_fire_component_remove(name, entity)
 
 ## 统一的组件名解析入口(全框架唯一实现): Script -> 注册名 / 反射类名; String(Name) 原样返回。
@@ -397,9 +409,10 @@ func set_field(entity: int, component, field: StringName, value) -> void:
 	_record_access(cn)
 	_core.set_field(entity, cn, field, value)
 	# 逐帧"每个单位都动"的场景走单实体增量: 只挪一格, 不触发整表重建
-	if _spatial_comp == cn and _spatial_field == field:
+	var spatial_moved := _spatial_comp == cn and _spatial_field == field
+	if spatial_moved:
 		_core.spatial_update_entity(entity)
-	_mark_dirty(cn)
+	_mark_dirty(cn, spatial_moved)
 
 
 # ---- 逐实体读写守卫(防静默慢) ----
@@ -690,6 +703,16 @@ func _cache_store(key: String, anchor_name: StringName, must_names: PackedString
 func _bump_comp(comp: StringName) -> void:
 	_comp_versions[comp] = _comp_versions.get(comp, 0) + 1
 
+
+## 全局结构版本(destroy / 批量结构变更 +1)。外部索引可据此判断"我的行号还作数吗"。
+func struct_version() -> int:
+	return _world_version
+
+
+## 某个组件的结构版本(该组件实体集合变化 +1)
+func comp_version(comp) -> int:
+	return _comp_versions.get(resolve_component_name(comp), 0)
+
 ## 取整列数据(返回 Packed 数组拷贝, 按 anchor 组件的 dense 行号索引)。
 func get_column(component, field: StringName):
 	var cn := resolve_component_name(component)
@@ -970,11 +993,12 @@ func cmd_create() -> int:
 
 ## 排队: 销毁实体(flush 时执行, 若已死亡则忽略)。
 func cmd_destroy(entity: int) -> void:
-	if entity >= 0:
-		_cmd_mutex.lock()
-		_core.cmd_destroy(entity)
-		_cmd_note(["destroy", entity])
-		_cmd_mutex.unlock()
+	## 负句柄是 cmd_create 的占位句柄, 原生 flush 时才解析成真实实体;
+	## 这里若只放行 >=0, "批量建完立刻删"的命令就只建不删(实体与内存持续泄漏)
+	_cmd_mutex.lock()
+	_core.cmd_destroy(entity)
+	_cmd_note(["destroy", entity])
+	_cmd_mutex.unlock()
 
 ## 排队: 给实体加组件(flush 时执行)。
 func cmd_add_component(entity: int, component) -> void:
@@ -1269,12 +1293,12 @@ func _fire_entity_destroyed(entity: int) -> void:
 #  注意: get_column 返回共享引用后原地修改不经过写 API, 不会被标记。
 
 ## 标记组件本帧被写(写路径内部调用)。
-func _mark_dirty(comp: StringName) -> void:
+func _mark_dirty(comp: StringName, skip_spatial := false) -> void:
 	if comp == &"":
 		return
 	# 空间索引靠这里失效: 所有写路径(单字段/整列/批量)最终都会走到 _mark_dirty,
 	# 所以在 C++ 的 set_field 里逐个挂钩反而不如这里一处可靠。
-	if _spatial_comp != &"" and comp == _spatial_comp:
+	if not skip_spatial and _spatial_comp != &"" and comp == _spatial_comp:
 		_core.spatial_invalidate()
 	_dirty_mutex.lock()
 	_dirty_comps[comp] = _frame_count

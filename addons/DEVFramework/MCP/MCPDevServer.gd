@@ -837,11 +837,6 @@ func _endpoint_url() -> String:
 	return _transport()._endpoint_url()
 
 
-## 从 query 串取参数值(键名大小写不敏感)。旧式 SSE 传输把 sessionId 放在 query 上。
-static func _query_param(query: String, key: String) -> String:
-	return MCPTransport.query_param(query, key)
-
-
 ## CORS 响应头
 func _cors_headers(headers: Dictionary) -> Dictionary:
 	return _transport()._cors_headers(headers)

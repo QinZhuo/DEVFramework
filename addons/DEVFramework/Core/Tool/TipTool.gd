@@ -134,8 +134,11 @@ static func _push(source: Object, items: Array, priority: int) -> void:
 
 ## 每帧：到期显示/收起；栈、设备、语言、键位任一变化时才重渲染
 static func _tick() -> void:
-	if not _can_show():
+	if not is_instance_valid(label):
 		_unbind()
+		return
+	## label 暂时离树(UI 层重建/切场景过渡)时必须继续挂着: 一旦解绑就没人再调 attach, 提示从此失效
+	if not label.is_inside_tree():
 		return
 	_flush_delayed()
 	_flush_hiding()
