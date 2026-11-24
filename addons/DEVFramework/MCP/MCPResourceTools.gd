@@ -2,18 +2,15 @@
 extends RefCounted
 
 ## ======= 资源与项目设置域 =======
-## (打开场景、写项目设置、创建/读取 .tres、触发重新导入)。两者唯一的交集是都要走 res:// 路径
-## 接缝可以存在, 但漏调必须可见; 漏调会静默失效的场合一律不许用接缝。据此各域给了不同答案,
-## 且都正确, 不要为了"看起来统一"而改:
-##   - log 域→ 注入 bind_logger: 漏调后果是 get_logs 返回"日志捕获器未就绪", **显式报错**。
+## 打开场景、读写项目设置、创建/读取 .tres、重新导入、预览与离屏渲染。
+## 全部走 res:// 路径, 依赖 EditorInterface —— 只在编辑器进程注册。
 const MCPResult := preload("res://addons/DEVFramework/MCP/MCPResult.gd")
-const MCPToolSchema := preload("res://addons/DEVFramework/MCP/MCPToolSchema.gd")
+const MCPToolContract := preload("res://addons/DEVFramework/MCP/MCPToolContract.gd")
 const MCPEditorEnv := preload("res://addons/DEVFramework/MCP/MCPEditorEnv.gd")
 const MCPScreenshotTools := preload("res://addons/DEVFramework/MCP/MCPScreenshotTools.gd")
 
-## 预览/渲染图都落在同一个目录, 每调用一次新增一个文件。不设上限就是"每看一次造型留一张
-## 512px PNG", 一个下午能堆出几百个再也没人会看的中间产物 —— 落盘产物属于"可重建"的东西,
-## 保留最近 N 个足够回看; 要长期留存的图请自己挪出这个目录。
+## 预览/渲染图每调用一次新增一个文件, 不设上限会堆出几百个没人看的中间产物。
+## 落盘产物属"可重建", 保留最近 N 个足够回看; 要长期留存请自己挪出这个目录。
 const MAX_PREVIEWS := 32
 ## 截图留得比预览多一点(截图常被拿去当对照证据), 但同样要有上限。
 const MAX_SHOTS := 64
@@ -23,12 +20,12 @@ const MAX_SHOTS := 64
 static func register(add_tool: Callable) -> void:
 	add_tool.call("open_scene",
 		"在编辑器打开场景(res://路径)。",
-		{"type": "object", "properties": {"path": MCPToolSchema.str_arg("场景 res:// 路径")}, "required": ["path"]},
+		{"type": "object", "properties": {"path": MCPToolContract.str_arg("场景 res:// 路径")}, "required": ["path"]},
 		_handle_open_scene)
 
 	add_tool.call("set_main_scene",
 		"设置项目主场景并保存project.godot。",
-		{"type": "object", "properties": {"path": MCPToolSchema.str_arg("主场景 res:// 路径")}, "required": ["path"]},
+		{"type": "object", "properties": {"path": MCPToolContract.str_arg("主场景 res:// 路径")}, "required": ["path"]},
 		_handle_set_main_scene)
 
 	add_tool.call("project_setting",
@@ -48,13 +45,13 @@ static func register(add_tool: Callable) -> void:
 
 	add_tool.call("reimport",
 		"重新导入资源(重建.godot/imported缓存), 资源显示异常/导入配置变更后使用。仅对有同名 .import 的资源有效(图片/音频/模型等); .gd/.tres/.json 等纯文本资源无需导入。",
-		{"type": "object", "properties": {"path": MCPToolSchema.str_arg("要重新导入的资源 res:// 路径")}, "required": ["path"]},
+		{"type": "object", "properties": {"path": MCPToolContract.str_arg("要重新导入的资源 res:// 路径")}, "required": ["path"]},
 		_handle_reimport)
 
 	add_tool.call("create_resource",
 		"创建 .tres 资源配置: 指定脚本(class_name 或 res://脚本路径)与属性字典, 写入 res:// 或 user:// 路径。配置驱动开发时创建 Def 资源用。注意: 新建脚本 class_name 需先 restart_editor 才能被引擎识别, 若创建失败请先 reload。",
 		{"type": "object", "properties": {
-			"path": MCPToolSchema.str_arg("要创建的 .tres 完整路径(如 res://Assets/Def/MyDef.tres)"),
+			"path": MCPToolContract.str_arg("要创建的 .tres 完整路径(如 res://Assets/Def/MyDef.tres)"),
 			"script": {"type": "string", "description": "脚本 class_name 或 res:// 脚本路径(如 ChangelogDef 或 res://addons/.../ChangelogDef.gd)"},
 			"properties": {"type": "object", "description": "属性字典(键=导出属性名, 值=属性值), 可嵌套资源/数组"}
 		}, "required": ["path", "script"]},
@@ -63,7 +60,7 @@ static func register(add_tool: Callable) -> void:
 	add_tool.call("get_resource_info",
 		"读取 .tres/.tscn 资源的完整属性树(递归), 便于理解配置结构。返回类型/导出属性/嵌套子资源/引用的脚本。**对 .tscn 还会给出节点结构(root/各节点 path+type+script), 无需先在编辑器打开**; 但要读运行时的属性值仍需 open_scene 后用 get_scene_tree / get_node_info。排查配置或了解 Def 资源用。",
 		{"type": "object", "properties": {
-			"path": MCPToolSchema.str_arg("资源 res:// 路径(如 res://Assets/Def/MyDef.tres)"),
+			"path": MCPToolContract.str_arg("资源 res:// 路径(如 res://Assets/Def/MyDef.tres)"),
 			"max_depth": {"type": "integer", "description": "嵌套资源最大展开深度, 默认 5"}
 		}, "required": ["path"]},
 		_handle_get_resource_info)
@@ -71,7 +68,7 @@ static func register(add_tool: Callable) -> void:
 	add_tool.call("preview_resource",
 		"把资源渲染成 PNG 并返回路径(两者都只是落盘产物, 删掉即回退)。mode=thumbnail(默认)取编辑器为它生成的**预览缩略图**(FileSystem 里那种): 视角固定、尺寸由编辑器缩略图设置决定, 传**源文件路径**(如 res://demo/deer.vox, 需已导入)。mode=render 改用离屏渲染, **相机可调**(yaw/pitch/dist/size/bg/transparent), 用于逐角度放大核对造型(模型/道具的多角度核对走这条)。",
 		{"type": "object", "properties": {
-			"path": MCPToolSchema.str_arg("资源路径: thumbnail 传已导入的源文件(如 res://demo/deer.vox); render 传 Mesh/.mesh/含 Mesh 的 .tscn(如 res://demo/samples/cottage.qvx)"),
+			"path": MCPToolContract.str_arg("资源路径: thumbnail 传已导入的源文件(如 res://demo/deer.vox); render 传 Mesh/.mesh/含 Mesh 的 .tscn(如 res://demo/samples/cottage.qvx)"),
 			"mode": {"type": "string", "enum": ["thumbnail", "render"], "description": "渲染方式, 默认 thumbnail=编辑器缩略图(视角固定); render=离屏渲染(相机可调)"},
 			"yaw": {"type": "number", "description": "mode=render: 水平角(度), 默认 35"},
 			"pitch": {"type": "number", "description": "mode=render: 俯仰角(度), 默认 20, 范围 -85..85"},
@@ -119,7 +116,7 @@ static func _to_res_path(ref: String) -> String:
 	return FileTool.to_res_path(s)
 
 
-## 项目设置项读写统一入口: value 缺省=读取, 提供=写入并保存
+## 项目设置项读写统一入口: value 缺省=读取, 提供=写入并保存。
 static func _handle_project_setting(args: Dictionary) -> Dictionary:
 	if args.has("value"):
 		return _handle_set_project_setting(args)
@@ -136,8 +133,8 @@ static func _handle_get_project_setting(args: Dictionary) -> Dictionary:
 
 
 ## ======= 一处合法的裸读: "value" =======
-##   注意这是**约定而非守卫**: 契约自检(_audit_tools / MCPToolAudit.audit_handler_params)校验的是
-##   VariantTool 裸读。新增 handler 时只能靠自律 —— 这点必须写明, 否则后人会误以为
+## 读写合一: value 缺省=读取, 提供=写入, 故不能用 VariantTool.get_* 判别缺省。
+## 这是**约定而非守卫**: 契约自检只校验 VariantTool 写法, 新增 handler 需自律。
 static func _handle_set_project_setting(args: Dictionary) -> Dictionary:
 	var name := VariantTool.get_string(args, "name")
 	if name.is_empty():
@@ -155,9 +152,8 @@ static func _handle_set_project_setting(args: Dictionary) -> Dictionary:
 	return MCPResult.ok("已设置 %s = %s 并保存" % [name, str(value)])
 
 
-## 保存(scope=scene|all)。
-## scope=scene 必须单独存在: 只存"当前正在编辑的那个场景"与"全部场景"是两种意图,
-## '只存当前'与'存全部'是同一个问题的两个取值 —— 分成两个工具时, 想只存当前就得赌"没有别的场景是脏的"。
+## 保存(scope=scene|all)。两个取值是两种意图: 想只存当前时不该去赌"没有别的场景是脏的",
+## 故合成一个工具用 scope 区分, 而不是两个工具。
 static func _handle_save(args: Dictionary) -> Dictionary:
 	var scope := VariantTool.get_string(args, "scope", "scene").strip_edges()
 	if scope.is_empty():
@@ -188,7 +184,7 @@ static func _handle_save(args: Dictionary) -> Dictionary:
 
 
 ## 重新导入资源。
-## **必须先确认该资源归导入系统管**: reimport_files 是拿同名 .import 去驱动导入器的, 而
+## **必须先确认该资源归导入系统管**: reimport_files 是拿同名 .import 去驱动导入器的, 目录里的源文件不归它管。
 static func _handle_reimport(args: Dictionary) -> Dictionary:
 	var path := VariantTool.get_string(args, "path")
 	if path.is_empty() or not ResourceLoader.exists(path):
@@ -343,9 +339,8 @@ static func _resource_property_tree(res: Resource, depth: int, max_depth: int) -
 	return out
 
 
-## .tscn 的节点结构: PackedScene 加载后本身只有内建属性, 节点树要实例化才拿得到。
-## 实例化后不加入场景树、读完即 free, 因此对当前编辑场景零副作用。
-## 此前没有打开的场景根本无法读出结构(只能 read_file 硬解析 .tscn 文本), 这是最常见的"改之前先看清"需求。
+## .tscn 的节点结构: PackedScene 本身只有内建属性, 节点树要实例化才拿得到。
+## 实例化后不入树、读完即 free, 对当前编辑场景零副作用 —— 未打开的场景也能看清结构。
 static func _scene_structure(res: Resource, max_depth: int) -> Dictionary:
 	if not (res is PackedScene):
 		return {}
@@ -396,8 +391,7 @@ static func _value_type(v: Variant) -> String:
 
 
 ## preview_resource 的统一入口: mode 决定走编辑器缩略图还是离屏渲染。
-## 合并的理由: 两者都是"把资源变成一个 PNG 给调用方看", 差异只在相机能不能调 ——
-## 分成两个工具时, 调用方要先猜哪个能看到造型。
+## 两者都是"把资源变成一个 PNG 给调用方看", 差异只在相机能不能调, 故合成一个工具。
 static func _handle_preview_resource(args: Dictionary) -> Dictionary:
 	if not Engine.is_editor_hint():
 		return MCPResult.fail("仅在编辑器模式可用")
@@ -500,10 +494,8 @@ static func _preview_by_render(path: String, args: Dictionary) -> Dictionary:
 
 
 ## ======= 离屏渲染的共用底座(预览 / 场景缩略图都走这里) =======
-## 为什么要共用: 此前"看一个资源长什么样"有三套独立实现 —— EditorResourcePreview(缩略图)、
-## 预览域的可调相机渲染、以及截图域自己搭的 256px 裸 SubViewport。三者都在干"把树外内容渲成
-## 一张图", 但一支补了环境光/主光、一支没有, 同样的模型在两边亮度不同 —— 差异纯属实现漂移。
-## 现在只留这一个底座: 相机/灯光/环境/尺寸/透明底全由 args 决定, 调用方只选"渲染什么"。
+## 只有这一个底座: 相机/灯光/环境/尺寸/透明底全由 args 决定, 调用方只选"渲染什么"。
+## 各写一套的后果是同样的模型在不同入口亮度不同 —— 差异纯属实现漂移。
 
 ## 离屏渲染一个节点子树, 返回 Image(null = 拿不到画面)。不落盘, 由调用方决定存哪。
 ## args: size(默认 512) / yaw / pitch / dist / bg / transparent

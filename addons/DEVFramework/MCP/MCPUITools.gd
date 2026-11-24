@@ -1,16 +1,19 @@
 @tool
 extends RefCounted
 ## ======= 运行期可交互元素查询域 =======
-## 各在哪"(给模型定位)。把定位寄生成截图的一个参数, 模型就必须先截图才能点, 而那图只是副产品。
-## 两者差一个 content_scale 系数(项目实测约 0.88) —— 把前者直接当点击坐标, 会稳定点在目标
+## 把"画面里有什么可点的东西、各在哪"结构化地报给模型, 供 simulate_* 用 ref 定位。
+## 坐标一律同时给 viewport_rect 与 window_rect: 两者差一个 content_scale 系数, 拿前者当
+## 点击坐标会点在目标之外。
 ## 依赖: MCPResult + VariantTool。不引用 MCPDevServer。必须带 @tool 且不声明 class_name。
 
 const MCPResult := preload("res://addons/DEVFramework/MCP/MCPResult.gd")
 
 ## ref -> NodePath。以最后一次 get_interactables 为准: 界面一变(节点重建/动画位移)旧 ref 就该
+## 作废, 别指望它还能对上坐标。
 static var _ref_paths: Dictionary = {}
 
 ## 交互判据之一: 有连接才说明"点了有反应"。没挂 pressed 的 Button 点了不会有任何事, 只看类型
+## 会把死按钮也报成可点。
 const _SIGNALS := ["pressed", "gui_input", "toggled", "value_changed", "item_selected",
 	"text_changed", "text_submitted", "item_activated", "focus_entered"]
 
@@ -45,8 +48,8 @@ static func _handle_get_interactables(args: Dictionary) -> Dictionary:
 	var max_nodes: int = clampi(VariantTool.get_int(args, "max_nodes", 60), 1, 200)
 	var max_depth: int = clampi(VariantTool.get_int(args, "max_depth", 24), 1, 32)
 
-	# capped 必须单独报出来: 只报 max_nodes 截断的话, "面板真是空的"与"内容在深度上限之外"
-	# 返回的清单长得一模一样(只剩几个空壳容器), 调用方无从下手。实测踩过 —— 设置面板在
+	# capped 必须单独报出来: 否则"面板真是空的"与"内容在深度上限之外"返回的清单长得一模一样
+	# (只剩几个空壳容器), 调用方无从下手。
 	var want_hidden := VariantTool.get_bool(args, "include_hidden", false)
 	var controls: Array = []
 	var hidden_controls: Array = []
@@ -68,6 +71,7 @@ static func _handle_get_interactables(args: Dictionary) -> Dictionary:
 			continue
 		var interactive := _is_interactive(c)
 		# 子视口内的元素换用**更严**的判据: 那边几乎所有 Label 都被框架挂了 gui_input(3D 物体的
+		# 面板就是这样), 只看有无连接会把整块面板算成可点。
 		var in_window := c.get_viewport() == loop.root
 		if not in_window:
 			interactive = _is_directly_clickable(c)
@@ -144,6 +148,7 @@ static func _handle_get_interactables(args: Dictionary) -> Dictionary:
 					"w": r2.size.x * scale.x, "h": r2.size.y * scale.y}
 			else:
 				# 刻意不给 window_rect: 子视口坐标与窗口坐标之间没有换算关系, 写一个出来只会被
+				# 误点。
 				var sv := c2.get_viewport() as SubViewport
 				e["sub_viewport"] = String(sv.get_path()) if sv != null else ""
 				e["sub_viewport_size"] = {"x": float(sv.size.x), "y": float(sv.size.y)} if sv != null else {}
@@ -217,6 +222,7 @@ static func resolve_ref(ref: String) -> Dictionary:
 	var vp := c.get_viewport()
 	if vp != loop.root:
 		# 子视口内的元素: get_global_rect() 给的就是子视口像素坐标, 与 SubView3D 把 3D 命中点
+		# 投出来的窗口坐标不是一回事。
 		return {
 			"ok": true,
 			"space": "subviewport",
@@ -238,9 +244,9 @@ static func resolve_ref(ref: String) -> Dictionary:
 	}
 
 
+## 收集可见控件到 out; want_hidden=true 时顺带把"在树里但不可见"的那一层收进 hidden。
+## hidden 与 out 必须分开: 后者是"能点的东西", 前者只是诊断线索, 混在一起会让 ref 指到点不到的控件。
 ## 返回 true = 有子树因触及上限而没被走到(深度上限或节点硬上限), 调用方据此报 depth_capped。
-## 收集可见控件; want_hidden=true 时顺带把"在树里但不可见"的那一层收进 hidden。
-## hidden 与 out 必须分开: 后者是"能点的东西", 前者只是诊断线索, 混在一起会让 ref 指到点不到的东西。
 static func _collect_controls(node: Node, out: Array, max_depth: int, depth: int, hidden: Array = [], want_hidden: bool = false) -> bool:
 	# 400 是收集阶段的硬上限: 界面重建时它防住"节点暴涨把一次调用拖死", 不影响结果集大小
 	if depth > max_depth or out.size() >= 400:
@@ -265,6 +271,7 @@ static func _collect_controls(node: Node, out: Array, max_depth: int, depth: int
 
 static func _sort_items(a: Dictionary, b: Dictionary) -> bool:
 	# 分层: 主视口 UI → 子视口 UI → 3D 物体。3D 排在最后不是"低一等", 而是它没有可直接
+	# 点击的屏幕矩形(点击由工具在物体自身上激活)。
 	if a["rank"] != b["rank"]:
 		return a["rank"] < b["rank"]
 	if a["is_3d"]:
@@ -280,7 +287,7 @@ static func _sort_items(a: Dictionary, b: Dictionary) -> bool:
 
 
 static func _visible_text(c: Control) -> String:
-	# Label 与 BaseButton 各自都有 text, 但两者**无继承关系**(都直接继承 Control), 故必须分开
+	# Label 与 BaseButton 各自都有 text, 但两者**无继承关系**(都直接继承 Control), 故必须分开判。
 	if c is Label:
 		return (c as Label).text
 	# RichTextLabel 的 text 存的是 bbcode 源码, 且用 append_text() 追加的内容不会写回 text,
@@ -333,6 +340,7 @@ static func _collect_interactables_3d(node: Node, out: Array, max_depth: int, de
 			if co.input_ray_pickable and co.is_visible_in_tree() and _is_interactable_3d(co):
 				out.append(co)
 		# 刻意不像 2D 那样对不可见节点剪枝: 3D 这边节点数远小于 Control, 为省一遍遍历而
+		# 记一份隐藏名单不值得。
 		if _collect_interactables_3d(child, out, max_depth, depth + 1):
 			capped = true
 	return capped

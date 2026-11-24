@@ -2,16 +2,13 @@
 extends RefCounted
 
 ## ======= 文件操作域 =======
-##   - MCPResult      响应封装
-##   - MCPToolSchema  请求 schema 工厂
-##   - VariantTool    全局 class_name, 入参读取
-## 删错东西/工程损坏, 且**不报错**。改本文件时不要把它们当冗余检查清理掉。
-##
-## 工具面: read_file(含 probe)/ write_file(含 mode)/ delete_file / move_file。
+## 工具面: read_file(含 probe) / write_file(含 mode) / delete_file / move_file。
 ##   - 追加与覆盖是同一件事的两种模式, 故 write_file(mode=overwrite|append) 一个入口;
 ##   - "删之前先探一下"是读动作, 故 read_file(probe=true) 顺带回答存在性, 不单独占一个工具。
+## 依赖: MCPResult(响应封装) + MCPToolContract(请求 schema 工厂)。**必须带 @tool 且不声明 class_name**。
+## 写路径守卫与 dry_run 不是冗余检查: 漏一次就能删错东西或损坏工程, 且**不报错**。
 const MCPResult := preload("res://addons/DEVFramework/MCP/MCPResult.gd")
-const MCPToolSchema := preload("res://addons/DEVFramework/MCP/MCPToolSchema.gd")
+const MCPToolContract := preload("res://addons/DEVFramework/MCP/MCPToolContract.gd")
 
 
 ## ======= 域注册入口 =======
@@ -20,17 +17,17 @@ const MCPToolSchema := preload("res://addons/DEVFramework/MCP/MCPToolSchema.gd")
 static func register(add_tool: Callable) -> void:
 	add_tool.call("read_file",
 		"读取文件内容(UTF-8)。返回内容与大小。大文件分段读: offset=起始字符下标(单位是**字符**不是字节), limit=本次最多返回字符数(默认0=不限); 返回的 next_char_offset=-1 表示已读完, 否则把它作为下次 offset 传入即可续读(同 get_logs 的 since/next 约定)。只想探存在性/大小而不读内容时传 probe=true(文件或目录都行)。",
-		MCPToolSchema.read_file(),
+		MCPToolContract.read_file(),
 		_handle_read_file)
 
 	add_tool.call("write_file",
 		"写入内容到文件(不存在则创建, 含目录)。mode=overwrite(默认)整份覆盖、不可撤销; mode=append 追加到末尾。建议先 dry_run=true 预演(会告知是否覆盖已有文件), 确认后再实写。",
-		MCPToolSchema.write_content(),
+		MCPToolContract.write_content(),
 		_handle_write_file)
 
 	add_tool.call("delete_file",
 		"删除文件或空目录(**不可撤销**)。强烈建议先传 dry_run=true 预演(返回目标大小), 确认后再删。目录只能删空目录。",
-		MCPToolSchema.file_path("文件或目录路径(res:// 或 user://)", true),
+		MCPToolContract.file_path("文件或目录路径(res:// 或 user://)", true),
 		_handle_delete_file)
 
 	add_tool.call("move_file",
@@ -51,7 +48,7 @@ static func _handle_read_file(args: Dictionary) -> Dictionary:
 	var path: String = VariantTool.get_string(args, "path")
 	if path.is_empty():
 		return MCPResult.fail("必须提供 path")
-	# probe: 只探测存在性。目录也要能探(删空目录前正是最需要它的时候), 故 exists 取
+	# probe: 只探测存在性。目录也要能探(删空目录前正是最需要它的时候), 故 exists 取文件与目录的并集。
 	if VariantTool.get_bool(args, "probe"):
 		return _probe_path(path)
 	if not FileAccess.file_exists(path):
@@ -62,18 +59,18 @@ static func _handle_read_file(args: Dictionary) -> Dictionary:
 	var file := FileAccess.open(path, FileAccess.READ)
 	if file == null:
 		return MCPResult.fail("无法打开文件: %s (错误码: %d)" % [path, FileAccess.get_open_error()])
-	# 仅支持 UTF-8(引擎默认编码)。此前声明的 gbk/gb2312 实际未实现解码, 已移除以免误导。
+	# 仅支持 UTF-8(引擎默认编码)。不声明未实现的解码方式, 以免误导。
 	var content := file.get_as_text()
 	var size := file.get_length()
 	file.close()
-	# 分段读: offset/limit 按**字符**切(String 的索引单位), 而上面的 size 是 `get_length()`
+	# 分段读: offset/limit 按**字符**切(String 的索引单位), 而 `get_length()` 给的是字节数。
 	var total_chars := content.length()
 	var offset: int = maxi(0, VariantTool.get_int(args, "offset", 0))
 	var limit: int = VariantTool.get_int(args, "limit", 0)
 	if offset > total_chars:
 		# 不静默返回空串: 读到文件末尾却拿到空内容, 调用方无法区分"文件是空的"与"游标越界",
 		return MCPResult.fail("offset %d 超出文件末尾(总字符数 %d)。文件已读完, 无需续读; 若确需重读请把 offset 回退到 0" % [offset, total_chars])
-	# limit<=0 表示不限: substr 的第二参传 -1 即"到末尾", 但显式分两支写, 免得读代码的人
+	# limit<=0 表示不限: substr 的第二参传 -1 即"到末尾", 但显式分两支写, 免得读代码的人以为会切出空串。
 	var chunk: String = content.substr(offset, limit) if limit > 0 else content.substr(offset)
 	var consumed: int = offset + chunk.length()
 	return MCPResult.ok_json({
@@ -202,7 +199,7 @@ static func _handle_write_file(args: Dictionary) -> Dictionary:
 			"mode": "append",
 			"message": "内容追加成功"
 		})
-	# overwrite 与"append 但目标不存在"共用同一条创建路径: 两份创建逻辑的漂移形态是
+	# overwrite 与"append 但目标不存在"共用同一条创建路径: 两份创建逻辑的典型漂移是一边补了守卫、另一边没补。
 	var file := FileAccess.open(path, FileAccess.WRITE)
 	if file == null:
 		return MCPResult.fail("无法写入文件: %s (错误码: %d)" % [path, FileAccess.get_open_error()])
@@ -223,7 +220,7 @@ static func _handle_delete_file(args: Dictionary) -> Dictionary:
 	var guard := guard_write_path(path)
 	if not guard.is_empty():
 		return MCPResult.fail(guard)
-	# dry_run 读一次就够: 原本两个分支各判一次 `args.get("dry_run") == true`, 严格比较
+	# dry_run 读一次就够: `args.get("dry_run") == true` 的严格比较在入参来自 JSON 时并不可靠, 统一走 VariantTool。
 	var dry_run := VariantTool.get_bool(args, "dry_run")
 	if not FileAccess.file_exists(path):
 		var dir := DirAccess.open(path)

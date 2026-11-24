@@ -2,7 +2,6 @@
 extends RefCounted
 
 ## ======= 截图域: 编辑器侧捕获(仅编辑器进程) =======
-##
 ## 本域只做一件编辑器独有的事: **取编辑器自己的视口像素**。
 ## "当前场景缩略图"不再在这里另搭一套 SubViewport —— 那与资源域"把资源渲成一张图"是同一件事,
 ## 两份实现必然漂移(一边补了环境光/主光、一边没有, 同样的场景在两处亮度不同)。
@@ -23,7 +22,7 @@ static func capture_editor_side(capture_type: String, args: Dictionary) -> Dicti
 	if capture_type == "scene":
 		return await MCPResourceTools.scene_thumbnail(args)
 	if capture_type != "editor":
-		# 这里**故意不做**"视作 editor"的兜底: schema 的 enum + MCPArgCheck 只挡协议路径,
+		# 这里**故意不做**"视作 editor"的兜底: schema 的 enum + MCPToolContract 只挡协议路径,
 		return MCPResult.fail("capture_type=%s 不是本域支持的模式(本域只做 editor / scene; game 由主服务器转发去游戏进程)" % capture_type)
 	var img: Image = await _capture_editor_viewport()
 	if img == null or img.is_empty():

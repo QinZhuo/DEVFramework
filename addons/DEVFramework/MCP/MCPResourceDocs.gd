@@ -242,8 +242,8 @@ static func read(uri: String) -> Dictionary:
 
 
 ## ======= 内置文档(本框架自带的"长文档在此, 别塞进工具描述") =======
-## 为什么要有它: tools/list 是**常驻**开销(每个会话开始就要交一次, 实测 50 个工具的
-## description+schema 合起来 92KB), 而 resources 是**按需**的 —— 只有真要按这份说明操作时才读。
+## 为什么要有它: tools/list 是**常驻**开销(每个会话开始都要交一次全部工具的 description+schema),
+## 而 resources 是**按需**的 —— 只有真要按这份说明操作时才读。
 ## 所以凡是"背景/为什么/例外/踩坑"这类长文都放这里, 工具描述只留"什么时候用、关键约束"。
 ## 这些 uri 是稳定契约(工具描述里直接引用了它们), 改名等于改 API。
 static func register_builtin() -> void:

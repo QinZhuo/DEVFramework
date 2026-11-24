@@ -95,7 +95,7 @@ func _push_error(entry: Dictionary) -> void:
 		_err_base_index += 1
 
 
-## 剥离 ANSI 转义序列(颜色码等)。这些控制字符会被 JSON.stringify 原样输出,
+## 剥离 ANSI 转义序列(颜色码等)。这些控制字符会被 JSON.stringify 原样输出, 污染客户端解析。
 func _strip_ansi(text: String) -> String:
 	if not text.contains(String.chr(27)):
 		return text

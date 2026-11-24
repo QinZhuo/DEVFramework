@@ -2,15 +2,15 @@
 extends RefCounted
 
 ## ======= 场景树 / 场景编辑域 =======
-##   - 场景树 / 节点(读): get_scene_tree / get_node_info / set_node_property / call_node_method
-##   - 场景编辑(写):       add_node / remove_node / apply_scene_edits(复制与连信号是它的 op)
+##   - 观测与单点修改: get_scene_tree / get_node_info / set_node_property / call_node_method
+##   - 场景编辑(写):    add_node / remove_node / apply_scene_edits(复制与连信号是它的 op)
 ## 保存(scene/all)不在本域 —— 它与项目设置的保存同源, 已并入资源域的 save 工具。
-## 分组的界线是**副作用**: 前一组以观测为主(唯一的例外是 set_node_property / call_node_method,
-## 改动能被用户 Ctrl+Z 撤掉 —— 这条"AI 改的东西必须可撤"是本域最重要的设计约束。
+## 设计约束: **AI 改的东西必须可撤**。变异一律经编辑器 UndoRedo 提交, 唯一例外是删除节点
+## (原因见 _apply_remove_node)。
 const MCPResult := preload("res://addons/DEVFramework/MCP/MCPResult.gd")
-const MCPToolSchema := preload("res://addons/DEVFramework/MCP/MCPToolSchema.gd")
+const MCPToolContract := preload("res://addons/DEVFramework/MCP/MCPToolContract.gd")
 
-## 跨域共享的编辑器环境辅助。本域**不持有**取编辑根节点的私有副本 —— 见文件头
+## 跨域共享的编辑器环境辅助。本域**不持有**取编辑根节点的私有副本, 一律走这里。
 const MCPEditorEnv := preload("res://addons/DEVFramework/MCP/MCPEditorEnv.gd")
 
 ## 输出给 AI 的核心属性白名单(过滤编辑器内部数百项属性, 控制上下文开销)
@@ -34,24 +34,24 @@ static func register(add_tool: Callable) -> void:
 		{"type": "object", "properties": {"max_depth": {"type": "integer", "description": "最大展开深度, 默认取项目设置 dev_framework/mcp/scene_tree_depth"}, "include_properties": {"type": "boolean", "description": "是否附带每个节点的关键属性, 默认 false"}}},
 		_handle_get_scene_tree)
 
-	## 【必填参数一律声明 required】本文件里必填项的兜底曾分三档, 档位之间体验差别很大:
-	##   2. handler 里手写 _fail("必须提供 path") -> 说得清, 但无 recovery 指引
+	## 【必填参数一律声明 required】handler 里手写 _fail("必须提供 path") 说得清, 但模型在调用前
+	## 看不到这条约束; 声明进 schema 则由契约层在校验时统一给出。
 	add_tool.call("get_node_info",
 		"获取编辑场景中指定节点的属性及当前值。path传节点名或路径(如Main/Player)。默认只回核心属性(位置/可见性/文本等)与脚本导出变量, 嵌套的 Object/Resource 值不回; 要看**其它**属性(如自定义控件的某个属性, 或 Object 引用到底指向谁)就传 properties 指定属性名。",
 		{"type": "object", "properties": {
-			"path": MCPToolSchema.node_path(),
+			"path": MCPToolContract.node_path(),
 			"properties": {"type": "array", "items": {"type": "string"}, "description": "可选: 只取这些属性名(按名字直读, 含 Object/Resource 值会被转成路径字符串)。省略则回核心属性白名单"},
 		}, "required": ["path"]},
 		_handle_get_node_info)
 
 	add_tool.call("set_node_property",
 		"修改编辑场景中节点属性(调试用), UndoRedo提交可按Ctrl+Z撤。仅改内存, 需 save(scope=\"scene\") 写回.tscn。支持任意属性含 Node2D/Node3D 的 position/rotation/scale(Vector 可传 '1,2'/'1,2,3' 字符串)。",
-		{"type": "object", "properties": {"path": MCPToolSchema.node_path(), "property": {"type": "string", "description": "属性名"}, "value": {"description": "新值(支持数字/字符串/布尔; Vector2 等可传 '1,2' 字符串)"}}, "required": ["path", "property"]},
+		{"type": "object", "properties": {"path": MCPToolContract.node_path(), "property": {"type": "string", "description": "属性名"}, "value": {"description": "新值(支持数字/字符串/布尔; Vector2 等可传 '1,2' 字符串)"}}, "required": ["path", "property"]},
 		_handle_set_node_property)
 
 	add_tool.call("call_node_method",
 		"调用编辑场景中节点的方法(调试触发逻辑, 如播放动画/切换状态)。args以数组传参。【副作用】这是**真执行而非观测**: 方法体会真的跑起来, 可能改节点状态、触发信号, 或走进游戏业务逻辑(扣血/切状态/存档), 故重复调用会叠加出额外副作用, 只想看状态请用 get_node_info。",
-		{"type": "object", "properties": {"path": MCPToolSchema.node_path(), "method": {"type": "string", "description": "方法名"}, "args": {"type": "array", "description": "参数数组"}}, "required": ["path", "method"]},
+		{"type": "object", "properties": {"path": MCPToolContract.node_path(), "method": {"type": "string", "description": "方法名"}, "args": {"type": "array", "description": "参数数组"}}, "required": ["path", "method"]},
 		_handle_call_node_method)
 
 
@@ -63,15 +63,13 @@ static func register(add_tool: Callable) -> void:
 
 	add_tool.call("remove_node",
 		"从当前编辑场景删除指定节点(含子树)。**【不可撤销】** 不走 UndoRedo(节点删除的撤销会保留已删节点引用, 保存场景时触发 'Trying to assign invalid previously freed instance'), 故 Ctrl+Z 不能把它变回来。要删多个节点请用 apply_scene_edits 一次提交; 若拿不准, 先 get_node_info 确认再删。",
-		{"type": "object", "properties": {"path": MCPToolSchema.node_path()}, "required": ["path"]},
+		{"type": "object", "properties": {"path": MCPToolContract.node_path()}, "required": ["path"]},
 		_handle_remove_node)
 
-	## duplicate_node / connect_signal 曾经各占一个工具, 但它们的入参是 apply_scene_edits 里
-	## 同名 op 的**真子集**(少了 dry_run 与事务语义), 两份入口只是让调用方多猜一次该用哪个。
-	## 现在只有批量入口, 单条用例写成 ops:[{...}] 一条即可 —— 事务边界不变, 描述也不用写两遍。
-	## 【批量】一次调用改多处场景: 每次单独的 tools/call 都是一个独立的 UndoRedo action,
-	## 于是 AI 改十个节点就要按十次 Ctrl+Z(而且中间漏一步就没法整体回退)。
-	## 这里把一组操作包进**同一个** action, 一次撤销回到调用前。
+	## duplicate_node / connect_signal 的入参是 apply_scene_edits 里同名 op 的真子集(少了 dry_run
+	## 与事务语义), 故不再各占一个工具 —— 单条用例写成 ops:[{...}] 一条即可, 描述也不用写两遍。
+	## 【批量】每次单独的 tools/call 是独立的 UndoRedo action: AI 改十个节点要按十次 Ctrl+Z,
+	## 中间漏一步就没法整体回退。这里把一组操作包进**同一个** action, 一次撤销回到调用前。
 	add_tool.call("apply_scene_edits",
 		"批量执行场景编辑(一次事务): 建控件树、批量设属性、批量删/复制。ops 按顺序执行, 任一失败即整体回滚并指出第几条; dry_run=true 只校验不落改动。**除 remove_node 外都可一次 Ctrl+Z 整体撤销**(含 remove_node 时结果带 irreversible=true)。op.action: add_node / remove_node / set_property / duplicate_node / connect_signal / rename。改一处时用对应的单条工具更省。",
 		{"type": "object", "properties": {
@@ -93,7 +91,7 @@ static func register(add_tool: Callable) -> void:
 				},
 				"required": ["action"],
 			}},
-			"dry_run": MCPToolSchema.dry_run_arg(),
+			"dry_run": MCPToolContract.dry_run_arg(),
 		}, "required": ["ops"]},
 		_handle_apply_scene_edits)
 
@@ -124,7 +122,7 @@ static func _handle_get_scene_tree(args: Dictionary) -> Dictionary:
 	if int(stats["pruned"]) > 0:
 		text += "\n\n[深度截断] %d 个节点因 max_depth=%d 未展开(子树内容未返回)。\n续读: 增大 max_depth, 或用 get_node_info(path) 精确取某个子树。" % [int(stats["pruned"]), max_depth]
 	# structuredContent 只放**元信息**, 不重复携带 tree 文本 ——
-	# tree 再进 structuredContent 就是第三份。实测深展开时三份合计 27 万字符, 去掉一份后
+	# 同一棵树在 content 与 structuredContent 里各来一份, 上下文开销直接翻倍。
 	return MCPResult.ok_with_meta(text, {
 		"root": str(root.name),
 		"max_depth": max_depth,
@@ -262,9 +260,9 @@ static func _apply_set_property(node: Node, property: String, value: Variant, un
 	var current: Variant = node.get(property)
 	var typed: Variant = VariantTool.infer(value)
 	if typed is String and _is_res_path(String(typed)) and (current is Resource or _declares_object(node, property)):
-		# 资源属性(texture / mesh / theme / font 等)此前完全写不进去: coerce 只按 typeof(current)
-		# 做数值/向量转换, 而 typeof(Resource) 是 TYPE_OBJECT, 于是 "res://a.png" 原样 set 进
-		# Object 属性 —— 要么静默失败, 要么把属性变成 null。这里显式按路径加载。
+		# 资源属性(texture / mesh / theme / font 等)不能交给 coerce: 它按 typeof(current) 做
+		# 数值/向量转换, 而 typeof(Resource) 是 TYPE_OBJECT, 路径字符串原样 set 进 Object 属性
+		# 只会静默失败或把属性置 null。这里显式按路径加载。
 		var loaded := _load_resource_arg(String(typed))
 		if loaded == null:
 			return "资源属性 %s 无法从路径加载: %s(路径要以 res:// 或 uid:// 开头)" % [property, str(typed)]
@@ -483,8 +481,8 @@ static func _make_duplicate(node: Node, new_name: String, out_err: Array) -> Nod
 
 
 ## 连接信号到方法。返回非空串 = 失败原因。
-## 【幂等】已存在同一条连接时直接跳过: 此前重复调用会重复连接(信号会触发两次方法体),
-## 而 Godot 的 connect 本身不做去重。is_connected 检查让这个工具真的可安全重放。
+## 【幂等】已存在同一条连接时直接跳过: Godot 的 connect 本身不去重, 重复调用会让信号
+## 触发两次方法体。is_connected 检查让这个工具真的可安全重放。
 static func _apply_connect_signal(source: Node, signal_name: String, target: Node, method: String, undo: EditorUndoRedoManager, add_undo: bool = true, execute_now: bool = false) -> String:
 	if not source.has_signal(signal_name):
 		return "节点 %s 没有信号 %s" % [source.name, signal_name]
@@ -628,11 +626,10 @@ static func _finish_edits(undo: EditorUndoRedoManager, recorded: int, executed: 
 
 
 ## 失败即整体回滚。recorded==0 时没有可撤的东西, 直接报错。
-## 【踩过的坑】EditorUndoRedoManager **没有 undo()** —— 它只是"按对象分历史"的管理器, 撤销要落到
+## 【坑】EditorUndoRedoManager **没有 undo()** —— 它只是"按对象分历史"的管理器, 撤销要落到
 ##   具体那条历史(UndoRedo)上: get_object_history_id(root) -> get_history_undo_redo(id) -> undo()。
-##   曾经直接写 undo.undo(), 结果回滚路径自己抛 "Nonexistent function 'undo' in base
-##   'EditorUndoRedoManager'", handler 抛异常 -> 结果没有 structuredContent -> 客户端看到的是
-##   "has an output schema but did not return structured content", 真正的原因(第几条 op 失败)反而丢了。
+##   写成 undo.undo() 会在回滚路径里抛异常, handler 抛异常则 structuredContent 缺失,
+##   客户端只看到 "has an output schema but did not return structured content", 真正原因反而丢了。
 static func _abort_edits(undo: EditorUndoRedoManager, recorded: int, why: String, report: Array, irreversible: bool) -> Dictionary:
 	if undo and recorded > 0:
 		undo.commit_action(false)
@@ -775,11 +772,10 @@ static func _undo_redo_of_edited_root(undo: EditorUndoRedoManager) -> UndoRedo:
 	return undo.get_history_undo_redo(history_id)
 
 
-## 获取编辑器 UndoRedo 管理器(仅编辑器模式)。所有场景变异工具经它提交,
-## "Ctrl+Z 撤销"这个能力静默消失。严格说这撞在全局判据"漏调必须可见"上, 但**保留原样**:
-##   - 它不是漏调, 是编辑器能力缺失时的兜底路径, 原始实现即如此;
-##   - 改掉会让本域在"能改但不能撤"时直接失败, 那比静默降级更糟。
-## 而 static 化之后拿不到 self。查过唯一创建 MCPDevServer 的位置(plugin.gd
+## 获取编辑器 UndoRedo 管理器(仅编辑器模式)。所有场景变异工具经它提交, 拿不到它则
+## "Ctrl+Z 撤销"这个能力静默消失。这里撞上"漏调必须可见"判据, 但**保留原样**:
+##   - 它是编辑器能力缺失时的兜底路径, 不是漏调;
+##   - 改成直接失败会让本域在"能改但不能撤"时完全不可用, 比静默降级更糟。
 static func _editor_undo_redo() -> EditorUndoRedoManager:
 	if not Engine.is_editor_hint():
 		return null

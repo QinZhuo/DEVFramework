@@ -2,17 +2,14 @@
 extends RefCounted
 
 ## ======= 工具元数据(annotations / outputSchema) =======
-## 与 MCPResult(响应契约)、MCPToolSchema(请求契约)同级的第三块协议契约。**必须带 @tool 且不
+## 与 MCPResult(响应契约)、MCPToolContract(请求契约)同级。**必须带 @tool 且不声明 class_name**。
 
 ## ======= 三张分类名单: 每个工具必须恰好落进一张 =======
-## 划分标准只有一条 —— **"重放一次会不会造成不可挽回的后果"**。三张名单直接对应 MCP 的三个
-## 注解, 名字也照注解取, 免得"名单叫什么"和"它其实在标什么"越走越远:
-##   READ_ONLY       → readOnlyHint=true                        不产生任何持久化改动。
-##   NON_DESTRUCTIVE → destructiveHint=false                    会改状态, 但改了能撤(UndoRedo)
-##                                                              或能重建(重新编译/重新截图/清缓冲)。
-##   DESTRUCTIVE     → destructiveHint=true                     不可撤销, 或改了工程配置/文件/进程
-##                                                              生命周期, 或执行任意代码。
-## destructiveHint 是**客户端唯一依据**来决定是否弹确认框, 所以宁可多标 —— 见 build() 的兜底规则。
+## 划分标准只有一条: **重放一次会不会造成不可挽回的后果**。名单名与注解一一对应:
+##   READ_ONLY       → readOnlyHint=true       不产生任何持久化改动。
+##   NON_DESTRUCTIVE → destructiveHint=false   会改状态, 但可撤(UndoRedo)或可重建。
+##   DESTRUCTIVE     → destructiveHint=true    不可撤销, 或动工程配置/文件/进程, 或执行任意代码。
+## destructiveHint 是客户端决定是否弹确认框的唯一依据, 故宁可多标 —— 见 build() 的兜底。
 
 ## ---------------------------------------------------------------- 只读工具
 const READ_ONLY := [
@@ -30,14 +27,14 @@ const READ_ONLY := [
 	"search_symbols", "find_resource_users", "script_status", "get_resource_info",
 	# -- 文件观测 --
 	"read_file",
-	# -- 崩溃取证: 只读日志与事件日志, 不改任何东西 --
+	# -- 崩溃取证: 只读日志与事件日志 --
 	"crash_report",
-	# -- job 轮询/列举: 只是看一个已在跑的任务, 本身不改状态 --
+	# -- job 轮询/列举: 只是看一个已在跑的任务 --
 	"job_wait", "job_list", "wait_for",
 ]
 
 ## ------------------------------------- 有副作用但不破坏的工具(NON_DESTRUCTIVE)
-## 判据: 改动可由 Ctrl+Z 撤回, 或产物可重建/可丢弃。**这张名单 = destructiveHint:false**,
+## 判据: 改动可由 Ctrl+Z 撤回, 或产物可重建/可丢弃 = destructiveHint:false。
 ## 不在这张名单里的写工具一律按破坏性处理(见 build() 兜底)。
 const NON_DESTRUCTIVE := [
 	# -- 产物落盘(新文件, 不覆盖; 删除即回退) --
@@ -48,8 +45,8 @@ const NON_DESTRUCTIVE := [
 	"save",
 	# -- 编辑器/进程内状态(不影响工程文件) --
 	"open_scene", "use_instance", "clear_logs", "refresh_tools", "perf", "job_cancel",
-	# -- 运行中输入注入: 只驱动游戏运行时状态, 不动工程; 但重放会重复触发业务逻辑,
-	#    故单列在此而不进幂等名单。与 call_node_method 的区别: 那个能调用任意方法(含存档/删档)。
+	# -- 运行中输入注入: 只驱动运行时状态, 不动工程; 重放会重复触发业务逻辑, 故不进幂等名单。
+	#    与 call_node_method 的区别: 那个能调用任意方法(含存档/删档)。
 	"simulate_click", "simulate_drag", "simulate_key", "simulate_text", "simulate_scroll",
 	# -- 起游戏进程跑测试: 进程可停、结果可重跑 --
 	"run_tests",
@@ -87,12 +84,11 @@ const IDEMPOTENT := [
 	"create_resource",
 	"clear_logs",
 	"refresh_tools",
-	# perf: snapshot/fps/history 只读, reset 只是清掉可重建的历史基线(同 clear_logs 的道理)
+	# perf: snapshot/fps/history 只读; reset 只清可重建的历史基线。
 	"perf",
-	# build_native: 重复构建同一份源码得到同一产物, 可安全重放
+	# build_native: 重复构建同一份源码得到同一产物。
 	"build_native",
-	# use_instance: 只改"默认目标编辑器"这一项设置(它**会落盘**, 见 MCPInstanceHub._save_target,
-	# 但同参数重放结果相同, 也不会碰任何工程文件)。
+	# use_instance: 只改"默认目标编辑器"这一项设置(会落盘, 但同参数重放结果相同, 不碰工程文件)。
 	"use_instance",
 	# -- 刻意不列 --
 	# add_node: 重放会多出一个节点, 不幂等
@@ -101,9 +97,8 @@ const IDEMPOTENT := [
 	# simulate_*: 重放会把业务逻辑再触发一遍
 ]
 
-## 未列入任何名单的工具 = **破坏性**(保守兜底)。以前的默认是"非破坏性", 结果是
-## launch_project / refresh_tools / perf(reset) 这些真会动东西的工具全被客户端当成安全操作,
-## 确认框一次都不弹。宁可让漏标显式暴露成"多弹一次确认", 由 audit_against() 把漏标报出来。
+## 未列入任何名单的工具 = **破坏性**(保守兜底): 漏标的代价是多弹一次确认, 而不是
+## 静默当安全操作执行。漏标由 audit() 在启动自检里报出来。
 
 
 ## ======= 入口: 供 MCPDevServer._add_tool 统一调用 =======
@@ -112,8 +107,7 @@ const IDEMPOTENT := [
 static func build(name: String, desc: String, input_schema: Dictionary) -> Dictionary:
 	var read_only := READ_ONLY.has(name)
 	var non_destructive := NON_DESTRUCTIVE.has(name)
-	# 第三张名单之外 = **破坏性**。这条兜底方向是刻意选的: 漏标的代价从"静默当安全操作执行"
-	# 变成"多弹一次确认", 而前者正是此前 launch_project/refresh_tools/perf 全都不弹框的原因。
+	# 三张名单之外 = **破坏性**: 漏标只多弹一次确认, 不会静默当安全操作执行。
 	# 显式登记进 NON_DESTRUCTIVE 才降级为"非破坏性"。
 	var destructive := not read_only and not non_destructive
 	var def := {
@@ -123,19 +117,19 @@ static func build(name: String, desc: String, input_schema: Dictionary) -> Dicti
 		"annotations": {
 			"readOnlyHint": read_only,
 			"destructiveHint": destructive,
-			# 只读天然幂等, 无需在 IDEMPOTENT 里重复列举(见该常量上方说明)
+			# 只读天然幂等, 无需在 IDEMPOTENT 重复列举。
 			"idempotentHint": read_only or IDEMPOTENT.has(name),
-			# 显式标 false 让客户端知道无需为"外部影响"额外确认。不可省: 规范默认是 true。
+			# 显式标 false 表示无外部影响。不可省: 规范默认是 true。
 			"openWorldHint": false,
 		},
-		# 只声明 type: 各工具 structuredContent 形状差异极大(日志是条目数组、classdb 是类成员树…),
+		# 只声明 type: 各工具 structuredContent 形状差异极大(日志是数组、classdb 是成员树…),
 		"outputSchema": {"type": "object"},
 	}
 	return def
 
 
-## ======= 为什么这里不生成 title =======
-## 曾按"取描述首句"生成过, 移除理由是它对模型零增益却让常驻工具表多付 13.5%(实测 44889 字符里
+## ======= 不生成 title =======
+## 对模型零增益, 却让常驻的 tools/list 明显变长。
 
 
 ## ======= 契约自检 =======
@@ -147,8 +141,7 @@ static func audit_against(registered: Dictionary) -> Array[String]:
 		for n in entry[1]:
 			if not registered.has(n):
 				issues.append("%s 含未注册的工具名 '%s'(工具已删除/改名, 名单未同步)" % [entry[0], n])
-	# 反向兜底: build() 把"三张分类名单都没写"的工具判成破坏性 —— 那属于漏标, 会被迫每次弹确认。
-	# 只报出来不够, 还得靠 audit() 在启动自检里暴露, 否则漏标只会表现为"客户端老让我确认"。
+	# 反向兜底: build() 把三张名单都没写的工具判成破坏性, 即漏标 —— 会表现为"客户端老让我确认"。
 	for tool_name in registered.keys():
 		if READ_ONLY.has(tool_name) or NON_DESTRUCTIVE.has(tool_name) or DESTRUCTIVE.has(tool_name):
 			continue
@@ -172,7 +165,7 @@ static func audit() -> Array[String]:
 	return issues
 
 
-## NON_DESTRUCTIVE 与另两张名单的交集 —— 不复用 _audit_overlap: 那套文案对这里的两个交集都不成立,
+## NON_DESTRUCTIVE 与另两张名单的交集(文案不同, 故不复用 _audit_overlap)。
 static func _audit_non_destructive_overlap() -> Array[String]:
 	var out: Array[String] = []
 	for n in NON_DESTRUCTIVE:
@@ -184,15 +177,11 @@ static func _audit_non_destructive_overlap() -> Array[String]:
 
 
 ## IDEMPOTENT 的一致性检查。
-## 曾经的规则是"有副作用名单与 IDEMPOTENT 互斥", 那建立在"有副作用的只有产物落盘类"这个旧前提上
-## (当时只装了截图/渲染类 —— 它们每次调用新增一个文件, 确实不可重放)。
-## 现在 NON_DESTRUCTIVE 收录的是"改了能撤 / 能重建"这一类, 与"可安全重放"并不矛盾:
-## save 写的是当前内存态、set_node_property 同参数重放结果相同、connect_signal 已做去重 ——
-## 它们**既**有副作用**又**幂等, 分类与幂等是两条正交的属性。所以这里只报两种真问题:
+## 分类(有无副作用)与幂等是两条**正交**属性: save 写当前内存态、set_node_property 同参数
+## 重放结果相同、connect_signal 已去重 —— 既非只读也无害。故只报两种真问题:
 ##   1. 只读工具重复列进 IDEMPOTENT(build() 已由 readOnlyHint 推导, 纯冗余);
-##   2. IDEMPOTENT 里的名字没落进任何分类名单(那是漏分类, 会造成破坏性兜底误判)。
-## 反之, "把产物落盘类写进幂等"这种误标由**分类本身**兜住: take_screenshot / preview_resource /
-## simulate_* 属于不可重放, 它们不进 IDEMPOTENT 是靠名单维护与下方注释, 而不是靠这条检查。
+##   2. IDEMPOTENT 里的名字没落进任何分类名单(漏分类会导致破坏性兜底误判)。
+## "把产物落盘类写进幂等"这类误标靠名单维护兜住, 不由本检查负责。
 static func _audit_redundant_idempotent() -> Array[String]:
 	var out: Array[String] = []
 	for n in IDEMPOTENT:

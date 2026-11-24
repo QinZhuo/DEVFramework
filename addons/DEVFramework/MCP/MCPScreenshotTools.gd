@@ -4,7 +4,7 @@ extends RefCounted
 ## ======= 截图域: 请求形状(与进程无关的安全部分) =======
 ## **本文件必须导出安全**(零编辑器标识符): 运行时服务器要在导出包里注册 take_screenshot,
 
-## 不 preload MCPToolSchema: 本工具的 schema 是带 enum 的自定义字典, 那里没有对应工厂。
+## 不 preload MCPToolContract: 本工具的 schema 是带 enum 的自定义字典, 那里没有对应工厂。
 
 
 ## ======= 请求形状(spec) =======
